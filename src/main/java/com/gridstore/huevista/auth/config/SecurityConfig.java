@@ -99,25 +99,21 @@ public class SecurityConfig {
      */
     @Bean
     public UserDetailsService userDetailsService() {
-        return email -> userRepository.findByEmail(email)
-                .map(user -> org.springframework.security.core.userdetails.User.builder()
-                        .username(user.getId())
-                        .password(user.getPassword() != null ? user.getPassword() : "")
-                        .authorities(Collections.emptyList())
-                        .build())
-                .orElseThrow(() -> new UsernameNotFoundException("User not found: " + email));
+        return email -> {
+            com.gridstore.huevista.auth.model.User user = userRepository.findByEmail(email)
+                    .orElseThrow(() -> new UsernameNotFoundException("User not found: " + email));
+            return org.springframework.security.core.userdetails.User.builder()
+                    .username(user.getId())
+                    .password(user.getPassword() != null ? user.getPassword() : "")
+                    .authorities(Collections.emptyList())
+                    .build();
+        };
     }
 
-    /**
-     * DaoAuthenticationProvider:
-     *  - calls UserDetailsService.loadUserByUsername(email) to get stored hash
-     *  - calls PasswordEncoder.matches(rawPassword, storedHash) to verify
-     *  - throws BadCredentialsException on mismatch
-     */
+    // Spring Security 6.x: DaoAuthenticationProvider requires UserDetailsService in constructor
     @Bean
     public AuthenticationProvider authenticationProvider() {
-        DaoAuthenticationProvider provider = new DaoAuthenticationProvider();
-        provider.setUserDetailsService(userDetailsService());
+        DaoAuthenticationProvider provider = new DaoAuthenticationProvider(userDetailsService());
         provider.setPasswordEncoder(passwordEncoder());
         return provider;
     }
