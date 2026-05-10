@@ -21,10 +21,58 @@
 11. [Database Tables](#11-database-tables)
 12. [Error Handling Reference](#12-error-handling-reference)
 13. [Security Decisions Explained](#13-security-decisions-explained)
+14. [Spring Boot 4.x Compatibility Notes](#14-spring-boot-4x-compatibility-notes)
 
 ---
 
 ## 1. Architecture Overview
+
+### Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | Spring Boot 4.0.6 (Spring Framework 7.0.7) |
+| Security | Spring Security 6.x |
+| JWT | JJWT 0.12.6 (HMAC-SHA256) |
+| OAuth2 | `spring-boot-starter-oauth2-client` (Google) |
+| JSON | Jackson 3.x (`tools.jackson.databind`) — Spring Boot 4.x default |
+| ORM | Spring Data JPA + Hibernate 7.x |
+| Database | PostgreSQL (production), H2 in-memory (tests) |
+| Passwords | BCryptPasswordEncoder (cost 10) |
+
+### Package Layout
+
+```
+auth/
+├── config/
+│   ├── SecurityConfig.java       ← filter chain, providers, AuthenticationManager
+│   └── PasswordConfig.java       ← PasswordEncoder bean (separate to avoid circular dep)
+├── controller/
+│   └── AuthController.java       ← REST endpoints
+├── dto/
+│   ├── RegisterRequest.java
+│   ├── LoginRequest.java
+│   ├── AuthResponse.java
+│   └── RefreshTokenRequest.java
+├── filter/
+│   └── JwtAuthFilter.java        ← OncePerRequestFilter, reads Bearer token
+├── handler/
+│   ├── OAuth2AuthenticationSuccessHandler.java
+│   └── OAuth2AuthenticationFailureHandler.java
+├── model/
+│   ├── User.java                 ← @Entity: users table
+│   ├── RefreshToken.java         ← @Entity: refresh_tokens table
+│   └── AuthProvider.java         ← enum: LOCAL | GOOGLE
+├── repository/
+│   ├── UserRepository.java
+│   └── RefreshTokenRepository.java
+└── service/
+    ├── AuthService.java          ← register, login, refresh, logout
+    ├── JwtService.java           ← token generation and validation
+    └── CustomOAuth2UserService.java ← Google user upsert
+```
+
+### Request Path Diagram
 
 ```
 Client (Browser / Mobile / Postman)
@@ -743,6 +791,114 @@ Logout:
 ### Why rotate refresh tokens?
 
 - If a refresh token is stolen and used, the attacker gets a new token and the legitimate user's old one is gone. The next time the legitimate user tries to refresh, it will fail (token not in DB). This is detectable. With non-rotating tokens, a stolen refresh token is valid indefinitely until logout.
+
+---
+
+## 14. Spring Boot 4.x Compatibility Notes
+
+This section documents the non-obvious compatibility decisions made for Spring Boot 4.0.x, which differs significantly from the 3.x line.
+
+### Jackson 3.x — package namespace change
+
+Spring Boot 4.x ships with **Jackson 3.x** as its primary JSON library. Jackson 3.x moved its package namespace from `com.fasterxml.jackson` to `tools.jackson`:
+
+| Spring Boot Version | Jackson Version | ObjectMapper import |
+|---|---|---|
+| 2.x / 3.x | 2.x | `com.fasterxml.jackson.databind.ObjectMapper` |
+| 4.x | 3.x | `tools.jackson.databind.ObjectMapper` |
+
+Our OAuth2 handlers (`OAuth2AuthenticationSuccessHandler`, `OAuth2AuthenticationFailureHandler`) use `tools.jackson.databind.ObjectMapper`. Note: `com.fasterxml.jackson` 2.x is still on the runtime classpath (pulled in by `jjwt-jackson`) but is NOT available at compile scope.
+
+### PasswordConfig — breaking the circular dependency
+
+Spring Boot 4.x is stricter about circular bean dependencies (they are now prohibited by default). The original design had `PasswordEncoder` as a `@Bean` inside `SecurityConfig`, which caused a startup cycle:
+
+```
+SecurityConfig
+  └── injects: OAuth2AuthenticationSuccessHandler
+                  └── injects: AuthService
+                                  └── injects: PasswordEncoder  ← @Bean in SecurityConfig
+                                                                    (currently being created!)
+```
+
+**Fix:** `PasswordEncoder` was extracted to a standalone `PasswordConfig` class. This makes `PasswordEncoder` independent of `SecurityConfig`, breaking the cycle:
+
+```
+PasswordConfig           ← created first, no dependencies
+  └── PasswordEncoder @Bean
+
+AuthService              ← needs PasswordEncoder (from PasswordConfig, not SecurityConfig)
+  └── @Lazy AuthenticationManager  ← proxy; resolved only on first login call
+
+OAuth2AuthenticationSuccessHandler
+  └── needs AuthService  ← now safe, no SecurityConfig dependency
+
+SecurityConfig           ← created last
+  └── needs OAuth2AuthenticationSuccessHandler ← fine now
+  └── needs PasswordEncoder (from PasswordConfig) ← fine now
+```
+
+### @Lazy on AuthenticationManager in AuthService
+
+`AuthService` injects `AuthenticationManager` with `@Lazy`. This is a secondary safety guard:
+
+- `AuthenticationManager` is exposed as a `@Bean` inside `SecurityConfig`
+- Without `@Lazy`, Spring would need to fully instantiate `SecurityConfig` to get `AuthenticationManager` before `AuthService` can be created
+- `@Lazy` injects a proxy that is only resolved when `authenticationManager.authenticate(...)` is first called (i.e., on the first login request), after all beans are fully initialized
+
+### DaoAuthenticationProvider — Spring Security 6.x constructor change
+
+Spring Security 6.x (used by Spring Boot 4.x) removed the no-arg constructor from `DaoAuthenticationProvider`. It now requires `UserDetailsService` as a constructor argument:
+
+```java
+// Spring Security 5.x (Spring Boot 2.x/3.x) — REMOVED:
+DaoAuthenticationProvider provider = new DaoAuthenticationProvider();
+provider.setUserDetailsService(userDetailsService());
+
+// Spring Security 6.x (Spring Boot 4.x) — REQUIRED:
+DaoAuthenticationProvider provider = new DaoAuthenticationProvider(userDetailsService());
+```
+
+### Lombok annotation processing — Maven compiler plugin
+
+Maven Compiler Plugin 3.14.x no longer auto-discovers annotation processors from the compile classpath. Lombok requires explicit registration in `pom.xml`:
+
+```xml
+<plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <configuration>
+        <annotationProcessorPaths>
+            <path>
+                <groupId>org.projectlombok</groupId>
+                <artifactId>lombok</artifactId>
+            </path>
+        </annotationProcessorPaths>
+    </configuration>
+</plugin>
+```
+
+Without this, all Lombok-generated methods (`@Getter`, `@Builder`, `@Slf4j` log field, etc.) fail to compile.
+
+### Test configuration — H2 in-memory database
+
+The `HueVistaApplicationTests.contextLoads` test loads the full Spring ApplicationContext. To run without a live PostgreSQL instance, it overrides datasource properties via `@TestPropertySource`:
+
+```java
+@SpringBootTest
+@TestPropertySource(properties = {
+    "spring.datasource.url=jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1",
+    "spring.datasource.driver-class-name=org.h2.Driver",
+    "spring.datasource.username=sa",
+    "spring.datasource.password=",
+    "spring.jpa.database-platform=org.hibernate.dialect.H2Dialect",
+    "spring.security.oauth2.client.registration.google.client-id=test-client-id",
+    "spring.security.oauth2.client.registration.google.client-secret=test-client-secret",
+    "app.jwt.secret=dGVzdC1zZWNyZXQta2V5LWZvci11bml0LXRlc3RzLW9ubHk=",
+})
+```
+
+Hibernate auto-creates schema from `@Entity` classes in H2 on startup (equivalent to `ddl-auto=create-drop` in tests).
 
 ---
 
