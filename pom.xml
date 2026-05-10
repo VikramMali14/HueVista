@@ -59,6 +59,12 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- ── Jackson (JSON serialization) ──────────────────── -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
         <!-- ── Validation ─────────────────────────────────────── -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
