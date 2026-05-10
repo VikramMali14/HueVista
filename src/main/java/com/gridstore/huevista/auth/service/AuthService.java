@@ -8,9 +8,10 @@ import com.gridstore.huevista.auth.model.RefreshToken;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.RefreshTokenRepository;
 import com.gridstore.huevista.auth.repository.UserRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -21,7 +22,6 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class AuthService {
 
@@ -30,6 +30,18 @@ public class AuthService {
     private final JwtService jwtService;
     private final PasswordEncoder passwordEncoder;
     private final AuthenticationManager authenticationManager;
+
+    public AuthService(UserRepository userRepository,
+                       RefreshTokenRepository refreshTokenRepository,
+                       JwtService jwtService,
+                       PasswordEncoder passwordEncoder,
+                       @Lazy AuthenticationManager authenticationManager) {
+        this.userRepository = userRepository;
+        this.refreshTokenRepository = refreshTokenRepository;
+        this.jwtService = jwtService;
+        this.passwordEncoder = passwordEncoder;
+        this.authenticationManager = authenticationManager;
+    }
 
     @Value("${app.refresh-token.expiration-ms}")
     private long refreshTokenExpirationMs;
