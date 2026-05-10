@@ -1,6 +1,6 @@
 package com.gridstore.huevista.auth.handler;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.gridstore.huevista.auth.dto.AuthResponse;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
