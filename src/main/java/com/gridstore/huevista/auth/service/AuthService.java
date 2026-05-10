@@ -1,0 +1,124 @@
+package com.gridstore.huevista.auth.service;
+
+import com.gridstore.huevista.auth.dto.AuthResponse;
+import com.gridstore.huevista.auth.dto.LoginRequest;
+import com.gridstore.huevista.auth.dto.RegisterRequest;
+import com.gridstore.huevista.auth.model.AuthProvider;
+import com.gridstore.huevista.auth.model.RefreshToken;
+import com.gridstore.huevista.auth.model.User;
+import com.gridstore.huevista.auth.repository.RefreshTokenRepository;
+import com.gridstore.huevista.auth.repository.UserRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Instant;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class AuthService {
+
+    private final UserRepository userRepository;
+    private final RefreshTokenRepository refreshTokenRepository;
+    private final JwtService jwtService;
+    private final PasswordEncoder passwordEncoder;
+    private final AuthenticationManager authenticationManager;
+
+    @Value("${app.refresh-token.expiration-ms}")
+    private long refreshTokenExpirationMs;
+
+    @Transactional
+    public AuthResponse register(RegisterRequest request) {
+        if (userRepository.existsByEmail(request.getEmail())) {
+            throw new IllegalArgumentException("Email already in use: " + request.getEmail());
+        }
+
+        User user = User.builder()
+                .name(request.getName())
+                .email(request.getEmail())
+                .password(passwordEncoder.encode(request.getPassword()))
+                .provider(AuthProvider.LOCAL)
+                .emailVerified(false)
+                .build();
+
+        userRepository.save(user);
+        log.info("Registered new user: {}", user.getEmail());
+        return buildAuthResponse(user);
+    }
+
+    @Transactional
+    public AuthResponse login(LoginRequest request) {
+        // AuthenticationManager delegates to DaoAuthenticationProvider →
+        // UserDetailsService → BCrypt comparison. Throws on bad credentials.
+        authenticationManager.authenticate(
+                new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword())
+        );
+
+        User user = userRepository.findByEmail(request.getEmail())
+                .orElseThrow(() -> new IllegalStateException("User not found after authentication"));
+
+        log.info("User logged in: {}", user.getEmail());
+        return buildAuthResponse(user);
+    }
+
+    @Transactional
+    public AuthResponse refreshToken(String rawToken) {
+        RefreshToken stored = refreshTokenRepository.findByToken(rawToken)
+                .orElseThrow(() -> new IllegalArgumentException("Refresh token not found"));
+
+        if (stored.getExpiryDate().isBefore(Instant.now())) {
+            refreshTokenRepository.delete(stored);
+            throw new IllegalArgumentException("Refresh token expired — please log in again");
+        }
+
+        // Rotate: invalidate the old token, issue a fresh pair
+        refreshTokenRepository.delete(stored);
+        return buildAuthResponse(stored.getUser());
+    }
+
+    @Transactional
+    public void logout(String userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        refreshTokenRepository.deleteByUser(user);
+        log.info("User logged out, refresh tokens revoked: {}", user.getEmail());
+    }
+
+    /**
+     * Central method: generates a fresh access + refresh token pair for any user.
+     * Called by register, login, OAuth2 success handler, and token refresh.
+     */
+    @Transactional
+    public AuthResponse buildAuthResponse(User user) {
+        String accessToken = jwtService.generateToken(user.getId(), user.getEmail());
+
+        String rawRefresh = UUID.randomUUID().toString();
+        RefreshToken refreshToken = RefreshToken.builder()
+                .token(rawRefresh)
+                .user(user)
+                .expiryDate(Instant.now().plusMillis(refreshTokenExpirationMs))
+                .build();
+        refreshTokenRepository.save(refreshToken);
+
+        return AuthResponse.builder()
+                .accessToken(accessToken)
+                .refreshToken(rawRefresh)
+                .tokenType("Bearer")
+                .expiresIn(jwtService.getExpirationMs() / 1000)
+                .user(AuthResponse.UserInfo.builder()
+                        .id(user.getId())
+                        .name(user.getName())
+                        .email(user.getEmail())
+                        .picture(user.getPicture())
+                        .provider(user.getProvider().name())
+                        .build())
+                .build();
+    }
+}
