@@ -1,0 +1,26 @@
+# Maven build output
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# IDE files
+.idea/
+*.iml
+*.iws
+.classpath
+.project
+.settings/
+*.class
+
+# Spring Boot
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+*.env
