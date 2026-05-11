@@ -40,7 +40,7 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
         String providerId = (String) attributes.get("sub");  // Google's unique user ID
 
         User user = userRepository.findByEmail(email)
-                .map(existing -> updateExistingUser(existing, name, picture))
+                .map(existing -> updateExistingUser(existing, name, picture, providerId))
                 .orElseGet(() -> createOAuth2User(email, name, picture, providerId));
 
         log.info("OAuth2 user loaded: {} via Google", email);
@@ -70,9 +70,11 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
         return userRepository.save(user);
     }
 
-    private User updateExistingUser(User user, String name, String picture) {
+    private User updateExistingUser(User user, String name, String picture, String providerId) {
         user.setName(name);
         user.setPicture(picture);
+        user.setProviderId(providerId);
+        user.setEmailVerified(true);
         return userRepository.save(user);
     }
 }
