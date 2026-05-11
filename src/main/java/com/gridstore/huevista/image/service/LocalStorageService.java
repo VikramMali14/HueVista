@@ -2,6 +2,7 @@ package com.gridstore.huevista.image.service;
 
 import com.gridstore.huevista.common.exception.StorageException;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -11,7 +12,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.UUID;
 
+// Active only when S3 is NOT configured (no app.s3.bucket-name set)
 @Service
+@ConditionalOnMissingBean(StorageService.class)
 public class LocalStorageService implements StorageService {
 
     @Value("${app.upload.storage-path:/tmp/huevista/uploads}")
