@@ -14,6 +14,9 @@ import org.springframework.test.context.TestPropertySource;
     "spring.security.oauth2.client.registration.google.client-id=test-client-id",
     "spring.security.oauth2.client.registration.google.client-secret=test-client-secret",
     "app.jwt.secret=dGVzdC1zZWNyZXQta2V5LWZvci11bml0LXRlc3RzLW9ubHk=",
+    "app.claude.api-key=test-claude-api-key",
+    "app.upload.storage-path=/tmp/huevista/test-uploads",
+    "app.cors.allowed-origins=http://localhost:3000",
 })
 class HueVistaApplicationTests {
 
