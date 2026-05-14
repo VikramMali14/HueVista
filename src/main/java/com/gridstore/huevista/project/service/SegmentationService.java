@@ -1,7 +1,7 @@
 package com.gridstore.huevista.project.service;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.json.JsonMapper;
 import com.gridstore.huevista.project.model.Project;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
@@ -37,7 +37,7 @@ public class SegmentationService {
     private final ProjectRepository projectRepository;
     private final RegionRepository regionRepository;
     private final RestTemplate restTemplate;
-    private final ObjectMapper objectMapper;
+    private final JsonMapper objectMapper;
 
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
