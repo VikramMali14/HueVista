@@ -1,5 +1,6 @@
 package com.gridstore.huevista.common.exception;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -12,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+@Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
@@ -22,6 +24,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(StorageException.class)
     public ResponseEntity<Map<String, Object>> handleStorage(StorageException ex) {
+        log.error("Storage error: {}", ex.getMessage(), ex);
         return errorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "File storage failed. Please try again.");
     }
 
@@ -43,8 +46,14 @@ public class GlobalExceptionHandler {
         return errorResponse(HttpStatus.BAD_REQUEST, errors);
     }
 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
+        return errorResponse(HttpStatus.BAD_REQUEST, ex.getMessage());
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleGeneric(Exception ex) {
+        log.error("Unhandled exception: {}", ex.getMessage(), ex);
         return errorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "An unexpected error occurred.");
     }
 
