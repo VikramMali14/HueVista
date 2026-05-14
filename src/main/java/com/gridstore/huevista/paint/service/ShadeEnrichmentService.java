@@ -1,7 +1,7 @@
 package com.gridstore.huevista.paint.service;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.json.JsonMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -17,7 +17,7 @@ import java.util.*;
 public class ShadeEnrichmentService {
 
     private final RestTemplate restTemplate;
-    private final ObjectMapper objectMapper;
+    private final JsonMapper objectMapper;
 
     @Value("${app.claude.api-key}")
     private String apiKey;
