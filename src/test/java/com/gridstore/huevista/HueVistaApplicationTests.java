@@ -17,7 +17,6 @@ import org.springframework.test.context.TestPropertySource;
     "app.claude.api-key=test-claude-api-key",
     "app.upload.storage-path=/tmp/huevista/test-uploads",
     "app.cors.allowed-origins=http://localhost:3000",
-    "app.s3.region=ap-south-1",
 })
 class HueVistaApplicationTests {
 

@@ -4,7 +4,7 @@ import com.gridstore.huevista.common.exception.StorageException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Conditional;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -19,7 +19,7 @@ import java.util.UUID;
 
 @Slf4j
 @Service
-@ConditionalOnProperty(name = "app.s3.bucket-name")   // only active when bucket is configured
+@Conditional(com.gridstore.huevista.image.config.S3EnabledCondition.class)
 @RequiredArgsConstructor
 public class S3StorageService implements StorageService {
 
