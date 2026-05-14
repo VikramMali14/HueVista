@@ -8,6 +8,7 @@ import com.gridstore.huevista.auth.service.CustomOAuth2UserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
@@ -75,8 +76,11 @@ public class SecurityConfig {
 
             // ── Route access rules ─────────────────────────────────────────
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/auth/**").permitAll()          // register, login, refresh
-                .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll() // OAuth2 redirect URIs
+                .requestMatchers(HttpMethod.POST,
+                        "/api/auth/register",
+                        "/api/auth/login",
+                        "/api/auth/refresh").permitAll()
+                .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
                 .anyRequest().authenticated()
             )
 
