@@ -1,597 +1,299 @@
-AI-Powered Paint Shade Visualizer — Product Requirements Document (PRD)
-Project Name: PaintVision AI
-Version: 1.0
-Prepared For: Development & AI Integration Team
-Document Type: PRD + AI Prompt Engineering Guide
+# HueVista
 
+**AI-Powered Paint Shade Visualizer — B2B Platform for the Indian Paint Retail Market**
 
-1. PROJECT OVERVIEW
-1.1 What Is This Product?
-PaintVision AI is a web application that allows users to upload a photo of their wall/room and virtually apply real paint shades from a brand catalog (e.g., Asian Paints, Berger, Nerolac) using AI. The AI model analyzes the image, identifies paintable surfaces, and intelligently applies selected shades while preserving shadows, textures, and lighting.
-1.2 Core Value Proposition
-"See your walls in your chosen color — before you paint a single stroke."
+> "See your walls in your chosen color — before you paint a single stroke."
 
+---
 
-2. USER FLOW (End-to-End)
-[Landing Page]
+## Overview
 
-      ↓
+HueVista is a B2B paint visualization platform built for the Indian paint retail market. Retailers, distributors, and their end customers can upload photographs of interior rooms or building exteriors and preview real paint shades from major brand catalogs (Asian Paints, Berger, Nerolac) applied photorealistically to walls and surfaces — before a single stroke is painted.
 
-[Sign Up / Login]  ←→  [OAuth / Email Auth]
+Unlike consumer-facing paint apps, HueVista distributes through the existing paint industry hierarchy:
 
-      ↓
+```
+Manufacturer → Distributor → Retailer → Painter → End Customer
+```
 
-[Dashboard]
+Retailers pay a subscription to use HueVista as a sales tool with walk-in customers, shortening the color-selection conversation and closing sales faster.
 
-      ↓
+---
 
-[Upload Image]  →  (JPG/PNG of room or wall)
+## The Problem
 
-      ↓
-
-[Select Paint Brand]  →  Asian Paints / Berger / Custom
-
-      ↓
-
-[Browse Shade Deck]  →  Filter by: Color Family, Finish, LRV
-
-      ↓
-
-[Select 1–3 Shades]  →  Primary wall / Accent wall / Trim
-
-      ↓
-
-[Click "Visualize"]
-
-      ↓
-
-[Image sent to AI Model via API]
-
-      ↓
-
-[AI Returns Colorized Image]
-
-      ↓
-
-[Preview & Compare]  →  Before / After Slider
-
-      ↓
-
-[Download / Share / Save to Project]
-
-
-3. FUNCTIONAL REQUIREMENTS
-3.1 Authentication Module
-Feature
-Description
-Sign Up
-Email + Password or Google OAuth
-Login
-JWT-based session management
-Forgot Password
-Email OTP reset
-User Profile
-Name, saved projects, history
-Guest Mode
-1 free try without login, watermarked output
-
-
-
-3.2 Image Upload Module
-Feature
-Spec
-Accepted Formats
-JPG, JPEG, PNG, WEBP
-Max File Size
-10 MB
-Min Resolution
-800 × 600 px
-Max Resolution
-4000 × 3000 px
-Auto-resize
-Resize >4MP before sending to AI
-Preview
-Show thumbnail before submission
-Validation
-Reject non-room/wall images (optional AI check)
-
-
-UI Elements Required:
-
-Drag-and-drop upload zone
-"Browse Files" fallback button
-Image preview card with dimensions
-Warning if image is too dark or blurry
-
-
-3.3 Shade Deck Module
-3.3.1 Data Structure for Each Shade
-{
-
-  "shade_id": "AP-7729",
-
-  "brand": "Asian Paints",
-
-  "collection": "Royale",
-
-  "shade_name": "Mellow Coral",
-
-  "color_family": "Orange",
-
-  "hex_code": "#E8937A",
-
-  "rgb": { "r": 232, "g": 147, "b": 122 },
-
-  "lrv": 42,
-
-  "finish": ["Matt", "Sheen", "Gloss"],
-
-  "recommended_rooms": ["Living Room", "Bedroom"],
-
-  "is_popular": true,
-
-  "image_swatch_url": "/swatches/AP-7729.png"
-
-}
-3.3.2 Shade Deck UI Features
-Grid view of color swatches (40–200 shades per collection)
-Filter by: Color Family, Finish Type, LRV (Light Reflectance Value), Collection
-Search by shade name or code
-"Compare" button to place 2 shades side-by-side
-Shade detail popup: name, code, finish, recommended rooms, similar shades
-Maximum selection: 3 shades per visualization (Primary, Secondary, Trim)
-
-
-3.4 AI Colorization Module
-3.4.1 What Gets Sent to the AI
-{
-
-  "image_base64": "<base64_encoded_image>",
-
-  "selected_shades": [
-
-    {
-
-      "zone": "primary_wall",
-
-      "shade_name": "Mellow Coral",
-
-      "hex_code": "#E8937A",
-
-      "rgb": { "r": 232, "g": 147, "b": 122 },
-
-      "finish": "Matt"
-
-    },
-
-    {
-
-      "zone": "accent_wall",
-
-      "shade_name": "Deep Ocean",
-
-      "hex_code": "#1B4F72",
-
-      "rgb": { "r": 27, "g": 79, "b": 114 },
-
-      "finish": "Sheen"
-
-    }
-
-  ],
-
-  "brand": "Asian Paints",
-
-  "settings": {
-
-    "preserve_shadows": true,
-
-    "preserve_texture": true,
-
-    "blend_mode": "realistic"
-
-  }
-
-}
-3.4.2 What the AI Returns
-{
-
-  "status": "success",
-
-  "colorized_image_url": "https://cdn.paintvision.ai/results/job_xyz.png",
-
-  "colorized_image_base64": "<base64>",
-
-  "zones_detected": ["primary_wall", "ceiling", "floor", "furniture"],
-
-  "zones_colored": ["primary_wall"],
-
-  "confidence_score": 0.91,
-
-  "processing_time_ms": 3200
-
-}
-
-
-4. AI PROMPT ENGINEERING GUIDE
-This section defines all prompts to be used when calling the AI/Vision model. These prompts must be sent as system or user messages alongside the image.
-
-
-4.1 MASTER SYSTEM PROMPT (Send Once per Session)
-You are an expert AI interior design assistant specializing in wall paint visualization.
-
-Your role is to analyze room/wall images and apply paint shades realistically,
-
-exactly as a professional painter would. You must:
-
-1. Accurately identify walls, ceilings, trims, and other paintable surfaces.
-
-2. Apply the exact color specified by its HEX code and finish type to the correct zone.
-
-3. Preserve all original shadows, light gradients, wall textures, fixtures, furniture,
-
-   doors, windows, and non-wall elements untouched.
-
-4. Blend colors naturally with room lighting — do not apply flat, uniform color blocks.
-
-5. Respect surface finish:
-
-   - Matt: low reflectance, soft matte appearance
-
-   - Sheen/Eggshell: slight sheen, soft glow on lit surfaces
-
-   - Gloss: high shine, reflections visible
-
-6. Return only the modified image. Do not add text, labels, watermarks, or UI elements.
-
-7. The output image must be the same resolution and aspect ratio as the input.
-
-
-4.2 USER PROMPT — Single Wall Colorization
-Here is a photo of a room/wall.
-
-Task: Apply the paint shade described below ONLY to the PRIMARY/MAIN WALL visible
-
-in this image. Do not change any other surfaces.
-
-Paint Shade Details:
-
-- Brand: {brand_name}
-
-- Shade Name: {shade_name}
-
-- Shade Code: {shade_code}
-
-- HEX Color: {hex_code}
-
-- RGB: R={r}, G={g}, B={b}
-
-- Finish Type: {finish_type}
-
-Instructions:
-
-- Identify the largest wall surface in the image (primary wall).
-
-- Apply the HEX color {hex_code} to it with a {finish_type} texture appearance.
-
-- Keep shadows, texture, corners, edges and any imperfections to maintain realism.
-
-- Do NOT paint: ceiling, floor, furniture, doors, windows, or decorative items.
-
-- Ensure color blending at edges where the wall meets other surfaces (ceiling, floor, corners).
-
-Output: A single realistic, photorealistic image with the paint applied.
-
-
-4.3 USER PROMPT — Multi-Zone Colorization (Primary + Accent + Trim)
-Here is a photo of a room. Apply different paint shades to different zones as specified below.
-
-Zone 1 — PRIMARY WALL (largest wall):
-
-- Shade: {shade_name_1} | HEX: {hex_1} | Finish: {finish_1}
-
-Zone 2 — ACCENT WALL (feature wall, usually opposite or perpendicular to main wall):
-
-- Shade: {shade_name_2} | HEX: {hex_2} | Finish: {finish_2}
-
-Zone 3 — TRIM & MOLDINGS (door frames, window frames, skirting boards):
-
-- Shade: {shade_name_3} | HEX: {hex_3} | Finish: {finish_3}
-
-Rules:
-
-- Apply each shade only to its designated zone.
-
-- Maintain realistic lighting and shadow transitions between zones.
-
-- Do NOT alter furniture, flooring, ceiling (unless specified), or decorative objects.
-
-- Output must look like a real painted room — not a digital overlay or flat fill.
-
-- Ensure natural edge blending where two zones meet.
-
-
-4.4 USER PROMPT — Shade Suggestion (AI Auto-Recommends)
-I have uploaded a photo of my room. Based on the existing room's:
-
-- Furniture colors
-
-- Flooring tone
-
-- Natural lighting
-
-- Overall style (modern / traditional / minimalist / etc.)
-
-Please recommend 3 paint shades from the following Asian Paints shade palette:
-
-[Insert shade list as JSON array with hex codes and names]
-
-For each recommendation:
-
-1. Shade Name & Code
-
-2. Why it complements this room
-
-3. Which wall it should go on (primary / accent / trim)
-
-4. Suggested finish (Matt / Sheen / Gloss)
-
-Format the response as a JSON object.
-
-
-4.5 USER PROMPT — Wall Detection Only (Pre-Processing Step)
-Analyze this room image and identify all paintable surface zones.
-
-Return a JSON object with:
-
-{
-
-  "zones_detected": [
-
-    {
-
-      "zone_id": "zone_1",
-
-      "label": "Primary Wall",
-
-      "location": "back center",
-
-      "approximate_percentage_of_image": 38,
-
-      "current_color_hex": "#F5F0EB",
-
-      "is_paintable": true
-
-    },
-
-    ...
-
-  ],
-
-  "room_type_guess": "Living Room",
-
-  "lighting_condition": "natural daylight / artificial / mixed",
-
-  "image_quality": "good / too_dark / too_blurry / insufficient_wall_area"
-
-}
-
-Do not modify or return the image. Only return the JSON.
-
-
-4.6 IMAGE VALIDATION PROMPT (Run Before Colorization)
-Examine this image and determine if it is suitable for paint visualization.
-
-Check for:
-
-1. Is this an indoor room or wall? (Yes/No)
-
-2. Is there at least one clearly visible wall surface? (Yes/No)
-
-3. Is the image sharp enough for realistic colorization? (Yes/No)
-
-4. Is the image lighting sufficient (not too dark)? (Yes/No)
-
-5. Is the wall area at least 25% of the total image? (Yes/No)
-
-Return ONLY a JSON:
-
-{
-
-  "is_suitable": true/false,
-
-  "reasons": ["reason if not suitable"],
-
-  "suggestion": "what the user should do to get a better image"
-
-}
-
-
-5. SHADE DECK — ASIAN PAINTS SAMPLE DATA
-Below is a starter dataset. Expand this with the full official catalog.
-
-[
-
-  { "shade_id": "AP-0001", "shade_name": "Polar White", "hex_code": "#F8F8F0", "rgb": {"r":248,"g":248,"b":240}, "color_family": "White", "lrv": 91, "finish": ["Matt","Gloss"] },
-
-  { "shade_id": "AP-1021", "shade_name": "Sunbeam Yellow", "hex_code": "#F5D76E", "rgb": {"r":245,"g":215,"b":110}, "color_family": "Yellow", "lrv": 68, "finish": ["Matt","Sheen"] },
-
-  { "shade_id": "AP-2045", "shade_name": "Dusty Rose", "hex_code": "#D4A0A0", "rgb": {"r":212,"g":160,"b":160}, "color_family": "Pink", "lrv": 44, "finish": ["Matt"] },
-
-  { "shade_id": "AP-3012", "shade_name": "Sage Mist", "hex_code": "#A8C5A0", "rgb": {"r":168,"g":197,"b":160}, "color_family": "Green", "lrv": 52, "finish": ["Matt","Sheen"] },
-
-  { "shade_id": "AP-4055", "shade_name": "Ocean Depth", "hex_code": "#2E6DA4", "rgb": {"r":46,"g":109,"b":164}, "color_family": "Blue", "lrv": 18, "finish": ["Matt","Sheen"] },
-
-  { "shade_id": "AP-5033", "shade_name": "Sandstone Beige", "hex_code": "#D4B896", "rgb": {"r":212,"g":184,"b":150}, "color_family": "Neutral", "lrv": 53, "finish": ["Matt","Sheen","Gloss"] },
-
-  { "shade_id": "AP-6022", "shade_name": "Terracotta Dreams", "hex_code": "#C4683A", "rgb": {"r":196,"g":104,"b":58}, "color_family": "Orange", "lrv": 22, "finish": ["Matt"] },
-
-  { "shade_id": "AP-7041", "shade_name": "Lavender Bliss", "hex_code": "#B8A0C8", "rgb": {"r":184,"g":160,"b":200}, "color_family": "Purple", "lrv": 40, "finish": ["Matt","Sheen"] }
-
-]
-
-
-6. TECHNICAL ARCHITECTURE
-┌──────────────────────────────────────────────────────────┐
-
-│                      FRONTEND (React/Next.js)            │
-
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
-
-│  │  Auth Pages  │  │ Upload + Deck│  │  Result Viewer │  │
-
-│  └─────────────┘  └──────────────┘  └────────────────┘  │
-
-└─────────────────────────┬────────────────────────────────┘
-
-                          │ REST API / GraphQL
-
-┌─────────────────────────▼────────────────────────────────┐
-
-│                    BACKEND (Node.js / Python FastAPI)     │
-
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────────┐   │
-
-│  │  Auth Service│  │ Image Service│  │  Shade DB API │   │
-
-│  └──────────────┘  └──────┬───────┘  └───────────────┘   │
-
-└─────────────────────────  │  ────────────────────────────┘
-
-                            │
-
-┌───────────────────────────▼──────────────────────────────┐
-
-│                   AI MODEL LAYER                          │
-
-│  Option A: Claude API (Vision) + Image Generation        │
-
-│  Option B: OpenAI GPT-4o Vision + DALL·E / Stable Diff  │
-
-│  Option C: Custom fine-tuned model on room data          │
-
-└──────────────────────────────────────────────────────────┘
-
-                            │
-
-┌───────────────────────────▼──────────────────────────────┐
-
-│             STORAGE & CDN                                 │
-
-│  AWS S3 / Cloudflare R2  →  CloudFront / Cloudflare CDN  │
-
-└──────────────────────────────────────────────────────────┘
-
-
-7. API ENDPOINTS (Backend)
-Method
-Endpoint
-Description
-POST
-/api/auth/register
-Register new user
-POST
-/api/auth/login
-Login, returns JWT
-GET
-/api/shades
-Get all shades (with filters)
-GET
-/api/shades/:brand
-Get shades by brand
-POST
-/api/upload
-Upload image, returns image_id
-POST
-/api/colorize
-Send image_id + shades to AI
-GET
-/api/results/:job_id
-Poll for AI result
-GET
-/api/projects
-Get user's saved projects
-POST
-/api/projects
-Save a colorization result
-
-
-
-8. UI SCREENS REQUIRED
-Landing Page — Hero section with before/after demo, CTA to sign up
-Login / Sign Up Page — Clean auth forms
-Dashboard — Recent projects, quick-start button
-Upload Screen — Drag-drop zone, tips for best photos
-Shade Deck Screen — Full filterable palette grid
-Shade Detail Modal — Swatch, name, code, similar shades
-Processing Screen — Loading animation while AI works
-Result Screen — Before/after slider, download, share, save
-Saved Projects — Gallery of past visualizations
-
-
-9. NON-FUNCTIONAL REQUIREMENTS
-Requirement
-Target
-AI Processing Time
-< 10 seconds per image
-Image Upload Speed
-< 5 seconds on 10 Mbps
-System Uptime
-99.5%
-Concurrent Users
-Support 500 simultaneous
-Mobile Responsive
-Yes (iOS + Android browsers)
-Security
-HTTPS, JWT, input sanitization
-GDPR Compliance
-User data deletion on request
-
-
-
-10. PHASE-WISE DELIVERY PLAN
-Phase 1 — MVP (6–8 Weeks)
-Auth (email + Google)
-Image upload + preview
-Shade deck (Asian Paints, static JSON)
-Single wall AI colorization
-Basic result viewer + download
-Phase 2 — Enhanced (4–6 Weeks)
-Multi-zone colorization
-AI shade recommendation
-Before/after slider
-Save to project / history
-Phase 3 — Scale (4–6 Weeks)
-Multiple paint brands
-Mobile app (React Native)
-Share to social
-Pro subscription plan
-API access for paint retailers
-
-
-11. MONETIZATION OPTIONS
-Model
-Description
-Freemium
-3 free visualizations/month, then ₹299/month
-B2B License
-White-label for Asian Paints stores / dealers
-Pay Per Use
-₹29 per visualization
-Pro Plan
-Unlimited + HD downloads + priority AI
-
-
-
-12. NOTES FOR DEVELOPERS
-Always compress uploaded images before sending to AI (use sharp / PIL)
-Cache AI results by (image_hash + shade_ids) to avoid duplicate API calls
-Store shade deck in a PostgreSQL database for fast filtering
-Use WebSocket or polling for AI job status (not blocking HTTP)
-Watermark free-tier results in the bottom-right corner
-Log all AI calls with tokens used and latency for cost monitoring
-
-
-
-Document Version: 1.0 | Created: May 2026 | Status: Ready for Development
-
+- Customers stare at small printed swatches and mentally imagine how a 2 cm card will look on a 12-foot wall — most get it wrong.
+- Repaints due to color disappointment cost customers time and money and create complaints for retailers.
+- Retailers spend 30+ minutes per customer walking through brochures, often losing the sale to indecision.
+- Existing manufacturer apps are generic, slow, and not tied to a specific retailer's inventory or commercial relationship.
+
+---
+
+## Core Features
+
+### Image Upload & Classification
+- Drag-drop or browse upload — JPEG, PNG, WebP up to 10 MB.
+- Pre-classification via **Claude Haiku Vision**: rejects invalid uploads (selfies, food, landscapes) before storage.
+- Original full-resolution image stored in **AWS S3**; a 1024 px copy used for AI calls (~10× token cost reduction). ✓ Built
+
+### Surface Detection
+- Automatic surface segmentation using **Segment Anything Model 2 (SAM 2)** via Replicate API.
+- Detects walls, doors, windows, trim, ceilings, floors as distinct masked regions.
+- Click-based refinement: user clicks any point to add or refine a region. *(Phase 1)*
+
+### Color Application Engine
+- **Browser-side HTML Canvas + WebGL** — zero backend round-trip per color change.
+- Luminance-preserving recolor: keeps original brightness, shadows, and texture; replaces only hue and saturation.
+- Per-region color assignment — different walls can have different colors simultaneously.
+- Real-time preview on swatch hover, 60 fps on mid-range mobile browsers. *(Phase 1)*
+
+### Paint Shade Catalog
+- Multi-brand: **Asian Paints** (launch), Berger, Nerolac (Phase 2).
+- Each shade: code, name, hex, RGB, color family, LRV, available finishes, recommended room types.
+- Filter by color family, finish, LRV range, style (Indian / Italian / American).
+- Search by shade code, name, or hex value.
+- "Find similar" using CIELAB color distance (Delta E). *(Phase 1)*
+
+### AI Color Recommendations
+- Claude analyzes the room/exterior style and proposes 3 hex combinations matched to the visual style.
+- Each hex snapped to the nearest real shade via Delta E nearest-neighbor.
+- One-click apply: primary wall + accent + trim colors applied simultaneously. *(Phase 2)*
+
+### Projects & Sharing
+- Auto-save every 2 seconds — no manual save button.
+- Browser-side PNG export via `canvas.toBlob()` — zero backend cost.
+- **WhatsApp sharing** (optimized for Indian market).
+- Backend high-resolution render for Premium tier. *(Phase 1–2)*
+
+### White-Label Customer Portal
+- Custom subdomain: `{shopname}.huevista.com`.
+- Retailer issues temporary access codes (3 / 7 / 14-day validity).
+- Customers visualize colors without seeing shade codes.
+- "Send to Retailer" packages the project; retailer receives full shade codes + pixel-area paint quantity estimates. *(Phase 2)*
+
+---
+
+## Business Model
+
+### Distribution Hierarchy
+**HueVista (Super Admin) → Distributors → Retailers → Customers / Painters**
+
+### Retailer Subscription Tiers
+
+| Tier | Price (ex-GST) | AI Generations | Key Features |
+|---|---|---|---|
+| Starter | ₹499/mo | 20/mo | Core visualization, WhatsApp share |
+| Professional | ₹999/mo | 60/mo | + AI recommendations, projects |
+| Business | ₹1,999/mo | 150/mo | + White-label portal, priority support |
+| Enterprise | Custom | Unlimited | + API access, dedicated onboarding |
+
+> **Important distinction:** Color application (2D canvas recolor) is unlimited at zero marginal cost to HueVista. AI generation (full generative re-render) is the capped resource — capped per tier.
+
+### Distributor Commission
+- One-time onboarding fee for a regional license.
+- **3% recurring commission** on every retailer subscription brought on.
+- Commission can be applied as an upfront discount to the retailer's subscription to close sales faster.
+- MVP: manual UPI/bank transfer payouts. Phase 2: automated via Razorpay X.
+
+### White-Label Add-on
+- ₹1,499 one-time activation fee per retailer.
+
+---
+
+## Technical Architecture
+
+```
++--------------------------------------------------+
+|           FRONTEND (Next.js + React)             |
+|  Auth | Upload + Catalog | WebGL Color Engine    |
+|  Customer Portal | Retailer Dashboard            |
++---------------------+----------------------------+
+                      | REST API
++---------------------v----------------------------+
+|           BACKEND (Spring Boot — Java)           |
+|  auth/       — JWT, Google OAuth2          (Built)|
+|  image/      — Upload, classify, S3        (Built)|
+|  common/     — CORS, error handling        (Built)|
+|  paint/      — Brand, Shade, ColorMatch  (Phase 1)|
+|  project/    — Project, Region, Render   (Phase 1)|
+|  ai/         — SAM2, Claude, SDXL        (Phase 1)|
+|  account/    — Org, Distributor, Retailer(Phase 2)|
+|  billing/    — Subscription, Razorpay    (Phase 1)|
++---------------------+----------------------------+
+                      |
++---------------------v----------------------------+
+|              AI / ML LAYER                       |
+|  Surface Segmentation: SAM 2 (Replicate)         |
+|  Image Classification: Claude Haiku Vision       |
+|  Color Recommendations: Claude                   |
+|  Generative Re-render: SDXL (Replicate, Phase 4) |
++---------------------+----------------------------+
+                      |
++---------------------v----------------------------+
+|           STORAGE & CDN                          |
+|  AWS S3 (ap-south-1)  →  CloudFront CDN          |
++--------------------------------------------------+
+```
+
+### Async AI Calls
+- SAM segmentation: 2–5 s. Generative AI: 10–30 s.
+- MVP: Spring `@Async` thread pool (core 4, max 16, queue 100). Frontend polls project status every 1 s.
+- Scale: Redis-backed queue + SSE for status streaming.
+
+### Stack
+| Layer | Technology |
+|---|---|
+| Backend | Spring Boot 4, Java |
+| Database | PostgreSQL |
+| Storage | AWS S3 (ap-south-1) |
+| Auth | JWT + Google OAuth2 |
+| Frontend | Next.js + React |
+| Mobile | Capacitor (post-Phase 1) |
+
+---
+
+## API Endpoints
+
+| Method | Endpoint | Description | Status |
+|---|---|---|---|
+| POST | `/api/auth/register` | Register new user | ✓ Built |
+| POST | `/api/auth/login` | Login, returns JWT | ✓ Built |
+| POST | `/api/auth/refresh` | Refresh access token | ✓ Built |
+| POST | `/api/images/upload` | Upload + classify image | ✓ Built |
+| GET | `/api/shades` | Get shades (with filters) | Phase 1 |
+| GET | `/api/shades/:brand` | Get shades by brand | Phase 1 |
+| POST | `/api/projects` | Create/save project | Phase 1 |
+| GET | `/api/projects` | Get user's projects | Phase 1 |
+| POST | `/api/projects/:id/segment` | Run SAM 2 segmentation | Phase 1 |
+| GET | `/api/projects/:id/status` | Poll AI job status | Phase 1 |
+| POST | `/api/projects/:id/share` | Generate share link | Phase 1 |
+
+---
+
+## Phased Roadmap
+
+### Phase 1 — MVP (Weeks 1–6)
+**Goal:** One paying retailer using core paint visualization in production.
+- [x] Image upload + indoor/outdoor classification
+- [ ] SAM 2 surface segmentation wired into upload pipeline
+- [ ] WebGL-based color application engine
+- [ ] Asian Paints catalog (~200 shades) seeded
+- [ ] Project save/load with auto-save
+- [ ] WhatsApp share with PNG export
+- [ ] Single subscription plan (₹999/mo) via Razorpay
+
+### Phase 2 — Multi-Tier Accounts & White-Label (Weeks 7–14)
+- [ ] Distributor → Retailer organization hierarchy
+- [ ] Wildcard subdomain routing (`{shop}.huevista.com`)
+- [ ] Customer access code system (3/7/14-day validity)
+- [ ] White-label customer portal (no shade codes shown)
+- [ ] AI color recommendations (Claude integration)
+- [ ] All four pricing tiers; commission payouts manual
+
+### Phase 3 — E-commerce & Painter Integration (Weeks 15–22)
+- [ ] Painter accounts under retailers
+- [ ] Online order placement with in-app payment
+- [ ] Retailer storefront with product pricing and availability
+
+### Phase 4 — Premium Visual Features (Weeks 23–28)
+- [ ] Depth Anything v2 for depth maps and parallax effect
+- [ ] Generative AI re-rendering via SDXL (Replicate)
+- [ ] 1–8 style variants per project for Premium plans
+- [ ] Automated commission payouts via Razorpay X
+
+### Phase 5 — True 3D (Conditional on Demand)
+- [ ] Multi-image capture → Gaussian Splatting / NeRF
+- [ ] Walkable 3D space with color application in any view
+
+---
+
+## MVP Success Criteria
+
+- At least 1 retailer using HueVista in daily customer conversations.
+- Retailer has used it with at least 10 walk-in customers.
+- Retailer paying ₹999/month (manually billed via UPI or bank transfer).
+- Time from photo upload to color preview: **< 10 seconds**.
+- Color application after segmentation: **< 100 ms per swatch change**.
+
+---
+
+## Getting Started
+
+### Prerequisites
+- Java 21+
+- PostgreSQL
+- Maven 3.9+
+- AWS account with S3 bucket (or use local storage for dev)
+
+### Configuration
+
+Copy and edit `src/main/resources/application.properties`:
+
+```properties
+spring.datasource.url=jdbc:postgresql://localhost:5432/huevista
+spring.datasource.username=your_db_user
+spring.datasource.password=your_db_password
+
+app.jwt.secret=your_jwt_secret
+app.jwt.expiration-ms=900000
+app.jwt.refresh-expiration-ms=604800000
+
+spring.security.oauth2.client.registration.google.client-id=your_google_client_id
+spring.security.oauth2.client.registration.google.client-secret=your_google_client_secret
+
+# Storage: 's3' or 'local'
+storage.type=local
+storage.local.upload-dir=uploads/
+
+aws.s3.bucket-name=your_bucket
+aws.s3.region=ap-south-1
+aws.access-key-id=your_key
+aws.secret-access-key=your_secret
+
+anthropic.api.key=your_claude_api_key
+```
+
+### Run
+
+```bash
+./mvnw spring-boot:run
+```
+
+---
+
+## Out of Scope (MVP)
+
+The following are real future features intentionally excluded from the MVP:
+- Multi-tier organization hierarchy (distributors, painters) — manual onboarding for MVP
+- Custom subdomain white-label portal
+- Customer access code system
+- Multiple subscription tiers — single ₹999 plan only at launch
+- Automated distributor commission payouts
+- Native Android app — mobile web is sufficient for MVP
+- E-commerce / online order placement
+- Generative AI image re-rendering
+- Multiple brand catalogs — Asian Paints only at launch
+
+---
+
+## Why 2D Color Application (Not Generative AI) for Core Recoloring
+
+Generative AI re-rendering was considered and rejected as the primary engine because:
+- **Cost:** ₹3–8 per render destroys margins at sub-Premium tiers.
+- **Latency:** 10–30 s waits between color changes is unusable.
+- **Hallucination:** AI subtly changes furniture, lighting, and layout — customers say "that's not my house."
+
+The 2D luminance-preserving approach is photorealistic by definition — it IS the original photo with only the wall's hue replaced. Generative AI remains a **Premium-tier feature** for styled final renders, not the core engine.
+
+---
+
+## Why B2B First, Not Direct-to-Consumer
+
+- Consumers paint once every 5–7 years — no repeat usage.
+- Paint retailers close color conversations every day — high-frequency, high-value usage.
+- B2B pricing (₹999/month) is trivial for a retailer who closes ₹50,000+ in monthly sales.
+- Distribution through the existing paint industry hierarchy costs far less than consumer marketing.
+
+---
+
+*PRD Version: 2.0 | Last Updated: May 2026 | Status: Phase 1 In Progress*
