@@ -112,6 +112,12 @@
             <version>0.4.20</version>
         </dependency>
 
+        <!-- Jackson (JSON serialization / deserialization) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
         <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>

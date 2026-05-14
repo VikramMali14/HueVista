@@ -82,6 +82,8 @@ public class SecurityConfig {
                         "/api/auth/login",
                         "/api/auth/refresh").permitAll()
                 .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
+                // Shade catalog is public read-only data
+                .requestMatchers(HttpMethod.GET, "/api/shades", "/api/shades/**").permitAll()
                 .anyRequest().authenticated()
             )
 
