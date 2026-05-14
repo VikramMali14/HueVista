@@ -6,6 +6,7 @@ import com.gridstore.huevista.auth.handler.OAuth2AuthenticationSuccessHandler;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.auth.service.CustomOAuth2UserService;
 import lombok.RequiredArgsConstructor;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -90,6 +91,17 @@ public class SecurityConfig {
                     userInfo.userService(customOAuth2UserService))    // upsert user after token exchange
                 .successHandler(oAuth2SuccessHandler)                // write JWT JSON response
                 .failureHandler(oAuth2FailureHandler)                // write error JSON response
+            )
+
+            // ── Return 401 JSON for unauthenticated API requests ──────────
+            // Without this, Spring Security redirects to Google OAuth2 login page
+            .exceptionHandling(ex -> ex
+                .authenticationEntryPoint((request, response, authException) -> {
+                    response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                    response.setContentType("application/json");
+                    response.getWriter().write(
+                        "{\"status\":401,\"error\":\"Unauthorized\",\"message\":\"Authentication required.\"}");
+                })
             )
 
             // ── Wire in our authentication provider ───────────────────────
