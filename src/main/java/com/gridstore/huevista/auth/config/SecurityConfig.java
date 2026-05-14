@@ -82,6 +82,8 @@ public class SecurityConfig {
                         "/api/auth/login",
                         "/api/auth/refresh").permitAll()
                 .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
+                // Swagger UI / OpenAPI spec — public
+                .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
                 // Shade catalog — public read-only
                 .requestMatchers(HttpMethod.GET, "/api/shades", "/api/shades/**").permitAll()
                 // Shared project view — public, no auth

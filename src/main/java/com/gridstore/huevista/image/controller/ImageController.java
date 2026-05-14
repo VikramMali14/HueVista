@@ -3,6 +3,12 @@ package com.gridstore.huevista.image.controller;
 import com.gridstore.huevista.image.dto.ImageResponse;
 import com.gridstore.huevista.image.service.ImageService;
 import com.gridstore.huevista.image.service.StorageService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.*;
@@ -17,27 +23,43 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/images")
 @RequiredArgsConstructor
+@Tag(name = "Images", description = "Upload and manage room/exterior photos")
 public class ImageController {
 
     private final ImageService imageService;
     private final StorageService storageService;
 
-    /**
-     * POST /api/images/upload
-     * Validates → AI-classifies → stores → returns metadata.
-     */
+    @Operation(
+            summary = "Upload and classify an image",
+            description = """
+                    Accepts JPEG, PNG, or WebP up to 10 MB.
+                    - Validates file type and size
+                    - Runs Claude Haiku Vision to classify as INDOOR or OUTDOOR
+                    - Rejects invalid images (selfies, food, landscapes) with 422
+                    - Stores original in S3/local and returns metadata
+                    """
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "201", description = "Image uploaded and classified"),
+            @ApiResponse(responseCode = "422", description = "Invalid image — not a room or building exterior",
+                    content = @Content),
+            @ApiResponse(responseCode = "400", description = "Wrong file type or size exceeds 10 MB",
+                    content = @Content)
+    })
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ImageResponse> upload(
+            @Parameter(description = "Room or building photo (JPEG/PNG/WebP, max 10 MB)")
             @RequestParam("file") MultipartFile file,
             @AuthenticationPrincipal UserDetails userDetails) {
         ImageResponse response = imageService.upload(file, userDetails.getUsername());
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
-    /**
-     * GET /api/images/{imageId}
-     * Returns metadata for one image owned by the authenticated user.
-     */
+    @Operation(summary = "Get image metadata", description = "Returns metadata for a single image owned by the authenticated user.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Image metadata"),
+            @ApiResponse(responseCode = "404", description = "Image not found or not owned by user", content = @Content)
+    })
     @GetMapping("/{imageId}")
     public ResponseEntity<ImageResponse> getImage(
             @PathVariable String imageId,
@@ -45,20 +67,15 @@ public class ImageController {
         return ResponseEntity.ok(imageService.getImage(imageId, userDetails.getUsername()));
     }
 
-    /**
-     * GET /api/images
-     * Lists all images uploaded by the authenticated user (newest first).
-     */
+    @Operation(summary = "List my images", description = "Lists all images uploaded by the authenticated user, newest first.")
+    @ApiResponse(responseCode = "200", description = "Image list")
     @GetMapping
     public ResponseEntity<List<ImageResponse>> listImages(
             @AuthenticationPrincipal UserDetails userDetails) {
         return ResponseEntity.ok(imageService.listImages(userDetails.getUsername()));
     }
 
-    /**
-     * GET /api/images/files/{userId}/{filename}
-     * Serves the raw image file. Only the owning user may access their own files.
-     */
+    @Operation(hidden = true)
     @GetMapping("/files/**")
     public ResponseEntity<byte[]> serveFile(
             HttpServletRequest request,
@@ -66,7 +83,6 @@ public class ImageController {
         String storageKey = extractStorageKey(request);
         String userId = userDetails.getUsername();
 
-        // Security: storageKey is always {userId}/{uuid}.ext — deny cross-user access
         if (!storageKey.startsWith(userId + "/")) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
