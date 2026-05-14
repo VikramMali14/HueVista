@@ -1,8 +1,8 @@
 package com.gridstore.huevista.image.config;
 
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.auth.credentials.*;
 import software.amazon.awssdk.regions.Region;
@@ -10,7 +10,7 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
 @Configuration
-@ConditionalOnProperty(name = "app.s3.bucket-name")
+@Conditional(S3EnabledCondition.class)
 public class S3Config {
 
     @Value("${app.s3.region}")
