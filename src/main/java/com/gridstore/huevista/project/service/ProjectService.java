@@ -10,10 +10,12 @@ import com.gridstore.huevista.project.dto.*;
 import com.gridstore.huevista.project.model.Project;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
+import com.gridstore.huevista.project.queue.SegmentationJobQueue;
 import com.gridstore.huevista.project.repository.ProjectRepository;
 import com.gridstore.huevista.project.repository.RegionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,6 +35,9 @@ public class ProjectService {
     private final ImageRepository imageRepository;
     private final StorageService storageService;
     private final SegmentationService segmentationService;
+
+    @Autowired(required = false)
+    private SegmentationJobQueue segmentationJobQueue;
 
     @Value("${app.base-url:http://localhost:8080}")
     private String baseUrl;
