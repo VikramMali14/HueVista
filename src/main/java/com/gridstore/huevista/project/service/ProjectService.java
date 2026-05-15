@@ -115,7 +115,11 @@ public class ProjectService {
         projectRepository.save(project);
 
         String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
-        segmentationService.segmentAsync(projectId, imageUrl);
+        if (segmentationJobQueue != null) {
+            segmentationJobQueue.enqueue(projectId, imageUrl);
+        } else {
+            segmentationService.segmentAsync(projectId, imageUrl);
+        }
 
         log.info("Segmentation requested: project={}", projectId);
         return ProjectResponse.from(project, imageUrl);
