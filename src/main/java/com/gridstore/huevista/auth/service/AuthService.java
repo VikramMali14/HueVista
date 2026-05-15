@@ -1,8 +1,6 @@
 package com.gridstore.huevista.auth.service;
 
-import com.gridstore.huevista.auth.dto.AuthResponse;
-import com.gridstore.huevista.auth.dto.LoginRequest;
-import com.gridstore.huevista.auth.dto.RegisterRequest;
+import com.gridstore.huevista.auth.dto.*;
 import com.gridstore.huevista.auth.model.AuthProvider;
 import com.gridstore.huevista.auth.model.RefreshToken;
 import com.gridstore.huevista.auth.model.User;
@@ -103,6 +101,42 @@ public class AuthService {
         log.info("User logged out, refresh tokens revoked: {}", user.getEmail());
     }
 
+    @Transactional(readOnly = true)
+    public UserProfileResponse getProfile(String userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        return UserProfileResponse.from(user);
+    }
+
+    @Transactional
+    public UserProfileResponse updateProfile(String userId, UpdateProfileRequest request) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        user.setName(request.getName());
+        if (request.getPicture() != null) {
+            user.setPicture(request.getPicture());
+        }
+        userRepository.save(user);
+        log.info("Profile updated: {}", user.getEmail());
+        return UserProfileResponse.from(user);
+    }
+
+    @Transactional
+    public void changePassword(String userId, ChangePasswordRequest request) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        if (user.getPassword() == null) {
+            throw new IllegalStateException("OAuth2 accounts cannot set a password here");
+        }
+        if (!passwordEncoder.matches(request.getCurrentPassword(), user.getPassword())) {
+            throw new IllegalArgumentException("Current password is incorrect");
+        }
+        user.setPassword(passwordEncoder.encode(request.getNewPassword()));
+        userRepository.save(user);
+        refreshTokenRepository.deleteByUser(user);
+        log.info("Password changed, all sessions revoked: {}", user.getEmail());
+    }
+
     /**
      * Central method: generates a fresh access + refresh token pair for any user.
      * Called by register, login, OAuth2 success handler, and token refresh.
@@ -130,6 +164,7 @@ public class AuthService {
                         .email(user.getEmail())
                         .picture(user.getPicture())
                         .provider(user.getProvider().name())
+                        .role(user.getRole().name())
                         .build())
                 .build();
     }

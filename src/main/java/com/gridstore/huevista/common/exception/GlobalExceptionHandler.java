@@ -54,6 +54,17 @@ public class GlobalExceptionHandler {
         return errorResponse(HttpStatus.BAD_REQUEST, ex.getMessage());
     }
 
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalState(IllegalStateException ex) {
+        // Subscription quota exceeded and similar business rule violations
+        return errorResponse(HttpStatus.PAYMENT_REQUIRED, ex.getMessage());
+    }
+
+    @ExceptionHandler(SecurityException.class)
+    public ResponseEntity<Map<String, Object>> handleSecurityException(SecurityException ex) {
+        return errorResponse(HttpStatus.FORBIDDEN, ex.getMessage());
+    }
+
     @ExceptionHandler({BadCredentialsException.class, DisabledException.class, LockedException.class})
     public ResponseEntity<Map<String, Object>> handleAuthenticationException(Exception ex) {
         return errorResponse(HttpStatus.UNAUTHORIZED, "Invalid email or password.");

@@ -38,6 +38,11 @@ public class User {
     // Google's "sub" claim — null for LOCAL users
     private String providerId;
 
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    @Builder.Default
+    private UserRole role = UserRole.RETAILER;
+
     @Column(nullable = false)
     @Builder.Default
     private boolean emailVerified = false;
