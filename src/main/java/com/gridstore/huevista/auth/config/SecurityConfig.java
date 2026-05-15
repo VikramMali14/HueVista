@@ -14,10 +14,12 @@ import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -25,7 +27,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfigurationSource;
 
-import java.util.Collections;
+import java.util.List;
 
 /**
  * Central Spring Security configuration.
@@ -53,6 +55,7 @@ import java.util.Collections;
  */
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 @RequiredArgsConstructor
 public class SecurityConfig {
 
@@ -88,6 +91,10 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/shades", "/api/shades/**").permitAll()
                 // Shared project view — public, no auth
                 .requestMatchers(HttpMethod.GET, "/api/share/**").permitAll()
+                // Razorpay webhook — no user auth, signature-verified in service
+                .requestMatchers(HttpMethod.POST, "/api/billing/webhooks/**").permitAll()
+                // Admin endpoints — ROLE_ADMIN only
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
             )
 
@@ -132,7 +139,7 @@ public class SecurityConfig {
             return org.springframework.security.core.userdetails.User.builder()
                     .username(user.getId())
                     .password(user.getPassword() != null ? user.getPassword() : "")
-                    .authorities(Collections.emptyList())
+                    .authorities(List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().name())))
                     .build();
         };
     }

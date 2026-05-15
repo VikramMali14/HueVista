@@ -1,9 +1,6 @@
 package com.gridstore.huevista.auth.controller;
 
-import com.gridstore.huevista.auth.dto.AuthResponse;
-import com.gridstore.huevista.auth.dto.LoginRequest;
-import com.gridstore.huevista.auth.dto.RefreshTokenRequest;
-import com.gridstore.huevista.auth.dto.RegisterRequest;
+import com.gridstore.huevista.auth.dto.*;
 import com.gridstore.huevista.auth.service.AuthService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -74,5 +71,28 @@ public class AuthController {
     @GetMapping("/me")
     public ResponseEntity<Map<String, String>> me(@AuthenticationPrincipal UserDetails userDetails) {
         return ResponseEntity.ok(Map.of("userId", userDetails.getUsername()));
+    }
+
+    @Operation(summary = "Get full profile", description = "Returns full profile of the authenticated user.")
+    @GetMapping("/profile")
+    public ResponseEntity<UserProfileResponse> getProfile(@AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.ok(authService.getProfile(userDetails.getUsername()));
+    }
+
+    @Operation(summary = "Update profile", description = "Update name and/or picture URL.")
+    @PatchMapping("/profile")
+    public ResponseEntity<UserProfileResponse> updateProfile(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Valid @RequestBody UpdateProfileRequest request) {
+        return ResponseEntity.ok(authService.updateProfile(userDetails.getUsername(), request));
+    }
+
+    @Operation(summary = "Change password", description = "Change password for local accounts. Revokes all existing sessions.")
+    @PostMapping("/change-password")
+    public ResponseEntity<Map<String, String>> changePassword(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Valid @RequestBody ChangePasswordRequest request) {
+        authService.changePassword(userDetails.getUsername(), request);
+        return ResponseEntity.ok(Map.of("message", "Password changed. Please log in again."));
     }
 }
