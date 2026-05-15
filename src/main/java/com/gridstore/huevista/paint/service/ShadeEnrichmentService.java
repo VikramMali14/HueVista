@@ -117,6 +117,10 @@ public class ShadeEnrichmentService {
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> content = (List<Map<String, Object>>) response.getBody().get("content");
         String rawJson = ((String) content.get(0).get("text")).trim();
+        // Strip markdown code fences if Claude wraps the response despite instructions
+        if (rawJson.startsWith("```")) {
+            rawJson = rawJson.replaceAll("^```[a-zA-Z]*\\n?", "").replaceAll("```$", "").trim();
+        }
 
         List<Map<String, Object>> parsed = objectMapper.readValue(rawJson, new TypeReference<>() {});
         parsed.sort(Comparator.comparingInt(m -> (Integer) m.get("index")));
