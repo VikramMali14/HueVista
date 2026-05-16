@@ -10,6 +10,8 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -39,6 +41,7 @@ public class ShadeController {
     )
     @ApiResponse(responseCode = "200", description = "Shade list")
     @SecurityRequirements
+    @Cacheable(value = "shades", key = "#brand + ':' + #family + ':' + #temperature + ':' + #tonality + ':' + #search")
     @GetMapping("/api/shades")
     public ResponseEntity<List<ShadeResponse>> getShades(
             @Parameter(description = "Brand slug, e.g. asian-paints") @RequestParam(required = false) String brand,
@@ -73,6 +76,7 @@ public class ShadeController {
     @Operation(summary = "List shade families", description = "Returns distinct shade family names for a brand — useful for building filter UI dropdowns.")
     @ApiResponse(responseCode = "200", description = "List of family names")
     @SecurityRequirements
+    @Cacheable(value = "shade-families", key = "#brand")
     @GetMapping("/api/shades/{brand}/families")
     public ResponseEntity<List<String>> getShadesFamilies(
             @Parameter(description = "Brand slug, e.g. asian-paints") @PathVariable String brand
@@ -84,6 +88,7 @@ public class ShadeController {
     @ApiResponse(responseCode = "200", description = "Shade detail")
     @ApiResponse(responseCode = "404", description = "Shade not found")
     @SecurityRequirements
+    @Cacheable(value = "shade-detail", key = "#brand + ':' + #code")
     @GetMapping("/api/shades/{brand}/{code}")
     public ResponseEntity<ShadeResponse> getShade(
             @Parameter(description = "Brand slug, e.g. asian-paints") @PathVariable String brand,
