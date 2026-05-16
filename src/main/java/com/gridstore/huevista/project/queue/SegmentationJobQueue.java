@@ -20,9 +20,8 @@ public class SegmentationJobQueue {
         log.info("Segmentation job enqueued: project={}", projectId);
     }
 
-    public SegmentationJob dequeue(long timeoutSeconds) {
-        String payload = redisTemplate.opsForList()
-                .rightPop(QUEUE_KEY, java.time.Duration.ofSeconds(timeoutSeconds));
+    public SegmentationJob dequeue() {
+        String payload = redisTemplate.opsForList().rightPop(QUEUE_KEY);
         if (payload == null) return null;
         int sep = payload.indexOf('|');
         if (sep < 0) return null;
