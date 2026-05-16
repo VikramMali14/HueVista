@@ -6,10 +6,12 @@ import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
@@ -17,6 +19,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @RequiredArgsConstructor
 @Profile("!test")
 public class SegmentationQueueWorker {
+
+    private static final long POLL_INTERVAL_MS = 2_000;
+    private static final long REDIS_ERROR_BACKOFF_MS = 15_000;
 
     private final SegmentationJobQueue jobQueue;
     private final SegmentationService segmentationService;
@@ -46,16 +51,32 @@ public class SegmentationQueueWorker {
     private void processLoop() {
         while (running.get()) {
             try {
-                SegmentationJob job = jobQueue.dequeue(5);
+                SegmentationJob job = jobQueue.dequeue();
                 if (job != null) {
                     log.info("Processing segmentation job: project={}", job.getProjectId());
                     segmentationService.segmentAsync(job.getProjectId(), job.getImageUrl());
+                } else {
+                    sleep(POLL_INTERVAL_MS);
                 }
+            } catch (DataAccessException e) {
+                // Redis unavailable — back off and retry rather than spam logs
+                log.warn("Redis unavailable for segmentation queue, retrying in {}s: {}",
+                        REDIS_ERROR_BACKOFF_MS / 1000, e.getMessage());
+                sleep(REDIS_ERROR_BACKOFF_MS);
             } catch (Exception e) {
                 if (running.get()) {
-                    log.error("Segmentation queue worker error: {}", e.getMessage(), e);
+                    log.error("Segmentation queue worker unexpected error: {}", e.getMessage(), e);
+                    sleep(POLL_INTERVAL_MS);
                 }
             }
+        }
+    }
+
+    private void sleep(long ms) {
+        try {
+            TimeUnit.MILLISECONDS.sleep(ms);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
         }
     }
 }
