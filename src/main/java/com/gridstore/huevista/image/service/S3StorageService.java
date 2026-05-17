@@ -37,6 +37,11 @@ public class S3StorageService implements StorageService {
         String extension = extractExtension(file.getOriginalFilename());
         String key = userId + "/" + UUID.randomUUID() + extension;
 
+        log.debug("S3 putObject → bucket={}, key={}, endpoint={}",
+                bucketName, key,
+                s3Client.serviceClientConfiguration().endpointOverride()
+                        .map(Object::toString).orElse("default (AWS)"));
+
         s3Client.putObject(
                 PutObjectRequest.builder()
                         .bucket(bucketName)
