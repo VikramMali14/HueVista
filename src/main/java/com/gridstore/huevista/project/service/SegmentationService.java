@@ -91,14 +91,19 @@ public class SegmentationService {
                 "use_m2m", true
         );
 
-        Map<String, Object> body = Map.of(
-                "version", sam2ModelVersion,
-                "input", input
-        );
+        // Use model-based endpoint (no version hash needed) when sam2ModelVersion is blank.
+        // POST /models/meta/sam-2/predictions always runs the latest published version.
+        Map<String, Object> body = (sam2ModelVersion == null || sam2ModelVersion.isBlank())
+                ? Map.of("input", input)
+                : Map.of("version", sam2ModelVersion, "input", input);
 
         try {
+            String endpoint = (sam2ModelVersion == null || sam2ModelVersion.isBlank())
+                    ? REPLICATE_BASE + "/models/meta/sam-2/predictions"
+                    : REPLICATE_BASE + "/predictions";
+
             ResponseEntity<Map> response = restTemplate.exchange(
-                    REPLICATE_BASE + "/predictions",
+                    endpoint,
                     HttpMethod.POST,
                     new HttpEntity<>(body, headers),
                     Map.class
