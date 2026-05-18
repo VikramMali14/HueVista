@@ -149,23 +149,38 @@ public class SegmentationService {
             return;
         }
 
-        List<Map<String, Object>> masks;
+        String outputJson;
         try {
-            String json = objectMapper.writeValueAsString(output);
-            masks = objectMapper.readValue(json, new TypeReference<>() {});
+            outputJson = objectMapper.writeValueAsString(output);
         } catch (Exception e) {
-            log.error("Failed to parse SAM 2 output: {}", e.getMessage());
+            log.error("Failed to serialize SAM 2 output: {}", e.getMessage());
             return;
+        }
+        log.debug("SAM 2 raw output: {}", outputJson);
+
+        // SAM 2 output: {"combined_mask": "url", "individual_masks": ["url", ...]}
+        List<Object> items = new ArrayList<>();
+        if (output instanceof Map<?, ?> map && map.containsKey("individual_masks")) {
+            Object masks = map.get("individual_masks");
+            if (masks instanceof List<?> list) items.addAll(list);
+        } else if (output instanceof List<?> list) {
+            items.addAll(list);
+        } else {
+            items.add(output);
         }
 
         List<Region> regions = new ArrayList<>();
-        for (int i = 0; i < masks.size(); i++) {
-            Map<String, Object> mask = masks.get(i);
+        for (int i = 0; i < items.size(); i++) {
+            Object item = items.get(i);
             try {
+                String maskData = (item instanceof String)
+                        ? objectMapper.writeValueAsString(Map.of("maskUrl", item))
+                        : objectMapper.writeValueAsString(item);
+
                 regions.add(Region.builder()
                         .project(projectRepository.getReferenceById(projectId))
                         .label("Region " + (i + 1))
-                        .maskData(objectMapper.writeValueAsString(mask))
+                        .maskData(maskData)
                         .displayOrder(i)
                         .build());
             } catch (Exception e) {
