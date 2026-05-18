@@ -149,20 +149,33 @@ public class SegmentationService {
             return;
         }
 
-        log.debug("SAM 2 raw output type={} value={}", output.getClass().getSimpleName(), output);
-
-        List<?> rawList;
+        String outputJson;
         try {
-            String json = objectMapper.writeValueAsString(output);
-            rawList = objectMapper.readValue(json, new TypeReference<List<?>>() {});
+            outputJson = objectMapper.writeValueAsString(output);
         } catch (Exception e) {
-            log.error("Failed to parse SAM 2 output: {}", e.getMessage());
+            log.error("Failed to serialize SAM 2 output: {}", e.getMessage());
             return;
+        }
+        log.debug("SAM 2 raw output: {}", outputJson);
+
+        // SAM 2 output can be a list of masks OR a single object with named mask lists
+        List<Object> items = new ArrayList<>();
+        if (output instanceof List<?> list) {
+            items.addAll(list);
+        } else if (output instanceof Map<?, ?> map) {
+            // e.g. {"masks": [...], "scores": [...]} — treat each top-level value list as items
+            map.values().forEach(v -> {
+                if (v instanceof List<?> l) items.addAll(l);
+                else items.add(v);
+            });
+            if (items.isEmpty()) items.add(map); // fall back: store whole map as one region
+        } else {
+            items.add(output);
         }
 
         List<Region> regions = new ArrayList<>();
-        for (int i = 0; i < rawList.size(); i++) {
-            Object item = rawList.get(i);
+        for (int i = 0; i < items.size(); i++) {
+            Object item = items.get(i);
             try {
                 String maskData = (item instanceof String)
                         ? objectMapper.writeValueAsString(Map.of("maskUrl", item))
