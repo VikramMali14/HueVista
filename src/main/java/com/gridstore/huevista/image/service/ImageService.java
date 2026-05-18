@@ -42,6 +42,10 @@ public class ImageService {
             imageType = claudeVisionService.classify(file);
         } catch (IOException e) {
             throw new StorageException("Failed to read uploaded file", e);
+        } catch (RuntimeException e) {
+            // Claude API temporarily unavailable (e.g. 529 overloaded) — skip classification
+            log.warn("Claude Vision unavailable, skipping classification: {}", e.getMessage());
+            imageType = ImageType.UNKNOWN;
         }
 
         if (imageType == null) {
