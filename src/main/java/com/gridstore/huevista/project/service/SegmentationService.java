@@ -158,17 +158,13 @@ public class SegmentationService {
         }
         log.debug("SAM 2 raw output: {}", outputJson);
 
-        // SAM 2 output can be a list of masks OR a single object with named mask lists
+        // SAM 2 output: {"combined_mask": "url", "individual_masks": ["url", ...]}
         List<Object> items = new ArrayList<>();
-        if (output instanceof List<?> list) {
+        if (output instanceof Map<?, ?> map && map.containsKey("individual_masks")) {
+            Object masks = map.get("individual_masks");
+            if (masks instanceof List<?> list) items.addAll(list);
+        } else if (output instanceof List<?> list) {
             items.addAll(list);
-        } else if (output instanceof Map<?, ?> map) {
-            // e.g. {"masks": [...], "scores": [...]} — treat each top-level value list as items
-            map.values().forEach(v -> {
-                if (v instanceof List<?> l) items.addAll(l);
-                else items.add(v);
-            });
-            if (items.isEmpty()) items.add(map); // fall back: store whole map as one region
         } else {
             items.add(output);
         }
