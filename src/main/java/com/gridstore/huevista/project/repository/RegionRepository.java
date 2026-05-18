@@ -13,4 +13,6 @@ public interface RegionRepository extends JpaRepository<Region, Long> {
     Optional<Region> findByIdAndProjectId(Long id, String projectId);
 
     void deleteByProjectId(String projectId);
+
+    int countByProjectId(String projectId);
 }

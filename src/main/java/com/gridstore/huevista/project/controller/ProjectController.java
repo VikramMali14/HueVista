@@ -106,6 +106,31 @@ public class ProjectController {
         return ResponseEntity.ok(projectService.requestSegmentation(userId(auth), id));
     }
 
+    @Operation(
+            summary = "Segment a specific point",
+            description = """
+                    Synchronously segments the surface at the given normalized coordinates (0-1).
+                    Useful for manual wall selection — the user clicks a point on the image
+                    and this returns the mask for that surface region.
+                    """
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "New region created from point"),
+            @ApiResponse(responseCode = "404", description = "Project not found or not owned by user")
+    })
+    @PostMapping("/{id}/segment/point")
+    public ResponseEntity<RegionResponse> segmentPoint(
+            @PathVariable String id,
+            @RequestBody PointSegmentRequest request,
+            Authentication auth
+    ) {
+        return ResponseEntity.ok(projectService.segmentPoint(
+                userId(auth), id,
+                request.getX(), request.getY(),
+                request.getLabel()
+        ));
+    }
+
     @Operation(summary = "Poll segmentation status", description = "Returns the current project status and regions. Poll this every 1–2 s after calling /segment until status is SEGMENTED or FAILED.")
     @ApiResponse(responseCode = "200", description = "Current project status")
     @GetMapping("/{id}/status")

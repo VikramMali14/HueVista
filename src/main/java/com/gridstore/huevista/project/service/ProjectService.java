@@ -165,6 +165,20 @@ public class ProjectService {
         );
     }
 
+    @Transactional
+    public RegionResponse segmentPoint(String userId, String projectId,
+                                       double x, double y, String label) {
+        Project project = findOwned(userId, projectId);
+        String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
+        try {
+            Region region = segmentationService.segmentPointAndSave(projectId, imageUrl, x, y, label);
+            return RegionResponse.from(region);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Point segmentation interrupted", e);
+        }
+    }
+
     private Project findOwned(String userId, String projectId) {
         return projectRepository.findByIdAndUserId(projectId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
