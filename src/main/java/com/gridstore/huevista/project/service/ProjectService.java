@@ -20,6 +20,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -169,13 +173,44 @@ public class ProjectService {
     public RegionResponse segmentPoint(String userId, String projectId,
                                        double x, double y, String label) {
         Project project = findOwned(userId, projectId);
-        String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
+        UploadedImage image = project.getImage();
+        ensureDimensionsCached(image);
+
+        String imageUrl = storageService.getPublicUrl(image.getStorageKey());
         try {
-            Region region = segmentationService.segmentPointAndSave(projectId, imageUrl, x, y, label);
+            Region region = segmentationService.segmentPointAndSave(
+                    projectId, imageUrl,
+                    image.getWidth(), image.getHeight(),
+                    x, y, label
+            );
             return RegionResponse.from(region);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Point segmentation interrupted", e);
+        }
+    }
+
+    /**
+     * Older uploads (and any future ones we don't measure at upload time) may
+     * not have width/height set. SAM 2 needs pixel coordinates, so we read
+     * dimensions from storage on demand and persist them back onto the image.
+     */
+    private void ensureDimensionsCached(UploadedImage image) {
+        if (image.getWidth() != null && image.getHeight() != null) return;
+
+        try {
+            byte[] bytes = storageService.load(image.getStorageKey());
+            BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(bytes));
+            if (decoded == null) {
+                throw new IllegalStateException("Unable to decode image: " + image.getStorageKey());
+            }
+            image.setWidth(decoded.getWidth());
+            image.setHeight(decoded.getHeight());
+            imageRepository.save(image);
+            log.info("Cached dimensions for image {}: {}x{}",
+                    image.getId(), decoded.getWidth(), decoded.getHeight());
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to read image dimensions for " + image.getStorageKey(), e);
         }
     }
 
