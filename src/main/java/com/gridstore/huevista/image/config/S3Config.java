@@ -1,5 +1,6 @@
 package com.gridstore.huevista.image.config;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Conditional;
@@ -9,6 +10,7 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
+@Slf4j
 @Configuration
 @Conditional(S3EnabledCondition.class)
 public class S3Config {
@@ -25,6 +27,9 @@ public class S3Config {
 
     @Bean
     public S3Client s3Client() {
+        AwsCredentials creds = credentialsProvider().resolveCredentials();
+        String keyId = creds.accessKeyId();
+        log.info("S3 using accessKeyId={}...{}", keyId.substring(0, 4), keyId.substring(keyId.length() - 4));
         return S3Client.builder()
                 .region(Region.of(region))
                 .credentialsProvider(credentialsProvider())
