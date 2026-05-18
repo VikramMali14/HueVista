@@ -37,6 +37,11 @@ public class UploadedImage {
     @Column(nullable = false)
     private long fileSize;
 
+    // Pixel dimensions of the stored image. Nullable for backfill — populated
+    // lazily the first time a feature needs them (e.g. click-to-segment).
+    private Integer width;
+    private Integer height;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private ImageType imageType;
