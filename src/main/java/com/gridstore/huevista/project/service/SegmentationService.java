@@ -149,23 +149,29 @@ public class SegmentationService {
             return;
         }
 
-        List<Map<String, Object>> masks;
+        log.debug("SAM 2 raw output type={} value={}", output.getClass().getSimpleName(), output);
+
+        List<?> rawList;
         try {
             String json = objectMapper.writeValueAsString(output);
-            masks = objectMapper.readValue(json, new TypeReference<>() {});
+            rawList = objectMapper.readValue(json, new TypeReference<List<?>>() {});
         } catch (Exception e) {
             log.error("Failed to parse SAM 2 output: {}", e.getMessage());
             return;
         }
 
         List<Region> regions = new ArrayList<>();
-        for (int i = 0; i < masks.size(); i++) {
-            Map<String, Object> mask = masks.get(i);
+        for (int i = 0; i < rawList.size(); i++) {
+            Object item = rawList.get(i);
             try {
+                String maskData = (item instanceof String)
+                        ? objectMapper.writeValueAsString(Map.of("maskUrl", item))
+                        : objectMapper.writeValueAsString(item);
+
                 regions.add(Region.builder()
                         .project(projectRepository.getReferenceById(projectId))
                         .label("Region " + (i + 1))
-                        .maskData(objectMapper.writeValueAsString(mask))
+                        .maskData(maskData)
                         .displayOrder(i)
                         .build());
             } catch (Exception e) {
