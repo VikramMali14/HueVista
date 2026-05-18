@@ -188,9 +188,10 @@ public class SegmentationService {
 
         Map<String, Object> input = Map.of(
                 "image", imageUrl,
-                "points_per_side", 32,
-                "pred_iou_thresh", 0.88,
-                "stability_score_thresh", 0.95,
+                "points_per_side", 16,
+                "pred_iou_thresh", 0.92,
+                "stability_score_thresh", 0.97,
+                "min_mask_region_area", 2000,
                 "use_m2m", true
         );
 
