@@ -43,6 +43,12 @@ public class Project {
     // Replicate prediction ID — used to poll SAM 2 job status
     private String replicatePredictionId;
 
+    // When status == FAILED, why. Surfaced to the frontend so we can show the
+    // user something actionable ("auto-segmentation not configured — click each
+    // wall") instead of a generic failure.
+    @Column(length = 500)
+    private String failureReason;
+
     // Share link — null until generated
     @Column(unique = true)
     private String shareToken;
