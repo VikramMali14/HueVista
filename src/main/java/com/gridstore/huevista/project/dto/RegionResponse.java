@@ -1,6 +1,7 @@
 package com.gridstore.huevista.project.dto;
 
 import com.gridstore.huevista.project.model.Region;
+import com.gridstore.huevista.project.model.RegionCategory;
 import lombok.Builder;
 import lombok.Data;
 
@@ -10,6 +11,7 @@ public class RegionResponse {
 
     private Long id;
     private String label;
+    private RegionCategory category;
     private String maskData;
     private String maskUrl;
     private String appliedShadeCode;
@@ -20,6 +22,7 @@ public class RegionResponse {
         return RegionResponse.builder()
                 .id(region.getId())
                 .label(region.getLabel())
+                .category(region.getCategory())
                 .maskData(region.getMaskData())
                 .maskUrl(region.getMaskUrl())
                 .appliedShadeCode(region.getAppliedShadeCode())
@@ -33,6 +36,7 @@ public class RegionResponse {
         return RegionResponse.builder()
                 .id(region.getId())
                 .label(region.getLabel())
+                .category(region.getCategory())
                 .maskData(region.getMaskData())
                 .maskUrl(region.getMaskUrl())
                 .appliedHexCode(region.getAppliedHexCode()) // hex shown, shade code hidden

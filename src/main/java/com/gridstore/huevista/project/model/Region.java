@@ -23,7 +23,10 @@ public class Region {
     @JoinColumn(name = "project_id", nullable = false)
     private Project project;
 
-    private String label; // e.g. "Wall", "Ceiling", "Door" — from SAM 2 or auto-indexed
+    private String label; // e.g. "Main Wall", "Accent Wall", "Trim" — display name
+
+    @Enumerated(EnumType.STRING)
+    private RegionCategory category;
 
     // Raw SAM 2 mask output stored as JSON (polygon or RLE)
     @Column(columnDefinition = "TEXT")

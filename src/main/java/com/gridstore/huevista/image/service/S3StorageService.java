@@ -57,6 +57,25 @@ public class S3StorageService implements StorageService {
     }
 
     @Override
+    public String store(byte[] bytes, String userId, String filename, String contentType) {
+        String extension = extractExtension(filename);
+        String key = userId + "/" + UUID.randomUUID() + extension;
+
+        s3Client.putObject(
+                PutObjectRequest.builder()
+                        .bucket(bucketName)
+                        .key(key)
+                        .contentType(contentType)
+                        .serverSideEncryption(ServerSideEncryption.AES256)
+                        .build(),
+                RequestBody.fromBytes(bytes)
+        );
+
+        log.info("Stored bytes in S3: key={} size={}B contentType={}", key, bytes.length, contentType);
+        return key;
+    }
+
+    @Override
     public byte[] load(String storageKey) {
         try {
             return s3Client.getObjectAsBytes(

@@ -26,4 +26,12 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
 
     @Query("SELECT COUNT(p) FROM Project p WHERE p.user.id = :userId")
     long countByUserId(@Param("userId") String userId);
+
+    /**
+     * Pulls the owning user's id without triggering lazy initialization on the
+     * Project.user association — needed inside the async segmentation worker,
+     * which runs outside any transaction.
+     */
+    @Query("SELECT p.user.id FROM Project p WHERE p.id = :projectId")
+    Optional<String> findUserIdById(@Param("projectId") String projectId);
 }
