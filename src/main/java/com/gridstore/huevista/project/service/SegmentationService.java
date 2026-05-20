@@ -1,9 +1,10 @@
 package com.gridstore.huevista.project.service;
 
 import tools.jackson.databind.json.JsonMapper;
-import com.gridstore.huevista.project.model.Project;
+import com.gridstore.huevista.image.service.StorageService;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
+import com.gridstore.huevista.project.model.RegionCategory;
 import com.gridstore.huevista.project.repository.ProjectRepository;
 import com.gridstore.huevista.project.repository.RegionRepository;
 import lombok.RequiredArgsConstructor;
@@ -14,28 +15,37 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 /**
  * Segments room images for paint visualization.
  *
- * Auto flow (segmentAsync):
- *   schananas/grounded_sam (Grounding DINO + SAM) with a positive prompt for
- *   walls and a negative prompt for the surfaces we don't want to paint
- *   (doors, windows, art, TVs, mirrors, cabinets, curtains). The model
- *   subtracts the negatives from the positive mask server-side, so we get a
- *   single clean wall mask without needing to combine masks in Java.
+ * <h3>Auto flow (segmentAsync)</h3>
+ * <ol>
+ *   <li><b>Wall pass:</b> Grounded SAM with positive="wall" and a negative
+ *       prompt listing everything we explicitly DON'T want painted: doors,
+ *       windows, furniture, electronics, light fixtures, fans, switches,
+ *       outlets, AND non-paintable surfaces (tile, marble, granite, brick,
+ *       stone). The model subtracts these server-side, so we get a single
+ *       wall mask with the obstructions cut out.</li>
+ *   <li><b>Component split:</b> Download that mask, threshold to binary, and
+ *       run 8-connectivity flood fill. The largest blob becomes the MAIN
+ *       wall; the second-largest becomes the ACCENT (highlighter); any
+ *       remaining blobs above the noise threshold become OTHER walls. Each
+ *       component is re-encoded as its own PNG and uploaded to S3 so the
+ *       frontend can paint them independently.</li>
+ *   <li><b>Trim pass:</b> A second Grounded SAM call with positive="window
+ *       frame, door frame, baseboard, crown molding, picture rail". All
+ *       detections are merged into one TRIM region. Failures here don't
+ *       fail the whole segmentation — trim is best-effort.</li>
+ * </ol>
  *
- *   The previous Replicate model (adirik/grounded-sam) was deprecated and
- *   started returning 404, which is why this swap exists. SAM 2 is not used
- *   as an auto fallback — a class-agnostic segmenter floods the canvas with
- *   masks for furniture and decor, which is worse than failing cleanly.
- *
- * Manual flow (segmentPointAndSave):
- *   User clicks a point → SAM 2 point-based segmentation → one region mask.
- *   Click coordinates are normalized 0–1 from the frontend and scaled to the
- *   image's real pixel dimensions (not a 1024×1024 square — that was a bug).
+ * <h3>Manual flow (segmentPointAndSave)</h3>
+ * User clicks a point → SAM 2 point-based segmentation → one MANUAL region.
+ * Click coordinates are normalized 0–1 and scaled to the image's real pixel
+ * dimensions before being sent to SAM 2.
  */
 @Slf4j
 @Service
@@ -44,6 +54,7 @@ public class SegmentationService {
 
     private final ProjectRepository projectRepository;
     private final RegionRepository regionRepository;
+    private final StorageService storageService;
     private final RestTemplate restTemplate;
     private final JsonMapper objectMapper;
 
@@ -53,37 +64,79 @@ public class SegmentationService {
     @Value("${replicate.sam2.model-version:}")
     private String sam2ModelVersion;
 
-    // Grounded SAM model slug (owner/name). Pinning a version is optional but
-    // recommended for production stability — without it we run "latest" via
-    // /models/{slug}/predictions, which can break when the maintainer republishes.
     @Value("${replicate.grounded-sam.model:schananas/grounded_sam}")
     private String groundedSamModel;
 
     @Value("${replicate.grounded-sam.model-version:}")
     private String groundedSamModelVersion;
 
+    @Value("${replicate.grounded-sam.detect-trim:true}")
+    private boolean detectTrim;
+
     private static final String REPLICATE_BASE = "https://api.replicate.com/v1";
     private static final int POLL_INTERVAL_MS = 3000;
     private static final int MAX_POLL_ATTEMPTS = 60;
 
-    // What we WANT painted. Comma-separated for Grounding DINO's text prompts.
+    /** Maximum number of wall components kept (Main, Accent, plus one Other). */
+    private static final int MAX_WALL_REGIONS = 3;
+
+    /**
+     * Components below this pixel area are dropped as noise / artifacts.
+     * Calibrated for ~1024px-side masks from Grounded SAM — a 5000-pixel blob
+     * is roughly 70×70px, smaller than any genuinely paintable wall area.
+     */
+    private static final int MIN_COMPONENT_PIXELS = 5000;
+
+    /**
+     * Trim pieces (baseboards, window frames) are smaller than walls, so we
+     * use a lower threshold for the trim pass.
+     */
+    private static final int MIN_TRIM_PIXELS = 800;
+
     private static final String WALL_PROMPT = "wall";
 
-    // What we explicitly DON'T want painted. The model subtracts these from
-    // the wall mask, so doors/windows/art/etc. stay their original color.
-    private static final String NON_PAINTABLE_PROMPT =
-            "door,window,painting,television,mirror,cabinet,curtain,picture frame,light switch,electrical outlet";
+    /**
+     * Everything that must NOT be painted. Covers: openings (door, window),
+     * furniture and decor that hangs ON walls, electrical fixtures, ceiling
+     * fixtures, and — most importantly — non-paintable wall surfaces (tile,
+     * marble, granite, brick, stone). The model subtracts all of these from
+     * the wall mask.
+     */
+    private static final String NON_PAINTABLE_PROMPT = String.join(",",
+            // Openings and frames
+            "door", "window", "windowpane",
+            // Wall-mounted furniture / decor
+            "painting", "picture frame", "mirror", "clock", "shelf", "television",
+            // Cabinetry
+            "cabinet", "wardrobe", "kitchen cabinet",
+            // Soft furnishings
+            "curtain", "blinds",
+            // Electrical / fixtures
+            "light switch", "electrical outlet", "thermostat",
+            // Ceiling and wall lighting
+            "ceiling light", "ceiling fan", "lamp", "sconce", "chandelier",
+            "pendant light", "light bulb", "spotlight",
+            // HVAC and detectors
+            "smoke detector", "vent", "air conditioner", "exhaust fan",
+            // Non-paintable wall surfaces — explicitly subtract so tiled walls
+            // in bathrooms / kitchens aren't returned as paintable
+            "tile", "tiled wall", "ceramic tile", "marble", "marble wall",
+            "granite", "stone wall", "brick wall", "exposed brick",
+            "backsplash", "wallpaper", "wood paneling",
+            // Misc obstructions
+            "plant", "indoor plant"
+    );
+
+    private static final String TRIM_PROMPT = String.join(",",
+            "window frame", "door frame", "baseboard", "skirting board",
+            "crown molding", "picture rail", "ceiling trim", "wainscoting"
+    );
 
     @Async("aiTaskExecutor")
     public void segmentAsync(String projectId, String imageUrl) {
         try {
             log.info("Starting wall segmentation: project={}", projectId);
 
-            // Third-party Replicate models (everything except Meta's official
-            // SAM 2) only resolve via /predictions with a pinned version hash —
-            // the /models/{slug}/predictions shortcut returns 404. Fail fast
-            // here so we don't waste an API round-trip and so the user gets a
-            // clear error instead of a generic "Failed to create prediction".
             if (groundedSamModelVersion == null || groundedSamModelVersion.isBlank()) {
                 markFailed(projectId,
                         "Auto-segmentation not configured. Set REPLICATE_GROUNDED_SAM_VERSION " +
@@ -92,83 +145,160 @@ public class SegmentationService {
                 return;
             }
 
-            String predictionId = startWallSegmentationPrediction(imageUrl);
-            if (predictionId == null) {
-                markFailed(projectId, "Failed to create Replicate prediction");
+            String userId = projectRepository.findUserIdById(projectId).orElse(null);
+            if (userId == null) {
+                markFailed(projectId, "Project owner not found");
                 return;
             }
 
-            updatePredictionId(projectId, predictionId);
-
-            Map<String, Object> result = pollUntilDone(predictionId);
-            if (result == null) {
-                markFailed(projectId, "Segmentation timed out or failed");
+            // Pass 1: walls
+            List<Region> walls = runWallPass(projectId, userId, imageUrl);
+            if (walls.isEmpty()) {
+                markFailed(projectId,
+                        "No paintable walls detected. The image may be a close-up, " +
+                        "or the walls may be fully covered by tile/marble/wallpaper. " +
+                        "Try click-to-segment, or upload a wider shot.");
                 return;
             }
 
-            Region wall = saveWallRegion(projectId, result);
-            if (wall == null) {
-                // Model ran but produced no mask — surface as a failure so the
-                // UI can prompt the user to click-segment manually.
-                markFailed(projectId, "No walls detected");
-                return;
+            // Pass 2: trim (best-effort, doesn't fail the project)
+            if (detectTrim) {
+                try {
+                    runTrimPass(projectId, userId, imageUrl, walls.size());
+                } catch (Exception e) {
+                    log.warn("Trim detection failed for project {} — continuing without trim region: {}",
+                            projectId, e.getMessage());
+                }
             }
+
             markSegmented(projectId);
-            log.info("Segmentation complete: project={} maskUrl={}", projectId, wall.getMaskUrl());
+            log.info("Segmentation complete: project={} walls={} trim={}",
+                    projectId, walls.size(), detectTrim);
 
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            markFailed(projectId, "Segmentation interrupted");
         } catch (Exception e) {
             log.error("Segmentation error for project {}: {}", projectId, e.getMessage(), e);
-            markFailed(projectId, e.getMessage());
+            markFailed(projectId, "Segmentation failed: " + e.getMessage());
         }
     }
 
     /**
-     * Starts a Grounded SAM prediction with positive prompt "wall" and a
-     * negative prompt listing surfaces we don't want painted. The model
-     * returns one combined wall mask (negatives subtracted). Returns the
-     * prediction id or null on failure.
+     * Runs Grounded SAM for walls, downloads the resulting mask, splits it
+     * into connected components, and persists up to MAX_WALL_REGIONS of them
+     * as MAIN_WALL / ACCENT_WALL / OTHER_WALL.
      */
-    private String startWallSegmentationPrediction(String imageUrl) {
-        try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.set("Authorization", "Token " + replicateApiToken);
-
-            Map<String, Object> input = Map.of(
-                    "image", imageUrl,
-                    "mask_prompt", WALL_PROMPT,
-                    "negative_mask_prompt", NON_PAINTABLE_PROMPT,
-                    "adjustment_factor", 0
-            );
-
-            boolean hasPinnedVersion = groundedSamModelVersion != null && !groundedSamModelVersion.isBlank();
-            Map<String, Object> body = hasPinnedVersion
-                    ? Map.of("version", groundedSamModelVersion, "input", input)
-                    : Map.of("input", input);
-            String endpoint = hasPinnedVersion
-                    ? REPLICATE_BASE + "/predictions"
-                    : REPLICATE_BASE + "/models/" + groundedSamModel + "/predictions";
-
-            ResponseEntity<Map> response = restTemplate.exchange(
-                    endpoint,
-                    HttpMethod.POST,
-                    new HttpEntity<>(body, headers),
-                    Map.class
-            );
-            String id = (String) response.getBody().get("id");
-            log.info("Grounded SAM prediction started: id={} model={} pinnedVersion={}",
-                    id, groundedSamModel, hasPinnedVersion);
-            return id;
-        } catch (Exception e) {
-            log.warn("Failed to start Grounded SAM prediction: {}", e.getMessage());
-            return null;
+    private List<Region> runWallPass(String projectId, String userId, String imageUrl)
+            throws Exception {
+        String predictionId = startGroundedSamPrediction(imageUrl, WALL_PROMPT, NON_PAINTABLE_PROMPT);
+        if (predictionId == null) {
+            throw new RuntimeException("Failed to start wall segmentation prediction");
         }
+        updatePredictionId(projectId, predictionId);
+
+        Map<String, Object> result = pollUntilDone(predictionId);
+        if (result == null) {
+            throw new RuntimeException("Wall segmentation timed out");
+        }
+
+        String wallMaskUrl = extractGroundedSamMaskUrl(result.get("output"));
+        if (wallMaskUrl == null) {
+            log.warn("Wall pass returned no mask.jpg for project {}", projectId);
+            return List.of();
+        }
+
+        byte[] maskBytes = downloadBytes(wallMaskUrl);
+        MaskProcessor.MaskAnalysis analysis = MaskProcessor.analyze(maskBytes, MIN_COMPONENT_PIXELS);
+        if (analysis.components.isEmpty()) {
+            log.info("Wall mask had no components above {}px for project {}",
+                    MIN_COMPONENT_PIXELS, projectId);
+            return List.of();
+        }
+
+        int keep = Math.min(MAX_WALL_REGIONS, analysis.components.size());
+        List<Region> saved = new ArrayList<>(keep);
+        for (int i = 0; i < keep; i++) {
+            MaskProcessor.Component component = analysis.components.get(i);
+            byte[] pngBytes = MaskProcessor.encodeComponentPng(analysis, component);
+            String storageKey = storageService.store(
+                    pngBytes, userId, "wall-" + (i + 1) + ".png", "image/png");
+            String url = storageService.getPublicUrl(storageKey);
+
+            RegionCategory category = (i == 0) ? RegionCategory.MAIN_WALL
+                    : (i == 1) ? RegionCategory.ACCENT_WALL
+                    : RegionCategory.OTHER_WALL;
+            String label = (i == 0) ? "Main Wall"
+                    : (i == 1) ? "Accent Wall"
+                    : "Wall " + (i + 1);
+
+            Region region = Region.builder()
+                    .project(projectRepository.getReferenceById(projectId))
+                    .label(label)
+                    .category(category)
+                    .maskUrl(url)
+                    .maskData(url)
+                    .displayOrder(i)
+                    .build();
+            saved.add(regionRepository.save(region));
+            log.info("Saved {} region for project {}: storageKey={} areaPx={}",
+                    category, projectId, storageKey, component.area);
+        }
+        return saved;
     }
 
     /**
-     * Synchronously segments a single point and persists the resulting Region.
-     * Coordinates are normalized 0–1 in the frontend; we scale by the image's
-     * real pixel size (passed in) before sending to SAM 2.
+     * Runs Grounded SAM with the trim prompt and saves all detected pieces
+     * as a single TRIM region. Best-effort — Grounded SAM is known to be
+     * weaker on thin objects like baseboards.
+     */
+    private void runTrimPass(String projectId, String userId, String imageUrl, int displayOrderStart)
+            throws Exception {
+        String predictionId = startGroundedSamPrediction(imageUrl, TRIM_PROMPT, "");
+        if (predictionId == null) {
+            log.warn("Trim pass: failed to start prediction for project {}", projectId);
+            return;
+        }
+        Map<String, Object> result = pollUntilDone(predictionId);
+        if (result == null) {
+            log.warn("Trim pass: timed out for project {}", projectId);
+            return;
+        }
+        String trimMaskUrl = extractGroundedSamMaskUrl(result.get("output"));
+        if (trimMaskUrl == null) {
+            log.info("Trim pass: no mask returned for project {}", projectId);
+            return;
+        }
+
+        byte[] maskBytes = downloadBytes(trimMaskUrl);
+        MaskProcessor.MaskAnalysis analysis = MaskProcessor.analyze(maskBytes, MIN_TRIM_PIXELS);
+        if (analysis.components.isEmpty()) {
+            log.info("Trim pass: no components above {}px for project {}",
+                    MIN_TRIM_PIXELS, projectId);
+            return;
+        }
+
+        byte[] combinedPng = MaskProcessor.encodeAllComponentsPng(analysis);
+        String storageKey = storageService.store(
+                combinedPng, userId, "trim.png", "image/png");
+        String url = storageService.getPublicUrl(storageKey);
+
+        Region region = Region.builder()
+                .project(projectRepository.getReferenceById(projectId))
+                .label("Trim & Frames")
+                .category(RegionCategory.TRIM)
+                .maskUrl(url)
+                .maskData(url)
+                .displayOrder(displayOrderStart)
+                .build();
+        regionRepository.save(region);
+        log.info("Saved TRIM region for project {}: storageKey={} pieces={}",
+                projectId, storageKey, analysis.components.size());
+    }
+
+    /**
+     * Synchronously segments a single user-clicked point and persists the
+     * resulting Region as MANUAL.
      */
     public Region segmentPointAndSave(String projectId, String imageUrl,
                                       int imageWidth, int imageHeight,
@@ -192,12 +322,10 @@ public class SegmentationService {
         if (predictionId == null) {
             throw new RuntimeException("Failed to create Replicate prediction for point segmentation");
         }
-
         Map<String, Object> result = pollUntilDone(predictionId);
         if (result == null) {
             throw new RuntimeException("Point segmentation timed out or failed");
         }
-
         String maskUrl = extractFirstMaskUrl(result.get("output"));
         if (maskUrl == null) {
             throw new RuntimeException("No mask URL in SAM 2 point segmentation output");
@@ -211,19 +339,53 @@ public class SegmentationService {
         Region region = Region.builder()
                 .project(projectRepository.getReferenceById(projectId))
                 .label(resolvedLabel)
+                .category(RegionCategory.MANUAL)
                 .maskUrl(maskUrl)
                 .maskData(maskUrl)
                 .displayOrder(displayOrder)
                 .build();
-
         return regionRepository.save(region);
     }
 
-    private String startSam2Prediction(Map<String, Object> input) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.set("Authorization", "Token " + replicateApiToken);
+    // ---------------------------------------------------------------------
+    // Replicate API helpers
+    // ---------------------------------------------------------------------
 
+    private String startGroundedSamPrediction(String imageUrl, String positive, String negative) {
+        try {
+            HttpHeaders headers = jsonHeaders();
+            Map<String, Object> input = Map.of(
+                    "image", imageUrl,
+                    "mask_prompt", positive,
+                    "negative_mask_prompt", negative,
+                    "adjustment_factor", 0
+            );
+
+            boolean hasPinnedVersion = groundedSamModelVersion != null && !groundedSamModelVersion.isBlank();
+            Map<String, Object> body = hasPinnedVersion
+                    ? Map.of("version", groundedSamModelVersion, "input", input)
+                    : Map.of("input", input);
+            String endpoint = hasPinnedVersion
+                    ? REPLICATE_BASE + "/predictions"
+                    : REPLICATE_BASE + "/models/" + groundedSamModel + "/predictions";
+
+            ResponseEntity<Map> response = restTemplate.exchange(
+                    endpoint,
+                    HttpMethod.POST,
+                    new HttpEntity<>(body, headers),
+                    Map.class
+            );
+            String id = (String) response.getBody().get("id");
+            log.info("Grounded SAM prediction started: id={} positive='{}'", id, positive);
+            return id;
+        } catch (Exception e) {
+            log.warn("Failed to start Grounded SAM prediction (positive='{}'): {}", positive, e.getMessage());
+            return null;
+        }
+    }
+
+    private String startSam2Prediction(Map<String, Object> input) {
+        HttpHeaders headers = jsonHeaders();
         boolean hasPinnedVersion = sam2ModelVersion != null && !sam2ModelVersion.isBlank();
         Map<String, Object> body = hasPinnedVersion
                 ? Map.of("version", sam2ModelVersion, "input", input)
@@ -253,76 +415,35 @@ public class SegmentationService {
 
         for (int attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
             Thread.sleep(POLL_INTERVAL_MS);
-
             ResponseEntity<Map> response = restTemplate.exchange(
                     REPLICATE_BASE + "/predictions/" + predictionId,
                     HttpMethod.GET,
                     new HttpEntity<>(headers),
                     Map.class
             );
-
             Map<String, Object> body = response.getBody();
             String status = (String) body.get("status");
             log.debug("Replicate poll [{}]: status={}", predictionId, status);
-
             if ("succeeded".equals(status)) return body;
-            if ("failed".equals(status) || "canceled".equals(status)) return null;
-        }
-
-        return null; // timed out
-    }
-
-    /**
-     * Parses schananas/grounded_sam output and saves the wall mask as a Region.
-     * The model yields four files per prediction: annotated_picture_mask.jpg,
-     * neg_annotated_picture_mask.jpg, mask.jpg, inverted_mask.jpg. We want the
-     * second one — "mask.jpg" — which is the actual binary mask of wall pixels
-     * with the non-paintable surfaces already subtracted.
-     */
-    private Region saveWallRegion(String projectId, Map<String, Object> prediction) {
-        Object output = prediction.get("output");
-        if (output == null) {
-            log.warn("Grounded SAM output is null for project {}", projectId);
-            return null;
-        }
-
-        if (log.isDebugEnabled()) {
-            try {
-                log.debug("Grounded SAM raw output: {}", objectMapper.writeValueAsString(output));
-            } catch (Exception ignored) {
-                // serialization failure here shouldn't kill segmentation
+            if ("failed".equals(status) || "canceled".equals(status)) {
+                log.warn("Replicate prediction {} ended with status={} error={}",
+                        predictionId, status, body.get("error"));
+                return null;
             }
         }
-
-        String maskUrl = extractWallMaskUrl(output);
-        if (maskUrl == null) {
-            log.warn("No 'mask.jpg' URL in Grounded SAM output for project {}", projectId);
-            return null;
-        }
-
-        Region region = Region.builder()
-                .project(projectRepository.getReferenceById(projectId))
-                .label("Wall")
-                .maskUrl(maskUrl)
-                .maskData(maskUrl)
-                .displayOrder(0)
-                .build();
-        Region saved = regionRepository.save(region);
-        log.info("Saved wall region for project {}: {}", projectId, maskUrl);
-        return saved;
+        return null;
     }
 
     /**
-     * Picks the "mask.jpg" URL from a Grounded SAM output list — i.e. the raw
-     * binary mask, not the annotated visualization or the inverted mask.
+     * Picks the binary mask.jpg URL from a schananas/grounded_sam output
+     * list — i.e. the raw mask, not the annotated visualization or the
+     * inverted mask.
      */
-    private static String extractWallMaskUrl(Object output) {
+    private static String extractGroundedSamMaskUrl(Object output) {
         if (!(output instanceof List<?> list)) return null;
         for (Object item : list) {
             if (!(item instanceof String url)) continue;
             String path = url.split("\\?", 2)[0];
-            // Skip the annotated previews and the inverted mask; we want the
-            // plain binary "mask.jpg" only.
             if (path.endsWith("/mask.jpg") || path.endsWith("/mask.png")) {
                 return url;
             }
@@ -331,7 +452,7 @@ public class SegmentationService {
     }
 
     @SuppressWarnings("unchecked")
-    private String extractFirstMaskUrl(Object output) {
+    private static String extractFirstMaskUrl(Object output) {
         if (output instanceof List<?> list && !list.isEmpty()) {
             Object first = list.get(0);
             if (first instanceof String url) return url;
@@ -347,9 +468,34 @@ public class SegmentationService {
         return null;
     }
 
+    private byte[] downloadBytes(String url) {
+        ResponseEntity<byte[]> response = restTemplate.exchange(
+                url, HttpMethod.GET, HttpEntity.EMPTY, byte[].class);
+        byte[] body = response.getBody();
+        if (body == null) {
+            throw new RuntimeException("Empty response downloading " + url);
+        }
+        return body;
+    }
+
+    private HttpHeaders jsonHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Authorization", "Token " + replicateApiToken);
+        return headers;
+    }
+
     private void updatePredictionId(String projectId, String predictionId) {
         projectRepository.findById(projectId).ifPresent(p -> {
             p.setReplicatePredictionId(predictionId);
+            projectRepository.save(p);
+        });
+    }
+
+    private void markSegmented(String projectId) {
+        projectRepository.findById(projectId).ifPresent(p -> {
+            p.setStatus(ProjectStatus.SEGMENTED);
+            p.setFailureReason(null);
             projectRepository.save(p);
         });
     }
@@ -359,14 +505,6 @@ public class SegmentationService {
         projectRepository.findById(projectId).ifPresent(p -> {
             p.setStatus(ProjectStatus.FAILED);
             p.setFailureReason(reason);
-            projectRepository.save(p);
-        });
-    }
-
-    private void markSegmented(String projectId) {
-        projectRepository.findById(projectId).ifPresent(p -> {
-            p.setStatus(ProjectStatus.SEGMENTED);
-            p.setFailureReason(null);
             projectRepository.save(p);
         });
     }

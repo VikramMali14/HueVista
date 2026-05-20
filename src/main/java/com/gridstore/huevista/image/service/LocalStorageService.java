@@ -28,6 +28,16 @@ public class LocalStorageService implements StorageService {
     }
 
     @Override
+    public String store(byte[] bytes, String userId, String filename, String contentType) throws IOException {
+        String extension = extractExtension(filename);
+        String storageKey = userId + "/" + UUID.randomUUID() + extension;
+        Path target = Path.of(storagePath, storageKey);
+        Files.createDirectories(target.getParent());
+        Files.write(target, bytes);
+        return storageKey;
+    }
+
+    @Override
     public byte[] load(String storageKey) throws IOException {
         return Files.readAllBytes(Path.of(storagePath, storageKey));
     }
