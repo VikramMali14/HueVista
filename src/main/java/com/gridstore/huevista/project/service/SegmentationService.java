@@ -79,6 +79,19 @@ public class SegmentationService {
         try {
             log.info("Starting wall segmentation: project={}", projectId);
 
+            // Third-party Replicate models (everything except Meta's official
+            // SAM 2) only resolve via /predictions with a pinned version hash —
+            // the /models/{slug}/predictions shortcut returns 404. Fail fast
+            // here so we don't waste an API round-trip and so the user gets a
+            // clear error instead of a generic "Failed to create prediction".
+            if (groundedSamModelVersion == null || groundedSamModelVersion.isBlank()) {
+                markFailed(projectId,
+                        "Auto-segmentation not configured. Set REPLICATE_GROUNDED_SAM_VERSION " +
+                        "to a version hash from https://replicate.com/" + groundedSamModel + "/versions, " +
+                        "or use click-to-segment to mark walls manually.");
+                return;
+            }
+
             String predictionId = startWallSegmentationPrediction(imageUrl);
             if (predictionId == null) {
                 markFailed(projectId, "Failed to create Replicate prediction");
@@ -341,17 +354,19 @@ public class SegmentationService {
         });
     }
 
-    private void markSegmented(String projectId) {
-        projectRepository.findById(projectId).ifPresent(p -> {
-            p.setStatus(ProjectStatus.SEGMENTED);
-            projectRepository.save(p);
-        });
-    }
-
     private void markFailed(String projectId, String reason) {
         log.error("Segmentation failed for project {}: {}", projectId, reason);
         projectRepository.findById(projectId).ifPresent(p -> {
             p.setStatus(ProjectStatus.FAILED);
+            p.setFailureReason(reason);
+            projectRepository.save(p);
+        });
+    }
+
+    private void markSegmented(String projectId) {
+        projectRepository.findById(projectId).ifPresent(p -> {
+            p.setStatus(ProjectStatus.SEGMENTED);
+            p.setFailureReason(null);
             projectRepository.save(p);
         });
     }

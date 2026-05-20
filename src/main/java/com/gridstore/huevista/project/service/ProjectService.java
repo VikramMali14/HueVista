@@ -116,6 +116,7 @@ public class ProjectService {
         }
 
         project.setStatus(ProjectStatus.SEGMENTING);
+        project.setFailureReason(null);
         projectRepository.save(project);
 
         String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());

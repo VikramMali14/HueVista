@@ -16,6 +16,8 @@ public class ProjectResponse {
     private String status;
     private String imageId;
     private String imageUrl;
+    // Populated when status == FAILED so the UI can show the cause.
+    private String failureReason;
     private List<RegionResponse> regions;
     private boolean hasShareLink;
     private LocalDateTime shareExpiresAt;
@@ -33,6 +35,7 @@ public class ProjectResponse {
                 .status(project.getStatus().name())
                 .imageId(project.getImage().getId())
                 .imageUrl(imageUrl)
+                .failureReason(project.getFailureReason())
                 .regions(regions)
                 .hasShareLink(project.getShareToken() != null)
                 .shareExpiresAt(project.getShareExpiresAt())
