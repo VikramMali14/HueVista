@@ -14,24 +14,26 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 /**
  * Segments room images for paint visualization.
  *
  * Auto flow (segmentAsync):
- *   Grounded SAM with a multi-class indoor prompt — returns labeled detections
- *   for wall, door, window, painting, TV, mirror, cabinet, curtain. Only the
- *   "wall" detections are persisted as paintable Regions today; non-wall
- *   detections are logged for future exclusion-mask use. There is no SAM 2
- *   auto fallback — a class-agnostic segmenter floods the UI with masks for
- *   furniture and decor, which is worse than failing cleanly.
+ *   schananas/grounded_sam (Grounding DINO + SAM) with a positive prompt for
+ *   walls and a negative prompt for the surfaces we don't want to paint
+ *   (doors, windows, art, TVs, mirrors, cabinets, curtains). The model
+ *   subtracts the negatives from the positive mask server-side, so we get a
+ *   single clean wall mask without needing to combine masks in Java.
+ *
+ *   The previous Replicate model (adirik/grounded-sam) was deprecated and
+ *   started returning 404, which is why this swap exists. SAM 2 is not used
+ *   as an auto fallback — a class-agnostic segmenter floods the canvas with
+ *   masks for furniture and decor, which is worse than failing cleanly.
  *
  * Manual flow (segmentPointAndSave):
- *   User clicks a point → SAM 2 point-based segmentation → one wall mask.
+ *   User clicks a point → SAM 2 point-based segmentation → one region mask.
  *   Click coordinates are normalized 0–1 from the frontend and scaled to the
  *   image's real pixel dimensions (not a 1024×1024 square — that was a bug).
  */
@@ -51,17 +53,26 @@ public class SegmentationService {
     @Value("${replicate.sam2.model-version:}")
     private String sam2ModelVersion;
 
+    // Grounded SAM model slug (owner/name). Pinning a version is optional but
+    // recommended for production stability — without it we run "latest" via
+    // /models/{slug}/predictions, which can break when the maintainer republishes.
+    @Value("${replicate.grounded-sam.model:schananas/grounded_sam}")
+    private String groundedSamModel;
+
+    @Value("${replicate.grounded-sam.model-version:}")
+    private String groundedSamModelVersion;
+
     private static final String REPLICATE_BASE = "https://api.replicate.com/v1";
     private static final int POLL_INTERVAL_MS = 3000;
     private static final int MAX_POLL_ATTEMPTS = 60;
 
-    // Multi-class indoor prompt. GroundingDINO inside Grounded SAM uses
-    // period-separated phrases. Each detection comes back with its class label,
-    // so we can keep walls and discard the rest.
-    private static final String INDOOR_PROMPT =
-            "wall . door . window . painting . television . mirror . cabinet . curtain";
+    // What we WANT painted. Comma-separated for Grounding DINO's text prompts.
+    private static final String WALL_PROMPT = "wall";
 
-    private static final String WALL_LABEL = "wall";
+    // What we explicitly DON'T want painted. The model subtracts these from
+    // the wall mask, so doors/windows/art/etc. stay their original color.
+    private static final String NON_PAINTABLE_PROMPT =
+            "door,window,painting,television,mirror,cabinet,curtain,picture frame,light switch,electrical outlet";
 
     @Async("aiTaskExecutor")
     public void segmentAsync(String projectId, String imageUrl) {
@@ -82,15 +93,15 @@ public class SegmentationService {
                 return;
             }
 
-            int saved = saveWallRegions(projectId, result);
-            if (saved == 0) {
-                // Model ran but found no walls — surface as a failure so the UI
-                // can prompt the user to click-segment manually.
+            Region wall = saveWallRegion(projectId, result);
+            if (wall == null) {
+                // Model ran but produced no mask — surface as a failure so the
+                // UI can prompt the user to click-segment manually.
                 markFailed(projectId, "No walls detected");
                 return;
             }
             markSegmented(projectId);
-            log.info("Segmentation complete: project={} walls={}", projectId, saved);
+            log.info("Segmentation complete: project={} maskUrl={}", projectId, wall.getMaskUrl());
 
         } catch (Exception e) {
             log.error("Segmentation error for project {}: {}", projectId, e.getMessage(), e);
@@ -99,7 +110,9 @@ public class SegmentationService {
     }
 
     /**
-     * Runs adirik/grounded-sam with a multi-class indoor prompt. Returns the
+     * Starts a Grounded SAM prediction with positive prompt "wall" and a
+     * negative prompt listing surfaces we don't want painted. The model
+     * returns one combined wall mask (negatives subtracted). Returns the
      * prediction id or null on failure.
      */
     private String startWallSegmentationPrediction(String imageUrl) {
@@ -110,19 +123,28 @@ public class SegmentationService {
 
             Map<String, Object> input = Map.of(
                     "image", imageUrl,
-                    "prompt", INDOOR_PROMPT,
-                    "box_threshold", 0.3,
-                    "text_threshold", 0.25
+                    "mask_prompt", WALL_PROMPT,
+                    "negative_mask_prompt", NON_PAINTABLE_PROMPT,
+                    "adjustment_factor", 0
             );
 
+            boolean hasPinnedVersion = groundedSamModelVersion != null && !groundedSamModelVersion.isBlank();
+            Map<String, Object> body = hasPinnedVersion
+                    ? Map.of("version", groundedSamModelVersion, "input", input)
+                    : Map.of("input", input);
+            String endpoint = hasPinnedVersion
+                    ? REPLICATE_BASE + "/predictions"
+                    : REPLICATE_BASE + "/models/" + groundedSamModel + "/predictions";
+
             ResponseEntity<Map> response = restTemplate.exchange(
-                    REPLICATE_BASE + "/models/adirik/grounded-sam/predictions",
+                    endpoint,
                     HttpMethod.POST,
-                    new HttpEntity<>(Map.of("input", input), headers),
+                    new HttpEntity<>(body, headers),
                     Map.class
             );
             String id = (String) response.getBody().get("id");
-            log.info("Grounded SAM prediction started: {}", id);
+            log.info("Grounded SAM prediction started: id={} model={} pinnedVersion={}",
+                    id, groundedSamModel, hasPinnedVersion);
             return id;
         } catch (Exception e) {
             log.warn("Failed to start Grounded SAM prediction: {}", e.getMessage());
@@ -238,17 +260,17 @@ public class SegmentationService {
     }
 
     /**
-     * Parses Grounded SAM output (a list of {label, mask, logit} detections)
-     * and persists only the wall detections as paintable Regions. Non-wall
-     * detections are logged so we can see in production what the model
-     * actually catches — they'll become exclusion masks in a follow-up.
+     * Parses schananas/grounded_sam output and saves the wall mask as a Region.
+     * The model yields four files per prediction: annotated_picture_mask.jpg,
+     * neg_annotated_picture_mask.jpg, mask.jpg, inverted_mask.jpg. We want the
+     * second one — "mask.jpg" — which is the actual binary mask of wall pixels
+     * with the non-paintable surfaces already subtracted.
      */
-    @SuppressWarnings("unchecked")
-    private int saveWallRegions(String projectId, Map<String, Object> prediction) {
+    private Region saveWallRegion(String projectId, Map<String, Object> prediction) {
         Object output = prediction.get("output");
         if (output == null) {
             log.warn("Grounded SAM output is null for project {}", projectId);
-            return 0;
+            return null;
         }
 
         if (log.isDebugEnabled()) {
@@ -259,46 +281,40 @@ public class SegmentationService {
             }
         }
 
-        if (!(output instanceof List<?> detections)) {
-            log.warn("Grounded SAM output was not a list (got {}) for project {}",
-                    output.getClass().getSimpleName(), projectId);
-            return 0;
+        String maskUrl = extractWallMaskUrl(output);
+        if (maskUrl == null) {
+            log.warn("No 'mask.jpg' URL in Grounded SAM output for project {}", projectId);
+            return null;
         }
 
-        List<Region> walls = new ArrayList<>();
-        List<String> excludedLabels = new ArrayList<>();
+        Region region = Region.builder()
+                .project(projectRepository.getReferenceById(projectId))
+                .label("Wall")
+                .maskUrl(maskUrl)
+                .maskData(maskUrl)
+                .displayOrder(0)
+                .build();
+        Region saved = regionRepository.save(region);
+        log.info("Saved wall region for project {}: {}", projectId, maskUrl);
+        return saved;
+    }
 
-        for (Object item : detections) {
-            if (!(item instanceof Map<?, ?> detection)) continue;
-
-            String detectionLabel = stringOrNull(detection.get("label"));
-            String maskUrl = stringOrNull(detection.get("mask"));
-            if (maskUrl == null || detectionLabel == null) continue;
-
-            String normalized = detectionLabel.trim().toLowerCase(Locale.ROOT);
-            if (!WALL_LABEL.equals(normalized)) {
-                excludedLabels.add(normalized);
-                continue;
+    /**
+     * Picks the "mask.jpg" URL from a Grounded SAM output list — i.e. the raw
+     * binary mask, not the annotated visualization or the inverted mask.
+     */
+    private static String extractWallMaskUrl(Object output) {
+        if (!(output instanceof List<?> list)) return null;
+        for (Object item : list) {
+            if (!(item instanceof String url)) continue;
+            String path = url.split("\\?", 2)[0];
+            // Skip the annotated previews and the inverted mask; we want the
+            // plain binary "mask.jpg" only.
+            if (path.endsWith("/mask.jpg") || path.endsWith("/mask.png")) {
+                return url;
             }
-
-            int order = walls.size();
-            walls.add(Region.builder()
-                    .project(projectRepository.getReferenceById(projectId))
-                    .label("Wall " + (order + 1))
-                    .maskUrl(maskUrl)
-                    .maskData(maskUrl)
-                    .displayOrder(order)
-                    .build());
         }
-
-        if (!excludedLabels.isEmpty()) {
-            log.info("Skipped {} non-wall detections for project {}: {}",
-                    excludedLabels.size(), projectId, excludedLabels);
-        }
-
-        regionRepository.saveAll(walls);
-        log.info("Saved {} wall regions for project {}", walls.size(), projectId);
-        return walls.size();
+        return null;
     }
 
     @SuppressWarnings("unchecked")
@@ -316,10 +332,6 @@ public class SegmentationService {
             return url;
         }
         return null;
-    }
-
-    private static String stringOrNull(Object v) {
-        return (v instanceof String s && !s.isBlank()) ? s : null;
     }
 
     private void updatePredictionId(String projectId, String predictionId) {
