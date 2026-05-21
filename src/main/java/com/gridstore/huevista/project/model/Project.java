@@ -45,8 +45,10 @@ public class Project {
 
     // When status == FAILED, why. Surfaced to the frontend so we can show the
     // user something actionable ("auto-segmentation not configured — click each
-    // wall") instead of a generic failure.
-    @Column(length = 500)
+    // wall") instead of a generic failure. Stored as TEXT because Hibernate
+    // exception messages with SQL fragments and presigned URLs blow past any
+    // reasonable VARCHAR limit.
+    @Column(columnDefinition = "TEXT")
     private String failureReason;
 
     // Share link — null until generated

@@ -151,6 +151,11 @@ public class SegmentationService {
                 return;
             }
 
+            // Clear stale auto regions from previous runs (and legacy
+            // category=null rows from before the enum existed). MANUAL
+            // click-segments are preserved.
+            regionRepository.deleteAutoRegionsByProjectId(projectId);
+
             // Pass 1: walls
             List<Region> walls = runWallPass(projectId, userId, imageUrl);
             if (walls.isEmpty()) {
