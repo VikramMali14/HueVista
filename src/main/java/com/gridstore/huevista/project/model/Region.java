@@ -32,7 +32,10 @@ public class Region {
     @Column(columnDefinition = "TEXT")
     private String maskData;
 
-    // Optional URL if mask stored as a PNG in S3
+    // URL of the mask PNG. Long enough to hold a presigned S3 URL — those run
+    // ~500 chars with X-Amz signature/expiry/credential params and overflow
+    // the default VARCHAR(255). Bumped to 2048 for headroom.
+    @Column(length = 2048)
     private String maskUrl;
 
     // Color currently applied to this region (updated via auto-save)
