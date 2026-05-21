@@ -31,6 +31,101 @@ final class MaskProcessor {
     private static final int FOREGROUND_THRESHOLD = 127;
 
     /**
+     * Cleans up a binary mask using morphological close-then-open with a 3×3
+     * structuring element. Close (dilate→erode) fills small holes — paint-through
+     * gaps where the model dropped a few wall pixels around light switches or
+     * picture frames. Open (erode→dilate) removes speckle noise — stray "wall"
+     * pixels on the floor, sky, or sofa. Both operations preserve overall wall
+     * shape. Returns a re-encoded PNG.
+     */
+    static byte[] morphClean(byte[] maskBytes) throws IOException {
+        BufferedImage img = ImageIO.read(new ByteArrayInputStream(maskBytes));
+        if (img == null) {
+            throw new IOException("Could not decode mask image for morphological cleanup");
+        }
+        int width = img.getWidth();
+        int height = img.getHeight();
+
+        boolean[] binary = thresholdToBinary(img, width, height);
+        boolean[] closed = erode(dilate(binary, width, height), width, height);
+        boolean[] cleaned = dilate(erode(closed, width, height), width, height);
+        return encodeBinaryPng(cleaned, width, height);
+    }
+
+    private static boolean[] thresholdToBinary(BufferedImage img, int w, int h) {
+        boolean[] bin = new boolean[w * h];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int rgb = img.getRGB(x, y);
+                int gray = (((rgb >> 16) & 0xff) + ((rgb >> 8) & 0xff) + (rgb & 0xff)) / 3;
+                bin[y * w + x] = gray > FOREGROUND_THRESHOLD;
+            }
+        }
+        return bin;
+    }
+
+    /** 3×3 dilation: a pixel becomes white if itself or any 8-neighbor is white. */
+    private static boolean[] dilate(boolean[] in, int w, int h) {
+        boolean[] out = new boolean[w * h];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int idx = y * w + x;
+                if (in[idx]) { out[idx] = true; continue; }
+                boolean any = false;
+                outer:
+                for (int dy = -1; dy <= 1; dy++) {
+                    int ny = y + dy;
+                    if (ny < 0 || ny >= h) continue;
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int nx = x + dx;
+                        if (nx < 0 || nx >= w) continue;
+                        if (in[ny * w + nx]) { any = true; break outer; }
+                    }
+                }
+                out[idx] = any;
+            }
+        }
+        return out;
+    }
+
+    /** 3×3 erosion: a pixel stays white only if every 8-neighbor (and the pixel) is white. */
+    private static boolean[] erode(boolean[] in, int w, int h) {
+        boolean[] out = new boolean[w * h];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int idx = y * w + x;
+                if (!in[idx]) continue;
+                boolean all = true;
+                outer:
+                for (int dy = -1; dy <= 1; dy++) {
+                    int ny = y + dy;
+                    if (ny < 0 || ny >= h) { all = false; break; }
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int nx = x + dx;
+                        if (nx < 0 || nx >= w) { all = false; break outer; }
+                        if (!in[ny * w + nx]) { all = false; break outer; }
+                    }
+                }
+                out[idx] = all;
+            }
+        }
+        return out;
+    }
+
+    private static byte[] encodeBinaryPng(boolean[] bin, int w, int h) throws IOException {
+        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
+        byte[] data = ((DataBufferByte) out.getRaster().getDataBuffer()).getData();
+        for (int i = 0; i < bin.length; i++) {
+            data[i] = bin[i] ? (byte) 0xFF : 0;
+        }
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        if (!ImageIO.write(out, "png", baos)) {
+            throw new IOException("PNG encoder not available");
+        }
+        return baos.toByteArray();
+    }
+
+    /**
      * Decodes mask bytes (PNG or JPEG), thresholds to binary, and runs
      * connected-component labeling. Components below `minPixelArea` are
      * dropped as noise. Returned list is sorted by area descending.
