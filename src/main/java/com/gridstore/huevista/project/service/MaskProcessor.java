@@ -1,6 +1,13 @@
 package com.gridstore.huevista.project.service;
 
 import javax.imageio.ImageIO;
+import java.awt.AlphaComposite;
+import java.awt.BasicStroke;
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.FontMetrics;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import java.io.ByteArrayInputStream;
@@ -83,6 +90,153 @@ final class MaskProcessor {
         int n = 0;
         for (boolean b : bin) if (b) n++;
         return n;
+    }
+
+    /**
+     * Overlays a list of masks on the original image with each one tinted a
+     * different color and labeled with its index number (1, 2, 3, ...) at its
+     * centroid. The output is the input image Claude sees for Set-of-Mark
+     * classification — Claude only has to read the numbers and say which is
+     * the main wall vs accent vs trim, instead of trying to output pixel
+     * coordinates from scratch.
+     *
+     * Resizes the output to at most {@code maxDim} on its longest side so
+     * Claude's input doesn't balloon (3-megapixel photos waste tokens).
+     */
+    static byte[] annotateComposite(byte[] originalBytes, List<byte[]> maskBytesList, int maxDim)
+            throws IOException {
+        BufferedImage original = ImageIO.read(new ByteArrayInputStream(originalBytes));
+        if (original == null) throw new IOException("Could not decode original image");
+
+        int srcW = original.getWidth();
+        int srcH = original.getHeight();
+        double scale = Math.min(1.0, (double) maxDim / Math.max(srcW, srcH));
+        int outW = (int) Math.round(srcW * scale);
+        int outH = (int) Math.round(srcH * scale);
+
+        BufferedImage composite = new BufferedImage(outW, outH, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = composite.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        g.drawImage(original, 0, 0, outW, outH, null);
+
+        // Color palette — 12 distinct hues so adjacent masks don't blend.
+        Color[] palette = {
+                new Color(231, 76, 60), new Color(46, 204, 113), new Color(52, 152, 219),
+                new Color(241, 196, 15), new Color(155, 89, 182), new Color(26, 188, 156),
+                new Color(230, 126, 34), new Color(52, 73, 94), new Color(231, 76, 200),
+                new Color(149, 165, 166), new Color(243, 156, 18), new Color(22, 160, 133)
+        };
+
+        int fontSize = Math.max(18, Math.min(48, outW / 30));
+        Font font = new Font("SansSerif", Font.BOLD, fontSize);
+        g.setFont(font);
+        FontMetrics fm = g.getFontMetrics();
+
+        for (int i = 0; i < maskBytesList.size(); i++) {
+            BufferedImage maskRaw = ImageIO.read(new ByteArrayInputStream(maskBytesList.get(i)));
+            if (maskRaw == null) continue;
+            // Resize each mask to the composite dimensions.
+            BufferedImage mask = resizeNearest(maskRaw, outW, outH);
+
+            Color tint = palette[i % palette.length];
+            g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.40f));
+            int rgb = (tint.getRed() << 16) | (tint.getGreen() << 8) | tint.getBlue();
+
+            // Centroid accumulators
+            long cxSum = 0, cySum = 0;
+            int count = 0;
+
+            for (int y = 0; y < outH; y++) {
+                for (int x = 0; x < outW; x++) {
+                    int p = mask.getRGB(x, y);
+                    int gray = (((p >> 16) & 0xff) + ((p >> 8) & 0xff) + (p & 0xff)) / 3;
+                    if (gray > FOREGROUND_THRESHOLD) {
+                        composite.setRGB(x, y, blend(composite.getRGB(x, y), rgb, 0.40f));
+                        cxSum += x;
+                        cySum += y;
+                        count++;
+                    }
+                }
+            }
+            if (count == 0) continue;
+
+            int cx = (int) (cxSum / count);
+            int cy = (int) (cySum / count);
+            String label = String.valueOf(i + 1);
+            int labelW = fm.stringWidth(label);
+            int labelH = fm.getAscent();
+            int padding = Math.max(4, fontSize / 4);
+            int boxX = cx - labelW / 2 - padding;
+            int boxY = cy - labelH / 2 - padding;
+            int boxW = labelW + padding * 2;
+            int boxH = labelH + padding * 2;
+
+            g.setComposite(AlphaComposite.SrcOver);
+            g.setColor(Color.WHITE);
+            g.fillRect(boxX, boxY, boxW, boxH);
+            g.setColor(Color.BLACK);
+            g.setStroke(new BasicStroke(2f));
+            g.drawRect(boxX, boxY, boxW, boxH);
+            g.drawString(label, cx - labelW / 2, cy + labelH / 2 - 2);
+        }
+
+        g.dispose();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        if (!ImageIO.write(composite, "jpg", out)) {
+            throw new IOException("JPEG encoder not available");
+        }
+        return out.toByteArray();
+    }
+
+    private static BufferedImage resizeNearest(BufferedImage src, int w, int h) {
+        if (src.getWidth() == w && src.getHeight() == h) return src;
+        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
+        Graphics2D g = out.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+        g.drawImage(src, 0, 0, w, h, null);
+        g.dispose();
+        return out;
+    }
+
+    private static int blend(int base, int over, float alpha) {
+        int br = (base >> 16) & 0xff, bg = (base >> 8) & 0xff, bb = base & 0xff;
+        int or = (over >> 16) & 0xff, og = (over >> 8) & 0xff, ob = over & 0xff;
+        int r = (int) (br * (1 - alpha) + or * alpha);
+        int gr = (int) (bg * (1 - alpha) + og * alpha);
+        int b = (int) (bb * (1 - alpha) + ob * alpha);
+        return (r << 16) | (gr << 8) | b;
+    }
+
+    /**
+     * Pixel-wise union of multiple binary masks: output pixel is white if any
+     * input mask is white at that location. All masks must share dimensions.
+     * Used after Claude's Set-of-Mark classification to combine, e.g., mask #4
+     * and mask #7 into a single MAIN_WALL region.
+     */
+    static byte[] unionMasks(List<byte[]> maskBytesList) throws IOException {
+        if (maskBytesList.isEmpty()) {
+            throw new IOException("unionMasks: empty input");
+        }
+        BufferedImage first = ImageIO.read(new ByteArrayInputStream(maskBytesList.get(0)));
+        if (first == null) throw new IOException("Could not decode mask 0 for union");
+        int w = first.getWidth(), h = first.getHeight();
+
+        boolean[] acc = thresholdToBinary(first, w, h);
+        for (int i = 1; i < maskBytesList.size(); i++) {
+            BufferedImage img = ImageIO.read(new ByteArrayInputStream(maskBytesList.get(i)));
+            if (img == null) continue;
+            if (img.getWidth() != w || img.getHeight() != h) {
+                // Resize to match
+                img = resizeNearest(img, w, h);
+            }
+            boolean[] bin = thresholdToBinary(img, w, h);
+            for (int j = 0; j < acc.length; j++) {
+                if (bin[j]) acc[j] = true;
+            }
+        }
+        return encodeBinaryPng(acc, w, h);
     }
 
     /**

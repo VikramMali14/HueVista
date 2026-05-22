@@ -94,6 +94,22 @@ public class SegmentationService {
     private static final int MAX_WALL_REGIONS = 3;
 
     /**
+     * Cap on SAM 2 auto candidates fed into the Set-of-Mark composite. More
+     * than ~25 numbered overlays makes the annotated image too crowded for
+     * Claude to read reliably. SAM auto often returns 30-60 masks; the
+     * model orders them by predicted IoU, so the first N are the most
+     * confident — taking the first 25 keeps the best ones.
+     */
+    private static final int MAX_CANDIDATE_MASKS = 25;
+
+    /**
+     * Longest-side resolution of the annotated composite image sent to
+     * Claude. 1280 is a sweet spot: Claude can still resolve mask numbers
+     * and surface details, but token cost is bounded.
+     */
+    private static final int CLAUDE_COMPOSITE_MAX_DIM = 1280;
+
+    /**
      * Components below this pixel area are dropped as noise / artifacts.
      * Same threshold for indoor and outdoor — turns out outdoor accent
      * areas (small painted columns, parapets between brick sections) can
@@ -199,11 +215,8 @@ public class SegmentationService {
     @Async("aiTaskExecutor")
     public void segmentAsync(String projectId, String imageUrl) {
         try {
-            log.info("Starting wall segmentation: project={}", projectId);
+            log.info("Starting wall segmentation (Set-of-Mark pipeline): project={}", projectId);
 
-            // SAM 2 must be configured — it's the model that produces masks
-            // from Claude's point hints. Grounded SAM is no longer used in
-            // the auto path.
             if (replicateApiToken == null || replicateApiToken.isBlank()) {
                 markFailed(projectId, "REPLICATE_API_TOKEN not configured");
                 return;
@@ -215,94 +228,184 @@ public class SegmentationService {
                 return;
             }
 
-            // Default to INDOOR if the image somehow has no classification.
             ImageType imageType = projectRepository.findImageTypeById(projectId)
                     .orElse(ImageType.INDOOR);
             log.info("Segmenting project {} as {}", projectId, imageType);
 
-            // Wipe stale auto regions; preserve MANUAL click-segments.
             regionRepository.deleteAutoRegionsByProjectId(projectId);
 
-            // Resolve real image dimensions (cached on UploadedImage on first
-            // use). Needed to scale Claude's normalized points to the pixel
-            // coordinates SAM 2 expects.
             UploadedImage image = loadAndEnsureDimensions(projectId);
-            int width = image.getWidth();
-            int height = image.getHeight();
+            byte[] originalBytes = storageService.load(image.getStorageKey());
 
-            // Claude scene analysis: returns POINTS for each surface category
-            // instead of a text exclude list. Sonnet by default — Haiku
-            // tends to mislocate coordinates by 10–15%.
-            Optional<WallSceneAnalysis> sceneOpt = sceneAnalyzer.analyze(imageUrl, imageType);
-            if (sceneOpt.isEmpty()) {
+            // Step 1: SAM 2 automatic mode produces ~15–30 candidate masks
+            // covering every segment in the photo (wall, sky, ground, door,
+            // window, AC unit, etc.). We don't yet know which is which —
+            // that's Claude's job in step 3.
+            List<String> maskUrls = runSam2AutoPass(projectId, imageUrl);
+            if (maskUrls.isEmpty()) {
                 markFailed(projectId,
-                        "Scene analysis failed (Claude vision returned no result). " +
+                        "SAM 2 produced no candidate masks. The photo may be too small or low contrast. " +
                         "Try click-to-segment to mark walls manually.");
                 return;
             }
-            WallSceneAnalysis scene = sceneOpt.get();
-            if (!scene.paintable()) {
-                String material = scene.wallMaterial();
-                String notes = scene.notes();
+
+            // Filter to large-enough candidates so Claude isn't overwhelmed.
+            // Cap at MAX_CANDIDATES so the composite stays readable.
+            List<byte[]> candidates = new ArrayList<>();
+            for (String url : maskUrls) {
+                try {
+                    candidates.add(downloadBytes(url));
+                } catch (Exception e) {
+                    log.warn("Skipping mask {}: {}", url, e.getMessage());
+                }
+                if (candidates.size() >= MAX_CANDIDATE_MASKS) break;
+            }
+            log.info("SAM 2 auto: downloaded {} candidate masks for project {}",
+                    candidates.size(), projectId);
+
+            // Step 2: overlay all candidate masks on the original photo with
+            // numeric labels. The composite is what Claude sees.
+            byte[] annotated = MaskProcessor.annotateComposite(originalBytes, candidates, CLAUDE_COMPOSITE_MAX_DIM);
+
+            // Step 3: Claude reads the numbers and tells us which masks are
+            // main wall, accent, trim, and which to ignore.
+            Optional<MaskClassification> classOpt =
+                    sceneAnalyzer.classifyMasks(annotated, imageType, candidates.size());
+            if (classOpt.isEmpty()) {
+                markFailed(projectId,
+                        "Claude could not classify the candidate masks. " +
+                        "Try click-to-segment to mark walls manually.");
+                return;
+            }
+            MaskClassification mc = classOpt.get();
+            if (!mc.paintable()) {
+                String material = mc.wallMaterial();
+                String notes = mc.notes();
                 markFailed(projectId,
                         "Visible walls are " + (material != null ? material : "not a paintable surface")
                                 + " and cannot be repainted. "
                                 + (notes != null ? notes + " " : "")
-                                + "Use click-to-segment to mark a specific area manually.");
+                                + "Use click-to-segment if you want to mark a specific area.");
                 return;
             }
 
-            // Negative points are shared across every category — they're the
-            // things that must NEVER be painted regardless of which surface
-            // we're segmenting (stone cladding, doors, windows, fixtures).
-            List<WallSceneAnalysis.Point> excludes = scene.excludePoints();
-
+            // Step 4: union the selected masks per category, clean them up,
+            // upload to S3, save Region rows.
             int displayOrder = 0;
             int saved = 0;
-
-            // MAIN_WALL — the dominant paintable surface
-            if (!scene.mainWallPoints().isEmpty()) {
-                Region r = runSam2CategoryPass(projectId, userId, imageUrl,
-                        width, height,
-                        scene.mainWallPoints(), excludes,
-                        "Main Wall", RegionCategory.MAIN_WALL, displayOrder);
-                if (r != null) { saved++; displayOrder++; }
-            } else {
-                log.warn("Scene analysis returned no main_wall_points for project {}", projectId);
+            if (saveUnionRegion(projectId, userId, candidates, mc.mainWall(),
+                    "Main Wall", RegionCategory.MAIN_WALL, displayOrder)) {
+                saved++; displayOrder++;
             }
-
-            // ACCENT_WALL — secondary feature wall, optional
-            if (!scene.accentWallPoints().isEmpty()) {
-                Region r = runSam2CategoryPass(projectId, userId, imageUrl,
-                        width, height,
-                        scene.accentWallPoints(), excludes,
-                        "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder);
-                if (r != null) { saved++; displayOrder++; }
+            if (saveUnionRegion(projectId, userId, candidates, mc.accentWall(),
+                    "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder)) {
+                saved++; displayOrder++;
             }
-
-            // TRIM — window/door frames, baseboards, fascia, balcony rails
-            if (!scene.trimPoints().isEmpty()) {
-                Region r = runSam2CategoryPass(projectId, userId, imageUrl,
-                        width, height,
-                        scene.trimPoints(), excludes,
-                        "Trim & Frames", RegionCategory.TRIM, displayOrder);
-                if (r != null) { saved++; displayOrder++; }
+            if (saveUnionRegion(projectId, userId, candidates, mc.trim(),
+                    "Trim & Frames", RegionCategory.TRIM, displayOrder)) {
+                saved++; displayOrder++;
             }
 
             if (saved == 0) {
                 markFailed(projectId,
-                        "Auto-segmentation could not isolate any paintable surfaces in this photo. " +
+                        "Claude classified the photo but assigned no masks to any paint category. " +
                         "Use click-to-segment to mark walls manually.");
                 return;
             }
 
             markSegmented(projectId);
-            log.info("Segmentation complete: project={} type={} regions={}",
-                    projectId, imageType, saved);
+            log.info("Segmentation complete: project={} type={} regions={} candidates={}",
+                    projectId, imageType, saved, candidates.size());
 
         } catch (Exception e) {
             log.error("Segmentation error for project {}: {}", projectId, e.getMessage(), e);
             markFailed(projectId, "Segmentation failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Unions the masks at the given indices into one mask, morph-cleans it,
+     * uploads to S3, and persists a Region row. Returns false if the index
+     * list is empty or the resulting mask is too small to be useful.
+     */
+    private boolean saveUnionRegion(String projectId, String userId,
+                                    List<byte[]> candidates, List<Integer> indices,
+                                    String label, RegionCategory category, int displayOrder) {
+        if (indices == null || indices.isEmpty()) return false;
+        try {
+            List<byte[]> selected = new ArrayList<>(indices.size());
+            for (int idx : indices) {
+                int i = idx - 1; // Claude returns 1-based
+                if (i >= 0 && i < candidates.size()) selected.add(candidates.get(i));
+            }
+            if (selected.isEmpty()) return false;
+
+            byte[] union = MaskProcessor.unionMasks(selected);
+            byte[] cleaned;
+            try {
+                cleaned = MaskProcessor.morphClean(union);
+            } catch (Exception e) {
+                log.warn("morphClean failed for {}, using raw union: {}", category, e.getMessage());
+                cleaned = union;
+            }
+
+            String storageKey = storageService.store(
+                    cleaned, userId,
+                    category.name().toLowerCase() + ".png", "image/png");
+            String url = storageService.getPublicUrl(storageKey);
+
+            Region region = Region.builder()
+                    .project(projectRepository.getReferenceById(projectId))
+                    .label(label)
+                    .category(category)
+                    .maskUrl(url)
+                    .maskData(url)
+                    .displayOrder(displayOrder)
+                    .build();
+            regionRepository.save(region);
+            log.info("Saved {} region for project {}: indices={} storageKey={}",
+                    category, projectId, indices, storageKey);
+            return true;
+        } catch (Exception e) {
+            log.warn("Failed to save {} region for project {}: {}", category, projectId, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Runs SAM 2 in automatic mask generation mode. The model lays a grid of
+     * points across the image and produces one mask per detected segment —
+     * typically 15–30 candidates. We then ask Claude (via Set-of-Mark) which
+     * of those candidates are the wall.
+     */
+    private List<String> runSam2AutoPass(String projectId, String imageUrl) {
+        try {
+            Map<String, Object> input = Map.of(
+                    "image", imageUrl,
+                    "points_per_side", 32,
+                    "pred_iou_thresh", 0.88,
+                    "stability_score_thresh", 0.95,
+                    "min_mask_region_area", 5000,
+                    "use_m2m", true
+            );
+            String predictionId = startSam2Prediction(input);
+            if (predictionId == null) {
+                log.warn("SAM 2 auto: failed to start prediction for project {}", projectId);
+                return List.of();
+            }
+            updatePredictionId(projectId, predictionId);
+
+            Map<String, Object> result = pollUntilDone(predictionId);
+            if (result == null) {
+                log.warn("SAM 2 auto: timed out for project {}", projectId);
+                return List.of();
+            }
+            List<String> urls = extractAllMaskUrls(result.get("output"));
+            log.info("SAM 2 auto: {} masks for project {}", urls.size(), projectId);
+            return urls;
+        } catch (Exception e) {
+            log.warn("SAM 2 auto pass failed for project {}: {}", projectId, e.getMessage());
+            return List.of();
         }
     }
 
@@ -829,6 +932,27 @@ public class SegmentationService {
             }
         }
         return null;
+    }
+
+    /**
+     * Parses the list of individual mask URLs from a SAM 2 automatic mode
+     * prediction output. The Replicate meta/sam-2 model returns either
+     * { combined_mask, individual_masks: [url, ...] } when run in auto mode,
+     * or a raw list of URLs in some wrappers. Returns the individual masks
+     * (one URL per candidate segment).
+     */
+    @SuppressWarnings("unchecked")
+    private static List<String> extractAllMaskUrls(Object output) {
+        List<String> out = new ArrayList<>();
+        if (output instanceof Map<?, ?> map) {
+            Object masks = map.get("individual_masks");
+            if (masks instanceof List<?> list) {
+                for (Object o : list) if (o instanceof String s) out.add(s);
+            }
+        } else if (output instanceof List<?> list) {
+            for (Object o : list) if (o instanceof String s) out.add(s);
+        }
+        return out;
     }
 
     @SuppressWarnings("unchecked")

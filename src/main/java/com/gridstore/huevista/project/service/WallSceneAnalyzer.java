@@ -137,6 +137,132 @@ public class WallSceneAnalyzer {
         }
     }
 
+    /**
+     * Set-of-Mark classification: takes the original photo overlaid with
+     * numbered candidate masks (produced by SAM 2 auto-segmentation) and
+     * asks Claude which numbers belong to MAIN_WALL, ACCENT_WALL, and TRIM.
+     * Returns Optional.empty() on any failure so the caller can give up
+     * cleanly instead of producing garbage masks.
+     */
+    public Optional<MaskClassification> classifyMasks(byte[] annotatedJpegBytes, ImageType imageType, int maskCount) {
+        if (!enabled || apiKey == null || apiKey.isBlank()) {
+            return Optional.empty();
+        }
+        if (annotatedJpegBytes == null || annotatedJpegBytes.length == 0 || maskCount <= 0) {
+            return Optional.empty();
+        }
+        try {
+            String base64 = Base64.getEncoder().encodeToString(annotatedJpegBytes);
+            String prompt = buildClassifyPrompt(imageType, maskCount);
+
+            Map<String, Object> imageBlock = Map.of(
+                    "type", "image",
+                    "source", Map.of(
+                            "type", "base64",
+                            "media_type", "image/jpeg",
+                            "data", base64
+                    )
+            );
+            Map<String, Object> textBlock = Map.of("type", "text", "text", prompt);
+
+            Map<String, Object> body = Map.of(
+                    "model", model,
+                    "max_tokens", 1200,
+                    "messages", List.of(
+                            Map.of("role", "user", "content", List.of(imageBlock, textBlock))
+                    )
+            );
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set("x-api-key", apiKey);
+            headers.set("anthropic-version", "2023-06-01");
+
+            ResponseEntity<Map> response = restTemplate.exchange(
+                    CLAUDE_API_URL, HttpMethod.POST,
+                    new HttpEntity<>(body, headers),
+                    Map.class
+            );
+
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> content =
+                    (List<Map<String, Object>>) response.getBody().get("content");
+            if (content == null || content.isEmpty()) return Optional.empty();
+            String text = ((String) content.get(0).get("text")).trim();
+            JsonNode root = objectMapper.readTree(stripCodeFences(text));
+
+            List<Integer> main = parseIntList(root.path("main_wall"), maskCount);
+            List<Integer> accent = parseIntList(root.path("accent_wall"), maskCount);
+            List<Integer> trim = parseIntList(root.path("trim"), maskCount);
+            boolean paintable = root.path("paintable").asBoolean(true);
+            String material = textOrNull(root.path("wall_material"));
+            String notes = textOrNull(root.path("notes"));
+
+            log.info("Mask classification [{}]: paintable={} material='{}' main={} accent={} trim={}",
+                    imageType, paintable, material, main, accent, trim);
+            return Optional.of(new MaskClassification(main, accent, trim, paintable, material, notes));
+
+        } catch (Exception e) {
+            log.warn("Mask classification failed: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private List<Integer> parseIntList(JsonNode node, int maxValue) {
+        List<Integer> out = new ArrayList<>();
+        if (node == null || !node.isArray()) return out;
+        for (JsonNode n : node) {
+            int v = n.asInt(-1);
+            if (v >= 1 && v <= maxValue && !out.contains(v)) {
+                out.add(v);
+            }
+        }
+        return out;
+    }
+
+    private String buildClassifyPrompt(ImageType imageType, int maskCount) {
+        boolean outdoor = imageType == ImageType.OUTDOOR;
+        String typeHint = outdoor ? "OUTDOOR (building facade / exterior)" : "INDOOR (room / interior)";
+        String mainHint = outdoor
+                ? "the largest visible painted wall of the building facade (the dominant cream/beige/colored plaster surface, NOT brick, stone, tile, or siding)"
+                : "the largest visible painted interior wall (the dominant flat painted surface, NOT tiled, wallpapered, or wood-paneled)";
+        String accentHint = outdoor
+                ? "a secondary paintable facade section in a different color (e.g. a band, an entry porch surround, a parapet face)"
+                : "a feature wall in a different color or a perpendicular wall";
+        String trimHint = outdoor
+                ? "window frames, door frames, fascia under the roof, soffit, parapet edges, balcony railings, decorative banding"
+                : "window frames, door frames, baseboards / skirting, crown molding, picture rails, wainscoting";
+
+        return ("You are looking at an %s photograph with %d numbered candidate masks overlaid on it.\n"
+                + "Each numbered colored region is one mask. Read the numbers and decide which masks\n"
+                + "belong to each paint category.\n\n"
+                + "RULES:\n"
+                + "- main_wall: mask numbers that cover %s. Usually 1–3 numbers, sometimes more if the\n"
+                + "  wall is split across several masks. Pick masks that are clearly painted wall,\n"
+                + "  not sky, ground, furniture, or non-paintable cladding.\n"
+                + "- accent_wall: mask numbers that cover %s. Often empty — return [] if no accent.\n"
+                + "- trim: mask numbers covering %s. Often 1–4 numbers. Return [] if none visible.\n"
+                + "- EXCLUDE: do NOT add mask numbers covering sky, clouds, trees, ground, dirt,\n"
+                + "  road, sidewalk, vehicles, doors, windows, glass, AC units, electrical fixtures,\n"
+                + "  stone cladding, exposed brick, ceramic tile, marble, wallpaper, wood paneling,\n"
+                + "  furniture, decor, or any background object. These get LEFT OUT.\n"
+                + "- A mask can belong to AT MOST ONE category. If unsure, leave it out.\n\n"
+                + "ALSO RETURN:\n"
+                + "- paintable: false ONLY if no paintable wall is visible at all (whole image is brick,\n"
+                + "  tile, sky, etc.). Otherwise true.\n"
+                + "- wall_material: short description.\n"
+                + "- notes: one sentence.\n\n"
+                + "Return ONLY this JSON. No markdown fences, no prose:\n\n"
+                + "{\n"
+                + "  \"paintable\": <true|false>,\n"
+                + "  \"wall_material\": \"<string>\",\n"
+                + "  \"main_wall\": [<mask numbers>],\n"
+                + "  \"accent_wall\": [<mask numbers>],\n"
+                + "  \"trim\": [<mask numbers>],\n"
+                + "  \"notes\": \"<string>\"\n"
+                + "}\n").formatted(typeHint, maskCount, mainHint, accentHint, trimHint);
+    }
+
     private List<WallSceneAnalysis.Point> parsePoints(JsonNode node) {
         List<WallSceneAnalysis.Point> out = new ArrayList<>();
         if (node == null || !node.isArray()) return out;
