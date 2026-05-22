@@ -31,6 +31,61 @@ final class MaskProcessor {
     private static final int FOREGROUND_THRESHOLD = 127;
 
     /**
+     * Subtracts {@code backgroundBytes} from {@code foregroundBytes} in pixel
+     * space — output = foreground AND NOT dilate(background, n). Used to
+     * remove non-paintable surfaces (stone cladding, exposed brick, tile)
+     * from a wall mask. The background mask is dilated by
+     * {@code backgroundDilationIterations} before subtraction so we don't
+     * leave a thin fringe along the boundary where grounded_sam's edge was
+     * a pixel or two short of the real surface.
+     *
+     * If the two masks are different sizes, throws IOException — callers
+     * should fall back to the un-subtracted foreground.
+     */
+    static byte[] subtract(byte[] foregroundBytes, byte[] backgroundBytes,
+                           int backgroundDilationIterations) throws IOException {
+        BufferedImage fg = ImageIO.read(new ByteArrayInputStream(foregroundBytes));
+        BufferedImage bg = ImageIO.read(new ByteArrayInputStream(backgroundBytes));
+        if (fg == null || bg == null) {
+            throw new IOException("Could not decode mask for subtraction");
+        }
+        if (fg.getWidth() != bg.getWidth() || fg.getHeight() != bg.getHeight()) {
+            throw new IOException(String.format(
+                    "Mask size mismatch: fg=%dx%d, bg=%dx%d",
+                    fg.getWidth(), fg.getHeight(), bg.getWidth(), bg.getHeight()));
+        }
+        int w = fg.getWidth(), h = fg.getHeight();
+
+        boolean[] fgBin = thresholdToBinary(fg, w, h);
+        boolean[] bgBin = thresholdToBinary(bg, w, h);
+        for (int i = 0; i < backgroundDilationIterations; i++) {
+            bgBin = dilate(bgBin, w, h);
+        }
+
+        boolean[] out = new boolean[w * h];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = fgBin[i] && !bgBin[i];
+        }
+        return encodeBinaryPng(out, w, h);
+    }
+
+    /**
+     * Counts the foreground (white) pixels in a binary mask. Used by callers
+     * to sanity-check a model's output — e.g. if the non-paintable mask
+     * covers 90%+ of the frame, the detector misfired and we should skip
+     * subtraction rather than wipe out the wall.
+     */
+    static int countForeground(byte[] maskBytes) throws IOException {
+        BufferedImage img = ImageIO.read(new ByteArrayInputStream(maskBytes));
+        if (img == null) throw new IOException("Could not decode mask");
+        int w = img.getWidth(), h = img.getHeight();
+        boolean[] bin = thresholdToBinary(img, w, h);
+        int n = 0;
+        for (boolean b : bin) if (b) n++;
+        return n;
+    }
+
+    /**
      * Cleans up a binary mask using morphological close-then-open with a 3×3
      * structuring element. Close (dilate→erode) fills small holes — paint-through
      * gaps where the model dropped a few wall pixels around light switches or
