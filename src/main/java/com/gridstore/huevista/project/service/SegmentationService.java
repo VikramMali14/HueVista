@@ -95,12 +95,12 @@ public class SegmentationService {
 
     /**
      * Cap on SAM 2 auto candidates fed into the Set-of-Mark composite. More
-     * than ~25 numbered overlays makes the annotated image too crowded for
-     * Claude to read reliably. SAM auto often returns 30-60 masks; the
-     * model orders them by predicted IoU, so the first N are the most
-     * confident — taking the first 25 keeps the best ones.
+     * than this makes the annotated image too crowded for Claude to read.
+     * Bumped from 25 → 40 after real-world testing showed SAM auto often
+     * splits one paintable wall into 6-10 pieces, and Claude was picking
+     * only the largest 1-2 — leaving most of the wall unclassified.
      */
-    private static final int MAX_CANDIDATE_MASKS = 25;
+    private static final int MAX_CANDIDATE_MASKS = 40;
 
     /**
      * Longest-side resolution of the annotated composite image sent to
@@ -289,6 +289,13 @@ public class SegmentationService {
                 return;
             }
 
+            // Step 3.5: color-expansion — Claude often picks 1-2 of the wall
+            // pieces and misses 5+ similar-colored siblings that SAM split
+            // off. For each category, compute its mean color and pull in
+            // any unclaimed candidate mask whose mean color is close enough.
+            // This is what gets us from "30% coverage" to "near-complete".
+            expandClassificationByColor(originalBytes, candidates, mc, projectId);
+
             // Step 4: union the selected masks per category, clean them up,
             // upload to S3, save Region rows.
             int displayOrder = 0;
@@ -320,6 +327,120 @@ public class SegmentationService {
         } catch (Exception e) {
             log.error("Segmentation error for project {}: {}", projectId, e.getMessage(), e);
             markFailed(projectId, "Segmentation failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Longest-side resolution for color analysis. Color decisions don't need
+     * pixel accuracy; a 512px downsample makes mean-color computation 50×
+     * faster than working on the full-resolution 4000px source.
+     */
+    private static final int COLOR_ANALYSIS_MAX_DIM = 512;
+
+    /**
+     * Maximum RGB Euclidean distance for "this unclaimed mask is the same
+     * color as main_wall, fold it in." 0–255 per channel, so the theoretical
+     * max is ~441. Around 38 catches "same cream shade with shadow
+     * variation" while rejecting "different paint color entirely". Tuned
+     * conservatively to avoid sucking in stone cladding that's vaguely
+     * cream-colored.
+     */
+    private static final double COLOR_EXPANSION_THRESHOLD = 38.0;
+
+    /**
+     * Expands Claude's mask selection by color similarity: for each category
+     * Claude picked, compute the mean wall color across the selected masks,
+     * then pull in every unclaimed candidate mask whose mean color falls
+     * within {@link #COLOR_EXPANSION_THRESHOLD} of that color. Mutates the
+     * lists inside {@code mc}.
+     *
+     * Works on a downsampled copy of the original (and downsampled mask
+     * copies) — color decisions don't need pixel accuracy. Silently no-ops
+     * if anything fails; the original Claude picks always remain.
+     */
+    private void expandClassificationByColor(byte[] originalBytes, List<byte[]> candidates,
+                                             MaskClassification mc, String projectId) {
+        try {
+            java.awt.image.BufferedImage originalFull = MaskProcessor.decode(originalBytes);
+            java.awt.image.BufferedImage original = MaskProcessor.downsample(originalFull, COLOR_ANALYSIS_MAX_DIM);
+
+            // Decode + downsample each candidate once.
+            List<java.awt.image.BufferedImage> maskImages = new ArrayList<>(candidates.size());
+            for (byte[] bytes : candidates) {
+                try {
+                    java.awt.image.BufferedImage decoded = MaskProcessor.decode(bytes);
+                    maskImages.add(MaskProcessor.downsample(decoded, COLOR_ANALYSIS_MAX_DIM));
+                } catch (Exception e) {
+                    maskImages.add(null);
+                }
+            }
+
+            int beforeMain = mc.mainWall().size();
+            int beforeAccent = mc.accentWall().size();
+            int beforeTrim = mc.trim().size();
+
+            expandCategoryByColor(original, maskImages, mc.mainWall(), mc.accentWall(), mc.trim());
+            expandCategoryByColor(original, maskImages, mc.accentWall(), mc.mainWall(), mc.trim());
+            // TRIM is intentionally NOT expanded by color — trim is usually
+            // a distinct color (white, dark) and applying the same heuristic
+            // would pull in unrelated surfaces with similar coloring.
+
+            int addedMain = mc.mainWall().size() - beforeMain;
+            int addedAccent = mc.accentWall().size() - beforeAccent;
+            int addedTrim = mc.trim().size() - beforeTrim;
+            if (addedMain + addedAccent + addedTrim > 0) {
+                log.info("Color expansion [project={}]: +{} main, +{} accent, +{} trim",
+                        projectId, addedMain, addedAccent, addedTrim);
+            }
+        } catch (Exception e) {
+            log.warn("Color expansion skipped for project {}: {}", projectId, e.getMessage());
+        }
+    }
+
+    /**
+     * For {@code target} (Claude's picks for one category), pull in any
+     * unclaimed mask whose mean color matches the target's mean color.
+     * Masks already in {@code otherA} or {@code otherB} are protected from
+     * being stolen across categories.
+     */
+    private void expandCategoryByColor(java.awt.image.BufferedImage original,
+                                       List<java.awt.image.BufferedImage> maskImages,
+                                       List<Integer> target,
+                                       List<Integer> otherA, List<Integer> otherB) {
+        if (target.isEmpty()) return;
+
+        // Mean color of the category's current union.
+        List<java.awt.image.BufferedImage> targetMasks = new ArrayList<>();
+        for (int idx : target) {
+            int i = idx - 1;
+            if (i >= 0 && i < maskImages.size() && maskImages.get(i) != null) {
+                targetMasks.add(maskImages.get(i));
+            }
+        }
+        int[] targetColor = MaskProcessor.meanColorAcrossMasks(original, targetMasks);
+        if (targetColor == null) return;
+
+        java.util.Set<Integer> claimed = new java.util.HashSet<>();
+        claimed.addAll(target);
+        claimed.addAll(otherA);
+        claimed.addAll(otherB);
+
+        for (int i = 0; i < maskImages.size(); i++) {
+            int oneBased = i + 1;
+            if (claimed.contains(oneBased)) continue;
+            java.awt.image.BufferedImage m = maskImages.get(i);
+            if (m == null) continue;
+
+            int[] color = MaskProcessor.meanColor(original, m);
+            if (color == null) continue;
+
+            double d = MaskProcessor.colorDistance(color, targetColor);
+            if (d < COLOR_EXPANSION_THRESHOLD) {
+                target.add(oneBased);
+                claimed.add(oneBased);
+                log.debug("  expansion: mask {} (color rgb={},{},{}) distance {} from target -> added",
+                        oneBased, color[0], color[1], color[2], String.format("%.1f", d));
+            }
         }
     }
 
@@ -380,12 +501,15 @@ public class SegmentationService {
      */
     private List<String> runSam2AutoPass(String projectId, String imageUrl) {
         try {
+            // Tuned for HIGH RECALL — we'd rather Claude have too many
+            // candidates than too few. Lower thresholds + finer grid produce
+            // ~40-80 masks per photo; cap is applied downstream.
             Map<String, Object> input = Map.of(
                     "image", imageUrl,
-                    "points_per_side", 32,
-                    "pred_iou_thresh", 0.88,
-                    "stability_score_thresh", 0.95,
-                    "min_mask_region_area", 5000,
+                    "points_per_side", 48,
+                    "pred_iou_thresh", 0.82,
+                    "stability_score_thresh", 0.90,
+                    "min_mask_region_area", 2500,
                     "use_m2m", true
             );
             String predictionId = startSam2Prediction(input);
