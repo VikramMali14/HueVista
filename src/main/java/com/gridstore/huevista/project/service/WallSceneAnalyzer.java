@@ -21,15 +21,19 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Pre-analyzes the uploaded photograph with Claude Haiku Vision so we can
- * feed Grounded SAM a smarter, image-specific negative prompt instead of the
- * same static list every time. Branches on INDOOR vs OUTDOOR — the
- * vocabulary that matters is completely different across the two
- * (furniture/decor vs sky/trees/vehicles).
+ * Pre-analyzes the photograph with Claude so we can drive SAM 2 with point
+ * prompts instead of relying on grounded_sam's flaky text-matching. Claude
+ * returns normalized image-space coordinates for each surface category
+ * (main wall, accent wall, trim) plus negative points for things to exclude
+ * (stone, tile, doors, fixtures). We feed those directly to SAM 2 and let
+ * it produce the actual masks — SAM 2's edges are dramatically tighter than
+ * anything text-grounded.
  *
- * Returns Optional.empty() on any failure (API down, malformed response,
- * key missing) so the caller can fall back to the hardcoded prompt rather
- * than fail the whole segmentation.
+ * Defaults to Sonnet 4.6 because spatial coordinate output is the hardest
+ * thing for vision models and Haiku's accuracy is too low for it.
+ *
+ * Returns Optional.empty() on any failure so the caller can fail clearly
+ * rather than feed SAM 2 garbage coordinates.
  */
 @Slf4j
 @Service
@@ -42,19 +46,18 @@ public class WallSceneAnalyzer {
     @Value("${app.claude.api-key:}")
     private String apiKey;
 
-    @Value("${app.claude.model:claude-haiku-4-5-20251001}")
+    /**
+     * Model for scene point analysis. Sonnet by default — Haiku consistently
+     * mislocates points by 10–15% which is enough to send SAM 2 off the wall.
+     */
+    @Value("${app.claude.scene-analysis-model:claude-sonnet-4-6}")
     private String model;
 
     @Value("${app.segmentation.scene-analysis.enabled:true}")
     private boolean enabled;
 
     private static final String CLAUDE_API_URL = "https://api.anthropic.com/v1/messages";
-
-    /** Cap on items kept from Claude's exclude list — keeps the Grounded SAM prompt tractable. */
-    private static final int MAX_EXCLUDES = 30;
-
-    /** Drop suspicious / overly long entries — Claude occasionally returns full sentences. */
-    private static final int MAX_EXCLUDE_LENGTH = 60;
+    private static final int MAX_POINTS_PER_CATEGORY = 8;
 
     public Optional<WallSceneAnalysis> analyze(String imageUrl, ImageType imageType) {
         if (!enabled) {
@@ -62,7 +65,7 @@ public class WallSceneAnalyzer {
             return Optional.empty();
         }
         if (apiKey == null || apiKey.isBlank()) {
-            log.debug("Claude API key not set — scene analysis disabled");
+            log.warn("Claude API key not set — scene analysis disabled");
             return Optional.empty();
         }
         if (imageType == null) imageType = ImageType.INDOOR;
@@ -84,7 +87,7 @@ public class WallSceneAnalyzer {
 
             Map<String, Object> body = Map.of(
                     "model", model,
-                    "max_tokens", 800,
+                    "max_tokens", 1500,
                     "messages", List.of(
                             Map.of("role", "user", "content", List.of(imageBlock, textBlock))
                     )
@@ -116,61 +119,82 @@ public class WallSceneAnalyzer {
             String material = textOrNull(root.path("wall_material"));
             String notes = textOrNull(root.path("notes"));
 
-            List<String> excludes = new ArrayList<>();
-            JsonNode arr = root.path("exclude_objects");
-            if (arr.isArray()) {
-                for (JsonNode n : arr) {
-                    String s = n.asText("").trim().toLowerCase();
-                    if (s.isBlank() || s.length() > MAX_EXCLUDE_LENGTH) continue;
-                    excludes.add(s);
-                    if (excludes.size() >= MAX_EXCLUDES) break;
-                }
-            }
+            List<WallSceneAnalysis.Point> mainWall = parsePoints(root.path("main_wall_points"));
+            List<WallSceneAnalysis.Point> accentWall = parsePoints(root.path("accent_wall_points"));
+            List<WallSceneAnalysis.Point> trim = parsePoints(root.path("trim_points"));
+            List<WallSceneAnalysis.Point> exclude = parsePoints(root.path("exclude_points"));
 
-            log.info("Scene analysis [{}]: paintable={} material='{}' excludes={}",
-                    imageType, paintable, material, excludes.size());
-            return Optional.of(new WallSceneAnalysis(paintable, material, excludes, notes));
+            log.info("Scene analysis [{}]: paintable={} material='{}' main={} accent={} trim={} exclude={}",
+                    imageType, paintable, material,
+                    mainWall.size(), accentWall.size(), trim.size(), exclude.size());
+
+            return Optional.of(new WallSceneAnalysis(
+                    paintable, material, mainWall, accentWall, trim, exclude, notes));
 
         } catch (Exception e) {
-            log.warn("Scene analysis failed, falling back to default prompt: {}", e.getMessage());
+            log.warn("Scene analysis failed: {}", e.getMessage());
             return Optional.empty();
         }
     }
 
+    private List<WallSceneAnalysis.Point> parsePoints(JsonNode node) {
+        List<WallSceneAnalysis.Point> out = new ArrayList<>();
+        if (node == null || !node.isArray()) return out;
+        for (JsonNode item : node) {
+            if (!item.isObject()) continue;
+            double x = item.path("x").asDouble(-1);
+            double y = item.path("y").asDouble(-1);
+            WallSceneAnalysis.Point p = new WallSceneAnalysis.Point(x, y);
+            if (!p.isValid()) continue;
+            out.add(p);
+            if (out.size() >= MAX_POINTS_PER_CATEGORY) break;
+        }
+        return out;
+    }
+
     private String buildPrompt(ImageType imageType) {
         boolean outdoor = imageType == ImageType.OUTDOOR;
-        String typeHint = outdoor ? "OUTDOOR (building facade)" : "INDOOR (room)";
-        String focusHint = outdoor
-                ? "Focus on: sky, clouds, trees, bushes, plants, lawn, road, sidewalk, driveway, "
-                + "parked cars, vehicles, fences, gates, garage doors, balconies, roof, chimney, "
-                + "drainpipes, gutters, AC units, electricity meters, signage, mailboxes, lamp posts, "
-                + "other buildings in the background."
-                : "Focus on: furniture (sofa, bed, chair, table, dresser, bookshelf), decor (paintings, "
-                + "mirrors, picture frames, clocks, wall art), wall-mounted electronics (television, "
-                + "speakers, intercom), light fixtures (chandelier, pendant light, sconce, ceiling fan, "
-                + "lamp), electrical (light switches, electrical outlets, thermostat), HVAC (ceiling "
-                + "vents, AC unit, smoke detector), curtains, blinds, indoor plants.";
+        String typeHint = outdoor ? "OUTDOOR (building facade / exterior)" : "INDOOR (room / interior)";
+        String trimExamples = outdoor
+                ? "window frames, door frames, fascia under the roof, soffit, parapet edges, balcony railings"
+                : "window frames, door frames, baseboard/skirting along the floor, crown molding at the ceiling, wainscoting";
+        String excludeExamples = outdoor
+                ? "stone cladding, exposed brick, ceramic tile, glass windows, garage door, AC unit, drainpipe, satellite dish, sky, trees, parked cars, fence, ground"
+                : "stone cladding, exposed brick, ceramic tile, marble, wallpaper, wood paneling, doors, windows, mirrors, TVs, picture frames, light switches, electrical outlets, AC vent, sconces, lamps, furniture, curtains";
 
-        return ("You are analyzing an %s photograph for a paint visualization app.\n"
-                + "Return ONLY valid JSON in this exact schema — no markdown fences, no preamble, "
-                + "no explanation outside the JSON object:\n\n"
+        return ("You are analyzing an %s photograph for an automated paint visualization app.\n"
+                + "Identify the paintable surfaces and their locations as normalized (x, y) coordinates.\n\n"
+                + "COORDINATE SYSTEM:\n"
+                + "- x ∈ [0.0, 1.0] — 0.0 = LEFT edge, 1.0 = RIGHT edge\n"
+                + "- y ∈ [0.0, 1.0] — 0.0 = TOP edge, 1.0 = BOTTOM edge\n"
+                + "- Place every point INSIDE its surface (not on the boundary).\n"
+                + "- Spread multiple points across the surface so SAM 2 captures the full extent.\n\n"
+                + "CATEGORIES:\n"
+                + "1. main_wall_points — 2 to 4 points inside the LARGEST visible paintable wall.\n"
+                + "   The main wall is the dominant flat painted surface (plaster/drywall/concrete).\n"
+                + "2. accent_wall_points — 1 to 3 points inside a SECONDARY paintable wall, if one\n"
+                + "   exists (a perpendicular wall, a feature wall, a wall of a clearly different\n"
+                + "   color). Return an empty array [] if the photo has no distinct accent wall.\n"
+                + "3. trim_points — 2 to 5 points on visible trim/border surfaces: %s.\n"
+                + "   Return [] if no trim is visible.\n"
+                + "4. exclude_points — 2 to 8 points on things NEAR or WITHIN the wall area that\n"
+                + "   MUST NOT be painted: %s. These become NEGATIVE points for SAM 2.\n\n"
+                + "ALSO RETURN:\n"
+                + "- paintable: true if the visible walls can be repainted at all. false ONLY if the\n"
+                + "  entire visible wall surface is non-paintable (full brick wall, full tiled bathroom,\n"
+                + "  full wood-paneled room, vinyl siding facade).\n"
+                + "- wall_material: short description of the dominant wall material.\n"
+                + "- notes: one-sentence summary surfaced to the user if paintable=false.\n\n"
+                + "Return ONLY this JSON. No markdown fences. No prose before or after.\n\n"
                 + "{\n"
-                + "  \"paintable\": <true or false>,\n"
-                + "  \"wall_material\": \"<short description of visible wall surface>\",\n"
-                + "  \"exclude_objects\": [<list of every non-paintable object visible>],\n"
-                + "  \"notes\": \"<one short sentence>\"\n"
-                + "}\n\n"
-                + "Rules:\n"
-                + "- \"paintable\" = true ONLY if visible walls are painted plaster, drywall, or "
-                + "concrete that CAN be repainted. Set FALSE for: exposed brick, raw stone, ceramic "
-                + "tile, marble, granite, wallpaper, wood paneling, vinyl siding, metal cladding, glass.\n"
-                + "- \"exclude_objects\" = every visible object that is NOT a paintable wall surface. "
-                + "Use specific lowercase noun phrases (e.g. \"wooden front door\", \"ceiling fan with "
-                + "three blades\", \"wall-mounted 55-inch television\"). Include 8-25 items. "
-                + "Do NOT include the walls themselves.\n"
-                + "- %s\n"
-                + "- If walls are not paintable, still list excluded objects so the user can see what "
-                + "you identified.\n").formatted(typeHint, focusHint);
+                + "  \"paintable\": <true|false>,\n"
+                + "  \"wall_material\": \"<string>\",\n"
+                + "  \"main_wall_points\": [{\"x\": 0.5, \"y\": 0.4}, ...],\n"
+                + "  \"accent_wall_points\": [{\"x\": 0.2, \"y\": 0.5}, ...],\n"
+                + "  \"trim_points\": [{\"x\": 0.3, \"y\": 0.7}, ...],\n"
+                + "  \"exclude_points\": [{\"x\": 0.15, \"y\": 0.6}, ...],\n"
+                + "  \"notes\": \"<string>\"\n"
+                + "}\n").formatted(typeHint, trimExamples, excludeExamples);
     }
 
     private byte[] downloadAndResize(String imageUrl) throws Exception {
@@ -195,8 +219,6 @@ public class WallSceneAnalyzer {
             if (nl > 0) s = s.substring(nl + 1);
             if (s.endsWith("```")) s = s.substring(0, s.length() - 3);
         }
-        // Trim anything before the first '{' and after the last '}', in case
-        // Claude wrapped the JSON in prose despite the prompt.
         int open = s.indexOf('{');
         int close = s.lastIndexOf('}');
         if (open >= 0 && close > open) {
