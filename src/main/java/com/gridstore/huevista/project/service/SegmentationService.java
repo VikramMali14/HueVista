@@ -78,7 +78,7 @@ public class SegmentationService {
     @Value("${replicate.grounded-sam.detect-trim:true}")
     private boolean detectTrim;
 
-    @Value("${replicate.grounded-sam.detect-non-paintable:true}")
+    @Value("${replicate.grounded-sam.detect-non-paintable:false}")
     private boolean detectNonPaintable;
 
     private static final String REPLICATE_BASE = "https://api.replicate.com/v1";
