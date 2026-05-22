@@ -263,6 +263,18 @@ public class SegmentationService {
             log.info("SAM 2 auto: downloaded {} candidate masks for project {}",
                     candidates.size(), projectId);
 
+            // Step 1.5: drop sky / ground / background candidates BEFORE
+            // Claude sees them. Without this, Claude (and downstream color
+            // expansion) reliably mis-classifies the huge sky mask as the
+            // main wall — exactly what happened in the user's last test.
+            candidates = filterBackgroundCandidates(candidates, projectId);
+            if (candidates.isEmpty()) {
+                markFailed(projectId,
+                        "After filtering sky/ground, no wall-shaped candidates remained. " +
+                        "Try click-to-segment.");
+                return;
+            }
+
             // Step 2: overlay all candidate masks on the original photo with
             // numeric labels. The composite is what Claude sees.
             byte[] annotated = MaskProcessor.annotateComposite(originalBytes, candidates, CLAUDE_COMPOSITE_MAX_DIM);
@@ -340,12 +352,65 @@ public class SegmentationService {
     /**
      * Maximum RGB Euclidean distance for "this unclaimed mask is the same
      * color as main_wall, fold it in." 0–255 per channel, so the theoretical
-     * max is ~441. Around 38 catches "same cream shade with shadow
-     * variation" while rejecting "different paint color entirely". Tuned
-     * conservatively to avoid sucking in stone cladding that's vaguely
-     * cream-colored.
+     * max is ~441. 28 catches "same cream shade with shadow variation" while
+     * rejecting "different paint color entirely" — tightened from 38 after
+     * sky pixels (which can be cream/beige at sunset) were getting pulled
+     * into the wall via the looser threshold.
      */
-    private static final double COLOR_EXPANSION_THRESHOLD = 38.0;
+    private static final double COLOR_EXPANSION_THRESHOLD = 28.0;
+
+    /**
+     * Background-rejection thresholds. A mask that covers more than
+     * BACKGROUND_FRAME_FRAC of the image is almost certainly sky, ground,
+     * or a "background everything-else" mask and gets dropped before Claude
+     * sees it. Smaller masks that touch the top edge with at least
+     * EDGE_BACKGROUND_FRAC coverage are dropped as sky; same for the
+     * bottom edge as ground.
+     */
+    private static final double BACKGROUND_FRAME_FRAC = 0.40;
+    private static final double EDGE_BACKGROUND_FRAC = 0.15;
+
+    /**
+     * Drops candidate masks that look like sky, ground, or a global
+     * "background" mask, based on geometry alone (no Claude/SAM API needed).
+     * Runs on a 512px downsampled copy so 40 masks process in &lt;1s.
+     *
+     * Rules:
+     *   - foreground fraction &gt; 40% of frame  → background, drop
+     *   - touches top edge AND fraction &gt; 15% → sky, drop
+     *   - touches bottom edge AND fraction &gt; 15% → ground, drop
+     */
+    private List<byte[]> filterBackgroundCandidates(List<byte[]> candidates, String projectId) {
+        List<byte[]> kept = new ArrayList<>(candidates.size());
+        int droppedBg = 0, droppedSky = 0, droppedGround = 0;
+        for (byte[] bytes : candidates) {
+            try {
+                java.awt.image.BufferedImage raw = MaskProcessor.decode(bytes);
+                java.awt.image.BufferedImage small = MaskProcessor.downsample(raw, COLOR_ANALYSIS_MAX_DIM);
+                MaskProcessor.MaskStats st = MaskProcessor.stats(small);
+                double frac = st.foregroundFraction();
+                if (frac > BACKGROUND_FRAME_FRAC) {
+                    droppedBg++;
+                    continue;
+                }
+                if (st.touchesTop() && frac > EDGE_BACKGROUND_FRAC) {
+                    droppedSky++;
+                    continue;
+                }
+                if (st.touchesBottom() && frac > EDGE_BACKGROUND_FRAC) {
+                    droppedGround++;
+                    continue;
+                }
+                kept.add(bytes);
+            } catch (Exception e) {
+                // Can't read this mask — drop it. Better than crashing.
+                log.debug("Dropping unreadable mask for project {}: {}", projectId, e.getMessage());
+            }
+        }
+        log.info("Background filter [project={}]: kept {} of {} (dropped {} background, {} sky, {} ground)",
+                projectId, kept.size(), candidates.size(), droppedBg, droppedSky, droppedGround);
+        return kept;
+    }
 
     /**
      * Expands Claude's mask selection by color similarity: for each category

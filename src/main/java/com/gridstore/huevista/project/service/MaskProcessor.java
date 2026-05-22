@@ -210,6 +210,41 @@ final class MaskProcessor {
     }
 
     /**
+     * Quick geometric stats on a binary mask — used by the segmenter to
+     * filter out sky/ground/background masks before they reach Claude.
+     * Computed on whatever input resolution is provided; pass a downsampled
+     * copy if speed matters.
+     */
+    static MaskStats stats(BufferedImage mask) {
+        int w = mask.getWidth();
+        int h = mask.getHeight();
+        int foreground = 0;
+        boolean touchesTop = false, touchesBottom = false, touchesLeft = false, touchesRight = false;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int p = mask.getRGB(x, y);
+                int gray = (((p >> 16) & 0xff) + ((p >> 8) & 0xff) + (p & 0xff)) / 3;
+                if (gray > FOREGROUND_THRESHOLD) {
+                    foreground++;
+                    if (y == 0) touchesTop = true;
+                    else if (y == h - 1) touchesBottom = true;
+                    if (x == 0) touchesLeft = true;
+                    else if (x == w - 1) touchesRight = true;
+                }
+            }
+        }
+        return new MaskStats(foreground, w * h, touchesTop, touchesBottom, touchesLeft, touchesRight);
+    }
+
+    record MaskStats(int foregroundPixels, int totalPixels,
+                     boolean touchesTop, boolean touchesBottom,
+                     boolean touchesLeft, boolean touchesRight) {
+        double foregroundFraction() {
+            return totalPixels == 0 ? 0.0 : (double) foregroundPixels / totalPixels;
+        }
+    }
+
+    /**
      * Computes the mean RGB color of the original photo's pixels that fall
      * inside the given binary mask. Returns null if the mask is empty.
      *
