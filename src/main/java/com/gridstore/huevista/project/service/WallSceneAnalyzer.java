@@ -138,13 +138,16 @@ public class WallSceneAnalyzer {
     }
 
     /**
-     * Set-of-Mark classification: takes the original photo overlaid with
-     * numbered candidate masks (produced by SAM 2 auto-segmentation) and
-     * asks Claude which numbers belong to MAIN_WALL, ACCENT_WALL, and TRIM.
-     * Returns Optional.empty() on any failure so the caller can give up
-     * cleanly instead of producing garbage masks.
+     * Set-of-Mark classification with TWO images: the original photo and
+     * the same photo overlaid with numbered candidate masks. Claude can
+     * cross-reference — "in image 1 this region is clearly cream plaster,
+     * in image 2 that region is masks 4, 7, 12, 15, all going into
+     * main_wall." Returns Optional.empty() on any failure so the caller
+     * can give up cleanly instead of producing garbage masks.
      */
-    public Optional<MaskClassification> classifyMasks(byte[] annotatedJpegBytes, ImageType imageType, int maskCount) {
+    public Optional<MaskClassification> classifyMasks(byte[] originalJpegBytes,
+                                                      byte[] annotatedJpegBytes,
+                                                      ImageType imageType, int maskCount) {
         if (!enabled || apiKey == null || apiKey.isBlank()) {
             return Optional.empty();
         }
@@ -152,24 +155,38 @@ public class WallSceneAnalyzer {
             return Optional.empty();
         }
         try {
-            String base64 = Base64.getEncoder().encodeToString(annotatedJpegBytes);
             String prompt = buildClassifyPrompt(imageType, maskCount);
 
-            Map<String, Object> imageBlock = Map.of(
+            List<Object> content = new ArrayList<>();
+            if (originalJpegBytes != null && originalJpegBytes.length > 0) {
+                content.add(Map.of("type", "text",
+                        "text", "Image 1: the ORIGINAL photograph — use this to identify what each surface actually is."));
+                content.add(Map.of(
+                        "type", "image",
+                        "source", Map.of(
+                                "type", "base64",
+                                "media_type", "image/jpeg",
+                                "data", Base64.getEncoder().encodeToString(originalJpegBytes)
+                        )
+                ));
+                content.add(Map.of("type", "text",
+                        "text", "Image 2: the SAME photograph with " + maskCount + " numbered candidate masks overlaid in different colors. Read the numbers to classify."));
+            }
+            content.add(Map.of(
                     "type", "image",
                     "source", Map.of(
                             "type", "base64",
                             "media_type", "image/jpeg",
-                            "data", base64
+                            "data", Base64.getEncoder().encodeToString(annotatedJpegBytes)
                     )
-            );
-            Map<String, Object> textBlock = Map.of("type", "text", "text", prompt);
+            ));
+            content.add(Map.of("type", "text", "text", prompt));
 
             Map<String, Object> body = Map.of(
                     "model", model,
-                    "max_tokens", 1200,
+                    "max_tokens", 1500,
                     "messages", List.of(
-                            Map.of("role", "user", "content", List.of(imageBlock, textBlock))
+                            Map.of("role", "user", "content", content)
                     )
             );
 
@@ -185,10 +202,10 @@ public class WallSceneAnalyzer {
             );
 
             @SuppressWarnings("unchecked")
-            List<Map<String, Object>> content =
+            List<Map<String, Object>> responseBlocks =
                     (List<Map<String, Object>>) response.getBody().get("content");
-            if (content == null || content.isEmpty()) return Optional.empty();
-            String text = ((String) content.get(0).get("text")).trim();
+            if (responseBlocks == null || responseBlocks.isEmpty()) return Optional.empty();
+            String text = ((String) responseBlocks.get(0).get("text")).trim();
             JsonNode root = objectMapper.readTree(stripCodeFences(text));
 
             List<Integer> main = parseIntList(root.path("main_wall"), maskCount);
