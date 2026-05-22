@@ -129,7 +129,10 @@ final class MaskProcessor {
                 new Color(149, 165, 166), new Color(243, 156, 18), new Color(22, 160, 133)
         };
 
-        int fontSize = Math.max(18, Math.min(48, outW / 30));
+        // Larger labels — earlier 18px font with outW/30 formula was unreadable
+        // for Claude on portrait images. Bumped so 1568px composite gets ~78px
+        // labels and a 600px one still gets 36px.
+        int fontSize = Math.max(36, Math.min(96, outW / 20));
         Font font = new Font("SansSerif", Font.BOLD, fontSize);
         g.setFont(font);
         FontMetrics fm = g.getFontMetrics();
@@ -214,10 +217,16 @@ final class MaskProcessor {
      * filter out sky/ground/background masks before they reach Claude.
      * Computed on whatever input resolution is provided; pass a downsampled
      * copy if speed matters.
+     *
+     * "touches top/bottom/left/right" uses a {@code edgeTolerancePx}-wide
+     * band rather than the exact 1-pixel edge — a sky or ground mask
+     * doesn't always reach the literal pixel border but is still clearly
+     * background.
      */
-    static MaskStats stats(BufferedImage mask) {
+    static MaskStats stats(BufferedImage mask, int edgeTolerancePx) {
         int w = mask.getWidth();
         int h = mask.getHeight();
+        int tol = Math.max(1, edgeTolerancePx);
         int foreground = 0;
         boolean touchesTop = false, touchesBottom = false, touchesLeft = false, touchesRight = false;
         for (int y = 0; y < h; y++) {
@@ -226,14 +235,19 @@ final class MaskProcessor {
                 int gray = (((p >> 16) & 0xff) + ((p >> 8) & 0xff) + (p & 0xff)) / 3;
                 if (gray > FOREGROUND_THRESHOLD) {
                     foreground++;
-                    if (y == 0) touchesTop = true;
-                    else if (y == h - 1) touchesBottom = true;
-                    if (x == 0) touchesLeft = true;
-                    else if (x == w - 1) touchesRight = true;
+                    if (y < tol) touchesTop = true;
+                    else if (y >= h - tol) touchesBottom = true;
+                    if (x < tol) touchesLeft = true;
+                    else if (x >= w - tol) touchesRight = true;
                 }
             }
         }
         return new MaskStats(foreground, w * h, touchesTop, touchesBottom, touchesLeft, touchesRight);
+    }
+
+    /** Convenience: 1-pixel tolerance for callers that don't care. */
+    static MaskStats stats(BufferedImage mask) {
+        return stats(mask, 1);
     }
 
     record MaskStats(int foregroundPixels, int totalPixels,

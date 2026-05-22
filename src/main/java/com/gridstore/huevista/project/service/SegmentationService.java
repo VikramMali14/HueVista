@@ -104,10 +104,18 @@ public class SegmentationService {
 
     /**
      * Longest-side resolution of the annotated composite image sent to
-     * Claude. 1280 is a sweet spot: Claude can still resolve mask numbers
-     * and surface details, but token cost is bounded.
+     * Claude. 1568 matches Claude's native vision resolution — at lower
+     * values the numbered mask labels become unreadable on tall portrait
+     * photos, which leads to bad classifications.
      */
-    private static final int CLAUDE_COMPOSITE_MAX_DIM = 1280;
+    private static final int CLAUDE_COMPOSITE_MAX_DIM = 1568;
+
+    /**
+     * Longest-side resolution of the ORIGINAL image when we send it
+     * alongside the composite. Lets Claude cross-reference what the
+     * masked colored regions actually look like in the source photo.
+     */
+    private static final int CLAUDE_ORIGINAL_MAX_DIM = 1024;
 
     /**
      * Components below this pixel area are dropped as noise / artifacts.
@@ -276,13 +284,24 @@ public class SegmentationService {
             }
 
             // Step 2: overlay all candidate masks on the original photo with
-            // numeric labels. The composite is what Claude sees.
+            // numeric labels. The composite is what Claude classifies.
             byte[] annotated = MaskProcessor.annotateComposite(originalBytes, candidates, CLAUDE_COMPOSITE_MAX_DIM);
+
+            // Step 2.5: also prepare a downsampled COPY of the original to
+            // send alongside the composite. Lets Claude cross-reference what
+            // each colored region actually is in the source photo.
+            byte[] originalForClaude;
+            try {
+                originalForClaude = downsampleJpegBytes(originalBytes, CLAUDE_ORIGINAL_MAX_DIM);
+            } catch (Exception e) {
+                log.warn("Failed to downsample original for Claude, sending composite only: {}", e.getMessage());
+                originalForClaude = null;
+            }
 
             // Step 3: Claude reads the numbers and tells us which masks are
             // main wall, accent, trim, and which to ignore.
             Optional<MaskClassification> classOpt =
-                    sceneAnalyzer.classifyMasks(annotated, imageType, candidates.size());
+                    sceneAnalyzer.classifyMasks(originalForClaude, annotated, imageType, candidates.size());
             if (classOpt.isEmpty()) {
                 markFailed(projectId,
                         "Claude could not classify the candidate masks. " +
@@ -357,7 +376,7 @@ public class SegmentationService {
      * sky pixels (which can be cream/beige at sunset) were getting pulled
      * into the wall via the looser threshold.
      */
-    private static final double COLOR_EXPANSION_THRESHOLD = 28.0;
+    private static final double COLOR_EXPANSION_THRESHOLD = 20.0;
 
     /**
      * Background-rejection thresholds. A mask that covers more than
@@ -366,9 +385,15 @@ public class SegmentationService {
      * sees it. Smaller masks that touch the top edge with at least
      * EDGE_BACKGROUND_FRAC coverage are dropped as sky; same for the
      * bottom edge as ground.
+     *
+     * Edge tolerance is 3 pixels (downsampled to 512px), so a mask doesn't
+     * have to literally reach the border to count as sky/ground — a thin
+     * gap of a few rows still classifies as background. Earlier 1-pixel
+     * tolerance let a pavement strip with a 2-row gap slip into MAIN_WALL.
      */
-    private static final double BACKGROUND_FRAME_FRAC = 0.40;
-    private static final double EDGE_BACKGROUND_FRAC = 0.15;
+    private static final double BACKGROUND_FRAME_FRAC = 0.35;
+    private static final double EDGE_BACKGROUND_FRAC = 0.10;
+    private static final int BACKGROUND_EDGE_TOLERANCE_PX = 3;
 
     /**
      * Drops candidate masks that look like sky, ground, or a global
@@ -387,7 +412,7 @@ public class SegmentationService {
             try {
                 java.awt.image.BufferedImage raw = MaskProcessor.decode(bytes);
                 java.awt.image.BufferedImage small = MaskProcessor.downsample(raw, COLOR_ANALYSIS_MAX_DIM);
-                MaskProcessor.MaskStats st = MaskProcessor.stats(small);
+                MaskProcessor.MaskStats st = MaskProcessor.stats(small, BACKGROUND_EDGE_TOLERANCE_PX);
                 double frac = st.foregroundFraction();
                 if (frac > BACKGROUND_FRAME_FRAC) {
                     droppedBg++;
@@ -1159,6 +1184,21 @@ public class SegmentationService {
             return url;
         }
         return null;
+    }
+
+    /**
+     * Re-encodes JPEG bytes downscaled to {@code maxDim} on the longest side.
+     * Used to send the original alongside the Set-of-Mark composite to Claude
+     * at a sensible token cost.
+     */
+    private byte[] downsampleJpegBytes(byte[] bytes, int maxDim) throws java.io.IOException {
+        java.awt.image.BufferedImage src = MaskProcessor.decode(bytes);
+        java.awt.image.BufferedImage out = MaskProcessor.downsample(src, maxDim);
+        java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+        if (!javax.imageio.ImageIO.write(out, "jpg", baos)) {
+            throw new java.io.IOException("JPEG encoder not available");
+        }
+        return baos.toByteArray();
     }
 
     private byte[] downloadBytes(String url) {
