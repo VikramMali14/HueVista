@@ -43,4 +43,12 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
      */
     @Query("SELECT p.image.imageType FROM Project p WHERE p.id = :projectId")
     Optional<ImageType> findImageTypeById(@Param("projectId") String projectId);
+
+    /**
+     * Reads the upload's stored image id so the async segmenter can hydrate
+     * the full UploadedImage (storage key + cached dimensions) without
+     * lazy-loading through Project.user/image. Single-column projection.
+     */
+    @Query("SELECT p.image.id FROM Project p WHERE p.id = :projectId")
+    Optional<String> findImageIdById(@Param("projectId") String projectId);
 }

@@ -2,6 +2,7 @@ package com.gridstore.huevista.project.service;
 
 import tools.jackson.databind.json.JsonMapper;
 import com.gridstore.huevista.image.model.ImageType;
+import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.service.StorageService;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
@@ -16,6 +17,9 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -62,6 +66,7 @@ public class SegmentationService {
     private final RestTemplate restTemplate;
     private final JsonMapper objectMapper;
     private final WallSceneAnalyzer sceneAnalyzer;
+    private final com.gridstore.huevista.image.repository.ImageRepository imageRepository;
 
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
@@ -78,7 +83,7 @@ public class SegmentationService {
     @Value("${replicate.grounded-sam.detect-trim:true}")
     private boolean detectTrim;
 
-    @Value("${replicate.grounded-sam.detect-non-paintable:true}")
+    @Value("${replicate.grounded-sam.detect-non-paintable:false}")
     private boolean detectNonPaintable;
 
     private static final String REPLICATE_BASE = "https://api.replicate.com/v1";
@@ -196,11 +201,11 @@ public class SegmentationService {
         try {
             log.info("Starting wall segmentation: project={}", projectId);
 
-            if (groundedSamModelVersion == null || groundedSamModelVersion.isBlank()) {
-                markFailed(projectId,
-                        "Auto-segmentation not configured. Set REPLICATE_GROUNDED_SAM_VERSION " +
-                        "to a version hash from https://replicate.com/" + groundedSamModel + "/versions, " +
-                        "or use click-to-segment to mark walls manually.");
+            // SAM 2 must be configured — it's the model that produces masks
+            // from Claude's point hints. Grounded SAM is no longer used in
+            // the auto path.
+            if (replicateApiToken == null || replicateApiToken.isBlank()) {
+                markFailed(projectId, "REPLICATE_API_TOKEN not configured");
                 return;
             }
 
@@ -210,79 +215,91 @@ public class SegmentationService {
                 return;
             }
 
-            // Default to INDOOR if the image somehow has no classification —
-            // it's the more common path and its prompt list is safer (sky,
-            // trees, etc. are rare false positives indoors anyway).
+            // Default to INDOOR if the image somehow has no classification.
             ImageType imageType = projectRepository.findImageTypeById(projectId)
                     .orElse(ImageType.INDOOR);
             log.info("Segmenting project {} as {}", projectId, imageType);
 
-            // Clear stale auto regions from previous runs (and legacy
-            // category=null rows from before the enum existed). MANUAL
-            // click-segments are preserved.
+            // Wipe stale auto regions; preserve MANUAL click-segments.
             regionRepository.deleteAutoRegionsByProjectId(projectId);
 
-            // Claude pre-analysis: builds a per-image exclude list tailored
-            // to what's actually in the photo. Falls back to the static
-            // fallback if analysis fails or is disabled — segmentation still
-            // runs, just with a less focused negative prompt.
-            Optional<WallSceneAnalysis> scene = sceneAnalyzer.analyze(imageUrl, imageType);
+            // Resolve real image dimensions (cached on UploadedImage on first
+            // use). Needed to scale Claude's normalized points to the pixel
+            // coordinates SAM 2 expects.
+            UploadedImage image = loadAndEnsureDimensions(projectId);
+            int width = image.getWidth();
+            int height = image.getHeight();
 
-            if (scene.isPresent() && !scene.get().paintable()) {
-                String material = scene.get().wallMaterial();
-                String notes = scene.get().notes();
+            // Claude scene analysis: returns POINTS for each surface category
+            // instead of a text exclude list. Sonnet by default — Haiku
+            // tends to mislocate coordinates by 10–15%.
+            Optional<WallSceneAnalysis> sceneOpt = sceneAnalyzer.analyze(imageUrl, imageType);
+            if (sceneOpt.isEmpty()) {
+                markFailed(projectId,
+                        "Scene analysis failed (Claude vision returned no result). " +
+                        "Try click-to-segment to mark walls manually.");
+                return;
+            }
+            WallSceneAnalysis scene = sceneOpt.get();
+            if (!scene.paintable()) {
+                String material = scene.wallMaterial();
+                String notes = scene.notes();
                 markFailed(projectId,
                         "Visible walls are " + (material != null ? material : "not a paintable surface")
                                 + " and cannot be repainted. "
                                 + (notes != null ? notes + " " : "")
-                                + "Try click-to-segment if you want to mark a specific area manually.");
+                                + "Use click-to-segment to mark a specific area manually.");
                 return;
             }
 
-            String positivePrompt = (imageType == ImageType.OUTDOOR)
-                    ? OUTDOOR_WALL_PROMPT : INDOOR_WALL_PROMPT;
-            String negativePrompt = buildNegativePrompt(imageType, scene);
-            log.info("Wall pass prompts [project={}]: positive='{}' negative='{}'",
-                    projectId, positivePrompt, negativePrompt);
+            // Negative points are shared across every category — they're the
+            // things that must NEVER be painted regardless of which surface
+            // we're segmenting (stone cladding, doors, windows, fixtures).
+            List<WallSceneAnalysis.Point> excludes = scene.excludePoints();
 
-            // Pass 0: dedicated detection of non-paintable surfaces (stone
-            // cladding, exposed brick, tile, marble, wallpaper, siding). The
-            // bytes are subtracted from the wall mask in pixel space inside
-            // runWallPass — far more reliable than relying on the model's
-            // negative_mask_prompt to do the same job.
-            byte[] nonPaintableMaskBytes = runNonPaintablePass(projectId, imageUrl, imageType);
+            int displayOrder = 0;
+            int saved = 0;
 
-            // Pass 1: walls (with non-paintable subtraction)
-            List<Region> walls = runWallPass(projectId, userId, imageUrl,
-                    positivePrompt, negativePrompt, MIN_COMPONENT_PIXELS,
-                    nonPaintableMaskBytes);
-            if (walls.isEmpty()) {
+            // MAIN_WALL — the dominant paintable surface
+            if (!scene.mainWallPoints().isEmpty()) {
+                Region r = runSam2CategoryPass(projectId, userId, imageUrl,
+                        width, height,
+                        scene.mainWallPoints(), excludes,
+                        "Main Wall", RegionCategory.MAIN_WALL, displayOrder);
+                if (r != null) { saved++; displayOrder++; }
+            } else {
+                log.warn("Scene analysis returned no main_wall_points for project {}", projectId);
+            }
+
+            // ACCENT_WALL — secondary feature wall, optional
+            if (!scene.accentWallPoints().isEmpty()) {
+                Region r = runSam2CategoryPass(projectId, userId, imageUrl,
+                        width, height,
+                        scene.accentWallPoints(), excludes,
+                        "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder);
+                if (r != null) { saved++; displayOrder++; }
+            }
+
+            // TRIM — window/door frames, baseboards, fascia, balcony rails
+            if (!scene.trimPoints().isEmpty()) {
+                Region r = runSam2CategoryPass(projectId, userId, imageUrl,
+                        width, height,
+                        scene.trimPoints(), excludes,
+                        "Trim & Frames", RegionCategory.TRIM, displayOrder);
+                if (r != null) { saved++; displayOrder++; }
+            }
+
+            if (saved == 0) {
                 markFailed(projectId,
-                        "No paintable walls detected. The image may be a close-up, " +
-                        "or the walls may be fully covered by tile/marble/wallpaper. " +
-                        "Try click-to-segment, or upload a wider shot.");
+                        "Auto-segmentation could not isolate any paintable surfaces in this photo. " +
+                        "Use click-to-segment to mark walls manually.");
                 return;
-            }
-
-            // Pass 2: trim (best-effort, doesn't fail the project)
-            if (detectTrim) {
-                String trimPrompt = (imageType == ImageType.OUTDOOR)
-                        ? OUTDOOR_TRIM_PROMPT : INDOOR_TRIM_PROMPT;
-                try {
-                    runTrimPass(projectId, userId, imageUrl, walls.size(), trimPrompt);
-                } catch (Exception e) {
-                    log.warn("Trim detection failed for project {} — continuing without trim region: {}",
-                            projectId, e.getMessage());
-                }
             }
 
             markSegmented(projectId);
-            log.info("Segmentation complete: project={} type={} walls={} trim={}",
-                    projectId, imageType, walls.size(), detectTrim);
+            log.info("Segmentation complete: project={} type={} regions={}",
+                    projectId, imageType, saved);
 
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            markFailed(projectId, "Segmentation interrupted");
         } catch (Exception e) {
             log.error("Segmentation error for project {}: {}", projectId, e.getMessage(), e);
             markFailed(projectId, "Segmentation failed: " + e.getMessage());
@@ -290,40 +307,14 @@ public class SegmentationService {
     }
 
     /**
-     * Builds the Grounded SAM negative_mask_prompt. Prefers Claude's
-     * image-specific exclude list (deduped, lowercased, scrubbed of any
-     * entries that would subtract the paintable wall itself). Falls back to
-     * a static type-specific list when scene analysis is unavailable.
-     */
-    private String buildNegativePrompt(ImageType type, Optional<WallSceneAnalysis> scene) {
-        if (scene.isEmpty() || scene.get().excludeObjects().isEmpty()) {
-            return (type == ImageType.OUTDOOR)
-                    ? OUTDOOR_FALLBACK_NEGATIVE
-                    : INDOOR_FALLBACK_NEGATIVE;
-        }
-
-        Set<String> combined = new LinkedHashSet<>();
-        for (String raw : scene.get().excludeObjects()) {
-            String cleaned = sanitizeExclude(raw);
-            if (cleaned != null) combined.add(cleaned);
-        }
-        // Safety net so Claude omissions don't leave huge gaps.
-        for (String safety : (type == ImageType.OUTDOOR ? OUTDOOR_SAFETY_EXCLUDES : INDOOR_SAFETY_EXCLUDES)) {
-            combined.add(safety);
-        }
-        return String.join(",", combined);
-    }
-
-    /**
      * Filters Claude's exclude entries before they hit grounded_sam.
-     *
-     * The danger: Claude might list "beige painted wall" or "exterior wall" in
-     * exclude_objects, and grounded_sam will then subtract the very surface we
-     * wanted to keep. We drop anything that contains "wall" or "facade" UNLESS
-     * it's qualified by a known non-paintable material (stone wall, brick wall,
-     * tile wall) — those we keep, since they describe surfaces we actually
-     * want subtracted.
+     * Now only used by the deprecated grounded_sam path (kept below for
+     * reference). The current SAM 2 + points pipeline doesn't need this —
+     * Claude returns coordinates, not noun phrases, so there's no risk of
+     * subtracting "exterior wall" by accident.
      */
+    @Deprecated
+    @SuppressWarnings("unused")
     private static String sanitizeExclude(String raw) {
         if (raw == null) return null;
         String s = raw.trim().toLowerCase();
@@ -346,12 +337,135 @@ public class SegmentationService {
             "wood paneling", "wood panel", "siding", "cladding", "backsplash"
     );
 
+    // ========================================================================
+    // SAM 2 + Claude-points pipeline (current auto path)
+    // ========================================================================
+
     /**
-     * Runs Grounded SAM for walls, downloads the resulting mask, subtracts
-     * any non-paintable surfaces, applies morphological close+open, splits
-     * it into connected components, and persists up to MAX_WALL_REGIONS of
-     * them as MAIN_WALL / ACCENT_WALL / OTHER_WALL.
+     * Finds the project's UploadedImage and makes sure its pixel dimensions
+     * are cached. Falls back to decoding the bytes from storage on first
+     * use. SAM 2 needs the real pixel size to interpret Claude's normalized
+     * coordinates.
      */
+    private UploadedImage loadAndEnsureDimensions(String projectId) throws java.io.IOException {
+        String imageId = projectRepository.findImageIdById(projectId)
+                .orElseThrow(() -> new RuntimeException("Project has no image: " + projectId));
+        UploadedImage image = imageRepository.findById(imageId)
+                .orElseThrow(() -> new RuntimeException("Image not found: " + imageId));
+
+        if (image.getWidth() == null || image.getHeight() == null) {
+            byte[] bytes = storageService.load(image.getStorageKey());
+            BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(bytes));
+            if (decoded == null) {
+                throw new java.io.IOException("Could not decode image bytes: " + image.getStorageKey());
+            }
+            image.setWidth(decoded.getWidth());
+            image.setHeight(decoded.getHeight());
+            image = imageRepository.save(image);
+            log.info("Cached dimensions for image {}: {}x{}",
+                    image.getId(), decoded.getWidth(), decoded.getHeight());
+        }
+        return image;
+    }
+
+    /**
+     * Runs one SAM 2 call with positive points (Claude's hints for this
+     * category) and negative points (shared exclude list — stone cladding,
+     * doors, fixtures), downloads the mask, cleans it, re-uploads to our S3,
+     * and persists a Region row. Returns null on any failure — the caller
+     * just skips the category.
+     */
+    private Region runSam2CategoryPass(String projectId, String userId, String imageUrl,
+                                       int imageWidth, int imageHeight,
+                                       List<WallSceneAnalysis.Point> positives,
+                                       List<WallSceneAnalysis.Point> negatives,
+                                       String label, RegionCategory category,
+                                       int displayOrder) {
+        try {
+            List<List<Double>> inputPoints = new ArrayList<>();
+            List<Integer> inputLabels = new ArrayList<>();
+            for (WallSceneAnalysis.Point p : positives) {
+                inputPoints.add(List.of(p.x() * imageWidth, p.y() * imageHeight));
+                inputLabels.add(1);
+            }
+            for (WallSceneAnalysis.Point p : negatives) {
+                inputPoints.add(List.of(p.x() * imageWidth, p.y() * imageHeight));
+                inputLabels.add(0);
+            }
+            log.info("SAM 2 [{}] [project={}]: positives={} negatives={}",
+                    category, projectId, positives.size(), negatives.size());
+
+            Map<String, Object> input = Map.of(
+                    "image", imageUrl,
+                    "input_points", inputPoints,
+                    "input_labels", inputLabels
+            );
+
+            String predictionId = startSam2Prediction(input);
+            if (predictionId == null) {
+                log.warn("SAM 2 [{}]: failed to start prediction for project {}", category, projectId);
+                return null;
+            }
+            updatePredictionId(projectId, predictionId);
+
+            Map<String, Object> result = pollUntilDone(predictionId);
+            if (result == null) {
+                log.warn("SAM 2 [{}]: timed out for project {}", category, projectId);
+                return null;
+            }
+            String maskUrl = extractFirstMaskUrl(result.get("output"));
+            if (maskUrl == null) {
+                log.warn("SAM 2 [{}]: no mask URL for project {}", category, projectId);
+                return null;
+            }
+
+            byte[] rawBytes = downloadBytes(maskUrl);
+            byte[] cleanBytes;
+            try {
+                cleanBytes = MaskProcessor.morphClean(rawBytes);
+            } catch (Exception e) {
+                log.warn("Morphological cleanup of {} mask failed, using raw: {}", category, e.getMessage());
+                cleanBytes = rawBytes;
+            }
+
+            String storageKey = storageService.store(
+                    cleanBytes, userId,
+                    category.name().toLowerCase() + ".png", "image/png");
+            String url = storageService.getPublicUrl(storageKey);
+
+            Region region = Region.builder()
+                    .project(projectRepository.getReferenceById(projectId))
+                    .label(label)
+                    .category(category)
+                    .maskUrl(url)
+                    .maskData(url)
+                    .displayOrder(displayOrder)
+                    .build();
+            Region savedRegion = regionRepository.save(region);
+            log.info("Saved {} region for project {}: storageKey={}", category, projectId, storageKey);
+            return savedRegion;
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("SAM 2 [{}] interrupted for project {}", category, projectId);
+            return null;
+        } catch (Exception e) {
+            log.warn("SAM 2 [{}] pass failed for project {}: {}", category, projectId, e.getMessage());
+            return null;
+        }
+    }
+
+    // ========================================================================
+    // Legacy grounded_sam pipeline — kept around for reference but no longer
+    // wired into segmentAsync. Will be removed once the SAM 2 + points path
+    // proves stable in production.
+    // ========================================================================
+
+    /**
+     * @deprecated Replaced by {@link #runSam2CategoryPass}. The grounded_sam
+     * text-matching was unreliable on architectural surfaces.
+     */
+    @Deprecated
     private List<Region> runWallPass(String projectId, String userId, String imageUrl,
                                      String positivePrompt, String negativePrompt,
                                      int minPixelArea,
