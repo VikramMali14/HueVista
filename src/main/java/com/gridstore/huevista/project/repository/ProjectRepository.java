@@ -1,5 +1,6 @@
 package com.gridstore.huevista.project.repository;
 
+import com.gridstore.huevista.image.model.ImageType;
 import com.gridstore.huevista.project.model.Project;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -34,4 +35,12 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
      */
     @Query("SELECT p.user.id FROM Project p WHERE p.id = :projectId")
     Optional<String> findUserIdById(@Param("projectId") String projectId);
+
+    /**
+     * Reads the upload's image type (INDOOR / OUTDOOR) classified at upload
+     * time. Lets the segmentation worker branch prompts and thresholds without
+     * pulling the full Project + UploadedImage graph through a lazy proxy.
+     */
+    @Query("SELECT p.image.imageType FROM Project p WHERE p.id = :projectId")
+    Optional<ImageType> findImageTypeById(@Param("projectId") String projectId);
 }

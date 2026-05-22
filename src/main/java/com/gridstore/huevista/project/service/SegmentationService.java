@@ -1,6 +1,7 @@
 package com.gridstore.huevista.project.service;
 
 import tools.jackson.databind.json.JsonMapper;
+import com.gridstore.huevista.image.model.ImageType;
 import com.gridstore.huevista.image.service.StorageService;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
@@ -16,8 +17,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 
 /**
  * Segments room images for paint visualization.
@@ -57,6 +61,7 @@ public class SegmentationService {
     private final StorageService storageService;
     private final RestTemplate restTemplate;
     private final JsonMapper objectMapper;
+    private final WallSceneAnalyzer sceneAnalyzer;
 
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
@@ -82,55 +87,75 @@ public class SegmentationService {
 
     /**
      * Components below this pixel area are dropped as noise / artifacts.
-     * Calibrated for ~1024px-side masks from Grounded SAM — a 5000-pixel blob
-     * is roughly 70×70px, smaller than any genuinely paintable wall area.
+     * Branched by image type — facades fill more of the frame than indoor
+     * shots, so a tighter outdoor threshold catches genuine accent areas
+     * while still rejecting JPEG artifacts.
      */
-    private static final int MIN_COMPONENT_PIXELS = 5000;
+    private static final int MIN_COMPONENT_PIXELS_INDOOR = 5000;
+    private static final int MIN_COMPONENT_PIXELS_OUTDOOR = 15000;
 
-    /**
-     * Trim pieces (baseboards, window frames) are smaller than walls, so we
-     * use a lower threshold for the trim pass.
-     */
+    /** Trim pieces are thinner than walls, so a smaller threshold. */
     private static final int MIN_TRIM_PIXELS = 800;
 
-    private static final String WALL_PROMPT = "wall";
+    // --- Wall positive prompts ---------------------------------------------
+    private static final String INDOOR_WALL_PROMPT = "interior wall, room wall, painted wall";
+    private static final String OUTDOOR_WALL_PROMPT = "exterior wall, building facade, painted facade";
 
     /**
-     * Everything that must NOT be painted. Covers: openings (door, window),
-     * furniture and decor that hangs ON walls, electrical fixtures, ceiling
-     * fixtures, and — most importantly — non-paintable wall surfaces (tile,
-     * marble, granite, brick, stone). The model subtracts all of these from
-     * the wall mask.
+     * INDOOR fallback for the negative_mask_prompt — used when Claude scene
+     * analysis is disabled or fails. Covers openings, decor, fixtures, and
+     * non-paintable wall surfaces.
      */
-    private static final String NON_PAINTABLE_PROMPT = String.join(",",
-            // Openings and frames
+    private static final String INDOOR_FALLBACK_NEGATIVE = String.join(",",
             "door", "window", "windowpane",
-            // Wall-mounted furniture / decor
             "painting", "picture frame", "mirror", "clock", "shelf", "television",
-            // Cabinetry
             "cabinet", "wardrobe", "kitchen cabinet",
-            // Soft furnishings
             "curtain", "blinds",
-            // Electrical / fixtures
             "light switch", "electrical outlet", "thermostat",
-            // Ceiling and wall lighting
             "ceiling light", "ceiling fan", "lamp", "sconce", "chandelier",
             "pendant light", "light bulb", "spotlight",
-            // HVAC and detectors
             "smoke detector", "vent", "air conditioner", "exhaust fan",
-            // Non-paintable wall surfaces — explicitly subtract so tiled walls
-            // in bathrooms / kitchens aren't returned as paintable
-            "tile", "tiled wall", "ceramic tile", "marble", "marble wall",
-            "granite", "stone wall", "brick wall", "exposed brick",
+            "tile", "ceramic tile", "marble", "granite", "exposed brick",
             "backsplash", "wallpaper", "wood paneling",
-            // Misc obstructions
-            "plant", "indoor plant"
+            "indoor plant"
     );
 
-    private static final String TRIM_PROMPT = String.join(",",
-            "window frame", "door frame", "baseboard", "skirting board",
-            "crown molding", "picture rail", "ceiling trim", "wainscoting"
+    /**
+     * OUTDOOR fallback for the negative_mask_prompt — completely different
+     * vocabulary from indoor. Sky, vegetation, vehicles, roof, fixtures, and
+     * non-paintable exterior cladding.
+     */
+    private static final String OUTDOOR_FALLBACK_NEGATIVE = String.join(",",
+            "sky", "clouds", "tree", "bush", "shrub", "hedge", "plant", "lawn", "grass",
+            "road", "sidewalk", "driveway", "fence", "gate",
+            "car", "parked car", "vehicle", "motorcycle", "bicycle",
+            "door", "front door", "garage door", "window", "balcony",
+            "roof", "roof tile", "shingle", "chimney",
+            "drainpipe", "gutter", "downspout", "antenna", "satellite dish",
+            "air conditioner", "ac unit", "electricity meter", "electrical box",
+            "signage", "house number", "mailbox", "lamp post", "street light",
+            "exposed brick", "stone cladding", "stone wall", "ceramic tile",
+            "wood siding", "vinyl siding", "metal cladding",
+            "neighboring building", "background building"
     );
+
+    /**
+     * Safety net added to Claude's exclude list so the model never forgets
+     * obvious non-paintable surfaces, even if Claude omits them from its
+     * scene analysis.
+     */
+    private static final List<String> INDOOR_SAFETY_EXCLUDES = List.of(
+            "door", "window", "ceramic tile", "marble", "exposed brick", "wallpaper");
+    private static final List<String> OUTDOOR_SAFETY_EXCLUDES = List.of(
+            "sky", "tree", "door", "window", "exposed brick", "stone cladding", "roof");
+
+    // --- Trim positive prompts (image-type-specific vocabulary) ------------
+    private static final String INDOOR_TRIM_PROMPT = String.join(",",
+            "window frame", "door frame", "baseboard", "skirting board",
+            "crown molding", "picture rail", "ceiling trim", "wainscoting");
+    private static final String OUTDOOR_TRIM_PROMPT = String.join(",",
+            "window frame", "door frame", "fascia", "soffit", "parapet",
+            "balcony railing", "trim board", "cornice");
 
     @Async("aiTaskExecutor")
     public void segmentAsync(String projectId, String imageUrl) {
@@ -151,13 +176,44 @@ public class SegmentationService {
                 return;
             }
 
+            // Default to INDOOR if the image somehow has no classification —
+            // it's the more common path and its prompt list is safer (sky,
+            // trees, etc. are rare false positives indoors anyway).
+            ImageType imageType = projectRepository.findImageTypeById(projectId)
+                    .orElse(ImageType.INDOOR);
+            log.info("Segmenting project {} as {}", projectId, imageType);
+
             // Clear stale auto regions from previous runs (and legacy
             // category=null rows from before the enum existed). MANUAL
             // click-segments are preserved.
             regionRepository.deleteAutoRegionsByProjectId(projectId);
 
+            // Claude pre-analysis: builds a per-image exclude list tailored
+            // to what's actually in the photo. Falls back to the static
+            // fallback if analysis fails or is disabled — segmentation still
+            // runs, just with a less focused negative prompt.
+            Optional<WallSceneAnalysis> scene = sceneAnalyzer.analyze(imageUrl, imageType);
+
+            if (scene.isPresent() && !scene.get().paintable()) {
+                String material = scene.get().wallMaterial();
+                String notes = scene.get().notes();
+                markFailed(projectId,
+                        "Visible walls are " + (material != null ? material : "not a paintable surface")
+                                + " and cannot be repainted. "
+                                + (notes != null ? notes + " " : "")
+                                + "Try click-to-segment if you want to mark a specific area manually.");
+                return;
+            }
+
+            String positivePrompt = (imageType == ImageType.OUTDOOR)
+                    ? OUTDOOR_WALL_PROMPT : INDOOR_WALL_PROMPT;
+            String negativePrompt = buildNegativePrompt(imageType, scene);
+            int minWallPixels = (imageType == ImageType.OUTDOOR)
+                    ? MIN_COMPONENT_PIXELS_OUTDOOR : MIN_COMPONENT_PIXELS_INDOOR;
+
             // Pass 1: walls
-            List<Region> walls = runWallPass(projectId, userId, imageUrl);
+            List<Region> walls = runWallPass(projectId, userId, imageUrl,
+                    positivePrompt, negativePrompt, minWallPixels);
             if (walls.isEmpty()) {
                 markFailed(projectId,
                         "No paintable walls detected. The image may be a close-up, " +
@@ -168,8 +224,10 @@ public class SegmentationService {
 
             // Pass 2: trim (best-effort, doesn't fail the project)
             if (detectTrim) {
+                String trimPrompt = (imageType == ImageType.OUTDOOR)
+                        ? OUTDOOR_TRIM_PROMPT : INDOOR_TRIM_PROMPT;
                 try {
-                    runTrimPass(projectId, userId, imageUrl, walls.size());
+                    runTrimPass(projectId, userId, imageUrl, walls.size(), trimPrompt);
                 } catch (Exception e) {
                     log.warn("Trim detection failed for project {} — continuing without trim region: {}",
                             projectId, e.getMessage());
@@ -177,8 +235,8 @@ public class SegmentationService {
             }
 
             markSegmented(projectId);
-            log.info("Segmentation complete: project={} walls={} trim={}",
-                    projectId, walls.size(), detectTrim);
+            log.info("Segmentation complete: project={} type={} walls={} trim={}",
+                    projectId, imageType, walls.size(), detectTrim);
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -190,13 +248,35 @@ public class SegmentationService {
     }
 
     /**
-     * Runs Grounded SAM for walls, downloads the resulting mask, splits it
-     * into connected components, and persists up to MAX_WALL_REGIONS of them
-     * as MAIN_WALL / ACCENT_WALL / OTHER_WALL.
+     * Builds the Grounded SAM negative_mask_prompt. Prefers Claude's
+     * image-specific exclude list (deduped, lowercased, with a safety net of
+     * common items added). Falls back to a static type-specific list when
+     * scene analysis is unavailable.
      */
-    private List<Region> runWallPass(String projectId, String userId, String imageUrl)
+    private String buildNegativePrompt(ImageType type, Optional<WallSceneAnalysis> scene) {
+        if (scene.isEmpty() || scene.get().excludeObjects().isEmpty()) {
+            return (type == ImageType.OUTDOOR)
+                    ? OUTDOOR_FALLBACK_NEGATIVE
+                    : INDOOR_FALLBACK_NEGATIVE;
+        }
+        Set<String> combined = new LinkedHashSet<>(scene.get().excludeObjects());
+        combined.addAll(type == ImageType.OUTDOOR
+                ? OUTDOOR_SAFETY_EXCLUDES
+                : INDOOR_SAFETY_EXCLUDES);
+        return String.join(",", combined);
+    }
+
+    /**
+     * Runs Grounded SAM for walls, downloads the resulting mask, applies a
+     * morphological close+open to clean up speckle and small holes, splits
+     * it into connected components, and persists up to MAX_WALL_REGIONS of
+     * them as MAIN_WALL / ACCENT_WALL / OTHER_WALL.
+     */
+    private List<Region> runWallPass(String projectId, String userId, String imageUrl,
+                                     String positivePrompt, String negativePrompt,
+                                     int minPixelArea)
             throws Exception {
-        String predictionId = startGroundedSamPrediction(imageUrl, WALL_PROMPT, NON_PAINTABLE_PROMPT);
+        String predictionId = startGroundedSamPrediction(imageUrl, positivePrompt, negativePrompt);
         if (predictionId == null) {
             throw new RuntimeException("Failed to start wall segmentation prediction");
         }
@@ -213,11 +293,22 @@ public class SegmentationService {
             return List.of();
         }
 
-        byte[] maskBytes = downloadBytes(wallMaskUrl);
-        MaskProcessor.MaskAnalysis analysis = MaskProcessor.analyze(maskBytes, MIN_COMPONENT_PIXELS);
+        byte[] rawMaskBytes = downloadBytes(wallMaskUrl);
+        // Morphological cleanup BEFORE component analysis so small holes
+        // (where the model missed a wall pixel behind a switch plate) don't
+        // become spurious component boundaries.
+        byte[] maskBytes;
+        try {
+            maskBytes = MaskProcessor.morphClean(rawMaskBytes);
+        } catch (Exception e) {
+            log.warn("Morphological cleanup failed, using raw mask: {}", e.getMessage());
+            maskBytes = rawMaskBytes;
+        }
+
+        MaskProcessor.MaskAnalysis analysis = MaskProcessor.analyze(maskBytes, minPixelArea);
         if (analysis.components.isEmpty()) {
             log.info("Wall mask had no components above {}px for project {}",
-                    MIN_COMPONENT_PIXELS, projectId);
+                    minPixelArea, projectId);
             return List.of();
         }
 
@@ -255,11 +346,14 @@ public class SegmentationService {
     /**
      * Runs Grounded SAM with the trim prompt and saves all detected pieces
      * as a single TRIM region. Best-effort — Grounded SAM is known to be
-     * weaker on thin objects like baseboards.
+     * weaker on thin objects like baseboards. The prompt vocabulary differs
+     * between INDOOR (baseboard, crown molding) and OUTDOOR (fascia, soffit,
+     * parapet), so the caller passes in the right one.
      */
-    private void runTrimPass(String projectId, String userId, String imageUrl, int displayOrderStart)
+    private void runTrimPass(String projectId, String userId, String imageUrl,
+                             int displayOrderStart, String trimPrompt)
             throws Exception {
-        String predictionId = startGroundedSamPrediction(imageUrl, TRIM_PROMPT, "");
+        String predictionId = startGroundedSamPrediction(imageUrl, trimPrompt, "");
         if (predictionId == null) {
             log.warn("Trim pass: failed to start prediction for project {}", projectId);
             return;
@@ -275,7 +369,14 @@ public class SegmentationService {
             return;
         }
 
-        byte[] maskBytes = downloadBytes(trimMaskUrl);
+        byte[] rawMaskBytes = downloadBytes(trimMaskUrl);
+        byte[] maskBytes;
+        try {
+            maskBytes = MaskProcessor.morphClean(rawMaskBytes);
+        } catch (Exception e) {
+            log.warn("Morphological cleanup of trim mask failed, using raw: {}", e.getMessage());
+            maskBytes = rawMaskBytes;
+        }
         MaskProcessor.MaskAnalysis analysis = MaskProcessor.analyze(maskBytes, MIN_TRIM_PIXELS);
         if (analysis.components.isEmpty()) {
             log.info("Trim pass: no components above {}px for project {}",
