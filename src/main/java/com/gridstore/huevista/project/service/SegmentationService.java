@@ -87,19 +87,22 @@ public class SegmentationService {
 
     /**
      * Components below this pixel area are dropped as noise / artifacts.
-     * Branched by image type — facades fill more of the frame than indoor
-     * shots, so a tighter outdoor threshold catches genuine accent areas
-     * while still rejecting JPEG artifacts.
+     * Same threshold for indoor and outdoor — turns out outdoor accent
+     * areas (small painted columns, parapets between brick sections) can
+     * be just as small as indoor accents, and a 15k threshold was eating
+     * legitimate walls.
      */
-    private static final int MIN_COMPONENT_PIXELS_INDOOR = 5000;
-    private static final int MIN_COMPONENT_PIXELS_OUTDOOR = 15000;
+    private static final int MIN_COMPONENT_PIXELS = 5000;
 
     /** Trim pieces are thinner than walls, so a smaller threshold. */
     private static final int MIN_TRIM_PIXELS = 800;
 
     // --- Wall positive prompts ---------------------------------------------
-    private static final String INDOOR_WALL_PROMPT = "interior wall, room wall, painted wall";
-    private static final String OUTDOOR_WALL_PROMPT = "exterior wall, building facade, painted facade";
+    // Kept simple. GroundingDINO (inside grounded_sam) matches single nouns
+    // reliably and is hit-or-miss on multi-word phrases — "painted facade"
+    // was returning empty masks on real building photos.
+    private static final String INDOOR_WALL_PROMPT = "wall";
+    private static final String OUTDOOR_WALL_PROMPT = "wall,facade";
 
     /**
      * INDOOR fallback for the negative_mask_prompt — used when Claude scene
@@ -208,12 +211,12 @@ public class SegmentationService {
             String positivePrompt = (imageType == ImageType.OUTDOOR)
                     ? OUTDOOR_WALL_PROMPT : INDOOR_WALL_PROMPT;
             String negativePrompt = buildNegativePrompt(imageType, scene);
-            int minWallPixels = (imageType == ImageType.OUTDOOR)
-                    ? MIN_COMPONENT_PIXELS_OUTDOOR : MIN_COMPONENT_PIXELS_INDOOR;
+            log.info("Wall pass prompts [project={}]: positive='{}' negative='{}'",
+                    projectId, positivePrompt, negativePrompt);
 
             // Pass 1: walls
             List<Region> walls = runWallPass(projectId, userId, imageUrl,
-                    positivePrompt, negativePrompt, minWallPixels);
+                    positivePrompt, negativePrompt, MIN_COMPONENT_PIXELS);
             if (walls.isEmpty()) {
                 markFailed(projectId,
                         "No paintable walls detected. The image may be a close-up, " +
@@ -249,9 +252,9 @@ public class SegmentationService {
 
     /**
      * Builds the Grounded SAM negative_mask_prompt. Prefers Claude's
-     * image-specific exclude list (deduped, lowercased, with a safety net of
-     * common items added). Falls back to a static type-specific list when
-     * scene analysis is unavailable.
+     * image-specific exclude list (deduped, lowercased, scrubbed of any
+     * entries that would subtract the paintable wall itself). Falls back to
+     * a static type-specific list when scene analysis is unavailable.
      */
     private String buildNegativePrompt(ImageType type, Optional<WallSceneAnalysis> scene) {
         if (scene.isEmpty() || scene.get().excludeObjects().isEmpty()) {
@@ -259,12 +262,50 @@ public class SegmentationService {
                     ? OUTDOOR_FALLBACK_NEGATIVE
                     : INDOOR_FALLBACK_NEGATIVE;
         }
-        Set<String> combined = new LinkedHashSet<>(scene.get().excludeObjects());
-        combined.addAll(type == ImageType.OUTDOOR
-                ? OUTDOOR_SAFETY_EXCLUDES
-                : INDOOR_SAFETY_EXCLUDES);
+
+        Set<String> combined = new LinkedHashSet<>();
+        for (String raw : scene.get().excludeObjects()) {
+            String cleaned = sanitizeExclude(raw);
+            if (cleaned != null) combined.add(cleaned);
+        }
+        // Safety net so Claude omissions don't leave huge gaps.
+        for (String safety : (type == ImageType.OUTDOOR ? OUTDOOR_SAFETY_EXCLUDES : INDOOR_SAFETY_EXCLUDES)) {
+            combined.add(safety);
+        }
         return String.join(",", combined);
     }
+
+    /**
+     * Filters Claude's exclude entries before they hit grounded_sam.
+     *
+     * The danger: Claude might list "beige painted wall" or "exterior wall" in
+     * exclude_objects, and grounded_sam will then subtract the very surface we
+     * wanted to keep. We drop anything that contains "wall" or "facade" UNLESS
+     * it's qualified by a known non-paintable material (stone wall, brick wall,
+     * tile wall) — those we keep, since they describe surfaces we actually
+     * want subtracted.
+     */
+    private static String sanitizeExclude(String raw) {
+        if (raw == null) return null;
+        String s = raw.trim().toLowerCase();
+        if (s.isEmpty()) return null;
+
+        boolean mentionsWall = s.contains("wall") || s.contains("facade");
+        if (!mentionsWall) return s;
+
+        // Wall mentioned — keep only if qualified by a non-paintable material.
+        for (String material : NON_PAINTABLE_MATERIALS) {
+            if (s.contains(material)) return s;
+        }
+        log.debug("Dropping exclude entry that would subtract paintable wall: '{}'", raw);
+        return null;
+    }
+
+    /** Material qualifiers that make a "wall" entry safe to keep in the negative prompt. */
+    private static final List<String> NON_PAINTABLE_MATERIALS = List.of(
+            "stone", "brick", "tile", "marble", "granite", "wallpaper",
+            "wood paneling", "wood panel", "siding", "cladding", "backsplash"
+    );
 
     /**
      * Runs Grounded SAM for walls, downloads the resulting mask, applies a
@@ -307,8 +348,11 @@ public class SegmentationService {
 
         MaskProcessor.MaskAnalysis analysis = MaskProcessor.analyze(maskBytes, minPixelArea);
         if (analysis.components.isEmpty()) {
-            log.info("Wall mask had no components above {}px for project {}",
-                    minPixelArea, projectId);
+            int allComponentArea = analysis.totalForegroundPixels();
+            log.warn("Wall mask had no components above {}px for project {} " +
+                            "(total foreground pixels in mask: {}, image: {}x{}, prompt='{}', negative='{}')",
+                    minPixelArea, projectId, allComponentArea, analysis.width, analysis.height,
+                    positivePrompt, negativePrompt);
             return List.of();
         }
 

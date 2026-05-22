@@ -280,5 +280,18 @@ final class MaskProcessor {
             this.labels = labels;
             this.components = components;
         }
+
+        /**
+         * Total foreground pixels across ALL labels (including components
+         * that were dropped for being too small). Useful for logging when
+         * components.isEmpty() — distinguishes "model returned blank mask"
+         * (0 px) from "model found something but the threshold rejected it"
+         * (>0 px).
+         */
+        int totalForegroundPixels() {
+            int sum = 0;
+            for (short l : labels) if (l > 0) sum++;
+            return sum;
+        }
     }
 }
