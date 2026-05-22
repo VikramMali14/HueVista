@@ -210,6 +210,116 @@ final class MaskProcessor {
     }
 
     /**
+     * Computes the mean RGB color of the original photo's pixels that fall
+     * inside the given binary mask. Returns null if the mask is empty.
+     *
+     * Caller is expected to pre-resize both inputs to the same small
+     * resolution (e.g. 512px longest side) — this method does no resizing
+     * itself, so full-res inputs would be wasteful. {@link #downsampleJpeg}
+     * is provided for that purpose.
+     */
+    static int[] meanColor(BufferedImage original, BufferedImage mask) {
+        int w = original.getWidth();
+        int h = original.getHeight();
+        if (mask.getWidth() != w || mask.getHeight() != h) {
+            mask = resizeNearest(mask, w, h);
+        }
+        long sumR = 0, sumG = 0, sumB = 0;
+        long count = 0;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int mp = mask.getRGB(x, y);
+                int gray = (((mp >> 16) & 0xff) + ((mp >> 8) & 0xff) + (mp & 0xff)) / 3;
+                if (gray > FOREGROUND_THRESHOLD) {
+                    int op = original.getRGB(x, y);
+                    sumR += (op >> 16) & 0xff;
+                    sumG += (op >> 8) & 0xff;
+                    sumB += op & 0xff;
+                    count++;
+                }
+            }
+        }
+        if (count == 0) return null;
+        return new int[]{(int) (sumR / count), (int) (sumG / count), (int) (sumB / count)};
+    }
+
+    /**
+     * Mean RGB color across the union of several mask images. Used to
+     * compute the "average wall color" from the masks Claude already
+     * picked, which we then use to find OTHER masks that match that color.
+     */
+    static int[] meanColorAcrossMasks(BufferedImage original, List<BufferedImage> masks) {
+        if (masks == null || masks.isEmpty()) return null;
+        int w = original.getWidth();
+        int h = original.getHeight();
+        boolean[] union = new boolean[w * h];
+        for (BufferedImage mask : masks) {
+            if (mask == null) continue;
+            BufferedImage m = (mask.getWidth() != w || mask.getHeight() != h)
+                    ? resizeNearest(mask, w, h) : mask;
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    int mp = m.getRGB(x, y);
+                    int gray = (((mp >> 16) & 0xff) + ((mp >> 8) & 0xff) + (mp & 0xff)) / 3;
+                    if (gray > FOREGROUND_THRESHOLD) union[y * w + x] = true;
+                }
+            }
+        }
+        long sumR = 0, sumG = 0, sumB = 0;
+        long count = 0;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (union[y * w + x]) {
+                    int op = original.getRGB(x, y);
+                    sumR += (op >> 16) & 0xff;
+                    sumG += (op >> 8) & 0xff;
+                    sumB += op & 0xff;
+                    count++;
+                }
+            }
+        }
+        if (count == 0) return null;
+        return new int[]{(int) (sumR / count), (int) (sumG / count), (int) (sumB / count)};
+    }
+
+    /** Plain RGB Euclidean distance — good enough for "are these the same color" decisions. */
+    static double colorDistance(int[] c1, int[] c2) {
+        int dr = c1[0] - c2[0];
+        int dg = c1[1] - c2[1];
+        int db = c1[2] - c2[2];
+        return Math.sqrt(dr * dr + dg * dg + db * db);
+    }
+
+    /**
+     * Decodes JPEG/PNG bytes to a BufferedImage at the original resolution.
+     */
+    static BufferedImage decode(byte[] bytes) throws IOException {
+        BufferedImage img = ImageIO.read(new ByteArrayInputStream(bytes));
+        if (img == null) throw new IOException("Could not decode image");
+        return img;
+    }
+
+    /**
+     * Returns a downsampled copy of an image with the longest side capped at
+     * {@code maxDim}. Used to make color analysis tractable — computing mean
+     * RGB on a 7-megapixel photo across 40 masks is too slow; a 512px copy
+     * gives the same answer 50× faster.
+     */
+    static BufferedImage downsample(BufferedImage src, int maxDim) {
+        int w = src.getWidth(), h = src.getHeight();
+        double scale = Math.min(1.0, (double) maxDim / Math.max(w, h));
+        if (scale >= 1.0) return src;
+        int outW = (int) Math.round(w * scale);
+        int outH = (int) Math.round(h * scale);
+        BufferedImage out = new BufferedImage(outW, outH, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = out.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.drawImage(src, 0, 0, outW, outH, null);
+        g.dispose();
+        return out;
+    }
+
+    /**
      * Pixel-wise union of multiple binary masks: output pixel is white if any
      * input mask is white at that location. All masks must share dimensions.
      * Used after Claude's Set-of-Mark classification to combine, e.g., mask #4
