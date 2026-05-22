@@ -78,6 +78,9 @@ public class SegmentationService {
     @Value("${replicate.grounded-sam.detect-trim:true}")
     private boolean detectTrim;
 
+    @Value("${replicate.grounded-sam.detect-non-paintable:true}")
+    private boolean detectNonPaintable;
+
     private static final String REPLICATE_BASE = "https://api.replicate.com/v1";
     private static final int POLL_INTERVAL_MS = 3000;
     private static final int MAX_POLL_ATTEMPTS = 60;
@@ -152,6 +155,34 @@ public class SegmentationService {
     private static final List<String> OUTDOOR_SAFETY_EXCLUDES = List.of(
             "sky", "tree", "door", "window", "exposed brick", "stone cladding", "roof");
 
+    /**
+     * Positive prompt for the dedicated non-paintable surface pass. Things
+     * that look like walls but aren't repaintable in their current state —
+     * subtracted from the wall mask in pixel space so the user can't paint
+     * over stone cladding columns, exposed-brick parapets, or tiled
+     * backsplashes.
+     */
+    private static final String INDOOR_NON_PAINTABLE_PROMPT = String.join(",",
+            "ceramic tile", "tiled wall", "tile backsplash", "marble wall",
+            "marble", "granite", "exposed brick wall", "brick wall",
+            "stone wall", "stone cladding", "wallpaper", "wood paneling",
+            "wood wall panel"
+    );
+
+    private static final String OUTDOOR_NON_PAINTABLE_PROMPT = String.join(",",
+            "stone cladding", "stone wall", "exposed brick", "brick wall",
+            "ceramic tile", "marble", "granite", "wood siding",
+            "vinyl siding", "metal cladding", "metal panel",
+            "glass facade", "glass wall"
+    );
+
+    /**
+     * If the non-paintable mask covers more than this fraction of the frame
+     * the detector misfired (it thought the whole building is brick). Skip
+     * subtraction in that case so we don't wipe out the actual wall.
+     */
+    private static final double NON_PAINTABLE_SANITY_FRAC = 0.70;
+
     // --- Trim positive prompts (image-type-specific vocabulary) ------------
     private static final String INDOOR_TRIM_PROMPT = String.join(",",
             "window frame", "door frame", "baseboard", "skirting board",
@@ -214,9 +245,17 @@ public class SegmentationService {
             log.info("Wall pass prompts [project={}]: positive='{}' negative='{}'",
                     projectId, positivePrompt, negativePrompt);
 
-            // Pass 1: walls
+            // Pass 0: dedicated detection of non-paintable surfaces (stone
+            // cladding, exposed brick, tile, marble, wallpaper, siding). The
+            // bytes are subtracted from the wall mask in pixel space inside
+            // runWallPass — far more reliable than relying on the model's
+            // negative_mask_prompt to do the same job.
+            byte[] nonPaintableMaskBytes = runNonPaintablePass(projectId, imageUrl, imageType);
+
+            // Pass 1: walls (with non-paintable subtraction)
             List<Region> walls = runWallPass(projectId, userId, imageUrl,
-                    positivePrompt, negativePrompt, MIN_COMPONENT_PIXELS);
+                    positivePrompt, negativePrompt, MIN_COMPONENT_PIXELS,
+                    nonPaintableMaskBytes);
             if (walls.isEmpty()) {
                 markFailed(projectId,
                         "No paintable walls detected. The image may be a close-up, " +
@@ -308,14 +347,15 @@ public class SegmentationService {
     );
 
     /**
-     * Runs Grounded SAM for walls, downloads the resulting mask, applies a
-     * morphological close+open to clean up speckle and small holes, splits
+     * Runs Grounded SAM for walls, downloads the resulting mask, subtracts
+     * any non-paintable surfaces, applies morphological close+open, splits
      * it into connected components, and persists up to MAX_WALL_REGIONS of
      * them as MAIN_WALL / ACCENT_WALL / OTHER_WALL.
      */
     private List<Region> runWallPass(String projectId, String userId, String imageUrl,
                                      String positivePrompt, String negativePrompt,
-                                     int minPixelArea)
+                                     int minPixelArea,
+                                     byte[] nonPaintableMaskBytes)
             throws Exception {
         String predictionId = startGroundedSamPrediction(imageUrl, positivePrompt, negativePrompt);
         if (predictionId == null) {
@@ -335,15 +375,30 @@ public class SegmentationService {
         }
 
         byte[] rawMaskBytes = downloadBytes(wallMaskUrl);
-        // Morphological cleanup BEFORE component analysis so small holes
-        // (where the model missed a wall pixel behind a switch plate) don't
-        // become spurious component boundaries.
+
+        // Subtract non-paintable surfaces (stone cladding, tile, brick) in
+        // pixel space. Dilation=2 grows the non-paintable mask by ~2px so we
+        // remove a slight fringe along the boundary — grounded_sam edges are
+        // typically a pixel or two short of the real surface boundary.
+        byte[] afterSubtraction = rawMaskBytes;
+        if (nonPaintableMaskBytes != null) {
+            try {
+                afterSubtraction = MaskProcessor.subtract(rawMaskBytes, nonPaintableMaskBytes, 2);
+                log.debug("Wall pass: subtracted non-paintable surfaces for project {}", projectId);
+            } catch (Exception e) {
+                log.warn("Non-paintable subtraction failed for project {}, using raw wall mask: {}",
+                        projectId, e.getMessage());
+            }
+        }
+
+        // Morphological cleanup AFTER subtraction so we close any small holes
+        // the subtraction introduced along the wall-stone boundary.
         byte[] maskBytes;
         try {
-            maskBytes = MaskProcessor.morphClean(rawMaskBytes);
+            maskBytes = MaskProcessor.morphClean(afterSubtraction);
         } catch (Exception e) {
-            log.warn("Morphological cleanup failed, using raw mask: {}", e.getMessage());
-            maskBytes = rawMaskBytes;
+            log.warn("Morphological cleanup failed, using subtracted mask: {}", e.getMessage());
+            maskBytes = afterSubtraction;
         }
 
         MaskProcessor.MaskAnalysis analysis = MaskProcessor.analyze(maskBytes, minPixelArea);
@@ -385,6 +440,67 @@ public class SegmentationService {
                     category, projectId, storageKey, component.area);
         }
         return saved;
+    }
+
+    /**
+     * Runs grounded_sam with a positive prompt enumerating non-paintable
+     * wall surfaces (stone cladding, exposed brick, ceramic tile, marble,
+     * wallpaper, wood paneling, vinyl/metal siding). Returns the resulting
+     * mask bytes, or null if the pass is disabled, the call failed, or the
+     * detected area was so large (>70% of frame) that the model clearly
+     * misfired. The wall pass uses these bytes to surgically remove
+     * non-paintable areas from its own mask.
+     */
+    private byte[] runNonPaintablePass(String projectId, String imageUrl, ImageType imageType) {
+        if (!detectNonPaintable) {
+            log.debug("Non-paintable pass disabled by config");
+            return null;
+        }
+        try {
+            String prompt = (imageType == ImageType.OUTDOOR)
+                    ? OUTDOOR_NON_PAINTABLE_PROMPT
+                    : INDOOR_NON_PAINTABLE_PROMPT;
+            log.info("Non-paintable pass [project={}]: prompt='{}'", projectId, prompt);
+
+            String predictionId = startGroundedSamPrediction(imageUrl, prompt, "");
+            if (predictionId == null) return null;
+
+            Map<String, Object> result = pollUntilDone(predictionId);
+            if (result == null) {
+                log.warn("Non-paintable pass: timed out for project {}", projectId);
+                return null;
+            }
+            String url = extractGroundedSamMaskUrl(result.get("output"));
+            if (url == null) {
+                log.info("Non-paintable pass: nothing detected for project {} — nothing to subtract", projectId);
+                return null;
+            }
+            byte[] bytes = downloadBytes(url);
+
+            // Sanity check: if the detector says >70% of the frame is
+            // non-paintable, it misfired (e.g. classified the whole cream
+            // wall as "marble"). Skip subtraction so we don't wipe the wall.
+            int foreground = MaskProcessor.countForeground(bytes);
+            double frac = (double) foreground / (double) totalPixels(bytes);
+            if (frac > NON_PAINTABLE_SANITY_FRAC) {
+                log.warn("Non-paintable pass: covers {}% of frame for project {} — discarding (likely a false positive)",
+                        String.format("%.1f", frac * 100), projectId);
+                return null;
+            }
+            log.info("Non-paintable pass [project={}]: {} foreground pixels ({}%)",
+                    projectId, foreground, String.format("%.1f", frac * 100));
+            return bytes;
+        } catch (Exception e) {
+            log.warn("Non-paintable pass failed for project {} — continuing without subtraction: {}",
+                    projectId, e.getMessage());
+            return null;
+        }
+    }
+
+    private static int totalPixels(byte[] maskBytes) throws java.io.IOException {
+        java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(maskBytes));
+        if (img == null) throw new java.io.IOException("Could not decode mask");
+        return img.getWidth() * img.getHeight();
     }
 
     /**
