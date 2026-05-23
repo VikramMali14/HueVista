@@ -494,58 +494,60 @@ final class MaskProcessor {
     }
 
     /**
-     * Grows a seed mask by flood-filling to adjacent pixels whose color is
-     * within {@code threshold} RGB distance of the seed's mean color. This
-     * turns tiny wall fragments into full wall surfaces by following the
-     * paint color, naturally stopping at windows, stone, sky, and ground.
+     * Creates a global color mask: EVERY pixel in the image whose color is
+     * within {@code threshold} RGB distance of the seed's mean color becomes
+     * white. Unlike flood-fill, this finds disconnected wall surfaces (e.g.
+     * left and right walls separated by stone cladding) in one pass.
      *
-     * <p>Runs on the full-resolution image — a 7-megapixel flood fill takes
-     * ~200ms on a modern CPU, fast enough for the async segmentation path.
+     * <p>After creating the color mask, a bottom crop removes the bottom
+     * {@code bottomCropFraction} of the image to eliminate ground/driveway
+     * that often matches wall color.
      */
-    static byte[] growByColor(BufferedImage original, BufferedImage seedMask, double threshold) throws IOException {
+    static byte[] createColorMask(BufferedImage original, BufferedImage seedMask,
+                                   double threshold, double bottomCropFraction) throws IOException {
         int w = original.getWidth(), h = original.getHeight();
         if (seedMask.getWidth() != w || seedMask.getHeight() != h) {
             seedMask = resizeNearest(seedMask, w, h);
         }
-        boolean[] seed = thresholdToBinary(seedMask, w, h);
         int[] mean = meanColor(original, seedMask);
-        if (mean == null) return encodeBinaryPng(seed, w, h);
+        if (mean == null) {
+            boolean[] empty = new boolean[w * h];
+            return encodeBinaryPng(empty, w, h);
+        }
 
-        boolean[] grown = seed.clone();
-        Deque<int[]> queue = new ArrayDeque<>();
+        boolean[] mask = new boolean[w * h];
+        int cropY = (int) (h * (1.0 - bottomCropFraction));
+
+        for (int y = 0; y < cropY; y++) {
+            for (int x = 0; x < w; x++) {
+                int p = original.getRGB(x, y);
+                int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
+                double dist = Math.sqrt((mean[0] - r)*(mean[0] - r) + (mean[1] - g)*(mean[1] - g) + (mean[2] - b)*(mean[2] - b));
+                if (dist < threshold) mask[y * w + x] = true;
+            }
+        }
+        return encodeBinaryPng(mask, w, h);
+    }
+
+    /**
+     * Creates a mask of ALL pixels in the image whose color is within
+     * {@code threshold} RGB distance of {@code targetColor}. Much more
+     * aggressive than {@link #growByColor} — useful when SAM 2 seeds are
+     * too tiny or scattered to flood-fill from. Finds every matching pixel
+     * globally, then keeps only the large connected components.
+     */
+    static byte[] maskByColorRange(BufferedImage original, int[] targetColor, double threshold) throws IOException {
+        int w = original.getWidth(), h = original.getHeight();
+        boolean[] mask = new boolean[w * h];
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
-                if (seed[y * w + x]) queue.add(new int[]{x, y});
+                int p = original.getRGB(x, y);
+                int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
+                double dist = Math.sqrt((targetColor[0]-r)*(targetColor[0]-r) + (targetColor[1]-g)*(targetColor[1]-g) + (targetColor[2]-b)*(targetColor[2]-b));
+                mask[y * w + x] = dist < threshold;
             }
         }
-        if (queue.isEmpty()) return encodeBinaryPng(grown, w, h);
-
-        int[] dx = {-1, 1, 0, 0, -1, -1, 1, 1};
-        int[] dy = {0, 0, -1, 1, -1, 1, -1, 1};
-
-        while (!queue.isEmpty()) {
-            int[] p = queue.poll();
-            int px = p[0], py = p[1];
-            int op = original.getRGB(px, py);
-            int pr = (op >> 16) & 0xff, pg = (op >> 8) & 0xff, pb = op & 0xff;
-
-            for (int d = 0; d < 8; d++) {
-                int nx = px + dx[d], ny = py + dy[d];
-                if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
-                int nIdx = ny * w + nx;
-                if (grown[nIdx]) continue;
-
-                int np = original.getRGB(nx, ny);
-                int nr = (np >> 16) & 0xff, ng = (np >> 8) & 0xff, nb = np & 0xff;
-
-                double dist = Math.sqrt((mean[0] - nr)*(mean[0] - nr) + (mean[1] - ng)*(mean[1] - ng) + (mean[2] - nb)*(mean[2] - nb));
-                if (dist < threshold) {
-                    grown[nIdx] = true;
-                    queue.add(new int[]{nx, ny});
-                }
-            }
-        }
-        return encodeBinaryPng(grown, w, h);
+        return encodeBinaryPng(mask, w, h);
     }
 
     /**

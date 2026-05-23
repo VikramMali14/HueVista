@@ -702,12 +702,38 @@ public class SegmentationService {
             try {
                 java.awt.image.BufferedImage original = MaskProcessor.decode(originalBytes);
                 java.awt.image.BufferedImage seed = MaskProcessor.decode(union);
-                grown = MaskProcessor.growByColor(original, seed, COLOR_GROW_THRESHOLD);
-                int grownForeground = MaskProcessor.countForeground(grown);
-                log.info("saveGrownRegion [project={} category={}]: after color grow = {} foreground pixels",
-                        projectId, category, grownForeground);
+                int[] meanColor = MaskProcessor.meanColor(original, seed);
+
+                if (unionForeground < 5000 && meanColor != null) {
+                    // Seeds are tiny specks — use global color matching to find
+                    // ALL pixels of the same color across the entire image.
+                    log.info("saveGrownRegion [project={} category={}]: using global color match, mean=rgb({},{},{})",
+                            projectId, category, meanColor[0], meanColor[1], meanColor[2]);
+                    grown = MaskProcessor.maskByColorRange(original, meanColor, COLOR_RANGE_THRESHOLD);
+                    int rangeForeground = MaskProcessor.countForeground(grown);
+                    log.info("saveGrownRegion [project={} category={}]: after color range = {} foreground pixels",
+                            projectId, category, rangeForeground);
+
+                    // Keep only large components (walls), drop noise (specks).
+                    int minArea = original.getWidth() * original.getHeight() / 100;
+                    MaskProcessor.MaskAnalysis analysis = MaskProcessor.analyze(grown, minArea);
+                    if (analysis.components.isEmpty()) {
+                        log.warn("Color range produced no large components for {}, using raw union", category);
+                        grown = union;
+                    } else {
+                        grown = MaskProcessor.encodeAllComponentsPng(analysis);
+                        log.info("saveGrownRegion [project={} category={}]: kept {} large components (minArea={})",
+                                projectId, category, analysis.components.size(), minArea);
+                    }
+                } else {
+                    // Decent seed size — global color mask with bottom crop
+                    grown = MaskProcessor.createColorMask(original, seed, COLOR_GROW_THRESHOLD, 0.15);
+                    int grownForeground = MaskProcessor.countForeground(grown);
+                    log.info("saveGrownRegion [project={} category={}]: after color mask = {} foreground pixels",
+                            projectId, category, grownForeground);
+                }
             } catch (Exception e) {
-                log.warn("Color grow failed for {}, using raw union: {}", category, e.getMessage(), e);
+                log.warn("Color grow/match failed for {}, using raw union: {}", category, e.getMessage(), e);
                 grown = union;
             }
             byte[] cleaned;
@@ -746,7 +772,14 @@ public class SegmentationService {
      * expand to adjacent pixels within this distance. 35 catches same-paint
      * surfaces with shadow variation while stopping at stone, windows, and sky.
      */
-    private static final double COLOR_GROW_THRESHOLD = 35.0;
+    private static final double COLOR_GROW_THRESHOLD = 28.0;
+
+    /**
+     * RGB distance threshold for global color range matching. Used when SAM 2
+     * seeds are too tiny to flood-fill from. 55 finds all cream/beige wall
+     * pixels across the entire image while excluding stone, sky, and ground.
+     */
+    private static final double COLOR_RANGE_THRESHOLD = 55.0;
 
     /**
      * Runs SAM 2 in automatic mask generation mode. The model lays a grid of
