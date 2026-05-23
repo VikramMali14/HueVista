@@ -494,6 +494,34 @@ final class MaskProcessor {
     }
 
     /**
+     * Detects and corrects inverted masks where the segmented region is
+     * black and the background is white. SAM 2 point mode on Replicate
+     * sometimes returns masks in this inverted form. We detect inversion by
+     * checking if black pixels dominate the image (>60%).
+     */
+    static byte[] ensureWhiteForeground(byte[] maskBytes) throws IOException {
+        BufferedImage img = ImageIO.read(new ByteArrayInputStream(maskBytes));
+        if (img == null) throw new IOException("Could not decode mask");
+        int w = img.getWidth(), h = img.getHeight();
+        boolean[] bin = thresholdToBinary(img, w, h);
+
+        int black = 0, white = 0;
+        for (boolean b : bin) {
+            if (b) white++;
+            else black++;
+        }
+        // If black dominates, the mask is inverted (black = foreground).
+        // Invert it so white = foreground.
+        if (black > white) {
+            for (int i = 0; i < bin.length; i++) {
+                bin[i] = !bin[i];
+            }
+            return encodeBinaryPng(bin, w, h);
+        }
+        return maskBytes;
+    }
+
+    /**
      * Decodes mask bytes (PNG or JPEG), thresholds to binary, and runs
      * connected-component labeling. Components below `minPixelArea` are
      * dropped as noise. Returned list is sorted by area descending.
