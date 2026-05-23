@@ -741,7 +741,7 @@ public class SegmentationService {
                             projectId, category, rangeForeground);
 
                     // Keep only large components (walls), drop noise (specks).
-                    int minArea = original.getWidth() * original.getHeight() / 100;
+                    int minArea = original.getWidth() * original.getHeight() / 200;
                     MaskProcessor.MaskAnalysis analysis = MaskProcessor.analyze(grown, minArea);
                     if (analysis.components.isEmpty()) {
                         log.warn("Color range produced no large components for {}, using raw union", category);
@@ -756,9 +756,16 @@ public class SegmentationService {
                     // large enough to be useful. Skip color growing to avoid
                     // pulling in stone, windows, ground, or other surfaces
                     // that happen to match one of the seed colors.
+                    // Still filter out tiny noise fragments.
                     grown = union;
-                    log.info("saveGrownRegion [project={} category={}]: union {} px is large enough, skipping color grow",
-                            projectId, category, unionForeground);
+                    int minArea = original.getWidth() * original.getHeight() / 200;
+                    MaskProcessor.MaskAnalysis analysis = MaskProcessor.analyze(grown, minArea);
+                    if (!analysis.components.isEmpty()) {
+                        grown = MaskProcessor.encodeAllComponentsPng(analysis);
+                    }
+                    log.info("saveGrownRegion [project={} category={}]: union {} px is large enough, skipping color grow, kept {} components (minArea={})",
+                            projectId, category, unionForeground,
+                            analysis.components.isEmpty() ? "all" : analysis.components.size(), minArea);
                 }
             } catch (Exception e) {
                 log.warn("Color grow/match failed for {}, using raw union: {}", category, e.getMessage(), e);
@@ -813,15 +820,16 @@ public class SegmentationService {
      * expand to adjacent pixels within this distance. 35 catches same-paint
      * surfaces with shadow variation while stopping at stone, windows, and sky.
      */
-    private static final double COLOR_GROW_THRESHOLD = 18.0;
+    private static final double COLOR_GROW_THRESHOLD = 22.0;
 
     /**
      * RGB distance threshold for global color range matching. Used when SAM 2
-     * seeds are too tiny to flood-fill from. 15 is tight enough to exclude
-     * stone cladding (~20 away) and trim (~26 away) while still catching
-     * same-paint surfaces with mild shadow variation.
+     * seeds are too tiny to flood-fill from. 22 catches sunlit and shadowed
+     * wall pixels while excluding trim (~26 away) and ground/sky. Stone at
+     * ~20 may leak slightly, but pixel-level subtraction of exclude masks
+     * removes it afterward.
      */
-    private static final double COLOR_RANGE_THRESHOLD = 15.0;
+    private static final double COLOR_RANGE_THRESHOLD = 22.0;
 
     /**
      * Runs SAM 2 in automatic mask generation mode. The model lays a grid of
