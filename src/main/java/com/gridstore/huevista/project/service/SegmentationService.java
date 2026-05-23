@@ -371,12 +371,19 @@ public class SegmentationService {
             // matching the wall's mean color. This turns specks into full walls.
             int displayOrder = 0;
             int saved = 0;
+            // Build subtract masks for main wall: exclude + accent + trim unions
+            // so any stone/window/roof that leaked into a large wall mask is removed.
+            List<byte[]> mainSubtract = new ArrayList<>();
+            for (int idx : mc.exclude()) { int i = idx-1; if (i>=0 && i<candidates.size()) mainSubtract.add(candidates.get(i)); }
+            for (int idx : mc.accentWall()) { int i = idx-1; if (i>=0 && i<candidates.size()) mainSubtract.add(candidates.get(i)); }
+            for (int idx : mc.trim()) { int i = idx-1; if (i>=0 && i<candidates.size()) mainSubtract.add(candidates.get(i)); }
+
             if (saveGrownRegion(projectId, userId, originalBytes, candidates, resolvedMain,
-                    "Main Wall", RegionCategory.MAIN_WALL, displayOrder)) {
+                    mainSubtract, "Main Wall", RegionCategory.MAIN_WALL, displayOrder)) {
                 saved++; displayOrder++;
             }
             if (saveGrownRegion(projectId, userId, originalBytes, candidates, mc.accentWall(),
-                    "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder)) {
+                    java.util.List.of(), "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder)) {
                 saved++; displayOrder++;
             }
             if (saveUnionRegion(projectId, userId, candidates, mc.trim(),
@@ -690,6 +697,7 @@ public class SegmentationService {
      */
     private boolean saveGrownRegion(String projectId, String userId, byte[] originalBytes,
                                     List<byte[]> candidates, List<Integer> indices,
+                                    List<byte[]> subtractMasks,
                                     String label, RegionCategory category, int displayOrder) {
         if (indices == null || indices.isEmpty()) return false;
         try {
@@ -744,29 +752,31 @@ public class SegmentationService {
                                 projectId, category, analysis.components.size(), minArea);
                     }
                 } else {
-                    // Decent seed size — global color mask with bottom crop
-                    // Also use multi-seed if multiple masks with different colors
-                    java.util.List<int[]> seedColors = new java.util.ArrayList<>();
-                    for (byte[] mb : selected) {
-                        java.awt.image.BufferedImage m = MaskProcessor.decode(mb);
-                        int[] c = MaskProcessor.meanColor(original, m);
-                        if (c != null) seedColors.add(c);
-                    }
-                    if (seedColors.size() > 1) {
-                        grown = MaskProcessor.maskByColorRangeMultiSeed(original, seedColors, COLOR_GROW_THRESHOLD, 0.15);
-                        log.info("saveGrownRegion [project={} category={}]: using multi-seed grow, {} seeds",
-                                projectId, category, seedColors.size());
-                    } else {
-                        grown = MaskProcessor.createColorMask(original, seed, COLOR_GROW_THRESHOLD, 0.15);
-                    }
-                    int grownForeground = MaskProcessor.countForeground(grown);
-                    log.info("saveGrownRegion [project={} category={}]: after color mask = {} foreground pixels",
-                            projectId, category, grownForeground);
+                    // Decent seed size — the union of SAM 2 masks is already
+                    // large enough to be useful. Skip color growing to avoid
+                    // pulling in stone, windows, ground, or other surfaces
+                    // that happen to match one of the seed colors.
+                    grown = union;
+                    log.info("saveGrownRegion [project={} category={}]: union {} px is large enough, skipping color grow",
+                            projectId, category, unionForeground);
                 }
             } catch (Exception e) {
                 log.warn("Color grow/match failed for {}, using raw union: {}", category, e.getMessage(), e);
                 grown = union;
             }
+            // Pixel-level subtraction: remove exclude/accent/trim masks that may
+            // have leaked into this category (e.g. stone within a large wall mask).
+            if (subtractMasks != null && !subtractMasks.isEmpty()) {
+                try {
+                    byte[] excludeUnion = MaskProcessor.unionMasks(subtractMasks);
+                    grown = MaskProcessor.subtract(grown, excludeUnion, 2);
+                    log.info("saveGrownRegion [project={} category={}]: subtracted {} masks, remaining {} px",
+                            projectId, category, subtractMasks.size(), MaskProcessor.countForeground(grown));
+                } catch (Exception e) {
+                    log.warn("Subtraction failed for {}, keeping grown mask: {}", category, e.getMessage());
+                }
+            }
+
             byte[] cleaned;
             try {
                 cleaned = MaskProcessor.morphClean(grown);
