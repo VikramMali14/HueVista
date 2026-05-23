@@ -720,8 +720,18 @@ public class SegmentationService {
                 int[] meanColor = MaskProcessor.meanColor(original, seed);
 
                 if (unionForeground < 5000) {
-                    // Seeds are tiny specks — use global color matching to find
-                    // ALL pixels of the same color across the entire image.
+                    // Seeds are tiny specks — use color matching confined to the
+                    // building silhouette so we don't leak into ground/sky.
+                    // Build silhouette = union of ALL candidate masks (after background
+                    // filter, these cover the building footprint, not the surroundings).
+                    java.awt.image.BufferedImage silhouette = null;
+                    try {
+                        byte[] silhouetteBytes = MaskProcessor.unionMasks(candidates);
+                        silhouette = MaskProcessor.decode(silhouetteBytes);
+                    } catch (Exception e) {
+                        log.warn("Could not build silhouette for project {}, using full image", projectId);
+                    }
+
                     // Use multi-seed: compute mean color from EACH individual mask
                     // so sunlit and shadowed walls are both captured.
                     java.util.List<int[]> seedColors = new java.util.ArrayList<>();
@@ -733,15 +743,16 @@ public class SegmentationService {
                     if (seedColors.isEmpty() && meanColor != null) {
                         seedColors.add(meanColor);
                     }
-                    log.info("saveGrownRegion [project={} category={}]: using multi-seed color match, {} seeds",
+                    log.info("saveGrownRegion [project={} category={}]: using silhouette-constrained multi-seed, {} seeds",
                             projectId, category, seedColors.size());
-                    grown = MaskProcessor.maskByColorRangeMultiSeed(original, seedColors, COLOR_RANGE_THRESHOLD, 0.15);
+                    grown = MaskProcessor.maskByColorRangeMultiSeed(
+                            original, silhouette, seedColors, COLOR_RANGE_THRESHOLD, 0.15);
                     int rangeForeground = MaskProcessor.countForeground(grown);
                     log.info("saveGrownRegion [project={} category={}]: after color range = {} foreground pixels",
                             projectId, category, rangeForeground);
 
                     // Keep only large components (walls), drop noise (specks).
-                    int minArea = original.getWidth() * original.getHeight() / 100;
+                    int minArea = original.getWidth() * original.getHeight() / 200;
                     MaskProcessor.MaskAnalysis analysis = MaskProcessor.analyze(grown, minArea);
                     if (analysis.components.isEmpty()) {
                         log.warn("Color range produced no large components for {}, using raw union", category);
@@ -756,9 +767,16 @@ public class SegmentationService {
                     // large enough to be useful. Skip color growing to avoid
                     // pulling in stone, windows, ground, or other surfaces
                     // that happen to match one of the seed colors.
+                    // Still filter out tiny noise fragments.
                     grown = union;
-                    log.info("saveGrownRegion [project={} category={}]: union {} px is large enough, skipping color grow",
-                            projectId, category, unionForeground);
+                    int minArea = original.getWidth() * original.getHeight() / 200;
+                    MaskProcessor.MaskAnalysis analysis = MaskProcessor.analyze(grown, minArea);
+                    if (!analysis.components.isEmpty()) {
+                        grown = MaskProcessor.encodeAllComponentsPng(analysis);
+                    }
+                    log.info("saveGrownRegion [project={} category={}]: union {} px is large enough, skipping color grow, kept {} components (minArea={})",
+                            projectId, category, unionForeground,
+                            analysis.components.isEmpty() ? "all" : analysis.components.size(), minArea);
                 }
             } catch (Exception e) {
                 log.warn("Color grow/match failed for {}, using raw union: {}", category, e.getMessage(), e);
@@ -813,15 +831,16 @@ public class SegmentationService {
      * expand to adjacent pixels within this distance. 35 catches same-paint
      * surfaces with shadow variation while stopping at stone, windows, and sky.
      */
-    private static final double COLOR_GROW_THRESHOLD = 18.0;
+    private static final double COLOR_GROW_THRESHOLD = 22.0;
 
     /**
      * RGB distance threshold for global color range matching. Used when SAM 2
-     * seeds are too tiny to flood-fill from. 15 is tight enough to exclude
-     * stone cladding (~20 away) and trim (~26 away) while still catching
-     * same-paint surfaces with mild shadow variation.
+     * seeds are too tiny to flood-fill from. 22 catches sunlit and shadowed
+     * wall pixels while excluding trim (~26 away) and ground/sky. Stone at
+     * ~20 may leak slightly, but pixel-level subtraction of exclude masks
+     * removes it afterward.
      */
-    private static final double COLOR_RANGE_THRESHOLD = 15.0;
+    private static final double COLOR_RANGE_THRESHOLD = 22.0;
 
     /**
      * Runs SAM 2 in automatic mask generation mode. The model lays a grid of
