@@ -801,6 +801,12 @@ public class SegmentationService {
      * doors, fixtures), downloads the mask, cleans it, re-uploads to our S3,
      * and persists a Region row. Returns null on any failure — the caller
      * just skips the category.
+     *
+     * <p>Uses {@code point_coords}/{@code point_labels} which are the actual
+     * parameter names accepted by the Replicate {@code meta/sam-2} model.
+     * Earlier code used {@code input_points}/{@code input_labels} which were
+     * ignored by Replicate, causing the model to silently fall back to auto
+     * mode and return the same building silhouette for every call.
      */
     private Region runSam2CategoryPass(String projectId, String userId, String imageUrl,
                                        int imageWidth, int imageHeight,
@@ -809,23 +815,23 @@ public class SegmentationService {
                                        String label, RegionCategory category,
                                        int displayOrder) {
         try {
-            List<List<Double>> inputPoints = new ArrayList<>();
-            List<Integer> inputLabels = new ArrayList<>();
+            List<List<Double>> pointCoords = new ArrayList<>();
+            List<Integer> pointLabels = new ArrayList<>();
             for (WallSceneAnalysis.Point p : positives) {
-                inputPoints.add(List.of(p.x() * imageWidth, p.y() * imageHeight));
-                inputLabels.add(1);
+                pointCoords.add(List.of(p.x() * imageWidth, p.y() * imageHeight));
+                pointLabels.add(1);
             }
             for (WallSceneAnalysis.Point p : negatives) {
-                inputPoints.add(List.of(p.x() * imageWidth, p.y() * imageHeight));
-                inputLabels.add(0);
+                pointCoords.add(List.of(p.x() * imageWidth, p.y() * imageHeight));
+                pointLabels.add(0);
             }
             log.info("SAM 2 [{}] [project={}]: positives={} negatives={}",
                     category, projectId, positives.size(), negatives.size());
 
             Map<String, Object> input = Map.of(
                     "image", imageUrl,
-                    "input_points", inputPoints,
-                    "input_labels", inputLabels
+                    "point_coords", pointCoords,
+                    "point_labels", pointLabels
             );
 
             String predictionId = startSam2Prediction(input);
@@ -840,6 +846,7 @@ public class SegmentationService {
                 log.warn("SAM 2 [{}]: timed out for project {}", category, projectId);
                 return null;
             }
+            log.debug("SAM 2 [{}] raw output type: {}", category, result.get("output") != null ? result.get("output").getClass().getName() : "null");
             String maskUrl = extractFirstMaskUrl(result.get("output"));
             if (maskUrl == null) {
                 log.warn("SAM 2 [{}]: no mask URL for project {}", category, projectId);
@@ -854,6 +861,10 @@ public class SegmentationService {
                 log.warn("Morphological cleanup of {} mask failed, using raw: {}", category, e.getMessage());
                 cleanBytes = rawBytes;
             }
+
+            // SAM 2 point mode sometimes returns inverted masks (black = segment,
+            // white = background). Auto-correct so white is always foreground.
+            cleanBytes = MaskProcessor.ensureWhiteForeground(cleanBytes);
 
             String storageKey = storageService.store(
                     cleanBytes, userId,
@@ -888,9 +899,10 @@ public class SegmentationService {
 
     /**
      * Fallback segmentation that uses Claude scene analysis to find point
-     * coordinates on walls, then feeds those points to SAM 2. Much more
-     * reliable than auto mode for outdoor building facades where SAM 2 auto
-     * fragments everything into tiny edge pieces.
+     * coordinates on walls, then feeds those points to SAM 2 ONE AT A TIME.
+     * Passing all wall points together makes SAM 2 treat the whole building
+     * as one object and return a building silhouette. Single-point mode
+     * isolates individual wall surfaces so we can union them afterwards.
      */
     private int runPointBasedSegmentation(String projectId, String userId, String imageUrl, ImageType imageType) {
         try {
@@ -914,39 +926,82 @@ public class SegmentationService {
             UploadedImage image = loadAndEnsureDimensions(projectId);
             int w = image.getWidth();
             int h = image.getHeight();
+            List<WallSceneAnalysis.Point> excludes =
+                    analysis.excludePoints() != null ? analysis.excludePoints() : List.of();
 
             int displayOrder = 0;
             int saved = 0;
 
-            // Main wall — positive points from Claude, negative from exclude list
-            Region main = runSam2CategoryPass(
-                    projectId, userId, imageUrl, w, h,
-                    analysis.mainWallPoints(),
-                    analysis.excludePoints() != null ? analysis.excludePoints() : List.of(),
-                    "Main Wall", RegionCategory.MAIN_WALL, displayOrder);
-            if (main != null) { saved++; displayOrder++; }
-
-            // Accent wall — optional
-            if (analysis.accentWallPoints() != null && !analysis.accentWallPoints().isEmpty()) {
-                Region accent = runSam2CategoryPass(
-                        projectId, userId, imageUrl, w, h,
-                        analysis.accentWallPoints(),
-                        analysis.excludePoints() != null ? analysis.excludePoints() : List.of(),
-                        "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder);
-                if (accent != null) { saved++; displayOrder++; }
+            // Main wall — run SAM 2 once per point, union the results.
+            // Different points may land on disconnected wall surfaces
+            // (e.g. left wall vs right wall separated by stone cladding).
+            List<byte[]> mainMasks = new ArrayList<>();
+            for (WallSceneAnalysis.Point p : analysis.mainWallPoints()) {
+                byte[] m = runSam2PointMask(projectId, imageUrl, w, h, p, excludes);
+                if (m != null) mainMasks.add(m);
+            }
+            if (!mainMasks.isEmpty()) {
+                byte[] union = MaskProcessor.unionMasks(mainMasks);
+                byte[] cleaned = MaskProcessor.morphClean(union);
+                String key = storageService.store(cleaned, userId, "main-wall.png", "image/png");
+                regionRepository.save(Region.builder()
+                        .project(projectRepository.getReferenceById(projectId))
+                        .label("Main Wall")
+                        .category(RegionCategory.MAIN_WALL)
+                        .maskUrl(storageService.getPublicUrl(key))
+                        .maskData(storageService.getPublicUrl(key))
+                        .displayOrder(displayOrder++)
+                        .build());
+                saved++;
             }
 
-            // Trim — optional, use main wall points as extra negatives so trim
-            // doesn't bleed into the wall, and exclude points too.
+            // Accent wall — same single-point approach
+            if (analysis.accentWallPoints() != null && !analysis.accentWallPoints().isEmpty()) {
+                List<byte[]> accentMasks = new ArrayList<>();
+                for (WallSceneAnalysis.Point p : analysis.accentWallPoints()) {
+                    byte[] m = runSam2PointMask(projectId, imageUrl, w, h, p, excludes);
+                    if (m != null) accentMasks.add(m);
+                }
+                if (!accentMasks.isEmpty()) {
+                    byte[] union = MaskProcessor.unionMasks(accentMasks);
+                    byte[] cleaned = MaskProcessor.morphClean(union);
+                    String key = storageService.store(cleaned, userId, "accent-wall.png", "image/png");
+                    regionRepository.save(Region.builder()
+                            .project(projectRepository.getReferenceById(projectId))
+                            .label("Accent Wall")
+                            .category(RegionCategory.ACCENT_WALL)
+                            .maskUrl(storageService.getPublicUrl(key))
+                            .maskData(storageService.getPublicUrl(key))
+                            .displayOrder(displayOrder++)
+                            .build());
+                    saved++;
+                }
+            }
+
+            // Trim — run once per trim point, union results
             if (analysis.trimPoints() != null && !analysis.trimPoints().isEmpty()) {
-                List<WallSceneAnalysis.Point> trimNegatives = new ArrayList<>();
-                if (analysis.excludePoints() != null) trimNegatives.addAll(analysis.excludePoints());
+                List<WallSceneAnalysis.Point> trimNegatives = new ArrayList<>(excludes);
                 if (analysis.mainWallPoints() != null) trimNegatives.addAll(analysis.mainWallPoints());
-                Region trim = runSam2CategoryPass(
-                        projectId, userId, imageUrl, w, h,
-                        analysis.trimPoints(), trimNegatives,
-                        "Trim & Frames", RegionCategory.TRIM, displayOrder);
-                if (trim != null) { saved++; displayOrder++; }
+
+                List<byte[]> trimMasks = new ArrayList<>();
+                for (WallSceneAnalysis.Point p : analysis.trimPoints()) {
+                    byte[] m = runSam2PointMask(projectId, imageUrl, w, h, p, trimNegatives);
+                    if (m != null) trimMasks.add(m);
+                }
+                if (!trimMasks.isEmpty()) {
+                    byte[] union = MaskProcessor.unionMasks(trimMasks);
+                    byte[] cleaned = MaskProcessor.morphClean(union);
+                    String key = storageService.store(cleaned, userId, "trim.png", "image/png");
+                    regionRepository.save(Region.builder()
+                            .project(projectRepository.getReferenceById(projectId))
+                            .label("Trim & Frames")
+                            .category(RegionCategory.TRIM)
+                            .maskUrl(storageService.getPublicUrl(key))
+                            .maskData(storageService.getPublicUrl(key))
+                            .displayOrder(displayOrder++)
+                            .build());
+                    saved++;
+                }
             }
 
             log.info("Point-based fallback saved {} regions for project {}", saved, projectId);
@@ -955,6 +1010,53 @@ public class SegmentationService {
         } catch (Exception e) {
             log.error("Point-based segmentation fallback failed for project {}: {}", projectId, e.getMessage(), e);
             return 0;
+        }
+    }
+
+    /**
+     * Runs SAM 2 with a SINGLE positive point (plus optional negatives) and
+     * returns the cleaned mask bytes, or null on failure. Does NOT persist
+     * a Region — callers union multiple point masks before saving.
+     */
+    private byte[] runSam2PointMask(String projectId, String imageUrl,
+                                    int imageWidth, int imageHeight,
+                                    WallSceneAnalysis.Point positive,
+                                    List<WallSceneAnalysis.Point> negatives) {
+        try {
+            List<List<Double>> pointCoords = new ArrayList<>();
+            List<Integer> pointLabels = new ArrayList<>();
+            pointCoords.add(List.of(positive.x() * imageWidth, positive.y() * imageHeight));
+            pointLabels.add(1);
+            for (WallSceneAnalysis.Point p : negatives) {
+                pointCoords.add(List.of(p.x() * imageWidth, p.y() * imageHeight));
+                pointLabels.add(0);
+            }
+
+            Map<String, Object> input = Map.of(
+                    "image", imageUrl,
+                    "point_coords", pointCoords,
+                    "point_labels", pointLabels
+            );
+
+            String predictionId = startSam2Prediction(input);
+            if (predictionId == null) return null;
+            updatePredictionId(projectId, predictionId);
+
+            Map<String, Object> result = pollUntilDone(predictionId);
+            if (result == null) return null;
+            String maskUrl = extractFirstMaskUrl(result.get("output"));
+            if (maskUrl == null) return null;
+
+            byte[] raw = downloadBytes(maskUrl);
+            byte[] clean = MaskProcessor.morphClean(raw);
+            return MaskProcessor.ensureWhiteForeground(clean);
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (Exception e) {
+            log.warn("Single-point SAM 2 failed for project {}: {}", projectId, e.getMessage());
+            return null;
         }
     }
 
@@ -1193,13 +1295,13 @@ public class SegmentationService {
 
         double pixelX = x * imageWidth;
         double pixelY = y * imageHeight;
-        List<List<Double>> inputPoints = List.of(List.of(pixelX, pixelY));
-        List<Integer> inputLabels = List.of(1);
+        List<List<Double>> pointCoords = List.of(List.of(pixelX, pixelY));
+        List<Integer> pointLabels = List.of(1);
 
         Map<String, Object> input = Map.of(
                 "image", imageUrl,
-                "input_points", inputPoints,
-                "input_labels", inputLabels
+                "point_coords", pointCoords,
+                "point_labels", pointLabels
         );
 
         String predictionId = startSam2Prediction(input);
