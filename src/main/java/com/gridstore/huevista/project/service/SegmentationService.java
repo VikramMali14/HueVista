@@ -366,13 +366,16 @@ public class SegmentationService {
 
             // Step 4: union the selected masks per category, clean them up,
             // upload to S3, save Region rows.
+            // For wall surfaces we use color-based region growing: starting from
+            // the tiny SAM 2 fragments, flood-fill outward to adjacent pixels
+            // matching the wall's mean color. This turns specks into full walls.
             int displayOrder = 0;
             int saved = 0;
-            if (saveUnionRegion(projectId, userId, candidates, resolvedMain,
+            if (saveGrownRegion(projectId, userId, originalBytes, candidates, resolvedMain,
                     "Main Wall", RegionCategory.MAIN_WALL, displayOrder)) {
                 saved++; displayOrder++;
             }
-            if (saveUnionRegion(projectId, userId, candidates, mc.accentWall(),
+            if (saveGrownRegion(projectId, userId, originalBytes, candidates, mc.accentWall(),
                     "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder)) {
                 saved++; displayOrder++;
             }
@@ -388,11 +391,8 @@ public class SegmentationService {
                 return;
             }
 
-            // Sanity check: if the main wall region is unreasonably small,
-            // the auto-mode pipeline missed the actual walls. Instead of failing,
-            // fall back to Claude point-based segmentation which drives SAM 2
-            // with explicit coordinates rather than hoping auto-mode discovers
-            // the wall as a single coherent segment.
+            // Sanity check: if the main wall region is unreasonably small
+            // even after color growing, the pipeline truly failed.
             long totalForeground = regionRepository.findAutoRegionsByProjectId(projectId)
                     .stream()
                     .filter(r -> r.getCategory() == RegionCategory.MAIN_WALL || r.getCategory() == RegionCategory.ACCENT_WALL)
@@ -404,7 +404,7 @@ public class SegmentationService {
                     })
                     .sum();
             if (totalForeground < 500) {
-                log.warn("Auto-mode produced only {} foreground pixels for project {} — falling back to point-based segmentation", totalForeground, projectId);
+                log.warn("Auto-mode + color grow produced only {} foreground pixels for project {} — falling back to point-based segmentation", totalForeground, projectId);
                 regionRepository.deleteAutoRegionsByProjectId(projectId);
                 int pointSaved = runPointBasedSegmentation(projectId, userId, imageUrl, imageType);
                 if (pointSaved > 0) {
@@ -687,6 +687,73 @@ public class SegmentationService {
             return false;
         }
     }
+
+    /**
+     * Like {@link #saveUnionRegion} but applies color-based region growing
+     * before saving. Starting from the tiny SAM 2 wall fragments, we flood-fill
+     * outward to adjacent pixels matching the wall's mean color. This turns
+     * specks into full wall surfaces for outdoor facades where SAM 2 auto
+     * fragments everything.
+     */
+    private boolean saveGrownRegion(String projectId, String userId, byte[] originalBytes,
+                                    List<byte[]> candidates, List<Integer> indices,
+                                    String label, RegionCategory category, int displayOrder) {
+        if (indices == null || indices.isEmpty()) return false;
+        try {
+            List<byte[]> selected = new ArrayList<>(indices.size());
+            for (int idx : indices) {
+                int i = idx - 1;
+                if (i >= 0 && i < candidates.size()) selected.add(candidates.get(i));
+            }
+            if (selected.isEmpty()) return false;
+
+            byte[] union = MaskProcessor.unionMasks(selected);
+            byte[] grown;
+            try {
+                java.awt.image.BufferedImage original = MaskProcessor.decode(originalBytes);
+                java.awt.image.BufferedImage seed = MaskProcessor.decode(union);
+                grown = MaskProcessor.growByColor(original, seed, COLOR_GROW_THRESHOLD);
+            } catch (Exception e) {
+                log.warn("Color grow failed for {}, using raw union: {}", category, e.getMessage());
+                grown = union;
+            }
+            byte[] cleaned;
+            try {
+                cleaned = MaskProcessor.morphClean(grown);
+            } catch (Exception e) {
+                log.warn("morphClean failed for {}, using raw grown: {}", category, e.getMessage());
+                cleaned = grown;
+            }
+
+            String storageKey = storageService.store(
+                    cleaned, userId,
+                    category.name().toLowerCase() + ".png", "image/png");
+            String url = storageService.getPublicUrl(storageKey);
+
+            Region region = Region.builder()
+                    .project(projectRepository.getReferenceById(projectId))
+                    .label(label)
+                    .category(category)
+                    .maskUrl(url)
+                    .maskData(url)
+                    .displayOrder(displayOrder)
+                    .build();
+            regionRepository.save(region);
+            log.info("Saved grown {} region for project {}: indices={} storageKey={}",
+                    category, projectId, indices, storageKey);
+            return true;
+        } catch (Exception e) {
+            log.warn("Failed to save grown {} region for project {}: {}", category, projectId, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * RGB distance threshold for color-based region growing. Seed wall fragments
+     * expand to adjacent pixels within this distance. 35 catches same-paint
+     * surfaces with shadow variation while stopping at stone, windows, and sky.
+     */
+    private static final double COLOR_GROW_THRESHOLD = 35.0;
 
     /**
      * Runs SAM 2 in automatic mask generation mode. The model lays a grid of
