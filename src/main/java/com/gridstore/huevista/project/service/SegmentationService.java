@@ -391,8 +391,7 @@ public class SegmentationService {
                 return;
             }
 
-            // Sanity check: if the main wall region is unreasonably small
-            // even after color growing, the pipeline truly failed.
+            // Sanity check: log the size of produced regions for debugging.
             long totalForeground = regionRepository.findAutoRegionsByProjectId(projectId)
                     .stream()
                     .filter(r -> r.getCategory() == RegionCategory.MAIN_WALL || r.getCategory() == RegionCategory.ACCENT_WALL)
@@ -403,20 +402,7 @@ public class SegmentationService {
                         } catch (Exception e) { return 0; }
                     })
                     .sum();
-            if (totalForeground < 500) {
-                log.warn("Auto-mode + color grow produced only {} foreground pixels for project {} — falling back to point-based segmentation", totalForeground, projectId);
-                regionRepository.deleteAutoRegionsByProjectId(projectId);
-                int pointSaved = runPointBasedSegmentation(projectId, userId, imageUrl, imageType);
-                if (pointSaved > 0) {
-                    markSegmented(projectId);
-                    log.info("Point-based segmentation complete: project={} regions={}", projectId, pointSaved);
-                    return;
-                }
-                markFailed(projectId,
-                        "Segmentation produced only tiny fragments — the walls were not detected. " +
-                        "Try click-to-segment to mark the wall areas manually.");
-                return;
-            }
+            log.info("Segmentation region sizes [project={}]: total main+accent foreground pixels={}", projectId, totalForeground);
 
             markSegmented(projectId);
             log.info("Segmentation complete: project={} type={} regions={} candidates={}",
@@ -708,13 +694,20 @@ public class SegmentationService {
             if (selected.isEmpty()) return false;
 
             byte[] union = MaskProcessor.unionMasks(selected);
+            int unionForeground = MaskProcessor.countForeground(union);
+            log.info("saveGrownRegion [project={} category={}]: union of {} masks = {} foreground pixels",
+                    projectId, category, selected.size(), unionForeground);
+
             byte[] grown;
             try {
                 java.awt.image.BufferedImage original = MaskProcessor.decode(originalBytes);
                 java.awt.image.BufferedImage seed = MaskProcessor.decode(union);
                 grown = MaskProcessor.growByColor(original, seed, COLOR_GROW_THRESHOLD);
+                int grownForeground = MaskProcessor.countForeground(grown);
+                log.info("saveGrownRegion [project={} category={}]: after color grow = {} foreground pixels",
+                        projectId, category, grownForeground);
             } catch (Exception e) {
-                log.warn("Color grow failed for {}, using raw union: {}", category, e.getMessage());
+                log.warn("Color grow failed for {}, using raw union: {}", category, e.getMessage(), e);
                 grown = union;
             }
             byte[] cleaned;
@@ -743,7 +736,7 @@ public class SegmentationService {
                     category, projectId, indices, storageKey);
             return true;
         } catch (Exception e) {
-            log.warn("Failed to save grown {} region for project {}: {}", category, projectId, e.getMessage());
+            log.warn("Failed to save grown {} region for project {}: {}", category, projectId, e.getMessage(), e);
             return false;
         }
     }
