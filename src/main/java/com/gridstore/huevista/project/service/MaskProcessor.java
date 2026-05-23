@@ -549,6 +549,27 @@ final class MaskProcessor {
     }
 
     /**
+     * Creates a mask of ALL pixels in the image whose color is within
+     * {@code threshold} RGB distance of {@code targetColor}. Much more
+     * aggressive than {@link #growByColor} — useful when SAM 2 seeds are
+     * too tiny or scattered to flood-fill from. Finds every matching pixel
+     * globally, then keeps only the large connected components.
+     */
+    static byte[] maskByColorRange(BufferedImage original, int[] targetColor, double threshold) throws IOException {
+        int w = original.getWidth(), h = original.getHeight();
+        boolean[] mask = new boolean[w * h];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int p = original.getRGB(x, y);
+                int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
+                double dist = Math.sqrt((targetColor[0]-r)*(targetColor[0]-r) + (targetColor[1]-g)*(targetColor[1]-g) + (targetColor[2]-b)*(targetColor[2]-b));
+                mask[y * w + x] = dist < threshold;
+            }
+        }
+        return encodeBinaryPng(mask, w, h);
+    }
+
+    /**
      * Detects and corrects inverted masks where the segmented region is
      * black and the background is white. SAM 2 point mode on Replicate
      * sometimes returns masks in this inverted form. We detect inversion by
