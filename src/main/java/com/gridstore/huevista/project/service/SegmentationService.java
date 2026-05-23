@@ -1425,7 +1425,34 @@ public class SegmentationService {
 
             byte[] raw = downloadBytes(maskUrl);
             byte[] clean = MaskProcessor.morphClean(raw);
-            return MaskProcessor.ensureWhiteForeground(clean);
+            byte[] whiteFg = MaskProcessor.ensureWhiteForeground(clean);
+
+            // Sanity filter: SAM 2 with a single point sometimes returns the
+            // "everything except this object" mask, OR Claude occasionally
+            // places a point that lands on sky/ground. Either way the result
+            // is a giant background-shaped mask covering the top, bottom, or
+            // both edges of the image — we MUST drop it or it will pollute
+            // the union with sky+ground pixels and end up painted.
+            try {
+                java.awt.image.BufferedImage decoded = MaskProcessor.decode(whiteFg);
+                java.awt.image.BufferedImage small = MaskProcessor.downsample(decoded, 512);
+                MaskProcessor.MaskStats st = MaskProcessor.stats(small, 3);
+                double frac = st.foregroundFraction();
+                boolean looksLikeSky = st.touchesTop() && frac > 0.10;
+                boolean looksLikeGround = st.touchesBottom() && frac > 0.10;
+                boolean looksLikeFullBackground = frac > 0.50 && st.touchesTop() && st.touchesBottom();
+                if (looksLikeSky || looksLikeGround || looksLikeFullBackground) {
+                    log.warn("Discarding point-mask for project {}: point ({},{}) returned a background-shaped mask (frac={}, top={}, bottom={})",
+                            projectId, positive.x(), positive.y(),
+                            String.format("%.2f", frac), st.touchesTop(), st.touchesBottom());
+                    return null;
+                }
+            } catch (Exception e) {
+                // If stats fail, prefer to keep the mask rather than drop it.
+                log.debug("Sky/ground stats check failed for project {}: {}", projectId, e.getMessage());
+            }
+
+            return whiteFg;
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
