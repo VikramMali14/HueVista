@@ -31,4 +31,8 @@ public interface RegionRepository extends JpaRepository<Region, Long> {
     @Query("DELETE FROM Region r WHERE r.project.id = :projectId " +
             "AND (r.category IS NULL OR r.category <> com.gridstore.huevista.project.model.RegionCategory.MANUAL)")
     void deleteAutoRegionsByProjectId(String projectId);
+
+    @Query("SELECT r FROM Region r WHERE r.project.id = :projectId " +
+            "AND (r.category IS NULL OR r.category <> com.gridstore.huevista.project.model.RegionCategory.MANUAL)")
+    List<Region> findAutoRegionsByProjectId(String projectId);
 }
