@@ -726,10 +726,10 @@ public class SegmentationService {
                                 projectId, category, analysis.components.size(), minArea);
                     }
                 } else {
-                    // Decent seed size — flood-fill from seeds
-                    grown = MaskProcessor.growByColor(original, seed, COLOR_GROW_THRESHOLD);
+                    // Decent seed size — global color mask with bottom crop
+                    grown = MaskProcessor.createColorMask(original, seed, COLOR_GROW_THRESHOLD, 0.15);
                     int grownForeground = MaskProcessor.countForeground(grown);
-                    log.info("saveGrownRegion [project={} category={}]: after flood-fill grow = {} foreground pixels",
+                    log.info("saveGrownRegion [project={} category={}]: after color mask = {} foreground pixels",
                             projectId, category, grownForeground);
                 }
             } catch (Exception e) {
@@ -772,7 +772,7 @@ public class SegmentationService {
      * expand to adjacent pixels within this distance. 35 catches same-paint
      * surfaces with shadow variation while stopping at stone, windows, and sky.
      */
-    private static final double COLOR_GROW_THRESHOLD = 35.0;
+    private static final double COLOR_GROW_THRESHOLD = 28.0;
 
     /**
      * RGB distance threshold for global color range matching. Used when SAM 2
