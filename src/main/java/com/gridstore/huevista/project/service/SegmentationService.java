@@ -379,11 +379,11 @@ public class SegmentationService {
             for (int idx : mc.trim()) { int i = idx-1; if (i>=0 && i<candidates.size()) mainSubtract.add(candidates.get(i)); }
 
             if (saveGrownRegion(projectId, userId, originalBytes, candidates, resolvedMain,
-                    mainSubtract, "Main Wall", RegionCategory.MAIN_WALL, displayOrder)) {
+                    mainSubtract, "Main Wall", RegionCategory.MAIN_WALL, displayOrder, imageType)) {
                 saved++; displayOrder++;
             }
             if (saveGrownRegion(projectId, userId, originalBytes, candidates, mc.accentWall(),
-                    java.util.List.of(), "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder)) {
+                    java.util.List.of(), "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder, imageType)) {
                 saved++; displayOrder++;
             }
             if (saveUnionRegion(projectId, userId, candidates, mc.trim(),
@@ -411,24 +411,41 @@ public class SegmentationService {
                     .sum();
             log.info("Segmentation region sizes [project={}]: total main+accent foreground pixels={}", projectId, totalForeground);
 
-            // FALLBACK: if auto-mode produced a tiny fragmented mask (< 10000 px),
-            // delete it and try point-based segmentation with Claude's wall points.
-            // SAM 2 auto-mode fragments outdoor facades into edge specks; point mode
-            // with positive wall points + negative exclude points often produces
-            // one large coherent wall mask.
+            // SUPPLEMENT WITH POINT-BASED SEGMENTATION (OUTDOOR).
+            // SAM 2 auto-mode and point-mode have complementary failure modes:
+            // auto-mode misses large flat painted facades, point-mode handles
+            // them well but loses fine fragments. For outdoor photos we run
+            // BOTH and union the resulting per-category masks so we get the
+            // best of both. (Indoor stays on auto-only — point-mode on
+            // interior shots over-grows into the floor/ceiling.)
             boolean isOutdoor = imageType == ImageType.OUTDOOR;
-            if (isOutdoor && totalForeground < 10000) {
-                log.warn("Auto-mode mask too small ({} px) for outdoor project {}, trying point-based fallback", totalForeground, projectId);
-                regionRepository.deleteAutoRegionsByProjectId(projectId);
-                int pointSaved = runPointBasedSegmentation(projectId, userId, imageUrl, imageType);
-                if (pointSaved > 0) {
-                    log.info("Point-based fallback succeeded for project {}, saved {} regions", projectId, pointSaved);
-                    markSegmented(projectId);
-                    return;
-                } else {
-                    log.warn("Point-based fallback also failed for project {}, keeping tiny auto mask", projectId);
-                    // Re-save the auto regions since we deleted them... actually,
-                    // we already ran auto-mode and saved. Let's just fail cleanly.
+            if (isOutdoor) {
+                try {
+                    int supplemented = supplementExistingWithPointBased(
+                            projectId, userId, imageUrl, imageType);
+                    log.info("Point-based supplementation [project={}]: merged into {} regions",
+                            projectId, supplemented);
+                } catch (Exception e) {
+                    log.warn("Point-based supplementation failed for {}, keeping auto-mode result only: {}",
+                            projectId, e.getMessage(), e);
+                }
+            }
+
+            // After supplementation, if the combined MAIN/ACCENT coverage is
+            // still tiny, the photo just couldn't be segmented automatically.
+            // Fail cleanly so the user knows to click-segment.
+            if (isOutdoor) {
+                long postSupplementForeground = regionRepository.findAutoRegionsByProjectId(projectId)
+                        .stream()
+                        .filter(r -> r.getCategory() == RegionCategory.MAIN_WALL || r.getCategory() == RegionCategory.ACCENT_WALL)
+                        .mapToLong(r -> {
+                            try {
+                                return MaskProcessor.countForeground(downloadBytes(r.getMaskUrl()));
+                            } catch (Exception e) { return 0; }
+                        })
+                        .sum();
+                log.info("Post-supplement coverage [project={}]: {} px", projectId, postSupplementForeground);
+                if (postSupplementForeground < 10000) {
                     markFailed(projectId,
                             "The building facade could not be segmented automatically. " +
                             "The photo may be too complex. Use click-to-segment to mark walls manually.");
@@ -723,7 +740,8 @@ public class SegmentationService {
     private boolean saveGrownRegion(String projectId, String userId, byte[] originalBytes,
                                     List<byte[]> candidates, List<Integer> indices,
                                     List<byte[]> subtractMasks,
-                                    String label, RegionCategory category, int displayOrder) {
+                                    String label, RegionCategory category, int displayOrder,
+                                    ImageType imageType) {
         if (indices == null || indices.isEmpty()) return false;
         try {
             List<byte[]> selected = new ArrayList<>(indices.size());
@@ -744,7 +762,15 @@ public class SegmentationService {
                 java.awt.image.BufferedImage seed = MaskProcessor.decode(union);
                 int[] meanColor = MaskProcessor.meanColor(original, seed);
 
-                if (unionForeground < 5000) {
+                // ALWAYS run color-based growing for OUTDOOR photos — SAM 2
+                // tends to under-segment large painted facades even when the
+                // initial seeds look "big enough", and the user is unable to
+                // get acceptable wall coverage without it. For indoor scenes
+                // we keep the original "only if seed tiny" rule to avoid
+                // pulling in adjacent same-colored furniture.
+                boolean alwaysGrow = (imageType == ImageType.OUTDOOR)
+                        && category != RegionCategory.TRIM;
+                if (alwaysGrow || unionForeground < 5000) {
                     // Seeds are tiny specks — use color matching confined to the
                     // building silhouette so we don't leak into ground/sky.
                     // Build silhouette = union of ALL candidate masks (after background
@@ -1083,6 +1109,161 @@ public class SegmentationService {
      * as one object and return a building silhouette. Single-point mode
      * isolates individual wall surfaces so we can union them afterwards.
      */
+    /**
+     * Runs the point-based SAM 2 pipeline and UNIONS its per-category masks
+     * with whatever auto-mode already saved. Used for outdoor photos where
+     * auto and point both produce partial coverage and the user's only
+     * complaint is "the mask doesn't cover enough wall".
+     *
+     * For each category (MAIN_WALL, ACCENT_WALL, TRIM) that already has an
+     * auto region, we download the existing mask, union it with the
+     * point-based result for the same category, upload the merged mask,
+     * and update the region's URL. If a category has only auto OR only
+     * point, the surviving mask is used as-is.
+     *
+     * @return number of regions that received a point-based supplement
+     */
+    private int supplementExistingWithPointBased(String projectId, String userId,
+                                                 String imageUrl, ImageType imageType) {
+        Map<RegionCategory, byte[]> pointMasks =
+                computePointBasedMasksPerCategory(projectId, imageUrl, imageType);
+        if (pointMasks.isEmpty()) {
+            log.info("Point-based supplement [project={}]: no masks produced", projectId);
+            return 0;
+        }
+
+        int merged = 0;
+        List<Region> autoRegions = regionRepository.findAutoRegionsByProjectId(projectId);
+        Map<RegionCategory, Region> byCategory = new java.util.EnumMap<>(RegionCategory.class);
+        for (Region r : autoRegions) {
+            if (r.getCategory() != null && !byCategory.containsKey(r.getCategory())) {
+                byCategory.put(r.getCategory(), r);
+            }
+        }
+
+        for (Map.Entry<RegionCategory, byte[]> e : pointMasks.entrySet()) {
+            RegionCategory cat = e.getKey();
+            byte[] pointMask = e.getValue();
+            try {
+                Region existing = byCategory.get(cat);
+                byte[] merged_bytes;
+                if (existing != null) {
+                    byte[] autoMask = downloadBytes(existing.getMaskUrl());
+                    int autoSize = MaskProcessor.countForeground(autoMask);
+                    int pointSize = MaskProcessor.countForeground(pointMask);
+                    byte[] union = MaskProcessor.unionMasks(java.util.List.of(autoMask, pointMask));
+                    merged_bytes = MaskProcessor.morphClean(union);
+                    int finalSize = MaskProcessor.countForeground(merged_bytes);
+                    log.info("Supplement {} [project={}]: auto={} px + point={} px -> union={} px",
+                            cat, projectId, autoSize, pointSize, finalSize);
+
+                    String key = storageService.store(merged_bytes, userId,
+                            cat.name().toLowerCase() + "-merged.png", "image/png");
+                    String url = storageService.getPublicUrl(key);
+                    existing.setMaskUrl(url);
+                    existing.setMaskData(url);
+                    regionRepository.save(existing);
+                } else {
+                    // No auto region of this category — save the point result fresh.
+                    byte[] cleaned = MaskProcessor.morphClean(pointMask);
+                    String key = storageService.store(cleaned, userId,
+                            cat.name().toLowerCase() + ".png", "image/png");
+                    String url = storageService.getPublicUrl(key);
+                    int order = (int) autoRegions.stream().count();
+                    Region region = Region.builder()
+                            .project(projectRepository.getReferenceById(projectId))
+                            .label(labelFor(cat))
+                            .category(cat)
+                            .maskUrl(url)
+                            .maskData(url)
+                            .displayOrder(order)
+                            .build();
+                    regionRepository.save(region);
+                    log.info("Supplement {} [project={}]: no auto, saved point-only {} px",
+                            cat, projectId, MaskProcessor.countForeground(pointMask));
+                }
+                merged++;
+            } catch (Exception ex) {
+                log.warn("Supplement merge failed for {} on project {}: {}", cat, projectId, ex.getMessage(), ex);
+            }
+        }
+        return merged;
+    }
+
+    private static String labelFor(RegionCategory cat) {
+        return switch (cat) {
+            case MAIN_WALL -> "Main Wall";
+            case ACCENT_WALL -> "Accent Wall";
+            case TRIM -> "Trim & Frames";
+            default -> cat.name();
+        };
+    }
+
+    /**
+     * Runs the SAM 2 point-prompt pipeline but returns per-category mask
+     * bytes instead of saving regions. Lets callers either persist directly
+     * (the original fallback) or union with existing auto-saved regions
+     * (the new outdoor supplementation path). All the actual SAM 2 calls
+     * and unioning logic live here; both wrappers reuse it.
+     */
+    private Map<RegionCategory, byte[]> computePointBasedMasksPerCategory(
+            String projectId, String imageUrl, ImageType imageType) {
+        Map<RegionCategory, byte[]> result = new java.util.EnumMap<>(RegionCategory.class);
+        try {
+            Optional<WallSceneAnalysis> analysisOpt = sceneAnalyzer.analyze(imageUrl, imageType);
+            if (analysisOpt.isEmpty()) {
+                log.warn("Point-based: scene analysis returned empty for project {}", projectId);
+                return result;
+            }
+            WallSceneAnalysis analysis = analysisOpt.get();
+            if (!analysis.paintable()) {
+                log.info("Point-based: scene flagged non-paintable for project {}", projectId);
+                return result;
+            }
+            UploadedImage image = loadAndEnsureDimensions(projectId);
+            int w = image.getWidth();
+            int h = image.getHeight();
+            List<WallSceneAnalysis.Point> excludes =
+                    analysis.excludePoints() != null ? analysis.excludePoints() : List.of();
+
+            if (analysis.mainWallPoints() != null && !analysis.mainWallPoints().isEmpty()) {
+                List<byte[]> masks = new ArrayList<>();
+                for (WallSceneAnalysis.Point p : analysis.mainWallPoints()) {
+                    byte[] m = runSam2PointMask(projectId, imageUrl, w, h, p, excludes);
+                    if (m != null) masks.add(m);
+                }
+                if (!masks.isEmpty()) {
+                    result.put(RegionCategory.MAIN_WALL, MaskProcessor.unionMasks(masks));
+                }
+            }
+            if (analysis.accentWallPoints() != null && !analysis.accentWallPoints().isEmpty()) {
+                List<byte[]> masks = new ArrayList<>();
+                for (WallSceneAnalysis.Point p : analysis.accentWallPoints()) {
+                    byte[] m = runSam2PointMask(projectId, imageUrl, w, h, p, excludes);
+                    if (m != null) masks.add(m);
+                }
+                if (!masks.isEmpty()) {
+                    result.put(RegionCategory.ACCENT_WALL, MaskProcessor.unionMasks(masks));
+                }
+            }
+            if (analysis.trimPoints() != null && !analysis.trimPoints().isEmpty()) {
+                List<WallSceneAnalysis.Point> trimNegatives = new ArrayList<>(excludes);
+                if (analysis.mainWallPoints() != null) trimNegatives.addAll(analysis.mainWallPoints());
+                List<byte[]> masks = new ArrayList<>();
+                for (WallSceneAnalysis.Point p : analysis.trimPoints()) {
+                    byte[] m = runSam2PointMask(projectId, imageUrl, w, h, p, trimNegatives);
+                    if (m != null) masks.add(m);
+                }
+                if (!masks.isEmpty()) {
+                    result.put(RegionCategory.TRIM, MaskProcessor.unionMasks(masks));
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Point-based mask computation failed for {}: {}", projectId, e.getMessage(), e);
+        }
+        return result;
+    }
+
     private int runPointBasedSegmentation(String projectId, String userId, String imageUrl, ImageType imageType) {
         try {
             log.info("Starting point-based segmentation fallback: project={}", projectId);
