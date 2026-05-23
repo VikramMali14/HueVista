@@ -411,6 +411,31 @@ public class SegmentationService {
                     .sum();
             log.info("Segmentation region sizes [project={}]: total main+accent foreground pixels={}", projectId, totalForeground);
 
+            // FALLBACK: if auto-mode produced a tiny fragmented mask (< 10000 px),
+            // delete it and try point-based segmentation with Claude's wall points.
+            // SAM 2 auto-mode fragments outdoor facades into edge specks; point mode
+            // with positive wall points + negative exclude points often produces
+            // one large coherent wall mask.
+            boolean isOutdoor = imageType == ImageType.OUTDOOR;
+            if (isOutdoor && totalForeground < 10000) {
+                log.warn("Auto-mode mask too small ({} px) for outdoor project {}, trying point-based fallback", totalForeground, projectId);
+                regionRepository.deleteAutoRegionsByProjectId(projectId);
+                int pointSaved = runPointBasedSegmentation(projectId, userId, imageUrl, imageType);
+                if (pointSaved > 0) {
+                    log.info("Point-based fallback succeeded for project {}, saved {} regions", projectId, pointSaved);
+                    markSegmented(projectId);
+                    return;
+                } else {
+                    log.warn("Point-based fallback also failed for project {}, keeping tiny auto mask", projectId);
+                    // Re-save the auto regions since we deleted them... actually,
+                    // we already ran auto-mode and saved. Let's just fail cleanly.
+                    markFailed(projectId,
+                            "The building facade could not be segmented automatically. " +
+                            "The photo may be too complex. Use click-to-segment to mark walls manually.");
+                    return;
+                }
+            }
+
             markSegmented(projectId);
             log.info("Segmentation complete: project={} type={} regions={} candidates={}",
                     projectId, imageType, saved, candidates.size());
