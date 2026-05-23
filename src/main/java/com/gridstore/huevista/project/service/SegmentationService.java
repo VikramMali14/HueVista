@@ -320,18 +320,26 @@ public class SegmentationService {
                 return;
             }
 
-            // Step 3.5: color-expansion — Claude often picks 1-2 of the wall
-            // pieces and misses 5+ similar-colored siblings that SAM split
-            // off. For each category, compute its mean color and pull in
-            // any unclaimed candidate mask whose mean color is close enough.
-            // This is what gets us from "30% coverage" to "near-complete".
-            expandClassificationByColor(originalBytes, candidates, mc, projectId);
+            // Step 3.5: SUBTRACTION-BASED MAIN WALL.
+            // Asking Claude to enumerate every wall fragment is unreliable on
+            // photos where SAM splits the wall into 15+ pieces. Instead we
+            // compute:
+            //   main_wall = ALL candidates  -  exclude  -  accent  -  trim
+            // Anything Claude DIDN'T explicitly assign defaults to main_wall
+            // (favors inclusion). This gets full wall coverage as long as
+            // Claude correctly identifies the obvious non-walls (doors,
+            // windows, stone, AC units, fixtures), which it does reliably.
+            List<Integer> resolvedMain = computeMainWallByExclusion(
+                    candidates.size(), mc.exclude(), mc.accentWall(), mc.trim(), mc.mainWall());
+            log.info("Subtraction MAIN_WALL [project={}]: claude main={} accent={} trim={} exclude={} -> resolved main={}",
+                    projectId, mc.mainWall().size(), mc.accentWall().size(),
+                    mc.trim().size(), mc.exclude().size(), resolvedMain.size());
 
             // Step 4: union the selected masks per category, clean them up,
             // upload to S3, save Region rows.
             int displayOrder = 0;
             int saved = 0;
-            if (saveUnionRegion(projectId, userId, candidates, mc.mainWall(),
+            if (saveUnionRegion(projectId, userId, candidates, resolvedMain,
                     "Main Wall", RegionCategory.MAIN_WALL, displayOrder)) {
                 saved++; displayOrder++;
             }
@@ -346,7 +354,7 @@ public class SegmentationService {
 
             if (saved == 0) {
                 markFailed(projectId,
-                        "Claude classified the photo but assigned no masks to any paint category. " +
+                        "Claude classified the photo but no paintable area remained. " +
                         "Use click-to-segment to mark walls manually.");
                 return;
             }
@@ -435,6 +443,35 @@ public class SegmentationService {
         log.info("Background filter [project={}]: kept {} of {} (dropped {} background, {} sky, {} ground)",
                 projectId, kept.size(), candidates.size(), droppedBg, droppedSky, droppedGround);
         return kept;
+    }
+
+    /**
+     * Computes MAIN_WALL by subtraction: every candidate mask index that
+     * isn't in Claude's exclude/accent/trim lists. Claude's own main_wall
+     * picks are included too (as a positive signal, even though they'd be
+     * captured anyway by "not in other lists"). De-duped, sorted.
+     *
+     * This is the load-bearing trick that makes the pipeline robust to
+     * Claude under-listing wall fragments: as long as Claude correctly
+     * identifies the OBVIOUS non-walls (doors, windows, stone, fixtures),
+     * everything else is treated as paintable wall by default.
+     */
+    private List<Integer> computeMainWallByExclusion(int candidateCount,
+                                                     List<Integer> exclude,
+                                                     List<Integer> accent,
+                                                     List<Integer> trim,
+                                                     List<Integer> claudeMain) {
+        java.util.Set<Integer> claimed = new java.util.HashSet<>();
+        if (exclude != null) claimed.addAll(exclude);
+        if (accent != null) claimed.addAll(accent);
+        if (trim != null) claimed.addAll(trim);
+
+        java.util.Set<Integer> result = new java.util.TreeSet<>();
+        if (claudeMain != null) result.addAll(claudeMain);
+        for (int i = 1; i <= candidateCount; i++) {
+            if (!claimed.contains(i)) result.add(i);
+        }
+        return new java.util.ArrayList<>(result);
     }
 
     /**

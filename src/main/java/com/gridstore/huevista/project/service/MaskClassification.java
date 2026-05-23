@@ -3,19 +3,29 @@ package com.gridstore.huevista.project.service;
 import java.util.List;
 
 /**
- * Claude's Set-of-Mark verdict: given the original photo overlaid with
- * numbered candidate masks from SAM 2 auto, which numbers belong to each
- * paintable category. Indices are 1-based to match the labels drawn on the
- * composite image (the same numbers a human reading the image would see).
+ * Claude's verdict on the Set-of-Mark composite: which numbered candidate
+ * masks belong to each paint category. Indices are 1-based to match the
+ * labels drawn on the composite.
  *
- * Empty lists are valid — a photo may have no accent wall, or no visible
- * trim. {@link #anyAssigned()} tells the caller whether the segmentation
- * produced anything worth saving.
+ * Every visible mask should be categorized into ONE of:
+ *   - mainWall
+ *   - accentWall
+ *   - trim
+ *   - exclude  (windows, doors, stone, brick, AC units, fixtures, etc.)
+ *
+ * Any candidate Claude doesn't list anywhere is treated as "uncertain" by
+ * the segmenter and added to mainWall as a default — favoring inclusion
+ * over a missed wall fragment, which is what the user actually wants for
+ * a paint visualization.
+ *
+ * Empty lists are valid (e.g. a photo with no accent wall returns
+ * accent_wall=[]).
  */
 public record MaskClassification(
         List<Integer> mainWall,
         List<Integer> accentWall,
         List<Integer> trim,
+        List<Integer> exclude,
         boolean paintable,
         String wallMaterial,
         String notes

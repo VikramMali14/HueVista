@@ -211,13 +211,14 @@ public class WallSceneAnalyzer {
             List<Integer> main = parseIntList(root.path("main_wall"), maskCount);
             List<Integer> accent = parseIntList(root.path("accent_wall"), maskCount);
             List<Integer> trim = parseIntList(root.path("trim"), maskCount);
+            List<Integer> exclude = parseIntList(root.path("exclude"), maskCount);
             boolean paintable = root.path("paintable").asBoolean(true);
             String material = textOrNull(root.path("wall_material"));
             String notes = textOrNull(root.path("notes"));
 
-            log.info("Mask classification [{}]: paintable={} material='{}' main={} accent={} trim={}",
-                    imageType, paintable, material, main, accent, trim);
-            return Optional.of(new MaskClassification(main, accent, trim, paintable, material, notes));
+            log.info("Mask classification [{}]: paintable={} material='{}' main={} accent={} trim={} exclude={}",
+                    imageType, paintable, material, main, accent, trim, exclude);
+            return Optional.of(new MaskClassification(main, accent, trim, exclude, paintable, material, notes));
 
         } catch (Exception e) {
             log.warn("Mask classification failed: {}", e.getMessage());
@@ -250,54 +251,65 @@ public class WallSceneAnalyzer {
                 ? "window frames, door frames, fascia under the roof, soffit, parapet edges, balcony railings, decorative banding"
                 : "window frames, door frames, baseboards / skirting, crown molding, picture rails, wainscoting";
 
-        return ("You are looking at an %s photograph with %d numbered candidate masks overlaid on it.\n"
-                + "Each numbered colored region is one mask. Read the numbers and decide which masks\n"
-                + "belong to each paint category.\n\n"
-                + "CRITICAL: SAM 2 OVER-SPLITS WALLS\n"
-                + "Walls of the same color are typically split across MANY masks — sometimes 5 to 15\n"
-                + "separate numbers — because SAM separates them at shadows, color gradients, edges,\n"
-                + "and architectural joints. You MUST list EVERY mask number that covers the same\n"
-                + "painted wall surface, not just the largest piece. If a cream wall is split into\n"
-                + "8 masks, all 8 numbers go into main_wall. Coverage matters more than tidiness.\n\n"
-                + "RULES:\n"
-                + "- main_wall: ALL mask numbers covering %s. Include EVERY piece — corners, soffits,\n"
-                + "  sections above/below windows, narrow strips next to doors, the wall behind the\n"
-                + "  balcony — anything that is the same painted-plaster surface. Typically 4–15\n"
-                + "  numbers for a real-world photo; rarely fewer than 3.\n"
-                + "- accent_wall: ALL numbers covering %s. Include every piece of that secondary\n"
-                + "  surface. Empty [] if there's no distinct second color/wall.\n"
-                + "- trim: ALL numbers covering %s. Include every visible trim piece — every window\n"
-                + "  frame, every door frame, every railing baluster.\n"
-                + "- HARD EXCLUDE — these are absolute, never include them in any category:\n"
-                + "    * sky, clouds, atmospheric haze (even if cream/beige at sunset)\n"
-                + "    * ground, dirt, soil, gravel, road, sidewalk, driveway, lawn, grass\n"
-                + "    * the largest mask in the photo if it covers > 1/3 of the frame — that's\n"
-                + "      almost always the sky or a background mask, not the wall\n"
-                + "    * any mask whose entire visible area is in the TOP THIRD of the photo\n"
-                + "      unless it is clearly part of the building (parapet, upper floor wall)\n"
-                + "    * any mask whose entire visible area is in the BOTTOM SIXTH of the photo\n"
-                + "- ALSO EXCLUDE: trees, plants, vehicles, glass panes, AC units, electrical\n"
-                + "  fixtures, stone cladding, exposed brick, ceramic tile, marble, wallpaper,\n"
-                + "  wood paneling, furniture, decor, neighboring buildings.\n"
-                + "- A mask number belongs to AT MOST ONE category. If two adjacent masks are\n"
-                + "  obviously the same wall surface (same color, separated by a shadow line or a\n"
-                + "  thin border), include BOTH in the same category.\n"
-                + "- When in doubt about a wall-colored mask, INCLUDE it in main_wall rather than\n"
-                + "  leave it out. Under-inclusion is the failure mode we're avoiding.\n\n"
-                + "ALSO RETURN:\n"
-                + "- paintable: false ONLY if no paintable wall is visible at all.\n"
-                + "- wall_material: short description.\n"
-                + "- notes: one sentence including roughly how many main_wall pieces you found and\n"
-                + "  why you grouped them together.\n\n"
-                + "Return ONLY this JSON. No markdown fences, no prose:\n\n"
+        return ("You are looking at an %s photograph. The second image is the SAME photo with\n"
+                + "%d numbered candidate masks overlaid in different colors. Use the first image\n"
+                + "(unannotated original) to see what each surface actually is; use the second\n"
+                + "image (annotated) to read the mask numbers.\n\n"
+                + "WHAT WE ARE DOING\n"
+                + "We are repainting this building. The result is computed by SUBTRACTION:\n"
+                + "  main_wall = (everything in the photo) – exclude – accent – trim\n"
+                + "So your most important job is to identify EVERY mask that should NOT be\n"
+                + "painted at all — those go into `exclude`. Whatever you leave out of exclude,\n"
+                + "accent, and trim will be painted with the main color.\n\n"
+                + "EXCLUDE — list mask numbers covering ANY of these. This is the critical list:\n"
+                + "  * Doors, garage doors, gates, door panels\n"
+                + "  * Windows, window glass, balcony glass, glazing\n"
+                + "  * Stone cladding, exposed brick, brick parapet, stone wall, stone column\n"
+                + "  * Ceramic tile, marble, granite, wallpaper, wood paneling, vinyl/metal siding\n"
+                + "  * AC units, exhaust fans, ducts, vents, electrical meters/boxes, drainpipes,\n"
+                + "    gutters, downspouts, satellite dishes, antennas, light fixtures, sconces,\n"
+                + "    light switches, electrical outlets, security cameras, junction boxes\n"
+                + "  * Mirrors, picture frames, paintings, TVs, signage, mailboxes, lamp posts\n"
+                + "  * Roof, roof tile, chimney (NOT roof eaves which are trim)\n"
+                + "  * Trees, bushes, plants, vines, grass, lawn\n"
+                + "  * Cars, motorcycles, bicycles, ladders\n"
+                + "  * Sky, clouds, distant buildings, fences (chain-link or metal)\n"
+                + "  * Ground, dirt, gravel, road, sidewalk, driveway, pavement\n"
+                + "  * People, animals\n"
+                + "  * Decorative wrought iron, balcony railings (railings only — the wall\n"
+                + "    behind them is paintable and goes into main_wall)\n\n"
+                + "ACCENT_WALL — usually empty []. Only fill if there is a clearly DIFFERENT\n"
+                + "color painted wall (e.g. a feature wall painted dark on a cream facade, or\n"
+                + "a perpendicular wall of a different shade). Don't split one cream wall into\n"
+                + "main + accent based on shadows — that's still all main_wall.\n\n"
+                + "TRIM — %s. Optional; empty [] if not clearly visible.\n\n"
+                + "MAIN_WALL — every mask covering %s. Best practice: list the obvious main wall\n"
+                + "pieces here, and let the segmenter automatically include anything you don't\n"
+                + "explicitly list elsewhere. Including a mask here is a positive signal but not\n"
+                + "required — the segmenter defaults uncategorized masks to main_wall.\n\n"
+                + "RULES OF THUMB\n"
+                + "- Be GENEROUS with exclude. If you're not sure whether something is paintable,\n"
+                + "  EXCLUDE it — it's worse to paint over an AC unit than to leave a wall fragment\n"
+                + "  unpainted (the user can click-segment to add it back).\n"
+                + "- A mask number belongs to AT MOST ONE list. Same mask can't be in exclude\n"
+                + "  AND main_wall.\n"
+                + "- Every mask 1..%d should appear in exactly one list. If you genuinely don't\n"
+                + "  know what a mask covers, omit it — the segmenter will default it to main_wall.\n\n"
+                + "ALSO RETURN\n"
+                + "- paintable: false ONLY if NO paintable wall is visible (whole facade is brick\n"
+                + "  or tile or wood). Otherwise true.\n"
+                + "- wall_material: short description of the dominant wall material.\n"
+                + "- notes: one sentence summary.\n\n"
+                + "Return ONLY this JSON. No markdown fences, no prose before or after:\n\n"
                 + "{\n"
                 + "  \"paintable\": <true|false>,\n"
                 + "  \"wall_material\": \"<string>\",\n"
                 + "  \"main_wall\": [<mask numbers>],\n"
                 + "  \"accent_wall\": [<mask numbers>],\n"
                 + "  \"trim\": [<mask numbers>],\n"
+                + "  \"exclude\": [<mask numbers>],\n"
                 + "  \"notes\": \"<string>\"\n"
-                + "}\n").formatted(typeHint, maskCount, mainHint, accentHint, trimHint);
+                + "}\n").formatted(typeHint, maskCount, trimHint, mainHint, maskCount);
     }
 
     private List<WallSceneAnalysis.Point> parsePoints(JsonNode node) {
