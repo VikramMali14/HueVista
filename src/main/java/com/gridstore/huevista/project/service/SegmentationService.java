@@ -66,6 +66,7 @@ public class SegmentationService {
     private final RestTemplate restTemplate;
     private final JsonMapper objectMapper;
     private final WallSceneAnalyzer sceneAnalyzer;
+    private final Ade20kSegmenter ade20kSegmenter;
     private final com.gridstore.huevista.image.repository.ImageRepository imageRepository;
 
     @Value("${replicate.api-token:}")
@@ -268,6 +269,20 @@ public class SegmentationService {
 
             UploadedImage image = loadAndEnsureDimensions(projectId);
             byte[] originalBytes = storageService.load(image.getStorageKey());
+
+            // Step 0: ADE20K SEMANTIC SEGMENTATION (preferred path).
+            // A Mask2Former/OneFormer/SegFormer model knows every pixel's
+            // scene class — "wall", "windowpane", "door", "sky", "grass",
+            // etc. — so we can pick the wall directly instead of asking
+            // SAM 2 to guess. When this model is configured AND produces
+            // a wall mask, we skip the entire SAM/Claude pipeline below.
+            // Falls through silently to the legacy path when ADE20K isn't
+            // configured or fails.
+            if (tryAde20kSegmentation(projectId, userId, imageUrl)) {
+                markSegmented(projectId);
+                log.info("ADE20K segmentation succeeded for project {} — skipping SAM/Claude pipeline", projectId);
+                return;
+            }
 
             // Step 1: SAM 2 automatic mode produces ~15–30 candidate masks
             // covering every segment in the photo (wall, sky, ground, door,
@@ -1206,6 +1221,133 @@ public class SegmentationService {
         return merged;
     }
 
+    /**
+     * Runs ADE20K semantic segmentation, saves the wall mask (+ optional
+     * trim from the railing class), and returns true on success. False if
+     * the segmenter isn't configured, fails, or returns no wall pixels —
+     * the caller should fall through to the SAM/Claude pipeline.
+     *
+     * Pipeline:
+     *  1. Call Mask2Former/OneFormer/SegFormer on Replicate → per-class
+     *     ADE20K masks.
+     *  2. UNION the "wall" (0) and "building" (1) classes → raw paintable.
+     *  3. SUBTRACT every EXCLUDE_CLASSES mask (door, window, painting,
+     *     sky, ground, mirror, lights, vehicles, etc.) so we never paint
+     *     over non-paintable surfaces. Dilation=1 trims a thin fringe so
+     *     ADE20K's mask boundaries don't leak.
+     *  4. Morph close+open to clean up speckle.
+     *  5. Save as MAIN_WALL. If the model also returned a "railing"
+     *     mask, save it as TRIM with displayOrder 1.
+     *
+     * Cost: one Replicate call (~5-10s, ~$0.005-0.02 depending on model).
+     * The user explicitly requested perfect over cheap.
+     */
+    private boolean tryAde20kSegmentation(String projectId, String userId, String imageUrl) {
+        try {
+            if (!ade20kSegmenter.isConfigured()) {
+                log.debug("ADE20K segmenter not configured — skipping primary path");
+                return false;
+            }
+            Optional<Ade20kResult> resultOpt = ade20kSegmenter.segment(imageUrl);
+            if (resultOpt.isEmpty()) {
+                log.info("ADE20K returned no result — falling back to SAM pipeline");
+                return false;
+            }
+            Ade20kResult r = resultOpt.get();
+            if (!r.hasWall()) {
+                log.info("ADE20K returned no wall mask — falling back to SAM pipeline");
+                return false;
+            }
+
+            // Build the wall mask: union of "wall" + "building".
+            List<byte[]> wallMasks = new ArrayList<>();
+            byte[] wallClass = r.perClassMasks().get(Ade20kResult.CLASS_WALL);
+            byte[] buildingClass = r.perClassMasks().get(Ade20kResult.CLASS_BUILDING);
+            if (wallClass != null) wallMasks.add(wallClass);
+            if (buildingClass != null) wallMasks.add(buildingClass);
+            if (wallMasks.isEmpty()) return false;
+
+            byte[] wallUnion = MaskProcessor.unionMasks(wallMasks);
+            int wallPx = MaskProcessor.countForeground(wallUnion);
+            log.info("ADE20K wall union [project={}]: {} px", projectId, wallPx);
+
+            // Subtract every exclusion class the model identified.
+            List<byte[]> excludeMasks = new ArrayList<>();
+            for (Integer classId : Ade20kResult.EXCLUDE_CLASSES) {
+                byte[] m = r.perClassMasks().get(classId);
+                if (m != null) excludeMasks.add(m);
+            }
+            byte[] finalWall;
+            if (excludeMasks.isEmpty()) {
+                finalWall = wallUnion;
+            } else {
+                byte[] excludeUnion = MaskProcessor.unionMasks(excludeMasks);
+                try {
+                    finalWall = MaskProcessor.subtract(wallUnion, excludeUnion, 1);
+                    log.info("ADE20K subtracted {} exclude classes [project={}]: {} px remaining",
+                            excludeMasks.size(), projectId, MaskProcessor.countForeground(finalWall));
+                } catch (Exception e) {
+                    log.warn("ADE20K subtract failed for {}, using raw wall union: {}", projectId, e.getMessage());
+                    finalWall = wallUnion;
+                }
+            }
+
+            // Morph clean — closes speckle gaps along plaster joints.
+            try {
+                finalWall = MaskProcessor.morphClean(finalWall);
+            } catch (Exception e) {
+                log.warn("Morph clean failed on ADE20K wall for {}: {}", projectId, e.getMessage());
+            }
+
+            int finalPx = MaskProcessor.countForeground(finalWall);
+            if (finalPx < 5000) {
+                log.warn("ADE20K wall mask too small after subtraction ({} px) — fall back to SAM", finalPx);
+                return false;
+            }
+
+            // Save MAIN_WALL.
+            String wallKey = storageService.store(finalWall, userId, "ade20k-main-wall.png", "image/png");
+            Region wallRegion = Region.builder()
+                    .project(projectRepository.getReferenceById(projectId))
+                    .label("Main Wall")
+                    .category(RegionCategory.MAIN_WALL)
+                    .maskUrl(storageService.getPublicUrl(wallKey))
+                    .maskData(storageService.getPublicUrl(wallKey))
+                    .displayOrder(0)
+                    .build();
+            regionRepository.save(wallRegion);
+            log.info("ADE20K saved MAIN_WALL for project {}: {} px", projectId, finalPx);
+
+            // Save TRIM from railing class if present (ADE20K class 38 or 43 depending on variant).
+            byte[] railing = r.perClassMasks().get(Ade20kResult.CLASS_RAILING);
+            if (railing == null) railing = r.perClassMasks().get(95); // alternate "bannister" id
+            if (railing != null) {
+                try {
+                    byte[] cleanedTrim = MaskProcessor.morphClean(railing);
+                    String trimKey = storageService.store(cleanedTrim, userId, "ade20k-trim.png", "image/png");
+                    Region trimRegion = Region.builder()
+                            .project(projectRepository.getReferenceById(projectId))
+                            .label("Trim & Frames")
+                            .category(RegionCategory.TRIM)
+                            .maskUrl(storageService.getPublicUrl(trimKey))
+                            .maskData(storageService.getPublicUrl(trimKey))
+                            .displayOrder(1)
+                            .build();
+                    regionRepository.save(trimRegion);
+                    log.info("ADE20K saved TRIM (railing) for project {}", projectId);
+                } catch (Exception e) {
+                    log.warn("Failed to save ADE20K TRIM for {}: {}", projectId, e.getMessage());
+                }
+            }
+
+            return true;
+        } catch (Exception e) {
+            log.warn("ADE20K segmentation path failed for project {}, falling back to SAM: {}",
+                    projectId, e.getMessage(), e);
+            return false;
+        }
+    }
+
     private static String labelFor(RegionCategory cat) {
         return switch (cat) {
             case MAIN_WALL -> "Main Wall";
@@ -1425,7 +1567,34 @@ public class SegmentationService {
 
             byte[] raw = downloadBytes(maskUrl);
             byte[] clean = MaskProcessor.morphClean(raw);
-            return MaskProcessor.ensureWhiteForeground(clean);
+            byte[] whiteFg = MaskProcessor.ensureWhiteForeground(clean);
+
+            // Sanity filter: SAM 2 with a single point sometimes returns the
+            // "everything except this object" mask, OR Claude occasionally
+            // places a point that lands on sky/ground. Either way the result
+            // is a giant background-shaped mask covering the top, bottom, or
+            // both edges of the image — we MUST drop it or it will pollute
+            // the union with sky+ground pixels and end up painted.
+            try {
+                java.awt.image.BufferedImage decoded = MaskProcessor.decode(whiteFg);
+                java.awt.image.BufferedImage small = MaskProcessor.downsample(decoded, 512);
+                MaskProcessor.MaskStats st = MaskProcessor.stats(small, 3);
+                double frac = st.foregroundFraction();
+                boolean looksLikeSky = st.touchesTop() && frac > 0.10;
+                boolean looksLikeGround = st.touchesBottom() && frac > 0.10;
+                boolean looksLikeFullBackground = frac > 0.50 && st.touchesTop() && st.touchesBottom();
+                if (looksLikeSky || looksLikeGround || looksLikeFullBackground) {
+                    log.warn("Discarding point-mask for project {}: point ({},{}) returned a background-shaped mask (frac={}, top={}, bottom={})",
+                            projectId, positive.x(), positive.y(),
+                            String.format("%.2f", frac), st.touchesTop(), st.touchesBottom());
+                    return null;
+                }
+            } catch (Exception e) {
+                // If stats fail, prefer to keep the mask rather than drop it.
+                log.debug("Sky/ground stats check failed for project {}: {}", projectId, e.getMessage());
+            }
+
+            return whiteFg;
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
