@@ -549,13 +549,33 @@ final class MaskProcessor {
      */
     static byte[] maskByColorRangeMultiSeed(BufferedImage original, java.util.List<int[]> targetColors,
                                             double threshold, double bottomCropFraction) throws IOException {
+        return maskByColorRangeMultiSeed(original, null, targetColors, threshold, bottomCropFraction);
+    }
+
+    /**
+     * Like {@link #maskByColorRangeMultiSeed} but constrained to a region mask.
+     * Only pixels where {@code regionMask} is white are checked for color matching.
+     * This prevents ground/sky leakage by confining the search to the building silhouette.
+     */
+    static byte[] maskByColorRangeMultiSeed(BufferedImage original, BufferedImage regionMask,
+                                            java.util.List<int[]> targetColors,
+                                            double threshold, double bottomCropFraction) throws IOException {
         int w = original.getWidth(), h = original.getHeight();
         boolean[] mask = new boolean[w * h];
+        boolean[] region = null;
+        if (regionMask != null) {
+            if (regionMask.getWidth() != w || regionMask.getHeight() != h) {
+                regionMask = resizeNearest(regionMask, w, h);
+            }
+            region = thresholdToBinary(regionMask, w, h);
+        }
         int cropY = (int) (h * (1.0 - bottomCropFraction));
         if (cropY > h) cropY = h;
 
         for (int y = 0; y < cropY; y++) {
             for (int x = 0; x < w; x++) {
+                int idx = y * w + x;
+                if (region != null && !region[idx]) continue;
                 int p = original.getRGB(x, y);
                 int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
                 for (int[] targetColor : targetColors) {
@@ -563,7 +583,7 @@ final class MaskProcessor {
                             + (targetColor[1]-g)*(targetColor[1]-g)
                             + (targetColor[2]-b)*(targetColor[2]-b));
                     if (dist <= threshold) {
-                        mask[y * w + x] = true;
+                        mask[idx] = true;
                         break;
                     }
                 }

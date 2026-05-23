@@ -720,8 +720,18 @@ public class SegmentationService {
                 int[] meanColor = MaskProcessor.meanColor(original, seed);
 
                 if (unionForeground < 5000) {
-                    // Seeds are tiny specks — use global color matching to find
-                    // ALL pixels of the same color across the entire image.
+                    // Seeds are tiny specks — use color matching confined to the
+                    // building silhouette so we don't leak into ground/sky.
+                    // Build silhouette = union of ALL candidate masks (after background
+                    // filter, these cover the building footprint, not the surroundings).
+                    java.awt.image.BufferedImage silhouette = null;
+                    try {
+                        byte[] silhouetteBytes = MaskProcessor.unionMasks(candidates);
+                        silhouette = MaskProcessor.decode(silhouetteBytes);
+                    } catch (Exception e) {
+                        log.warn("Could not build silhouette for project {}, using full image", projectId);
+                    }
+
                     // Use multi-seed: compute mean color from EACH individual mask
                     // so sunlit and shadowed walls are both captured.
                     java.util.List<int[]> seedColors = new java.util.ArrayList<>();
@@ -733,9 +743,10 @@ public class SegmentationService {
                     if (seedColors.isEmpty() && meanColor != null) {
                         seedColors.add(meanColor);
                     }
-                    log.info("saveGrownRegion [project={} category={}]: using multi-seed color match, {} seeds",
+                    log.info("saveGrownRegion [project={} category={}]: using silhouette-constrained multi-seed, {} seeds",
                             projectId, category, seedColors.size());
-                    grown = MaskProcessor.maskByColorRangeMultiSeed(original, seedColors, COLOR_RANGE_THRESHOLD, 0.15);
+                    grown = MaskProcessor.maskByColorRangeMultiSeed(
+                            original, silhouette, seedColors, COLOR_RANGE_THRESHOLD, 0.15);
                     int rangeForeground = MaskProcessor.countForeground(grown);
                     log.info("saveGrownRegion [project={} category={}]: after color range = {} foreground pixels",
                             projectId, category, rangeForeground);
