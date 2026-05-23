@@ -275,8 +275,24 @@ public class SegmentationService {
             // that's Claude's job in step 3.
             List<String> maskUrls = runSam2AutoPass(projectId, imageUrl, imageType);
             if (maskUrls.isEmpty()) {
+                // SAM 2 auto returned nothing — could be a transient Replicate
+                // failure or genuine model output. For outdoor photos we have a
+                // fully independent fallback (Claude → SAM 2 point prompts) that
+                // doesn't need the auto candidates at all. Run it directly so
+                // users don't get a hard failure on an intermittent issue.
+                log.warn("SAM 2 auto returned no masks for project {}; trying point-based path directly", projectId);
+                if (imageType == ImageType.OUTDOOR) {
+                    int pointSaved = runPointBasedSegmentation(projectId, userId, imageUrl, imageType);
+                    if (pointSaved > 0) {
+                        markSegmented(projectId);
+                        log.info("Auto-mode empty for project {}, point-based saved {} regions", projectId, pointSaved);
+                        return;
+                    }
+                    log.warn("Point-based fallback also empty for project {}", projectId);
+                }
                 markFailed(projectId,
-                        "SAM 2 produced no candidate masks. The photo may be too small or low contrast. " +
+                        "SAM 2 produced no candidate masks (this can be a transient Replicate issue — try again in a minute). " +
+                        "If the failure persists, the photo may be too small or low contrast. " +
                         "Try click-to-segment to mark walls manually.");
                 return;
             }
