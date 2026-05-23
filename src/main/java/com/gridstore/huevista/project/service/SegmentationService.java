@@ -387,20 +387,19 @@ public class SegmentationService {
     private static final double COLOR_EXPANSION_THRESHOLD = 20.0;
 
     /**
-     * Background-rejection thresholds. A mask that covers more than
-     * BACKGROUND_FRAME_FRAC of the image is almost certainly sky, ground,
-     * or a "background everything-else" mask and gets dropped before Claude
-     * sees it. Smaller masks that touch the top edge with at least
-     * EDGE_BACKGROUND_FRAC coverage are dropped as sky; same for the
-     * bottom edge as ground.
+     * Background-rejection thresholds. The ONLY way a mask gets dropped is
+     * if it looks like sky or ground — i.e. it touches the top or bottom
+     * edge AND covers a meaningful area. A large mask in the middle of the
+     * frame is the building wall, NOT the background; we keep it.
      *
-     * Edge tolerance is 3 pixels (downsampled to 512px), so a mask doesn't
-     * have to literally reach the border to count as sky/ground — a thin
-     * gap of a few rows still classifies as background. Earlier 1-pixel
-     * tolerance let a pavement strip with a 2-row gap slip into MAIN_WALL.
+     * Earlier versions dropped masks above 35% coverage as "background-
+     * like", which silently filtered out coherent wall masks (the building
+     * wall in a phone photo often covers 30-45% of the frame). Now we only
+     * drop a large mask if it ALSO touches both top AND bottom edges — that
+     * geometry is only possible for a true background mask.
      */
-    private static final double BACKGROUND_FRAME_FRAC = 0.35;
     private static final double EDGE_BACKGROUND_FRAC = 0.10;
+    private static final double FULLFRAME_BACKGROUND_FRAC = 0.65;
     private static final int BACKGROUND_EDGE_TOLERANCE_PX = 3;
 
     /**
@@ -415,33 +414,39 @@ public class SegmentationService {
      */
     private List<byte[]> filterBackgroundCandidates(List<byte[]> candidates, String projectId) {
         List<byte[]> kept = new ArrayList<>(candidates.size());
-        int droppedBg = 0, droppedSky = 0, droppedGround = 0;
+        int droppedSky = 0, droppedGround = 0, droppedFullFrame = 0;
         for (byte[] bytes : candidates) {
             try {
                 java.awt.image.BufferedImage raw = MaskProcessor.decode(bytes);
                 java.awt.image.BufferedImage small = MaskProcessor.downsample(raw, COLOR_ANALYSIS_MAX_DIM);
                 MaskProcessor.MaskStats st = MaskProcessor.stats(small, BACKGROUND_EDGE_TOLERANCE_PX);
                 double frac = st.foregroundFraction();
-                if (frac > BACKGROUND_FRAME_FRAC) {
-                    droppedBg++;
-                    continue;
-                }
+
+                // SKY — touches top edge with significant area.
                 if (st.touchesTop() && frac > EDGE_BACKGROUND_FRAC) {
                     droppedSky++;
                     continue;
                 }
+                // GROUND — touches bottom edge with significant area.
                 if (st.touchesBottom() && frac > EDGE_BACKGROUND_FRAC) {
                     droppedGround++;
                     continue;
                 }
+                // FULL-FRAME BACKGROUND — covers most of the image AND touches
+                // both top and bottom. A real building wall, no matter how big,
+                // won't span both vertical extremes (there's always sky above
+                // and ground below). Catches "everything-else" masks.
+                if (frac > FULLFRAME_BACKGROUND_FRAC && st.touchesTop() && st.touchesBottom()) {
+                    droppedFullFrame++;
+                    continue;
+                }
                 kept.add(bytes);
             } catch (Exception e) {
-                // Can't read this mask — drop it. Better than crashing.
                 log.debug("Dropping unreadable mask for project {}: {}", projectId, e.getMessage());
             }
         }
-        log.info("Background filter [project={}]: kept {} of {} (dropped {} background, {} sky, {} ground)",
-                projectId, kept.size(), candidates.size(), droppedBg, droppedSky, droppedGround);
+        log.info("Background filter [project={}]: kept {} of {} (dropped {} sky, {} ground, {} full-frame)",
+                projectId, kept.size(), candidates.size(), droppedSky, droppedGround, droppedFullFrame);
         return kept;
     }
 
@@ -628,15 +633,17 @@ public class SegmentationService {
      */
     private List<String> runSam2AutoPass(String projectId, String imageUrl) {
         try {
-            // Tuned for HIGH RECALL — we'd rather Claude have too many
-            // candidates than too few. Lower thresholds + finer grid produce
-            // ~40-80 masks per photo; cap is applied downstream.
+            // Tuned for COHERENT large masks rather than many fragments. The
+            // subtraction approach (main_wall = all − exclude − accent − trim)
+            // works best when SAM produces a single mask covering the wall,
+            // not 15 wall-fragment masks. Higher pred_iou + stability + larger
+            // min_region keeps only the masks SAM is confident about.
             Map<String, Object> input = Map.of(
                     "image", imageUrl,
-                    "points_per_side", 48,
-                    "pred_iou_thresh", 0.82,
-                    "stability_score_thresh", 0.90,
-                    "min_mask_region_area", 2500,
+                    "points_per_side", 32,
+                    "pred_iou_thresh", 0.88,
+                    "stability_score_thresh", 0.92,
+                    "min_mask_region_area", 5000,
                     "use_m2m", true
             );
             String predictionId = startSam2Prediction(input);
