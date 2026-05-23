@@ -831,16 +831,16 @@ public class SegmentationService {
      * expand to adjacent pixels within this distance. 35 catches same-paint
      * surfaces with shadow variation while stopping at stone, windows, and sky.
      */
-    private static final double COLOR_GROW_THRESHOLD = 22.0;
+    private static final double COLOR_GROW_THRESHOLD = 30.0;
 
     /**
      * RGB distance threshold for global color range matching. Used when SAM 2
-     * seeds are too tiny to flood-fill from. 22 catches sunlit and shadowed
-     * wall pixels while excluding trim (~26 away) and ground/sky. Stone at
-     * ~20 may leak slightly, but pixel-level subtraction of exclude masks
-     * removes it afterward.
+     * seeds are too tiny to flood-fill from. 30 catches sunlit and shadowed
+     * wall pixels across the entire facade. Stone (~20 away) and trim (~26)
+     * will leak in, but pixel-level subtraction of Claude's exclude masks
+     * removes them afterward. Ground/sky stay excluded via silhouette constraint.
      */
-    private static final double COLOR_RANGE_THRESHOLD = 22.0;
+    private static final double COLOR_RANGE_THRESHOLD = 30.0;
 
     /**
      * Runs SAM 2 in automatic mask generation mode. The model lays a grid of
