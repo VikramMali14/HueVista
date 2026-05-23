@@ -95,16 +95,16 @@ public class SegmentationService {
     @Value("${replicate.sam2.indoor.stability-thresh:0.92}")
     private double indoorStabilityThresh;
 
-    @Value("${replicate.sam2.outdoor.pred-iou-thresh:0.75}")
+    @Value("${replicate.sam2.outdoor.pred-iou-thresh:0.70}")
     private double outdoorPredIouThresh;
 
-    @Value("${replicate.sam2.outdoor.stability-thresh:0.82}")
+    @Value("${replicate.sam2.outdoor.stability-thresh:0.78}")
     private double outdoorStabilityThresh;
 
     @Value("${replicate.sam2.points-per-side:32}")
     private int sam2PointsPerSide;
 
-    @Value("${replicate.sam2.outdoor.points-per-side:48}")
+    @Value("${replicate.sam2.outdoor.points-per-side:64}")
     private int outdoorSam2PointsPerSide;
 
     @Value("${replicate.sam2.min-mask-region-area:5000}")
@@ -389,8 +389,10 @@ public class SegmentationService {
             }
 
             // Sanity check: if the main wall region is unreasonably small,
-            // the pipeline likely missed the actual walls. Fail with a helpful
-            // message rather than presenting the user with useless tiny masks.
+            // the auto-mode pipeline missed the actual walls. Instead of failing,
+            // fall back to Claude point-based segmentation which drives SAM 2
+            // with explicit coordinates rather than hoping auto-mode discovers
+            // the wall as a single coherent segment.
             long totalForeground = regionRepository.findAutoRegionsByProjectId(projectId)
                     .stream()
                     .filter(r -> r.getCategory() == RegionCategory.MAIN_WALL || r.getCategory() == RegionCategory.ACCENT_WALL)
@@ -402,7 +404,14 @@ public class SegmentationService {
                     })
                     .sum();
             if (totalForeground < 500) {
+                log.warn("Auto-mode produced only {} foreground pixels for project {} — falling back to point-based segmentation", totalForeground, projectId);
                 regionRepository.deleteAutoRegionsByProjectId(projectId);
+                int pointSaved = runPointBasedSegmentation(projectId, userId, imageUrl, imageType);
+                if (pointSaved > 0) {
+                    markSegmented(projectId);
+                    log.info("Point-based segmentation complete: project={} regions={}", projectId, pointSaved);
+                    return;
+                }
                 markFailed(projectId,
                         "Segmentation produced only tiny fragments — the walls were not detected. " +
                         "Try click-to-segment to mark the wall areas manually.");
@@ -874,10 +883,87 @@ public class SegmentationService {
     }
 
     // ========================================================================
+    // Point-based fallback — used when SAM 2 auto mode produces tiny fragments
+    // ========================================================================
+
+    /**
+     * Fallback segmentation that uses Claude scene analysis to find point
+     * coordinates on walls, then feeds those points to SAM 2. Much more
+     * reliable than auto mode for outdoor building facades where SAM 2 auto
+     * fragments everything into tiny edge pieces.
+     */
+    private int runPointBasedSegmentation(String projectId, String userId, String imageUrl, ImageType imageType) {
+        try {
+            log.info("Starting point-based segmentation fallback: project={}", projectId);
+
+            Optional<WallSceneAnalysis> analysisOpt = sceneAnalyzer.analyze(imageUrl, imageType);
+            if (analysisOpt.isEmpty()) {
+                log.warn("Point-based fallback: scene analysis failed for project {}", projectId);
+                return 0;
+            }
+            WallSceneAnalysis analysis = analysisOpt.get();
+            if (!analysis.paintable()) {
+                log.warn("Point-based fallback: scene analysis says not paintable for project {}", projectId);
+                return 0;
+            }
+            if (analysis.mainWallPoints() == null || analysis.mainWallPoints().isEmpty()) {
+                log.warn("Point-based fallback: no main wall points for project {}", projectId);
+                return 0;
+            }
+
+            UploadedImage image = loadAndEnsureDimensions(projectId);
+            int w = image.getWidth();
+            int h = image.getHeight();
+
+            int displayOrder = 0;
+            int saved = 0;
+
+            // Main wall — positive points from Claude, negative from exclude list
+            Region main = runSam2CategoryPass(
+                    projectId, userId, imageUrl, w, h,
+                    analysis.mainWallPoints(),
+                    analysis.excludePoints() != null ? analysis.excludePoints() : List.of(),
+                    "Main Wall", RegionCategory.MAIN_WALL, displayOrder);
+            if (main != null) { saved++; displayOrder++; }
+
+            // Accent wall — optional
+            if (analysis.accentWallPoints() != null && !analysis.accentWallPoints().isEmpty()) {
+                Region accent = runSam2CategoryPass(
+                        projectId, userId, imageUrl, w, h,
+                        analysis.accentWallPoints(),
+                        analysis.excludePoints() != null ? analysis.excludePoints() : List.of(),
+                        "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder);
+                if (accent != null) { saved++; displayOrder++; }
+            }
+
+            // Trim — optional, use main wall points as extra negatives so trim
+            // doesn't bleed into the wall, and exclude points too.
+            if (analysis.trimPoints() != null && !analysis.trimPoints().isEmpty()) {
+                List<WallSceneAnalysis.Point> trimNegatives = new ArrayList<>();
+                if (analysis.excludePoints() != null) trimNegatives.addAll(analysis.excludePoints());
+                if (analysis.mainWallPoints() != null) trimNegatives.addAll(analysis.mainWallPoints());
+                Region trim = runSam2CategoryPass(
+                        projectId, userId, imageUrl, w, h,
+                        analysis.trimPoints(), trimNegatives,
+                        "Trim & Frames", RegionCategory.TRIM, displayOrder);
+                if (trim != null) { saved++; displayOrder++; }
+            }
+
+            log.info("Point-based fallback saved {} regions for project {}", saved, projectId);
+            return saved;
+
+        } catch (Exception e) {
+            log.error("Point-based segmentation fallback failed for project {}: {}", projectId, e.getMessage(), e);
+            return 0;
+        }
+    }
+
+    // ========================================================================
     // Legacy grounded_sam pipeline — kept around for reference but no longer
     // wired into segmentAsync. Will be removed once the SAM 2 + points path
     // proves stable in production.
     // ========================================================================
+
 
     /**
      * @deprecated Replaced by {@link #runSam2CategoryPass}. The grounded_sam
