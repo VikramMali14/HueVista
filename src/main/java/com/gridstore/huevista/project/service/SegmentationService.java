@@ -86,6 +86,30 @@ public class SegmentationService {
     @Value("${replicate.grounded-sam.detect-non-paintable:false}")
     private boolean detectNonPaintable;
 
+    // --- SAM 2 auto-mode tuning (indoor vs outdoor) -------------------------
+    // Outdoor facades are harder for SAM 2 auto — large uniform surfaces,
+    // harsher lighting, mixed materials. Lower thresholds catch more candidates.
+    @Value("${replicate.sam2.indoor.pred-iou-thresh:0.88}")
+    private double indoorPredIouThresh;
+
+    @Value("${replicate.sam2.indoor.stability-thresh:0.92}")
+    private double indoorStabilityThresh;
+
+    @Value("${replicate.sam2.outdoor.pred-iou-thresh:0.75}")
+    private double outdoorPredIouThresh;
+
+    @Value("${replicate.sam2.outdoor.stability-thresh:0.82}")
+    private double outdoorStabilityThresh;
+
+    @Value("${replicate.sam2.points-per-side:32}")
+    private int sam2PointsPerSide;
+
+    @Value("${replicate.sam2.outdoor.points-per-side:48}")
+    private int outdoorSam2PointsPerSide;
+
+    @Value("${replicate.sam2.min-mask-region-area:5000}")
+    private int sam2MinMaskRegionArea;
+
     private static final String REPLICATE_BASE = "https://api.replicate.com/v1";
     private static final int POLL_INTERVAL_MS = 3000;
     private static final int MAX_POLL_ATTEMPTS = 60;
@@ -249,7 +273,7 @@ public class SegmentationService {
             // covering every segment in the photo (wall, sky, ground, door,
             // window, AC unit, etc.). We don't yet know which is which —
             // that's Claude's job in step 3.
-            List<String> maskUrls = runSam2AutoPass(projectId, imageUrl);
+            List<String> maskUrls = runSam2AutoPass(projectId, imageUrl, imageType);
             if (maskUrls.isEmpty()) {
                 markFailed(projectId,
                         "SAM 2 produced no candidate masks. The photo may be too small or low contrast. " +
@@ -275,7 +299,7 @@ public class SegmentationService {
             // Claude sees them. Without this, Claude (and downstream color
             // expansion) reliably mis-classifies the huge sky mask as the
             // main wall — exactly what happened in the user's last test.
-            candidates = filterBackgroundCandidates(candidates, projectId);
+            candidates = filterBackgroundCandidates(candidates, projectId, imageType);
             if (candidates.isEmpty()) {
                 markFailed(projectId,
                         "After filtering sky/ground, no wall-shaped candidates remained. " +
@@ -309,6 +333,11 @@ public class SegmentationService {
                 return;
             }
             MaskClassification mc = classOpt.get();
+
+            // Step 3.25: color-based expansion — pull in wall fragments that
+            // Claude missed but match the mean color of the wall masks.
+            expandClassificationByColor(originalBytes, candidates, mc, projectId);
+
             if (!mc.paintable()) {
                 String material = mc.wallMaterial();
                 String notes = mc.notes();
@@ -356,6 +385,27 @@ public class SegmentationService {
                 markFailed(projectId,
                         "Claude classified the photo but no paintable area remained. " +
                         "Use click-to-segment to mark walls manually.");
+                return;
+            }
+
+            // Sanity check: if the main wall region is unreasonably small,
+            // the pipeline likely missed the actual walls. Fail with a helpful
+            // message rather than presenting the user with useless tiny masks.
+            long totalForeground = regionRepository.findAutoRegionsByProjectId(projectId)
+                    .stream()
+                    .filter(r -> r.getCategory() == RegionCategory.MAIN_WALL || r.getCategory() == RegionCategory.ACCENT_WALL)
+                    .mapToLong(r -> {
+                        try {
+                            byte[] b = downloadBytes(r.getMaskUrl());
+                            return MaskProcessor.countForeground(b);
+                        } catch (Exception e) { return 0; }
+                    })
+                    .sum();
+            if (totalForeground < 500) {
+                regionRepository.deleteAutoRegionsByProjectId(projectId);
+                markFailed(projectId,
+                        "Segmentation produced only tiny fragments — the walls were not detected. " +
+                        "Try click-to-segment to mark the wall areas manually.");
                 return;
             }
 
@@ -412,7 +462,12 @@ public class SegmentationService {
      *   - touches top edge AND fraction &gt; 15% → sky, drop
      *   - touches bottom edge AND fraction &gt; 15% → ground, drop
      */
-    private List<byte[]> filterBackgroundCandidates(List<byte[]> candidates, String projectId) {
+    private List<byte[]> filterBackgroundCandidates(List<byte[]> candidates, String projectId, ImageType imageType) {
+        // Outdoor buildings legitimately touch frame edges; be much more lenient.
+        boolean outdoor = imageType == ImageType.OUTDOOR;
+        double edgeFrac   = outdoor ? 0.25 : EDGE_BACKGROUND_FRAC;
+        double fullFrac   = outdoor ? 0.80 : FULLFRAME_BACKGROUND_FRAC;
+        int edgeTol       = outdoor ? 5 : BACKGROUND_EDGE_TOLERANCE_PX;
         List<byte[]> kept = new ArrayList<>(candidates.size());
         int droppedSky = 0, droppedGround = 0, droppedFullFrame = 0;
         for (byte[] bytes : candidates) {
@@ -423,20 +478,19 @@ public class SegmentationService {
                 double frac = st.foregroundFraction();
 
                 // SKY — touches top edge with significant area.
-                if (st.touchesTop() && frac > EDGE_BACKGROUND_FRAC) {
+                if (st.touchesTop() && frac > edgeFrac) {
                     droppedSky++;
                     continue;
                 }
                 // GROUND — touches bottom edge with significant area.
-                if (st.touchesBottom() && frac > EDGE_BACKGROUND_FRAC) {
+                if (st.touchesBottom() && frac > edgeFrac) {
                     droppedGround++;
                     continue;
                 }
                 // FULL-FRAME BACKGROUND — covers most of the image AND touches
-                // both top and bottom. A real building wall, no matter how big,
-                // won't span both vertical extremes (there's always sky above
-                // and ground below). Catches "everything-else" masks.
-                if (frac > FULLFRAME_BACKGROUND_FRAC && st.touchesTop() && st.touchesBottom()) {
+                // both top and bottom. For outdoor, a building can span most of
+                // the frame; only drop if it covers an implausibly huge fraction.
+                if (frac > fullFrac && st.touchesTop() && st.touchesBottom()) {
                     droppedFullFrame++;
                     continue;
                 }
@@ -631,19 +685,22 @@ public class SegmentationService {
      * typically 15–30 candidates. We then ask Claude (via Set-of-Mark) which
      * of those candidates are the wall.
      */
-    private List<String> runSam2AutoPass(String projectId, String imageUrl) {
+    private List<String> runSam2AutoPass(String projectId, String imageUrl, ImageType imageType) {
         try {
-            // Tuned for COHERENT large masks rather than many fragments. The
-            // subtraction approach (main_wall = all − exclude − accent − trim)
-            // works best when SAM produces a single mask covering the wall,
-            // not 15 wall-fragment masks. Higher pred_iou + stability + larger
-            // min_region keeps only the masks SAM is confident about.
+            boolean outdoor = imageType == ImageType.OUTDOOR;
+            double predIou   = outdoor ? outdoorPredIouThresh   : indoorPredIouThresh;
+            double stability = outdoor ? outdoorStabilityThresh : indoorStabilityThresh;
+            int points       = outdoor ? outdoorSam2PointsPerSide : sam2PointsPerSide;
+
+            log.info("SAM 2 auto params [project={} type={}]: pred_iou={} stability={} points={} min_area={}",
+                    projectId, imageType, predIou, stability, points, sam2MinMaskRegionArea);
+
             Map<String, Object> input = Map.of(
                     "image", imageUrl,
-                    "points_per_side", 32,
-                    "pred_iou_thresh", 0.88,
-                    "stability_score_thresh", 0.92,
-                    "min_mask_region_area", 5000,
+                    "points_per_side", points,
+                    "pred_iou_thresh", predIou,
+                    "stability_score_thresh", stability,
+                    "min_mask_region_area", sam2MinMaskRegionArea,
                     "use_m2m", true
             );
             String predictionId = startSam2Prediction(input);
