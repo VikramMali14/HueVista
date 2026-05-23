@@ -590,16 +590,18 @@ public class SegmentationService {
                                        List<Integer> otherA, List<Integer> otherB) {
         if (target.isEmpty()) return;
 
-        // Mean color of the category's current union.
-        List<java.awt.image.BufferedImage> targetMasks = new ArrayList<>();
+        // Collect individual mean colors from each target mask (multi-seed).
+        // This lets us pull in sunlit AND shadowed wall fragments even when
+        // their colors are very different.
+        java.util.List<int[]> targetColors = new java.util.ArrayList<>();
         for (int idx : target) {
             int i = idx - 1;
             if (i >= 0 && i < maskImages.size() && maskImages.get(i) != null) {
-                targetMasks.add(maskImages.get(i));
+                int[] c = MaskProcessor.meanColor(original, maskImages.get(i));
+                if (c != null) targetColors.add(c);
             }
         }
-        int[] targetColor = MaskProcessor.meanColorAcrossMasks(original, targetMasks);
-        if (targetColor == null) return;
+        if (targetColors.isEmpty()) return;
 
         java.util.Set<Integer> claimed = new java.util.HashSet<>();
         claimed.addAll(target);
@@ -615,12 +617,17 @@ public class SegmentationService {
             int[] color = MaskProcessor.meanColor(original, m);
             if (color == null) continue;
 
-            double d = MaskProcessor.colorDistance(color, targetColor);
-            if (d < COLOR_EXPANSION_THRESHOLD) {
+            // Match against ANY target seed color (OR logic).
+            double bestDist = Double.MAX_VALUE;
+            for (int[] tc : targetColors) {
+                double d = MaskProcessor.colorDistance(color, tc);
+                if (d < bestDist) bestDist = d;
+            }
+            if (bestDist < COLOR_EXPANSION_THRESHOLD) {
                 target.add(oneBased);
                 claimed.add(oneBased);
-                log.debug("  expansion: mask {} (color rgb={},{},{}) distance {} from target -> added",
-                        oneBased, color[0], color[1], color[2], String.format("%.1f", d));
+                log.debug("  expansion: mask {} (color rgb={},{},{}) bestDist {} -> added",
+                        oneBased, color[0], color[1], color[2], String.format("%.1f", bestDist));
             }
         }
     }
@@ -704,12 +711,23 @@ public class SegmentationService {
                 java.awt.image.BufferedImage seed = MaskProcessor.decode(union);
                 int[] meanColor = MaskProcessor.meanColor(original, seed);
 
-                if (unionForeground < 5000 && meanColor != null) {
+                if (unionForeground < 5000) {
                     // Seeds are tiny specks — use global color matching to find
                     // ALL pixels of the same color across the entire image.
-                    log.info("saveGrownRegion [project={} category={}]: using global color match, mean=rgb({},{},{})",
-                            projectId, category, meanColor[0], meanColor[1], meanColor[2]);
-                    grown = MaskProcessor.maskByColorRange(original, meanColor, COLOR_RANGE_THRESHOLD);
+                    // Use multi-seed: compute mean color from EACH individual mask
+                    // so sunlit and shadowed walls are both captured.
+                    java.util.List<int[]> seedColors = new java.util.ArrayList<>();
+                    for (byte[] mb : selected) {
+                        java.awt.image.BufferedImage m = MaskProcessor.decode(mb);
+                        int[] c = MaskProcessor.meanColor(original, m);
+                        if (c != null) seedColors.add(c);
+                    }
+                    if (seedColors.isEmpty() && meanColor != null) {
+                        seedColors.add(meanColor);
+                    }
+                    log.info("saveGrownRegion [project={} category={}]: using multi-seed color match, {} seeds",
+                            projectId, category, seedColors.size());
+                    grown = MaskProcessor.maskByColorRangeMultiSeed(original, seedColors, COLOR_RANGE_THRESHOLD, 0.15);
                     int rangeForeground = MaskProcessor.countForeground(grown);
                     log.info("saveGrownRegion [project={} category={}]: after color range = {} foreground pixels",
                             projectId, category, rangeForeground);
@@ -727,7 +745,20 @@ public class SegmentationService {
                     }
                 } else {
                     // Decent seed size — global color mask with bottom crop
-                    grown = MaskProcessor.createColorMask(original, seed, COLOR_GROW_THRESHOLD, 0.15);
+                    // Also use multi-seed if multiple masks with different colors
+                    java.util.List<int[]> seedColors = new java.util.ArrayList<>();
+                    for (byte[] mb : selected) {
+                        java.awt.image.BufferedImage m = MaskProcessor.decode(mb);
+                        int[] c = MaskProcessor.meanColor(original, m);
+                        if (c != null) seedColors.add(c);
+                    }
+                    if (seedColors.size() > 1) {
+                        grown = MaskProcessor.maskByColorRangeMultiSeed(original, seedColors, COLOR_GROW_THRESHOLD, 0.15);
+                        log.info("saveGrownRegion [project={} category={}]: using multi-seed grow, {} seeds",
+                                projectId, category, seedColors.size());
+                    } else {
+                        grown = MaskProcessor.createColorMask(original, seed, COLOR_GROW_THRESHOLD, 0.15);
+                    }
                     int grownForeground = MaskProcessor.countForeground(grown);
                     log.info("saveGrownRegion [project={} category={}]: after color mask = {} foreground pixels",
                             projectId, category, grownForeground);
@@ -772,14 +803,15 @@ public class SegmentationService {
      * expand to adjacent pixels within this distance. 35 catches same-paint
      * surfaces with shadow variation while stopping at stone, windows, and sky.
      */
-    private static final double COLOR_GROW_THRESHOLD = 28.0;
+    private static final double COLOR_GROW_THRESHOLD = 18.0;
 
     /**
      * RGB distance threshold for global color range matching. Used when SAM 2
-     * seeds are too tiny to flood-fill from. 55 finds all cream/beige wall
-     * pixels across the entire image while excluding stone, sky, and ground.
+     * seeds are too tiny to flood-fill from. 15 is tight enough to exclude
+     * stone cladding (~20 away) and trim (~26 away) while still catching
+     * same-paint surfaces with mild shadow variation.
      */
-    private static final double COLOR_RANGE_THRESHOLD = 55.0;
+    private static final double COLOR_RANGE_THRESHOLD = 15.0;
 
     /**
      * Runs SAM 2 in automatic mask generation mode. The model lays a grid of

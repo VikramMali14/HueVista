@@ -537,14 +537,36 @@ final class MaskProcessor {
      * globally, then keeps only the large connected components.
      */
     static byte[] maskByColorRange(BufferedImage original, int[] targetColor, double threshold) throws IOException {
+        return maskByColorRangeMultiSeed(original, java.util.List.of(targetColor), threshold, 0.0);
+    }
+
+    /**
+     * Creates a mask of ALL pixels in the image whose color is within
+     * {@code threshold} RGB distance of ANY seed color in {@code targetColors}.
+     * Uses OR logic across seeds — useful when a category spans multiple
+     * distinct colors (e.g. sunlit wall vs shadowed wall on the same facade).
+     * Pixels below {@code bottomCropFraction} are excluded to avoid ground/dirt.
+     */
+    static byte[] maskByColorRangeMultiSeed(BufferedImage original, java.util.List<int[]> targetColors,
+                                            double threshold, double bottomCropFraction) throws IOException {
         int w = original.getWidth(), h = original.getHeight();
         boolean[] mask = new boolean[w * h];
-        for (int y = 0; y < h; y++) {
+        int cropY = (int) (h * (1.0 - bottomCropFraction));
+        if (cropY > h) cropY = h;
+
+        for (int y = 0; y < cropY; y++) {
             for (int x = 0; x < w; x++) {
                 int p = original.getRGB(x, y);
                 int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
-                double dist = Math.sqrt((targetColor[0]-r)*(targetColor[0]-r) + (targetColor[1]-g)*(targetColor[1]-g) + (targetColor[2]-b)*(targetColor[2]-b));
-                mask[y * w + x] = dist < threshold;
+                for (int[] targetColor : targetColors) {
+                    double dist = Math.sqrt((targetColor[0]-r)*(targetColor[0]-r)
+                            + (targetColor[1]-g)*(targetColor[1]-g)
+                            + (targetColor[2]-b)*(targetColor[2]-b));
+                    if (dist <= threshold) {
+                        mask[y * w + x] = true;
+                        break;
+                    }
+                }
             }
         }
         return encodeBinaryPng(mask, w, h);
