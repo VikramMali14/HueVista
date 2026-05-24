@@ -16,6 +16,11 @@ public class ProjectResponse {
     private String status;
     private String imageId;
     private String imageUrl;
+    // Cleaned image URL when ImageCleanerService ran. Frontend should
+    // prefer this as the paint canvas when present — masks are aligned
+    // to the cleaned image, not the original. Null when cleaning is
+    // disabled or hasn't run.
+    private String cleanedImageUrl;
     // Populated when status == FAILED so the UI can show the cause.
     private String failureReason;
     private List<RegionResponse> regions;

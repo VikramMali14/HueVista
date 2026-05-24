@@ -69,6 +69,7 @@ public class SegmentationService {
     private final Ade20kSegmenter ade20kSegmenter;
     private final GeminiImageSegmenter geminiImageSegmenter;
     private final ReplicateNanoBananaSegmenter replicateNanoBanana;
+    private final ImageCleanerService imageCleaner;
     private final com.gridstore.huevista.image.repository.ImageRepository imageRepository;
 
     @Value("${replicate.api-token:}")
@@ -272,12 +273,45 @@ public class SegmentationService {
             UploadedImage image = loadAndEnsureDimensions(projectId);
             byte[] originalBytes = storageService.load(image.getStorageKey());
 
+            // Step -3: IMAGE CLEAN (optional, opt-in). When enabled, send
+            // the photo to Nano Banana Pro asking it to remove wires,
+            // bushes, parked cars, garbage, etc. The cleaned image then
+            // becomes the canvas the masks are aligned to AND the image
+            // the frontend renders the paint preview on top of. Skipped
+            // silently when REPLICATE_IMAGE_CLEANER_ENABLED is false.
+            String maskImageUrl = imageUrl;
+            byte[] maskImageBytes = originalBytes;
+            try {
+                Optional<byte[]> cleanedOpt = imageCleaner.cleanImage(imageUrl);
+                if (cleanedOpt.isPresent()) {
+                    byte[] cleanedBytes = cleanedOpt.get();
+                    String userId2 = projectRepository.findUserIdById(projectId).orElseThrow();
+                    String cleanedKey = storageService.store(
+                            cleanedBytes, userId2, "cleaned.jpg", "image/jpeg");
+                    // Persist the storage key on the project so the frontend
+                    // can fetch a presigned URL via the existing project read
+                    // endpoints (avoids leaking long presigned URLs into the
+                    // mask-gen API call below).
+                    persistCleanedImageKey(projectId, cleanedKey);
+                    maskImageUrl = storageService.getPublicUrl(cleanedKey);
+                    maskImageBytes = cleanedBytes;
+                    log.info("ImageCleaner produced cleaned image for project {}, storageKey={}",
+                            projectId, cleanedKey);
+                } else {
+                    log.debug("ImageCleaner disabled or returned no result for project {}, using original",
+                            projectId);
+                }
+            } catch (Exception e) {
+                log.warn("ImageCleaner step failed for project {}, using original: {}",
+                        projectId, e.getMessage());
+            }
+
             // Step -2: NANO BANANA via REPLICATE (preferred — reuses
             // the existing Replicate token, no Google API key needed).
             // Uses google/nano-banana-2 (Gemini 3.1 Flash Image) by
             // default. One Replicate call per category. Falls through
             // silently when not configured.
-            if (tryReplicateNanoBananaSegmentation(projectId, userId, imageUrl)) {
+            if (tryReplicateNanoBananaSegmentation(projectId, userId, maskImageUrl)) {
                 markSegmented(projectId);
                 log.info("Nano Banana (Replicate) succeeded for project {} — skipping other paths", projectId);
                 return;
@@ -288,7 +322,7 @@ public class SegmentationService {
             // API. Requires GEMINI_API_KEY. Falls through silently when not
             // configured (use this only if you don't have a Replicate token
             // or want to keep direct-Google billing separate).
-            if (tryGeminiImageSegmentation(projectId, userId, imageUrl, originalBytes)) {
+            if (tryGeminiImageSegmentation(projectId, userId, maskImageUrl, maskImageBytes)) {
                 markSegmented(projectId);
                 log.info("Gemini Image (direct Google) succeeded for project {} — skipping other paths", projectId);
                 return;
@@ -302,7 +336,7 @@ public class SegmentationService {
             // a wall mask, we skip the entire SAM/Claude pipeline below.
             // Falls through silently to the legacy path when ADE20K isn't
             // configured or fails.
-            if (tryAde20kSegmentation(projectId, userId, imageUrl)) {
+            if (tryAde20kSegmentation(projectId, userId, maskImageUrl)) {
                 markSegmented(projectId);
                 log.info("ADE20K segmentation succeeded for project {} — skipping SAM/Claude pipeline", projectId);
                 return;
@@ -2337,6 +2371,19 @@ public class SegmentationService {
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set("Authorization", "Token " + replicateApiToken);
         return headers;
+    }
+
+    /**
+     * Saves the cleaned image's S3 storage key onto the project so the
+     * frontend can later resolve a presigned URL via the standard project
+     * read endpoint. Idempotent — overwrites a previous cleaned image
+     * if the user re-runs segmentation.
+     */
+    private void persistCleanedImageKey(String projectId, String storageKey) {
+        projectRepository.findById(projectId).ifPresent(p -> {
+            p.setCleanedImageStorageKey(storageKey);
+            projectRepository.save(p);
+        });
     }
 
     private void updatePredictionId(String projectId, String predictionId) {
