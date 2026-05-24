@@ -66,7 +66,7 @@ public class ProjectService {
                 .build());
 
         log.info("Project created: id={} user={}", project.getId(), userId);
-        return ProjectResponse.from(project, storageService.getPublicUrl(image.getStorageKey()));
+        return toResponse(project, image);
     }
 
     @Transactional(readOnly = true)
@@ -79,7 +79,7 @@ public class ProjectService {
     @Transactional(readOnly = true)
     public ProjectResponse getProject(String userId, String projectId) {
         Project project = findOwned(userId, projectId);
-        return ProjectResponse.from(project, storageService.getPublicUrl(project.getImage().getStorageKey()));
+        return toResponse(project);
     }
 
     @Transactional
@@ -94,10 +94,7 @@ public class ProjectService {
             });
         }
 
-        return ProjectResponse.from(
-                projectRepository.findById(projectId).orElseThrow(),
-                storageService.getPublicUrl(project.getImage().getStorageKey())
-        );
+        return toResponse(projectRepository.findById(projectId).orElseThrow());
     }
 
     @Transactional
@@ -141,7 +138,7 @@ public class ProjectService {
         }
 
         log.info("Segmentation requested: project={}", projectId);
-        return ProjectResponse.from(project, imageUrl);
+        return toResponse(project);
     }
 
     @Transactional(readOnly = true)
@@ -178,10 +175,12 @@ public class ProjectService {
                         || p.getShareExpiresAt().isAfter(LocalDateTime.now()))
                 .orElseThrow(() -> new ResourceNotFoundException("Share link not found or expired."));
 
-        return ProjectResponse.fromPublic(
-                project,
-                storageService.getPublicUrl(project.getImage().getStorageKey())
-        );
+        String originalUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
+        String cleanedUrl = project.getCleanedImageStorageKey() != null
+                ? storageService.getPublicUrl(project.getCleanedImageStorageKey()) : null;
+        ProjectResponse r = ProjectResponse.fromPublic(project, originalUrl);
+        r.setCleanedImageUrl(cleanedUrl);
+        return r;
     }
 
     @Transactional
@@ -227,6 +226,26 @@ public class ProjectService {
         } catch (IOException e) {
             throw new RuntimeException("Failed to read image dimensions for " + image.getStorageKey(), e);
         }
+    }
+
+    /**
+     * Builds a ProjectResponse that exposes BOTH the original image URL and
+     * the cleaned image URL (when ImageCleanerService has produced one).
+     * Callers reaching here from inside a transactional method can rely on
+     * project.image being fetched lazily; we re-look-up the image to be safe
+     * when the project was loaded via a projection.
+     */
+    private ProjectResponse toResponse(Project project) {
+        return toResponse(project, project.getImage());
+    }
+
+    private ProjectResponse toResponse(Project project, UploadedImage image) {
+        String originalUrl = storageService.getPublicUrl(image.getStorageKey());
+        String cleanedUrl = project.getCleanedImageStorageKey() != null
+                ? storageService.getPublicUrl(project.getCleanedImageStorageKey()) : null;
+        ProjectResponse r = ProjectResponse.from(project, originalUrl);
+        r.setCleanedImageUrl(cleanedUrl);
+        return r;
     }
 
     private Project findOwned(String userId, String projectId) {

@@ -43,6 +43,14 @@ public class Project {
     // Replicate prediction ID — used to poll SAM 2 job status
     private String replicatePredictionId;
 
+    // Storage key (NOT full URL) of the cleaned image produced by
+    // ImageCleanerService when the cleaner is enabled. The frontend
+    // resolves a presigned URL via StorageService at read time. Null
+    // when cleaning is disabled or hasn't run yet. Both the painted
+    // preview canvas AND the mask images are aligned to THIS image
+    // when present, falling back to the original UploadedImage when not.
+    private String cleanedImageStorageKey;
+
     // When status == FAILED, why. Surfaced to the frontend so we can show the
     // user something actionable ("auto-segmentation not configured — click each
     // wall") instead of a generic failure. Stored as TEXT because Hibernate
