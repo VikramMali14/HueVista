@@ -111,8 +111,22 @@ public class ProjectService {
     public ProjectResponse requestSegmentation(String userId, String projectId) {
         Project project = findOwned(userId, projectId);
 
+        // Allow re-triggering if the previous run never finished (e.g. it
+        // crashed, the worker JVM restarted, or an upstream API like Gemini
+        // returned a quota / payment error and bubbled out before
+        // markFailed could write the status). Without this stale check, a
+        // single failed run locks the project out forever and forces the
+        // user to reset state by hand. 5 minutes is well past any
+        // legitimate segmentation latency (typical run is 10-60s).
         if (project.getStatus() == ProjectStatus.SEGMENTING) {
-            throw new IllegalStateException("Segmentation already in progress for this project.");
+            java.time.LocalDateTime updatedAt = project.getUpdatedAt();
+            boolean stale = updatedAt == null
+                    || updatedAt.isBefore(java.time.LocalDateTime.now().minusMinutes(5));
+            if (!stale) {
+                throw new IllegalStateException("Segmentation already in progress for this project.");
+            }
+            log.warn("Project {} stuck in SEGMENTING since {}, treating as stale and re-triggering",
+                    projectId, updatedAt);
         }
 
         project.setStatus(ProjectStatus.SEGMENTING);
