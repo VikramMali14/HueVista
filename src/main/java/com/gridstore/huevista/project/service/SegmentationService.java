@@ -1284,24 +1284,39 @@ public class SegmentationService {
                 log.debug("Nano Banana (Replicate) not configured — skipping");
                 return false;
             }
-            log.info("Trying Nano Banana (Replicate) for project {}", projectId);
+            log.info("Trying Nano Banana (Replicate) COLOR-CODED for project {}", projectId);
+
+            // ONE call returns a color-coded image: white=main, green=trim,
+            // blue=accent, black=nothing. We split it server-side. 3× cheaper
+            // and 3× faster than the prior 3-call approach, and Gemini sees
+            // all categories simultaneously so a pixel can only belong to
+            // one — no overlap between main/trim/accent.
+            Optional<byte[]> colorRaw = replicateNanoBanana.generateColorCodedMask(imageUrl);
+            if (colorRaw.isEmpty()) {
+                log.info("Nano Banana returned no color-coded mask — falling through");
+                return false;
+            }
+
+            // Split: per-category binary masks. Categories under 5000 px
+            // (2000 for trim) get dropped here automatically.
+            java.util.Map<String, byte[]> parts;
+            try {
+                parts = MaskProcessor.splitColorCodedMask(colorRaw.get(), 2000);
+            } catch (Exception e) {
+                log.warn("splitColorCodedMask failed for project {}: {}", projectId, e.getMessage());
+                return false;
+            }
+            log.info("Nano Banana split [project={}]: {}", projectId, parts.keySet());
 
             int saved = 0;
             int displayOrder = 0;
             boolean mainSaved = false;
 
-            // Main wall
-            Optional<byte[]> mainRaw = replicateNanoBanana.generateMask(
-                    imageUrl,
-                    "the MAIN painted wall surface of this house — the dominant flat painted "
-                  + "plaster/concrete that someone would repaint with a single color. EXCLUDE "
-                  + "stone cladding, exposed brick, ceramic tile, marble, doors, windows, sky, "
-                  + "ground, vehicles, trees, AC units, light fixtures, electrical boxes, "
-                  + "drainpipes, decorative wrought iron.");
-            if (mainRaw.isPresent()) {
-                byte[] cleaned = safeClean(mainRaw.get());
-                int px = safeForegroundCount(cleaned);
+            byte[] mainBytes = parts.get("main");
+            if (mainBytes != null) {
+                int px = safeForegroundCount(mainBytes);
                 if (px >= 5000) {
+                    byte[] cleaned = safeClean(mainBytes);
                     String key = storageService.store(cleaned, userId, "nb-main-wall.png", "image/png");
                     regionRepository.save(Region.builder()
                             .project(projectRepository.getReferenceById(projectId))
@@ -1315,22 +1330,15 @@ public class SegmentationService {
                     saved++;
                     mainSaved = true;
                 } else {
-                    log.warn("Nano Banana main wall mask too small ({} px), discarding", px);
+                    log.warn("Nano Banana main wall under threshold ({} px), discarding", px);
                 }
             }
 
-            // Accent wall
-            Optional<byte[]> accentRaw = replicateNanoBanana.generateMask(
-                    imageUrl,
-                    "a SECONDARY paintable wall surface in this house that is clearly a different "
-                  + "color from the main wall — a feature wall, an accent strip, or a "
-                  + "perpendicular wall painted differently. If no distinct second-color wall "
-                  + "is visible, return a completely BLACK image. EXCLUDE windows, doors, "
-                  + "stone, brick, fixtures, sky, ground.");
-            if (accentRaw.isPresent()) {
-                byte[] cleaned = safeClean(accentRaw.get());
-                int px = safeForegroundCount(cleaned);
+            byte[] accentBytes = parts.get("accent");
+            if (accentBytes != null) {
+                int px = safeForegroundCount(accentBytes);
                 if (px >= 5000) {
+                    byte[] cleaned = safeClean(accentBytes);
                     String key = storageService.store(cleaned, userId, "nb-accent-wall.png", "image/png");
                     regionRepository.save(Region.builder()
                             .project(projectRepository.getReferenceById(projectId))
@@ -1342,23 +1350,14 @@ public class SegmentationService {
                             .build());
                     log.info("Nano Banana ACCENT_WALL saved for project {}: {} px", projectId, px);
                     saved++;
-                } else {
-                    log.info("Nano Banana accent wall empty/tiny ({} px) — no accent in photo", px);
                 }
             }
 
-            // Trim & frames
-            Optional<byte[]> trimRaw = replicateNanoBanana.generateMask(
-                    imageUrl,
-                    "the visible TRIM, borders and frames of this house — window frames, door "
-                  + "frames, balcony railings, fascia under the roof, parapet edges, decorative "
-                  + "banding. These are the narrow elements typically painted in a contrasting "
-                  + "trim color. EXCLUDE the walls themselves, glass, door slabs, stone, brick, "
-                  + "sky, ground.");
-            if (trimRaw.isPresent()) {
-                byte[] cleaned = safeClean(trimRaw.get());
-                int px = safeForegroundCount(cleaned);
+            byte[] trimBytes = parts.get("trim");
+            if (trimBytes != null) {
+                int px = safeForegroundCount(trimBytes);
                 if (px >= 2000) {
+                    byte[] cleaned = safeClean(trimBytes);
                     String key = storageService.store(cleaned, userId, "nb-trim.png", "image/png");
                     regionRepository.save(Region.builder()
                             .project(projectRepository.getReferenceById(projectId))
@@ -1370,8 +1369,6 @@ public class SegmentationService {
                             .build());
                     log.info("Nano Banana TRIM saved for project {}: {} px", projectId, px);
                     saved++;
-                } else {
-                    log.info("Nano Banana trim mask too small ({} px) — skipping", px);
                 }
             }
 
@@ -1379,9 +1376,10 @@ public class SegmentationService {
                 log.info("Nano Banana didn't produce a usable main wall — falling through");
                 return false;
             }
+            log.info("Nano Banana saved {} regions for project {}", saved, projectId);
             return true;
         } catch (Exception e) {
-            log.warn("Nano Banana (Replicate) path failed for project {}, falling through: {}",
+            log.warn("Nano Banana (Replicate) color-coded path failed for project {}, falling through: {}",
                     projectId, e.getMessage(), e);
             return false;
         }

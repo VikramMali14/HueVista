@@ -121,6 +121,91 @@ public class ReplicateNanoBananaSegmenter {
         }
     }
 
+    /**
+     * Generates a SINGLE color-coded segmentation mask covering all three
+     * paint categories at once. White = main wall, Green = trim, Blue =
+     * accent wall, Black = everything else. The caller splits the image
+     * into per-category binary masks server-side via
+     * {@link MaskProcessor#splitColorCodedMask}.
+     *
+     * Big advantage over three separate single-category calls: 1 Replicate
+     * call instead of 3 (3× faster, 3× cheaper), Gemini sees all categories
+     * at once so a pixel can only belong to ONE category — no inter-mask
+     * overlap.
+     */
+    public Optional<byte[]> generateColorCodedMask(String imageUrl) {
+        if (!isConfigured()) {
+            log.debug("Nano Banana (Replicate) not configured — skipping");
+            return Optional.empty();
+        }
+        try {
+            log.info("Nano Banana (Replicate) [{}]: requesting COLOR-CODED mask", model);
+
+            Map<String, Object> input = Map.of(
+                    "prompt", COLOR_CODED_PROMPT,
+                    "image_input", List.of(imageUrl),
+                    "output_format", "png"
+            );
+
+            String predictionId = startPrediction(input);
+            if (predictionId == null) return Optional.empty();
+
+            Map<String, Object> result = pollUntilDone(predictionId);
+            if (result == null) {
+                log.warn("Nano Banana color-coded prediction timed out");
+                return Optional.empty();
+            }
+            String maskUrl = extractOutputUrl(result.get("output"));
+            if (maskUrl == null) {
+                log.warn("Nano Banana color-coded prediction had no output URL");
+                return Optional.empty();
+            }
+            byte[] bytes = downloadBytes(maskUrl);
+            log.info("Nano Banana color-coded mask: {} bytes", bytes.length);
+            return Optional.of(bytes);
+        } catch (Exception e) {
+            log.warn("Nano Banana color-coded mask failed: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Single comprehensive prompt for the color-coded approach. Asks for ONE
+     * image with four specific colors marking the three paint categories
+     * plus a "nothing" background. Tested wording — be careful editing.
+     */
+    private static final String COLOR_CODED_PROMPT =
+            "Look at this house photograph. Generate a SINGLE color-coded "
+          + "segmentation mask image of the same exact dimensions as the input. "
+          + "Mark each surface using one of these four specific colors only:\n\n"
+          + "- WHITE pixels (#FFFFFF) — the MAIN painted wall surface. The "
+          + "dominant flat painted plaster/concrete that someone would repaint "
+          + "with a single color (the largest cream/beige/painted area).\n\n"
+          + "- BLUE pixels (#0000FF) — an ACCENT or HIGHLIGHTER wall: a "
+          + "secondary painted wall surface clearly a DIFFERENT color from the "
+          + "main wall — a feature wall, an accent strip, or a perpendicular "
+          + "wall painted differently. If there is no obviously different-colored "
+          + "secondary wall, DO NOT use blue anywhere. Leave it out entirely.\n\n"
+          + "- GREEN pixels (#00FF00) — TRIM, borders and frames: window frames, "
+          + "door frames, balcony railings, fascia under the roof, parapet "
+          + "edges, decorative banding. Narrow elements typically painted in a "
+          + "contrasting trim color.\n\n"
+          + "- BLACK pixels (#000000) — everything else: sky, clouds, ground, "
+          + "dirt, road, sidewalk, vegetation, trees, vehicles, the doors "
+          + "themselves, glass panes inside windows, stone cladding, exposed "
+          + "brick, ceramic tile, marble, AC units, light fixtures, electrical "
+          + "boxes, drainpipes, signage, mailboxes, decor, people — anything "
+          + "that is NOT a paintable surface.\n\n"
+          + "RULES:\n"
+          + "- Use ONLY these four colors. No other colors at all. No grey, no "
+          + "gradients, no shading.\n"
+          + "- Each pixel belongs to exactly ONE category. Never two at once.\n"
+          + "- The mask must be PIXEL-ALIGNED with the input photo (same "
+          + "resolution).\n"
+          + "- Hard color boundaries only — no anti-aliasing, no soft edges.\n"
+          + "- No text, watermarks, or annotations.\n"
+          + "- Output: just the color-coded mask image.\n";
+
     private String buildMaskPrompt(String surfaceDescription) {
         return ("Generate a black-and-white binary segmentation MASK image. The mask must be the "
                 + "same exact dimensions as the input photograph.\n\n"
