@@ -68,6 +68,7 @@ public class SegmentationService {
     private final WallSceneAnalyzer sceneAnalyzer;
     private final Ade20kSegmenter ade20kSegmenter;
     private final GeminiImageSegmenter geminiImageSegmenter;
+    private final ReplicateNanoBananaSegmenter replicateNanoBanana;
     private final com.gridstore.huevista.image.repository.ImageRepository imageRepository;
 
     @Value("${replicate.api-token:}")
@@ -271,14 +272,25 @@ public class SegmentationService {
             UploadedImage image = loadAndEnsureDimensions(projectId);
             byte[] originalBytes = storageService.load(image.getStorageKey());
 
-            // Step -1: NANO BANANA 2 — Gemini Image generation.
-            // Send the photo to Gemini and ask for a per-category mask
-            // image. One call per category (main wall, accent wall, trim).
-            // When configured AND produces usable masks, skip every other
-            // pipeline below. Falls through silently when not configured.
+            // Step -2: NANO BANANA via REPLICATE (preferred — reuses
+            // the existing Replicate token, no Google API key needed).
+            // Uses google/nano-banana-2 (Gemini 3.1 Flash Image) by
+            // default. One Replicate call per category. Falls through
+            // silently when not configured.
+            if (tryReplicateNanoBananaSegmentation(projectId, userId, imageUrl)) {
+                markSegmented(projectId);
+                log.info("Nano Banana (Replicate) succeeded for project {} — skipping other paths", projectId);
+                return;
+            }
+
+            // Step -1: NANO BANANA via DIRECT GOOGLE API.
+            // Same model family but called via Google's generativelanguage
+            // API. Requires GEMINI_API_KEY. Falls through silently when not
+            // configured (use this only if you don't have a Replicate token
+            // or want to keep direct-Google billing separate).
             if (tryGeminiImageSegmentation(projectId, userId, imageUrl, originalBytes)) {
                 markSegmented(projectId);
-                log.info("Gemini Image segmentation succeeded for project {} — skipping SAM/ADE20K", projectId);
+                log.info("Gemini Image (direct Google) succeeded for project {} — skipping other paths", projectId);
                 return;
             }
 
@@ -1254,6 +1266,127 @@ public class SegmentationService {
      * Cost: one Replicate call (~5-10s, ~$0.005-0.02 depending on model).
      * The user explicitly requested perfect over cheap.
      */
+    /**
+     * Same as {@link #tryGeminiImageSegmentation} but routes through
+     * Replicate's hosted google/nano-banana-2 (or pro/older variant)
+     * instead of Google's direct API. Lets users with only a Replicate
+     * token use Nano Banana without setting up a separate Google AI
+     * Studio key.
+     *
+     * Saves up to three regions (MAIN_WALL, ACCENT_WALL, TRIM). Returns
+     * true if at least the main wall mask saved. Falls through silently
+     * if Replicate Nano Banana isn't configured.
+     */
+    private boolean tryReplicateNanoBananaSegmentation(String projectId, String userId,
+                                                       String imageUrl) {
+        try {
+            if (!replicateNanoBanana.isConfigured()) {
+                log.debug("Nano Banana (Replicate) not configured — skipping");
+                return false;
+            }
+            log.info("Trying Nano Banana (Replicate) for project {}", projectId);
+
+            int saved = 0;
+            int displayOrder = 0;
+            boolean mainSaved = false;
+
+            // Main wall
+            Optional<byte[]> mainRaw = replicateNanoBanana.generateMask(
+                    imageUrl,
+                    "the MAIN painted wall surface of this house — the dominant flat painted "
+                  + "plaster/concrete that someone would repaint with a single color. EXCLUDE "
+                  + "stone cladding, exposed brick, ceramic tile, marble, doors, windows, sky, "
+                  + "ground, vehicles, trees, AC units, light fixtures, electrical boxes, "
+                  + "drainpipes, decorative wrought iron.");
+            if (mainRaw.isPresent()) {
+                byte[] cleaned = safeClean(mainRaw.get());
+                int px = safeForegroundCount(cleaned);
+                if (px >= 5000) {
+                    String key = storageService.store(cleaned, userId, "nb-main-wall.png", "image/png");
+                    regionRepository.save(Region.builder()
+                            .project(projectRepository.getReferenceById(projectId))
+                            .label("Main Wall")
+                            .category(RegionCategory.MAIN_WALL)
+                            .maskUrl(storageService.getPublicUrl(key))
+                            .maskData(storageService.getPublicUrl(key))
+                            .displayOrder(displayOrder++)
+                            .build());
+                    log.info("Nano Banana MAIN_WALL saved for project {}: {} px", projectId, px);
+                    saved++;
+                    mainSaved = true;
+                } else {
+                    log.warn("Nano Banana main wall mask too small ({} px), discarding", px);
+                }
+            }
+
+            // Accent wall
+            Optional<byte[]> accentRaw = replicateNanoBanana.generateMask(
+                    imageUrl,
+                    "a SECONDARY paintable wall surface in this house that is clearly a different "
+                  + "color from the main wall — a feature wall, an accent strip, or a "
+                  + "perpendicular wall painted differently. If no distinct second-color wall "
+                  + "is visible, return a completely BLACK image. EXCLUDE windows, doors, "
+                  + "stone, brick, fixtures, sky, ground.");
+            if (accentRaw.isPresent()) {
+                byte[] cleaned = safeClean(accentRaw.get());
+                int px = safeForegroundCount(cleaned);
+                if (px >= 5000) {
+                    String key = storageService.store(cleaned, userId, "nb-accent-wall.png", "image/png");
+                    regionRepository.save(Region.builder()
+                            .project(projectRepository.getReferenceById(projectId))
+                            .label("Accent Wall")
+                            .category(RegionCategory.ACCENT_WALL)
+                            .maskUrl(storageService.getPublicUrl(key))
+                            .maskData(storageService.getPublicUrl(key))
+                            .displayOrder(displayOrder++)
+                            .build());
+                    log.info("Nano Banana ACCENT_WALL saved for project {}: {} px", projectId, px);
+                    saved++;
+                } else {
+                    log.info("Nano Banana accent wall empty/tiny ({} px) — no accent in photo", px);
+                }
+            }
+
+            // Trim & frames
+            Optional<byte[]> trimRaw = replicateNanoBanana.generateMask(
+                    imageUrl,
+                    "the visible TRIM, borders and frames of this house — window frames, door "
+                  + "frames, balcony railings, fascia under the roof, parapet edges, decorative "
+                  + "banding. These are the narrow elements typically painted in a contrasting "
+                  + "trim color. EXCLUDE the walls themselves, glass, door slabs, stone, brick, "
+                  + "sky, ground.");
+            if (trimRaw.isPresent()) {
+                byte[] cleaned = safeClean(trimRaw.get());
+                int px = safeForegroundCount(cleaned);
+                if (px >= 2000) {
+                    String key = storageService.store(cleaned, userId, "nb-trim.png", "image/png");
+                    regionRepository.save(Region.builder()
+                            .project(projectRepository.getReferenceById(projectId))
+                            .label("Trim & Frames")
+                            .category(RegionCategory.TRIM)
+                            .maskUrl(storageService.getPublicUrl(key))
+                            .maskData(storageService.getPublicUrl(key))
+                            .displayOrder(displayOrder++)
+                            .build());
+                    log.info("Nano Banana TRIM saved for project {}: {} px", projectId, px);
+                    saved++;
+                } else {
+                    log.info("Nano Banana trim mask too small ({} px) — skipping", px);
+                }
+            }
+
+            if (!mainSaved) {
+                log.info("Nano Banana didn't produce a usable main wall — falling through");
+                return false;
+            }
+            return true;
+        } catch (Exception e) {
+            log.warn("Nano Banana (Replicate) path failed for project {}, falling through: {}",
+                    projectId, e.getMessage(), e);
+            return false;
+        }
+    }
+
     /**
      * Sends the photo to Gemini (Nano Banana 2 / Gemini 3 Pro Image) and
      * asks for a black-and-white mask per paint category. One Gemini call
