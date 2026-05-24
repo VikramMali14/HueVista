@@ -494,6 +494,68 @@ final class MaskProcessor {
     }
 
     /**
+     * Splits a color-coded segmentation mask (produced by a single
+     * Nano Banana / Gemini call) into per-category binary masks.
+     *
+     * Pixel classification:
+     *   - WHITE-ish  (R+G+B > 600 AND R≈G≈B within 60)            → "main"
+     *   - GREEN-dom  (G ≥ R+40 AND G ≥ B+40 AND G ≥ 100)          → "trim"
+     *   - BLUE-dom   (B ≥ R+40 AND B ≥ G+40 AND B ≥ 100)          → "accent"
+     *   - everything else (black, ambiguous, anti-aliased edges)  → unassigned
+     *
+     * Returns a map keyed by "main", "trim", "accent". Categories with
+     * fewer than {@code minPixels} foreground pixels are omitted from the
+     * map so callers can skip saving empty regions.
+     */
+    static java.util.Map<String, byte[]> splitColorCodedMask(byte[] colorMaskBytes, int minPixels)
+            throws IOException {
+        BufferedImage img = decode(colorMaskBytes);
+        int w = img.getWidth();
+        int h = img.getHeight();
+
+        boolean[] mainBin = new boolean[w * h];
+        boolean[] trimBin = new boolean[w * h];
+        boolean[] accentBin = new boolean[w * h];
+        int mainCount = 0, trimCount = 0, accentCount = 0;
+
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int rgb = img.getRGB(x, y);
+                int r = (rgb >> 16) & 0xff;
+                int g = (rgb >> 8) & 0xff;
+                int b = rgb & 0xff;
+                int idx = y * w + x;
+
+                // WHITE: bright AND roughly equal channels (tolerates JPEG/diffusion drift).
+                int chanRange = Math.max(Math.max(r, g), b) - Math.min(Math.min(r, g), b);
+                if (r + g + b > 600 && chanRange < 60) {
+                    mainBin[idx] = true;
+                    mainCount++;
+                    continue;
+                }
+                // GREEN-dominant: clearly more green than red and blue.
+                if (g >= r + 40 && g >= b + 40 && g >= 100) {
+                    trimBin[idx] = true;
+                    trimCount++;
+                    continue;
+                }
+                // BLUE-dominant.
+                if (b >= r + 40 && b >= g + 40 && b >= 100) {
+                    accentBin[idx] = true;
+                    accentCount++;
+                }
+                // else: black or ambiguous — leave unassigned.
+            }
+        }
+
+        java.util.Map<String, byte[]> out = new java.util.HashMap<>();
+        if (mainCount >= minPixels) out.put("main", encodeBinaryPng(mainBin, w, h));
+        if (trimCount >= minPixels) out.put("trim", encodeBinaryPng(trimBin, w, h));
+        if (accentCount >= minPixels) out.put("accent", encodeBinaryPng(accentBin, w, h));
+        return out;
+    }
+
+    /**
      * Creates a global color mask: EVERY pixel in the image whose color is
      * within {@code threshold} RGB distance of the seed's mean color becomes
      * white. Unlike flood-fill, this finds disconnected wall surfaces (e.g.
