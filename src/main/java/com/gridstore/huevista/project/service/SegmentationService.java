@@ -67,6 +67,7 @@ public class SegmentationService {
     private final JsonMapper objectMapper;
     private final WallSceneAnalyzer sceneAnalyzer;
     private final Ade20kSegmenter ade20kSegmenter;
+    private final GeminiImageSegmenter geminiImageSegmenter;
     private final com.gridstore.huevista.image.repository.ImageRepository imageRepository;
 
     @Value("${replicate.api-token:}")
@@ -270,7 +271,18 @@ public class SegmentationService {
             UploadedImage image = loadAndEnsureDimensions(projectId);
             byte[] originalBytes = storageService.load(image.getStorageKey());
 
-            // Step 0: ADE20K SEMANTIC SEGMENTATION (preferred path).
+            // Step -1: NANO BANANA 2 — Gemini Image generation.
+            // Send the photo to Gemini and ask for a per-category mask
+            // image. One call per category (main wall, accent wall, trim).
+            // When configured AND produces usable masks, skip every other
+            // pipeline below. Falls through silently when not configured.
+            if (tryGeminiImageSegmentation(projectId, userId, imageUrl, originalBytes)) {
+                markSegmented(projectId);
+                log.info("Gemini Image segmentation succeeded for project {} — skipping SAM/ADE20K", projectId);
+                return;
+            }
+
+            // Step 0: ADE20K SEMANTIC SEGMENTATION (next preferred).
             // A Mask2Former/OneFormer/SegFormer model knows every pixel's
             // scene class — "wall", "windowpane", "door", "sky", "grass",
             // etc. — so we can pick the wall directly instead of asking
@@ -1242,6 +1254,150 @@ public class SegmentationService {
      * Cost: one Replicate call (~5-10s, ~$0.005-0.02 depending on model).
      * The user explicitly requested perfect over cheap.
      */
+    /**
+     * Sends the photo to Gemini (Nano Banana 2 / Gemini 3 Pro Image) and
+     * asks for a black-and-white mask per paint category. One Gemini call
+     * per category — main wall, accent wall, trim. Saves whatever masks
+     * Gemini produces; returns true if at least the main wall succeeded.
+     *
+     * Honest caveat: this is image GENERATION, so pixel alignment isn't
+     * guaranteed. If Gemini's output is misaligned for a particular photo
+     * we fall through to ADE20K and then SAM. The user requested we try
+     * this path despite the alignment risk.
+     *
+     * Falls through silently if GEMINI_API_KEY isn't configured.
+     */
+    private boolean tryGeminiImageSegmentation(String projectId, String userId,
+                                               String imageUrl, byte[] originalBytes) {
+        try {
+            if (!geminiImageSegmenter.isConfigured()) {
+                log.debug("Gemini Image segmenter not configured — skipping");
+                return false;
+            }
+            log.info("Trying Gemini Image segmentation for project {}", projectId);
+
+            // Main wall
+            Optional<byte[]> mainRaw = geminiImageSegmenter.generateMask(
+                    originalBytes,
+                    "the MAIN painted wall surface of this house — the dominant flat painted "
+                  + "plaster/concrete that someone would repaint with a single color. EXCLUDE "
+                  + "stone cladding, exposed brick, ceramic tile, marble, doors, windows, sky, "
+                  + "ground, vehicles, trees, AC units, light fixtures, electrical boxes, "
+                  + "drainpipes, decorative wrought iron.");
+            int saved = 0;
+            int displayOrder = 0;
+            if (mainRaw.isPresent()) {
+                byte[] cleaned = safeClean(mainRaw.get());
+                int px = safeForegroundCount(cleaned);
+                if (px >= 5000) {
+                    String key = storageService.store(cleaned, userId, "gemini-main-wall.png", "image/png");
+                    Region r = Region.builder()
+                            .project(projectRepository.getReferenceById(projectId))
+                            .label("Main Wall")
+                            .category(RegionCategory.MAIN_WALL)
+                            .maskUrl(storageService.getPublicUrl(key))
+                            .maskData(storageService.getPublicUrl(key))
+                            .displayOrder(displayOrder++)
+                            .build();
+                    regionRepository.save(r);
+                    log.info("Gemini MAIN_WALL saved for project {}: {} px", projectId, px);
+                    saved++;
+                } else {
+                    log.warn("Gemini main wall mask too small ({} px), discarding", px);
+                }
+            }
+
+            // Accent wall (the "highlighter" the user mentioned)
+            Optional<byte[]> accentRaw = geminiImageSegmenter.generateMask(
+                    originalBytes,
+                    "a SECONDARY paintable wall surface in this house that is clearly a different "
+                  + "color from the main wall — a feature wall, an accent strip, or a "
+                  + "perpendicular wall painted differently. If no distinct second-color wall "
+                  + "is visible, return a completely BLACK image (do not invent one). "
+                  + "EXCLUDE windows, doors, stone, brick, fixtures, sky, ground.");
+            if (accentRaw.isPresent()) {
+                byte[] cleaned = safeClean(accentRaw.get());
+                int px = safeForegroundCount(cleaned);
+                if (px >= 5000) {
+                    String key = storageService.store(cleaned, userId, "gemini-accent-wall.png", "image/png");
+                    Region r = Region.builder()
+                            .project(projectRepository.getReferenceById(projectId))
+                            .label("Accent Wall")
+                            .category(RegionCategory.ACCENT_WALL)
+                            .maskUrl(storageService.getPublicUrl(key))
+                            .maskData(storageService.getPublicUrl(key))
+                            .displayOrder(displayOrder++)
+                            .build();
+                    regionRepository.save(r);
+                    log.info("Gemini ACCENT_WALL saved for project {}: {} px", projectId, px);
+                    saved++;
+                } else {
+                    log.info("Gemini accent wall empty/tiny ({} px) — skipping (no accent in photo)", px);
+                }
+            }
+
+            // Trim & frames
+            Optional<byte[]> trimRaw = geminiImageSegmenter.generateMask(
+                    originalBytes,
+                    "the visible TRIM, borders and frames of this house — window frames, door "
+                  + "frames, balcony railings, fascia under the roof, parapet edges, decorative "
+                  + "banding. These are the narrow elements that are typically painted in a "
+                  + "contrasting trim color. EXCLUDE the walls themselves, exclude windows "
+                  + "(glass), doors (slab), stone, brick, sky, ground.");
+            if (trimRaw.isPresent()) {
+                byte[] cleaned = safeClean(trimRaw.get());
+                int px = safeForegroundCount(cleaned);
+                if (px >= 2000) {
+                    String key = storageService.store(cleaned, userId, "gemini-trim.png", "image/png");
+                    Region r = Region.builder()
+                            .project(projectRepository.getReferenceById(projectId))
+                            .label("Trim & Frames")
+                            .category(RegionCategory.TRIM)
+                            .maskUrl(storageService.getPublicUrl(key))
+                            .maskData(storageService.getPublicUrl(key))
+                            .displayOrder(displayOrder++)
+                            .build();
+                    regionRepository.save(r);
+                    log.info("Gemini TRIM saved for project {}: {} px", projectId, px);
+                    saved++;
+                } else {
+                    log.info("Gemini trim mask too small ({} px) — skipping", px);
+                }
+            }
+
+            if (saved == 0) {
+                log.info("Gemini Image returned nothing usable for project {}, falling through", projectId);
+                return false;
+            }
+            // We treat MAIN_WALL as the load-bearing one: if Gemini produced
+            // even a main wall mask we count this path as a success. (Accent
+            // and trim are bonus.)
+            return mainRaw.isPresent() && saved >= 1;
+        } catch (Exception e) {
+            log.warn("Gemini Image path failed for project {}, falling through: {}",
+                    projectId, e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /** Morph-cleans a mask, falling back to the input if cleaning fails. */
+    private byte[] safeClean(byte[] mask) {
+        try {
+            return MaskProcessor.morphClean(mask);
+        } catch (Exception e) {
+            return mask;
+        }
+    }
+
+    /** Counts foreground pixels, returning 0 if the mask can't be decoded. */
+    private int safeForegroundCount(byte[] mask) {
+        try {
+            return MaskProcessor.countForeground(mask);
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
     private boolean tryAde20kSegmentation(String projectId, String userId, String imageUrl) {
         try {
             if (!ade20kSegmenter.isConfigured()) {
