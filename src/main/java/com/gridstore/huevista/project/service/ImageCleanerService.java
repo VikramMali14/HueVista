@@ -111,16 +111,21 @@ public class ImageCleanerService {
 
     /**
      * The cleaning prompt — written to be as surgical as possible. Asks
-     * the model to keep architecture pristine and ONLY remove clutter.
-     * Generative models still drift, but this constrains it as much as
+     * the model to keep architecture pristine, remove clutter, AND refresh
+     * the painted surfaces so the cleaned image looks freshly repainted
+     * with the SAME colors. The refresh pass gives the mask generator a
+     * more uniform canvas to work with (no weathering, no stains, no
+     * peeling) which makes "this pixel is painted wall" decisions easier.
+     * Generative models still drift, but this constrains them as much as
      * a text prompt can.
      */
     private static final String CLEAN_PROMPT =
-            "Look at this photograph of a house. Edit the image to remove only "
-          + "the unwanted clutter listed below, while keeping every architectural "
-          + "element pristine and preserving the exact perspective, layout, "
-          + "dimensions, materials, colors, lighting, and shadows.\n\n"
-          + "REMOVE:\n"
+            "Look at this photograph of a house. Edit the image so the house "
+          + "looks freshly painted and free of clutter — like a real estate "
+          + "listing photo taken right after a clean repaint. Keep every "
+          + "architectural element pristine and preserve the exact perspective, "
+          + "layout, dimensions, materials, paint COLORS, lighting, and shadows.\n\n"
+          + "REMOVE (unwanted clutter):\n"
           + "- Electrical wires, telephone wires, power lines, cables crossing the building\n"
           + "- Garbage, trash bags, construction debris on the ground\n"
           + "- Parked cars, motorcycles, scooters, bicycles directly in front of the house\n"
@@ -128,20 +133,31 @@ public class ImageCleanerService {
           + "- Hanging laundry, temporary banners (not permanent signage)\n"
           + "- Construction scaffolding, ladders\n"
           + "- People and animals\n\n"
+          + "REFRESH (make painted surfaces look freshly repainted, SAME color):\n"
+          + "- Painted walls (cream/beige plaster, painted concrete) should look "
+          + "like they were just professionally repainted: no peeling, no water "
+          + "stains, no dust streaks, no faded patches, no graffiti.\n"
+          + "- Use the SAME paint color the wall currently has — only make the "
+          + "coat appear evenly and freshly applied. Do not lighten or darken it.\n"
+          + "- Door frames, window frames, balcony railings, fascia and trim: "
+          + "same treatment — fresh, evenly applied trim paint in the same color.\n"
+          + "- DO NOT refresh non-painted surfaces. Stone cladding, exposed brick, "
+          + "ceramic tile, marble, wood siding stay EXACTLY as they appear — "
+          + "those will be excluded from paint masks downstream.\n\n"
           + "KEEP COMPLETELY UNCHANGED:\n"
-          + "- Every wall surface and its exact color/texture (cream paint, stone "
-          + "cladding, brick, tile, plaster — all preserved as-is)\n"
           + "- Every architectural feature: doors, windows, window grilles, balconies, "
-          + "railings, columns, parapets, moldings, ledges\n"
+          + "railings, columns, parapets, moldings, ledges (their shapes and positions).\n"
           + "- The roof, eaves, chimneys, AC units mounted on the wall, drainpipes "
-          + "(these are part of the house, not clutter)\n"
-          + "- Lighting, shadows, time of day, weather, sky\n"
-          + "- Camera angle, perspective, framing, image dimensions\n"
-          + "- The building's exact proportions — do NOT widen, narrow, or reshape it\n\n"
-          + "OUTPUT: The same photograph with ONLY the listed clutter removed. The "
-          + "house must remain pixel-faithful to the original — no stylization, no "
-          + "color enhancement, no added architectural details, no smoothing of "
-          + "textures, no relighting.\n";
+          + "(these are part of the house, not clutter — keep them visible).\n"
+          + "- Lighting, shadows, time of day, weather, sky.\n"
+          + "- Camera angle, perspective, framing, image dimensions.\n"
+          + "- The building's exact proportions — do NOT widen, narrow, or reshape it.\n"
+          + "- Stone, brick, tile, marble, wood materials in their current state.\n\n"
+          + "OUTPUT: The same photograph with the clutter removed and the painted "
+          + "surfaces refreshed to look like a clean repaint. The house must remain "
+          + "pixel-faithful to the original in shape, proportion, and material — only "
+          + "the surface FINISH of painted areas is refreshed, never the paint color "
+          + "itself and never the non-painted materials.\n";
 
     private String startPrediction(Map<String, Object> input) {
         try {
