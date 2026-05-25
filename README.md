@@ -37,9 +37,10 @@ Retailers pay a subscription to use HueVista as a sales tool with walk-in custom
 - Original full-resolution image stored in **AWS S3**; a 1024 px copy used for AI calls (~10× token cost reduction). ✓ Built
 
 ### Surface Detection
-- Automatic surface segmentation using **Segment Anything Model 2 (SAM 2)** via Replicate API.
-- Detects walls, doors, windows, trim, ceilings, floors as distinct masked regions.
-- Click-based refinement: user clicks any point to add or refine a region. *(Phase 1)*
+- Two-step automatic segmentation via Replicate:
+  1. **Image cleaner** *(opt-in)*: Nano Banana Pro removes overhead wires, bushes, parked cars, debris, hanging laundry and refreshes painted surfaces in their current color. The cleaned image becomes the paint preview canvas AND the input for mask generation. Disable to use the original photo.
+  2. **Nano Banana** (Gemini Image): a single Replicate call returns one color-coded mask — **white** for the main paintable wall, **green** for trim & frames, **blue** for an accent wall (when distinct), **black** for everything else. The server splits this into per-category binary masks (`MAIN_WALL`, `ACCENT_WALL`, `TRIM`).
+- **Click-based refinement** *(Phase 1)*: user clicks any point on the photo, SAM 2 segments the surface at that click, and the resulting region is saved as `MANUAL`. The safety net for whatever the auto path misses.
 
 ### Color Application Engine
 - **Browser-side HTML Canvas + WebGL** — zero backend round-trip per color change.
@@ -116,17 +117,18 @@ Retailers pay a subscription to use HueVista as a sales tool with walk-in custom
 |  common/     — CORS, error handling        (Built)|
 |  paint/      — Brand, Shade, ColorMatch  (Phase 1)|
 |  project/    — Project, Region, Render   (Phase 1)|
-|  ai/         — SAM2, Claude, SDXL        (Phase 1)|
+|  ai/         — Nano Banana, SAM 2, Claude (Phase 1)|
 |  account/    — Org, Distributor, Retailer(Phase 2)|
 |  billing/    — Subscription, Razorpay    (Phase 1)|
 +---------------------+----------------------------+
                       |
 +---------------------v----------------------------+
 |              AI / ML LAYER                       |
-|  Surface Segmentation: SAM 2 (Replicate)         |
-|  Image Classification: Claude Haiku Vision       |
-|  Color Recommendations: Claude                   |
-|  Generative Re-render: SDXL (Replicate, Phase 4) |
+|  Image cleaning (opt-in): Nano Banana Pro        |
+|  Auto mask generation:    Nano Banana (color)    |
+|  Click refinement:        SAM 2 (point prompt)   |
+|  Image classification:    Claude Haiku Vision    |
+|  Color recommendations:   Claude Sonnet          |
 +---------------------+----------------------------+
                       |
 +---------------------v----------------------------+
@@ -136,7 +138,7 @@ Retailers pay a subscription to use HueVista as a sales tool with walk-in custom
 ```
 
 ### Async AI Calls
-- SAM segmentation: 2–5 s. Generative AI: 10–30 s.
+- Nano Banana mask generation: 5–10 s. With image cleaner enabled: ~15–20 s end-to-end (clean + mask).
 - MVP: Spring `@Async` thread pool (core 4, max 16, queue 100). Frontend polls project status every 1 s.
 - Scale: Redis-backed queue + SSE for status streaming.
 
@@ -164,7 +166,7 @@ Retailers pay a subscription to use HueVista as a sales tool with walk-in custom
 | GET | `/api/shades/:brand` | Get shades by brand | Phase 1 |
 | POST | `/api/projects` | Create/save project | Phase 1 |
 | GET | `/api/projects` | Get user's projects | Phase 1 |
-| POST | `/api/projects/:id/segment` | Run SAM 2 segmentation | Phase 1 |
+| POST | `/api/projects/:id/segment` | Run Nano Banana segmentation | Phase 1 |
 | GET | `/api/projects/:id/status` | Poll AI job status | Phase 1 |
 | POST | `/api/projects/:id/share` | Generate share link | Phase 1 |
 
@@ -175,7 +177,7 @@ Retailers pay a subscription to use HueVista as a sales tool with walk-in custom
 ### Phase 1 — MVP (Weeks 1–6)
 **Goal:** One paying retailer using core paint visualization in production.
 - [x] Image upload + indoor/outdoor classification
-- [ ] SAM 2 surface segmentation wired into upload pipeline
+- [x] Nano Banana auto segmentation + optional image cleaner, SAM 2 click-refinement
 - [ ] WebGL-based color application engine
 - [ ] Asian Paints catalog (~200 shades) seeded
 - [ ] Project save/load with auto-save

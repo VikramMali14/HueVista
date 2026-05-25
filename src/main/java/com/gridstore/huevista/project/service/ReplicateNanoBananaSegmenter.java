@@ -22,9 +22,8 @@ import java.util.Optional;
  *   google/nano-banana-pro    — Gemini 3 Pro Image (highest quality, ~3x cost)
  *   google/nano-banana        — Gemini 2.5 Flash Image (cheapest, older)
  *
- * Honest caveat: like the direct-Google variant in
- * {@link GeminiImageSegmenter}, this is image GENERATION, not pixel
- * extraction. Pixel alignment isn't guaranteed. Recent versions are
+ * Honest caveat: this is image GENERATION, not pixel extraction.
+ * Pixel alignment isn't guaranteed. Recent versions are
  * substantially better than older diffusion models but it's still worth
  * comparing this path's masks against the ADE20K and SAM paths on your
  * photo distribution.
