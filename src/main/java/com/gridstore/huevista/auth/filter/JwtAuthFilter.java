@@ -1,5 +1,6 @@
 package com.gridstore.huevista.auth.filter;
 
+import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.auth.service.JwtService;
 import jakarta.servlet.FilterChain;
@@ -9,6 +10,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -18,7 +20,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.util.Collections;
+import java.util.List;
 
 /**
  * Runs exactly once per HTTP request (OncePerRequestFilter).
@@ -53,28 +55,29 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
             // Only populate context if not already authenticated
             if (userId != null && SecurityContextHolder.getContext().getAuthentication() == null) {
-                boolean exists = userRepository.existsById(userId);
+                userRepository.findById(userId).ifPresentOrElse(
+                        appUser -> {
+                            UserRole role = appUser.getRole() != null ? appUser.getRole() : UserRole.CUSTOMER;
+                            List<SimpleGrantedAuthority> authorities =
+                                    List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));
 
-                if (exists) {
-                    // Build a minimal UserDetails — authorities are empty (role checks come later)
-                    UserDetails userDetails = User.builder()
-                            .username(userId)
-                            .password("")
-                            .authorities(Collections.emptyList())
-                            .build();
+                            UserDetails userDetails = User.builder()
+                                    .username(userId)
+                                    .password("")
+                                    .authorities(authorities)
+                                    .build();
 
-                    UsernamePasswordAuthenticationToken authToken =
-                            new UsernamePasswordAuthenticationToken(
-                                    userDetails, null, userDetails.getAuthorities());
+                            UsernamePasswordAuthenticationToken authToken =
+                                    new UsernamePasswordAuthenticationToken(
+                                            userDetails, null, userDetails.getAuthorities());
 
-                    authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                            authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
 
-                    // ← This is the line that marks the request as authenticated
-                    SecurityContextHolder.getContext().setAuthentication(authToken);
-                    log.debug("JWT authenticated user [{}] for {}", email, request.getServletPath());
-                } else {
-                    log.warn("JWT contained unknown userId: {}", userId);
-                }
+                            SecurityContextHolder.getContext().setAuthentication(authToken);
+                            log.debug("JWT authenticated user [{}] role={} for {}", email, role, request.getServletPath());
+                        },
+                        () -> log.warn("JWT contained unknown userId: {}", userId)
+                );
             }
         }
 
