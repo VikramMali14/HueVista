@@ -1,0 +1,802 @@
+{
+  "info": {
+    "name": "HueVista API",
+    "_postman_id": "a1b2c3d4-0001-0001-0001-000000000001",
+    "description": "Complete API surface for HueVista (Spring Boot backend).\n\nAuth flow: run `Auth › Register` (or `Login`) — the test script auto-captures `accessToken`, `refreshToken`, and `userId` into environment variables. All subsequent requests use `{{accessToken}}` via collection-level Bearer auth.\n\nMany requests in this collection capture useful IDs (project, image, org, job, share token, access code, painter invitation code) into the environment so chained requests work without manual copy-paste.\n\nSee `docs/postman/README.md` for the recommended run order.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+  },
+  "item": [
+    {
+      "name": "0 · Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Test User\",\n  \"email\": \"test+{{$timestamp}}@example.com\",\n  \"password\": \"password123\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/register", "host": ["{{baseUrl}}"], "path": ["api", "auth", "register"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  const r = pm.response.json();",
+              "  pm.environment.set('accessToken', r.accessToken);",
+              "  pm.environment.set('refreshToken', r.refreshToken);",
+              "  if (r.user) pm.environment.set('userId', r.user.id);",
+              "  console.log('Registered userId=' + r.user.id);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "login"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  const r = pm.response.json();",
+              "  pm.environment.set('accessToken', r.accessToken);",
+              "  pm.environment.set('refreshToken', r.refreshToken);",
+              "  if (r.user) pm.environment.set('userId', r.user.id);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "Refresh token",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/refresh", "host": ["{{baseUrl}}"], "path": ["api", "auth", "refresh"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  const r = pm.response.json();",
+              "  pm.environment.set('accessToken', r.accessToken);",
+              "  if (r.refreshToken) pm.environment.set('refreshToken', r.refreshToken);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "Get me",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/auth/me", "host": ["{{baseUrl}}"], "path": ["api", "auth", "me"] }
+          }
+        },
+        {
+          "name": "Get full profile",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/auth/profile", "host": ["{{baseUrl}}"], "path": ["api", "auth", "profile"] }
+          }
+        },
+        {
+          "name": "Update profile",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Updated Name\",\n  \"picture\": null\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/profile", "host": ["{{baseUrl}}"], "path": ["api", "auth", "profile"] }
+          }
+        },
+        {
+          "name": "Change password",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"currentPassword\": \"password123\",\n  \"newPassword\": \"newpassword456\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/change-password", "host": ["{{baseUrl}}"], "path": ["api", "auth", "change-password"] }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{baseUrl}}/api/auth/logout", "host": ["{{baseUrl}}"], "path": ["api", "auth", "logout"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "1 · Images",
+      "item": [
+        {
+          "name": "Upload image (multipart)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [], "description": "Select a JPEG/PNG/WebP under 10 MB" }
+              ]
+            },
+            "url": { "raw": "{{baseUrl}}/api/images/upload", "host": ["{{baseUrl}}"], "path": ["api", "images", "upload"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  const r = pm.response.json();",
+              "  pm.environment.set('imageId', r.imageId);",
+              "  console.log('imageId=' + r.imageId + ' type=' + r.imageType);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "Get image",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/images/{{imageId}}", "host": ["{{baseUrl}}"], "path": ["api", "images", "{{imageId}}"] }
+          }
+        },
+        {
+          "name": "List my images",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/images", "host": ["{{baseUrl}}"], "path": ["api", "images"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 · Paint Catalogue",
+      "item": [
+        {
+          "name": "List shades (no filters)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/shades", "host": ["{{baseUrl}}"], "path": ["api", "shades"] }
+          }
+        },
+        {
+          "name": "List shades (filtered)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/shades?brand=asian-paints&family=greens&temperature=cool&tonality=medium&search=sage",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "shades"],
+              "query": [
+                { "key": "brand", "value": "asian-paints" },
+                { "key": "family", "value": "greens" },
+                { "key": "temperature", "value": "cool" },
+                { "key": "tonality", "value": "medium" },
+                { "key": "search", "value": "sage" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Shades by brand",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/shades/asian-paints", "host": ["{{baseUrl}}"], "path": ["api", "shades", "asian-paints"] }
+          }
+        },
+        {
+          "name": "Families for brand",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/shades/asian-paints/families", "host": ["{{baseUrl}}"], "path": ["api", "shades", "asian-paints", "families"] }
+          }
+        },
+        {
+          "name": "Single shade",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/shades/asian-paints/1402", "host": ["{{baseUrl}}"], "path": ["api", "shades", "asian-paints", "1402"] }
+          }
+        },
+        {
+          "name": "Seed AP catalogue (admin)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"success\": true,\n  \"shade\": [\n    {\n      \"entityCode\": \"0001\",\n      \"entityName\": \"Bone China\",\n      \"shadeHexCode\": \"#F3EEE4\",\n      \"shadeFamily\": \"off whites\",\n      \"popularity\": \"1\",\n      \"filterTitle\": {\n        \"color temperature\": [\"neutral\"],\n        \"tonality\": [\"light\"],\n        \"room\": [\"all rooms\"]\n      }\n    }\n  ]\n}" },
+            "url": { "raw": "{{baseUrl}}/api/admin/paint/seed/asian-paints", "host": ["{{baseUrl}}"], "path": ["api", "admin", "paint", "seed", "asian-paints"] },
+            "description": "Body shape: AsianPaintsApiResponse. For full seeding, POST the file at `src/main/resources/seed/asian-paints-sample.json` instead."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 · Projects",
+      "item": [
+        {
+          "name": "Create project",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"imageId\": \"{{imageId}}\",\n  \"name\": \"Belgavi 3BHK · Living Room\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/projects", "host": ["{{baseUrl}}"], "path": ["api", "projects"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  const r = pm.response.json();",
+              "  pm.environment.set('projectId', r.id);",
+              "  console.log('projectId=' + r.id);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "List my projects",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/projects", "host": ["{{baseUrl}}"], "path": ["api", "projects"] }
+          }
+        },
+        {
+          "name": "Get project",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/projects/{{projectId}}", "host": ["{{baseUrl}}"], "path": ["api", "projects", "{{projectId}}"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  const r = pm.response.json();",
+              "  if (r.regions && r.regions.length) {",
+              "    pm.environment.set('regionId', r.regions[0].id);",
+              "  }",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "Update region colors (auto-save)",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "[\n  {\n    \"regionId\": {{regionId}},\n    \"shadeCode\": \"1618\",\n    \"hexCode\": \"#5B6C5B\"\n  }\n]" },
+            "url": { "raw": "{{baseUrl}}/api/projects/{{projectId}}/regions", "host": ["{{baseUrl}}"], "path": ["api", "projects", "{{projectId}}", "regions"] }
+          }
+        },
+        {
+          "name": "Start auto segmentation",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{baseUrl}}/api/projects/{{projectId}}/segment", "host": ["{{baseUrl}}"], "path": ["api", "projects", "{{projectId}}", "segment"] }
+          }
+        },
+        {
+          "name": "Click-to-segment (SAM 2)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"x\": 320.5,\n  \"y\": 240.0,\n  \"label\": \"MANUAL · 01\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/projects/{{projectId}}/segment/point", "host": ["{{baseUrl}}"], "path": ["api", "projects", "{{projectId}}", "segment", "point"] }
+          }
+        },
+        {
+          "name": "Poll status",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/projects/{{projectId}}/status", "host": ["{{baseUrl}}"], "path": ["api", "projects", "{{projectId}}", "status"] }
+          }
+        },
+        {
+          "name": "Generate share link",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"validDays\": 7\n}" },
+            "url": { "raw": "{{baseUrl}}/api/projects/{{projectId}}/share", "host": ["{{baseUrl}}"], "path": ["api", "projects", "{{projectId}}", "share"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  const r = pm.response.json();",
+              "  if (r.token) pm.environment.set('shareToken', r.token);",
+              "  else if (r.shareToken) pm.environment.set('shareToken', r.shareToken);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "Delete project",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{baseUrl}}/api/projects/{{projectId}}", "host": ["{{baseUrl}}"], "path": ["api", "projects", "{{projectId}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 · Shared Project (public)",
+      "item": [
+        {
+          "name": "Get shared project by token",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/share/{{shareToken}}", "host": ["{{baseUrl}}"], "path": ["api", "share", "{{shareToken}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5 · AI Recommendations",
+      "item": [
+        {
+          "name": "Generate color recommendations",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{baseUrl}}/api/projects/{{projectId}}/recommendations", "host": ["{{baseUrl}}"], "path": ["api", "projects", "{{projectId}}", "recommendations"] },
+            "description": "Calls Claude Sonnet vision + DeltaE matcher. Counts against the user's monthly AI quota; needs an active subscription."
+          }
+        }
+      ]
+    },
+    {
+      "name": "6 · Billing",
+      "item": [
+        {
+          "name": "List plans",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/billing/plans", "host": ["{{baseUrl}}"], "path": ["api", "billing", "plans"] }
+          }
+        },
+        {
+          "name": "Create subscription",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"plan\": \"PROFESSIONAL\",\n  \"quantity\": 1\n}" },
+            "url": { "raw": "{{baseUrl}}/api/billing/subscriptions", "host": ["{{baseUrl}}"], "path": ["api", "billing", "subscriptions"] },
+            "description": "Plan must be STARTER / PROFESSIONAL / BUSINESS / ENTERPRISE. Returns Razorpay subscription id + paymentUrl."
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201 || pm.response.code === 200) {",
+              "  const r = pm.response.json();",
+              "  if (r.id) pm.environment.set('subscriptionId', r.id);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "Current subscription",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/billing/subscriptions/current", "host": ["{{baseUrl}}"], "path": ["api", "billing", "subscriptions", "current"] }
+          }
+        },
+        {
+          "name": "Subscription history",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/billing/subscriptions", "host": ["{{baseUrl}}"], "path": ["api", "billing", "subscriptions"] }
+          }
+        },
+        {
+          "name": "Cancel subscription (at period end)",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{baseUrl}}/api/billing/subscriptions/cancel", "host": ["{{baseUrl}}"], "path": ["api", "billing", "subscriptions", "cancel"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7 · Organizations & Customers",
+      "item": [
+        {
+          "name": "Create retailer org",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Sharda Paints\",\n  \"slug\": \"sharda-paints-{{$timestamp}}\",\n  \"type\": \"RETAILER\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/organizations", "host": ["{{baseUrl}}"], "path": ["api", "organizations"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  const r = pm.response.json();",
+              "  pm.environment.set('retailerOrgId', r.id);",
+              "  pm.environment.set('orgId', r.id);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "Create distributor org",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"South India Paints Distributors\",\n  \"slug\": \"sipd-{{$timestamp}}\",\n  \"type\": \"DISTRIBUTOR\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/organizations", "host": ["{{baseUrl}}"], "path": ["api", "organizations"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  const r = pm.response.json();",
+              "  pm.environment.set('distributorOrgId', r.id);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "Get organization",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/organizations/{{orgId}}", "host": ["{{baseUrl}}"], "path": ["api", "organizations", "{{orgId}}"] }
+          }
+        },
+        {
+          "name": "My organizations",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/organizations/mine", "host": ["{{baseUrl}}"], "path": ["api", "organizations", "mine"] }
+          }
+        },
+        {
+          "name": "List members",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/organizations/{{orgId}}/members", "host": ["{{baseUrl}}"], "path": ["api", "organizations", "{{orgId}}", "members"] }
+          }
+        },
+        {
+          "name": "Add member",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userEmail\": \"member@example.com\",\n  \"role\": \"MEMBER\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/organizations/{{orgId}}/members", "host": ["{{baseUrl}}"], "path": ["api", "organizations", "{{orgId}}", "members"] }
+          }
+        },
+        {
+          "name": "Remove member",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{baseUrl}}/api/organizations/{{orgId}}/members/{{userId}}", "host": ["{{baseUrl}}"], "path": ["api", "organizations", "{{orgId}}", "members", "{{userId}}"] }
+          }
+        },
+        {
+          "name": "Link retailer to distributor",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"retailerOrgId\": \"{{retailerOrgId}}\",\n  \"commissionRate\": 3.00\n}" },
+            "url": { "raw": "{{baseUrl}}/api/organizations/{{distributorOrgId}}/retailers", "host": ["{{baseUrl}}"], "path": ["api", "organizations", "{{distributorOrgId}}", "retailers"] }
+          }
+        },
+        {
+          "name": "List retailers under distributor",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/organizations/{{distributorOrgId}}/retailers", "host": ["{{baseUrl}}"], "path": ["api", "organizations", "{{distributorOrgId}}", "retailers"] }
+          }
+        },
+        {
+          "name": "List distributors for retailer",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/organizations/{{retailerOrgId}}/distributors", "host": ["{{baseUrl}}"], "path": ["api", "organizations", "{{retailerOrgId}}", "distributors"] }
+          }
+        },
+        {
+          "name": "Generate customer access code",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"validDays\": 7\n}" },
+            "url": { "raw": "{{baseUrl}}/api/organizations/{{retailerOrgId}}/access-codes", "host": ["{{baseUrl}}"], "path": ["api", "organizations", "{{retailerOrgId}}", "access-codes"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  const r = pm.response.json();",
+              "  pm.environment.set('accessCode', r.code);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "List access codes",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/organizations/{{retailerOrgId}}/access-codes", "host": ["{{baseUrl}}"], "path": ["api", "organizations", "{{retailerOrgId}}", "access-codes"] }
+          }
+        },
+        {
+          "name": "Redeem access code (as customer)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"code\": \"{{accessCode}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/access-codes/redeem", "host": ["{{baseUrl}}"], "path": ["api", "access-codes", "redeem"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "8 · Painters (Phase 2)",
+      "item": [
+        {
+          "name": "Generate painter invitation",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"validDays\": 7,\n  \"phoneHint\": \"+91 9876543210\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/organizations/{{retailerOrgId}}/painter-invitations", "host": ["{{baseUrl}}"], "path": ["api", "organizations", "{{retailerOrgId}}", "painter-invitations"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  const r = pm.response.json();",
+              "  pm.environment.set('painterInvitationCode', r.code);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "List painter invitations",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/organizations/{{retailerOrgId}}/painter-invitations", "host": ["{{baseUrl}}"], "path": ["api", "organizations", "{{retailerOrgId}}", "painter-invitations"] }
+          }
+        },
+        {
+          "name": "Redeem painter invitation",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"code\": \"{{painterInvitationCode}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/painter-invitations/redeem", "host": ["{{baseUrl}}"], "path": ["api", "painter-invitations", "redeem"] }
+          }
+        },
+        {
+          "name": "My painter profile",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/painters/me", "host": ["{{baseUrl}}"], "path": ["api", "painters", "me"] }
+          }
+        },
+        {
+          "name": "Update my painter profile",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"phone\": \"+91 9876543210\",\n  \"serviceAreas\": [\"Belgavi\", \"Hubballi\"],\n  \"specialties\": [\"interior\", \"decorative\"],\n  \"yearsExperience\": 12,\n  \"dayRateInr\": 850\n}" },
+            "url": { "raw": "{{baseUrl}}/api/painters/me", "host": ["{{baseUrl}}"], "path": ["api", "painters", "me"] }
+          }
+        },
+        {
+          "name": "My retailers (as painter)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/painters/me/retailers", "host": ["{{baseUrl}}"], "path": ["api", "painters", "me", "retailers"] }
+          }
+        },
+        {
+          "name": "List painters for retailer",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/painters/by-retailer/{{retailerOrgId}}", "host": ["{{baseUrl}}"], "path": ["api", "painters", "by-retailer", "{{retailerOrgId}}"] }
+          }
+        },
+        {
+          "name": "Remove painter from retailer",
+          "request": {
+            "method": "DELETE",
+            "url": { "raw": "{{baseUrl}}/api/painters/by-retailer/{{retailerOrgId}}/{{painterUserId}}", "host": ["{{baseUrl}}"], "path": ["api", "painters", "by-retailer", "{{retailerOrgId}}", "{{painterUserId}}"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "9 · Paint Jobs (Phase 2)",
+      "item": [
+        {
+          "name": "Create job (retailer assigns painter)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"projectId\": \"{{projectId}}\",\n  \"retailerId\": \"{{retailerOrgId}}\",\n  \"painterId\": \"{{painterUserId}}\",\n  \"siteAddress\": \"12 Vidya Nagar, Belgavi 590001\",\n  \"estimatedAreaSqft\": 420.0,\n  \"estimatedPaintLiters\": 7.0,\n  \"notes\": \"Two coats throughout. Trim in royale.\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/jobs", "host": ["{{baseUrl}}"], "path": ["api", "jobs"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  const r = pm.response.json();",
+              "  pm.environment.set('jobId', r.id);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "Get job",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/jobs/{{jobId}}", "host": ["{{baseUrl}}"], "path": ["api", "jobs", "{{jobId}}"] }
+          }
+        },
+        {
+          "name": "My jobs (as painter)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/jobs/mine/painter", "host": ["{{baseUrl}}"], "path": ["api", "jobs", "mine", "painter"] }
+          }
+        },
+        {
+          "name": "Jobs by retailer",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/jobs/by-retailer/{{retailerOrgId}}", "host": ["{{baseUrl}}"], "path": ["api", "jobs", "by-retailer", "{{retailerOrgId}}"] }
+          }
+        },
+        {
+          "name": "My jobs (as customer)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/jobs/mine/customer", "host": ["{{baseUrl}}"], "path": ["api", "jobs", "mine", "customer"] }
+          }
+        },
+        {
+          "name": "Accept job (painter)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"quotedAmountInr\": 9500.00,\n  \"estimatedDays\": 3,\n  \"scheduledFor\": \"2026-06-01T10:00:00\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/jobs/{{jobId}}/accept", "host": ["{{baseUrl}}"], "path": ["api", "jobs", "{{jobId}}", "accept"] }
+          }
+        },
+        {
+          "name": "Decline job (painter)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"reason\": \"Booked through this month — cannot take it on.\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/jobs/{{jobId}}/decline", "host": ["{{baseUrl}}"], "path": ["api", "jobs", "{{jobId}}", "decline"] }
+          }
+        },
+        {
+          "name": "Start job (painter)",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{baseUrl}}/api/jobs/{{jobId}}/start", "host": ["{{baseUrl}}"], "path": ["api", "jobs", "{{jobId}}", "start"] }
+          }
+        },
+        {
+          "name": "Complete job (painter)",
+          "request": {
+            "method": "POST",
+            "url": { "raw": "{{baseUrl}}/api/jobs/{{jobId}}/complete", "host": ["{{baseUrl}}"], "path": ["api", "jobs", "{{jobId}}", "complete"] }
+          }
+        },
+        {
+          "name": "Cancel job (retailer or customer)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"reason\": \"Customer holding off till next month\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/jobs/{{jobId}}/cancel", "host": ["{{baseUrl}}"], "path": ["api", "jobs", "{{jobId}}", "cancel"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "10 · Admin",
+      "item": [
+        {
+          "name": "List users",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/admin/users", "host": ["{{baseUrl}}"], "path": ["api", "admin", "users"] }
+          }
+        },
+        {
+          "name": "Get user",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/admin/users/{{userId}}", "host": ["{{baseUrl}}"], "path": ["api", "admin", "users", "{{userId}}"] }
+          }
+        },
+        {
+          "name": "Change user role",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"role\": \"PAINTER\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/admin/users/{{userId}}/role", "host": ["{{baseUrl}}"], "path": ["api", "admin", "users", "{{userId}}", "role"] }
+          }
+        },
+        {
+          "name": "List all organizations",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/admin/organizations", "host": ["{{baseUrl}}"], "path": ["api", "admin", "organizations"] }
+          }
+        },
+        {
+          "name": "List all subscriptions",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/admin/subscriptions", "host": ["{{baseUrl}}"], "path": ["api", "admin", "subscriptions"] }
+          }
+        },
+        {
+          "name": "Platform stats",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/admin/stats", "host": ["{{baseUrl}}"], "path": ["api", "admin", "stats"] }
+          }
+        },
+        {
+          "name": "Recent signups",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/admin/users/recent", "host": ["{{baseUrl}}"], "path": ["api", "admin", "users", "recent"] }
+          }
+        },
+        {
+          "name": "Revenue by plan",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/admin/stats/revenue", "host": ["{{baseUrl}}"], "path": ["api", "admin", "stats", "revenue"] }
+          }
+        },
+        {
+          "name": "AI usage stats",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }] },
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/admin/stats/ai-usage", "host": ["{{baseUrl}}"], "path": ["api", "admin", "stats", "ai-usage"] }
+          }
+        }
+      ]
+    }
+  ]
+}
