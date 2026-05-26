@@ -10,6 +10,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
@@ -68,6 +69,12 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({BadCredentialsException.class, DisabledException.class, LockedException.class})
     public ResponseEntity<Map<String, Object>> handleAuthenticationException(Exception ex) {
         return errorResponse(HttpStatus.UNAUTHORIZED, "Invalid email or password.");
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, Object>> handleResponseStatus(ResponseStatusException ex) {
+        HttpStatus status = HttpStatus.valueOf(ex.getStatusCode().value());
+        return errorResponse(status, ex.getReason() != null ? ex.getReason() : status.getReasonPhrase());
     }
 
     @ExceptionHandler(Exception.class)

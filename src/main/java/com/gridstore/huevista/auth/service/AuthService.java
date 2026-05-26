@@ -47,7 +47,9 @@ public class AuthService {
     @Transactional
     public AuthResponse register(RegisterRequest request) {
         if (userRepository.existsByEmail(request.getEmail())) {
-            throw new IllegalArgumentException("Email already in use: " + request.getEmail());
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    "Email already in use: " + request.getEmail());
         }
 
         User user = User.builder()

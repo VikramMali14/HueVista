@@ -9,6 +9,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -24,14 +25,15 @@ public class ProjectController {
     private final ProjectService projectService;
 
     @Operation(summary = "Create a project", description = "Creates a new project from an uploaded image. The project starts in CREATED status — call /segment to run SAM 2.")
-    @ApiResponse(responseCode = "200", description = "Project created")
+    @ApiResponse(responseCode = "201", description = "Project created")
     @ApiResponse(responseCode = "404", description = "Image not found or not owned by user")
     @PostMapping
     public ResponseEntity<ProjectResponse> createProject(
             @Valid @RequestBody CreateProjectRequest request,
             Authentication auth
     ) {
-        return ResponseEntity.ok(projectService.createProject(userId(auth), request));
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(projectService.createProject(userId(auth), request));
     }
 
     @Operation(summary = "List my projects", description = "Returns all projects for the authenticated user, most recently updated first.")
