@@ -24,6 +24,7 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.net.URI;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -251,5 +252,35 @@ public class ProjectService {
     private Project findOwned(String userId, String projectId) {
         return projectRepository.findByIdAndUserId(projectId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+    }
+
+    @Transactional(readOnly = true)
+    public byte[] loadRegionMaskBytes(String userId, String projectId, Long regionId) {
+        findOwned(userId, projectId);
+        Region region = regionRepository.findByIdAndProjectId(regionId, projectId)
+                .orElseThrow(() -> new ResourceNotFoundException("Region not found: " + regionId));
+        String maskUrl = region.getMaskUrl();
+        if (maskUrl == null || maskUrl.isBlank()) {
+            throw new ResourceNotFoundException("Region has no mask: " + regionId);
+        }
+        String key = extractStorageKey(maskUrl);
+        try {
+            return storageService.load(key);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load mask for region " + regionId, e);
+        }
+    }
+
+    // Strips host + query from a presigned S3 URL to recover the object key
+    // we originally wrote. Falls back to the whole path if parsing fails.
+    private String extractStorageKey(String url) {
+        try {
+            URI uri = URI.create(url);
+            String path = uri.getRawPath();
+            if (path == null) return url;
+            return path.startsWith("/") ? path.substring(1) : path;
+        } catch (IllegalArgumentException e) {
+            return url;
+        }
     }
 }
