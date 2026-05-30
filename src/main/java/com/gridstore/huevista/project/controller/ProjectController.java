@@ -9,11 +9,14 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Duration;
 import java.util.List;
 
 @RestController
@@ -161,6 +164,32 @@ public class ProjectController {
     ) {
         if (days != 3 && days != 7 && days != 14) days = 7;
         return ResponseEntity.ok(projectService.generateShareLink(userId(auth), id, days));
+    }
+
+    @Operation(
+            summary = "Stream a region's mask PNG",
+            description = """
+                    Same-origin proxy for the region mask. Use this when the S3 bucket
+                    isn't CORS-configured for the frontend origin — the bytes are
+                    streamed from S3 through the backend, so the browser sees a
+                    same-origin response with no CORS preflight.
+                    """
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "PNG mask bytes"),
+            @ApiResponse(responseCode = "404", description = "Project or region not found, or region has no mask")
+    })
+    @GetMapping("/{id}/regions/{regionId}/mask")
+    public ResponseEntity<byte[]> getRegionMask(
+            @PathVariable String id,
+            @PathVariable Long regionId,
+            Authentication auth
+    ) {
+        byte[] bytes = projectService.loadRegionMaskBytes(userId(auth), id, regionId);
+        return ResponseEntity.ok()
+                .contentType(MediaType.IMAGE_PNG)
+                .cacheControl(CacheControl.maxAge(Duration.ofMinutes(15)).cachePrivate())
+                .body(bytes);
     }
 
     private String userId(Authentication auth) {
