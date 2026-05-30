@@ -168,7 +168,9 @@
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <scope>test</scope>
+            <!-- runtime (not just test) so the `dev` Spring profile can boot on in-memory H2
+                 with zero external infrastructure. Production still uses PostgreSQL. -->
+            <scope>runtime</scope>
         </dependency>
 
     </dependencies>

@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.oauth2.client.userinfo.DefaultOAuth2UserService;
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserRequest;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
+import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.user.DefaultOAuth2User;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.stereotype.Service;
@@ -38,6 +39,14 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
         String name       = (String) attributes.get("name");
         String picture    = (String) attributes.get("picture");
         String providerId = (String) attributes.get("sub");  // Google's unique user ID
+
+        // Google can omit email if the `email` scope wasn't granted. Guard against persisting a
+        // User with a null email (violates the unique/not-null constraint → 500 + confusing UX).
+        if (email == null || email.isBlank()) {
+            throw new OAuth2AuthenticationException(
+                    new OAuth2Error("email_unavailable"),
+                    "Google did not return an email address. Please grant email permission and try again.");
+        }
 
         User user = userRepository.findByEmail(email)
                 .map(existing -> updateExistingUser(existing, name, picture, providerId))

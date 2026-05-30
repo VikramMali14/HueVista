@@ -1,5 +1,6 @@
 package com.gridstore.huevista.project.service;
 
+import com.gridstore.huevista.account.service.CustomerEntitlementService;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
@@ -40,6 +41,7 @@ public class ProjectService {
     private final ImageRepository imageRepository;
     private final StorageService storageService;
     private final SegmentationService segmentationService;
+    private final CustomerEntitlementService entitlementService;
 
     @Autowired(required = false)
     private SegmentationJobQueue segmentationJobQueue;
@@ -51,6 +53,10 @@ public class ProjectService {
     public ProjectResponse createProject(String userId, CreateProjectRequest request) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+        // Enforce the customer's project entitlement (expiry + included/granted/purchased allowance).
+        // No-op for non-customer roles (retailers/distributors/admins).
+        entitlementService.assertCanCreateProject(userId);
 
         UploadedImage image = imageRepository.findByIdAndUserId(request.getImageId(), userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Image not found: " + request.getImageId()));
@@ -66,12 +72,16 @@ public class ProjectService {
                 .status(ProjectStatus.CREATED)
                 .build());
 
+        // Count this project against the customer's allowance (monotonic — deleting won't refund).
+        entitlementService.recordProjectCreated(userId);
+
         log.info("Project created: id={} user={}", project.getId(), userId);
         return toResponse(project, image);
     }
 
     @Transactional(readOnly = true)
     public List<ProjectSummaryResponse> getUserProjects(String userId) {
+        entitlementService.assertAccessValid(userId);
         return projectRepository.findByUserIdOrderByUpdatedAtDesc(userId).stream()
                 .map(p -> ProjectSummaryResponse.from(p, storageService.getPublicUrl(p.getImage().getStorageKey())))
                 .toList();
@@ -250,6 +260,8 @@ public class ProjectService {
     }
 
     private Project findOwned(String userId, String projectId) {
+        // Full lock on expiry: a customer past their access window cannot view OR manage projects.
+        entitlementService.assertAccessValid(userId);
         return projectRepository.findByIdAndUserId(projectId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
     }
