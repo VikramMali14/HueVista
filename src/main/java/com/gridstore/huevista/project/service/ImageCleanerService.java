@@ -1,5 +1,6 @@
 package com.gridstore.huevista.project.service;
 
+import com.gridstore.huevista.image.model.ImageType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -48,6 +49,7 @@ import java.util.Optional;
 public class ImageCleanerService {
 
     private final RestTemplate restTemplate;
+    private final CleaningHintService cleaningHintService;
 
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
@@ -73,16 +75,27 @@ public class ImageCleanerService {
      * image bytes on success. Empty on any failure (caller should fall
      * back to the original image).
      */
-    public Optional<byte[]> cleanImage(String imageUrl) {
+    public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType) {
         if (!isConfigured()) {
             log.debug("ImageCleaner not configured — skipping");
             return Optional.empty();
         }
         try {
-            log.info("ImageCleaner [{}]: cleaning image", model);
+            // Interiors and exterior facades have completely different clutter and surfaces,
+            // so pick a scene-specific instruction. UNKNOWN falls back to the exterior prompt.
+            String prompt = (imageType == ImageType.INDOOR) ? CLEAN_PROMPT_INTERIOR : CLEAN_PROMPT_EXTERIOR;
+            // Hybrid step: ground the instruction in THIS image's actual clutter/anchors.
+            Optional<String> hints = cleaningHintService.describeCleanup(imageUrl, imageType);
+            if (hints.isPresent()) {
+                prompt = prompt
+                        + "\n\nTHIS IMAGE SPECIFICALLY (follow precisely, still obeying all rules above):\n"
+                        + hints.get() + "\n";
+            }
+            log.info("ImageCleaner [{}]: cleaning image (scene={}, imageHints={})",
+                    model, imageType, hints.isPresent());
 
             Map<String, Object> input = Map.of(
-                    "prompt", CLEAN_PROMPT,
+                    "prompt", prompt,
                     "image_input", List.of(imageUrl),
                     "output_format", "jpg"
             );
@@ -119,7 +132,7 @@ public class ImageCleanerService {
      * Generative models still drift, but this constrains them as much as
      * a text prompt can.
      */
-    private static final String CLEAN_PROMPT =
+    private static final String CLEAN_PROMPT_EXTERIOR =
             "Look at this photograph of a house. Edit the image so the house "
           + "looks freshly painted and free of clutter — like a real estate "
           + "listing photo taken right after a clean repaint. Keep every "
@@ -158,6 +171,40 @@ public class ImageCleanerService {
           + "pixel-faithful to the original in shape, proportion, and material — only "
           + "the surface FINISH of painted areas is refreshed, never the paint color "
           + "itself and never the non-painted materials.\n";
+
+    /**
+     * Interior-room variant. Clutter here is furniture mess, cables, boxes and stains;
+     * the anchors to preserve are windows, doors, built-in cabinetry, fireplaces and
+     * fixtures. Same conservative rules: refresh paint in the SAME color, change nothing
+     * structural, leave non-painted materials (floors, counters, cabinetry finish) alone.
+     */
+    private static final String CLEAN_PROMPT_INTERIOR =
+            "Look at this photograph of an interior room. Edit the image so the room "
+          + "looks freshly painted and tidy — like a real-estate listing photo taken right "
+          + "after a clean repaint. Preserve the exact perspective, layout, dimensions, wall "
+          + "COLORS, materials, lighting and shadows.\n\n"
+          + "REMOVE (clutter):\n"
+          + "- Loose papers, boxes, bags, laundry, toys, dishes, bottles, small loose objects\n"
+          + "- Visible cables and wires behind TV/desk, power strips, chargers\n"
+          + "- Wall stains, scuff marks, scribbles, damp patches, peeling paint, nail holes\n"
+          + "- Spills and clutter on the floor\n"
+          + "- People and pets\n\n"
+          + "REFRESH (painted surfaces, SAME color):\n"
+          + "- Walls and ceiling: look evenly and freshly repainted in the SAME color they "
+          + "currently have — no stains, no patchiness. Do not lighten or darken.\n"
+          + "- Painted trim, skirting, door and window frames: same fresh, even coat, same color.\n"
+          + "- DO NOT change non-painted surfaces: wood/tile/marble/stone floors, countertops, "
+          + "cabinetry finish, glass and metal stay EXACTLY as they appear.\n\n"
+          + "KEEP COMPLETELY UNCHANGED:\n"
+          + "- Windows, doors, frames, built-in cabinetry and wardrobes, kitchen units, "
+          + "fireplaces, shelving, switchboards — their shapes and positions.\n"
+          + "- Large furniture that defines the room (sofa, bed, dining table): keep it in place; "
+          + "only clear small clutter and mess, never remove the furniture itself.\n"
+          + "- Flooring material, ceiling features, lighting, shadows, time of day.\n"
+          + "- Camera angle, perspective, framing, image dimensions, room proportions.\n\n"
+          + "OUTPUT: the same room, decluttered, with painted walls/ceiling/trim refreshed to a "
+          + "clean even coat in their EXISTING colors. Pixel-faithful in structure and materials; "
+          + "never invent new colors and never restyle the room.\n";
 
     private String startPrediction(Map<String, Object> input) {
         try {

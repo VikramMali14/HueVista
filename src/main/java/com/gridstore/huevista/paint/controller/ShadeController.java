@@ -1,7 +1,9 @@
 package com.gridstore.huevista.paint.controller;
 
+import com.gridstore.huevista.ai.util.DeltaEMatcher;
 import com.gridstore.huevista.paint.dto.AsianPaintsApiResponse;
 import com.gridstore.huevista.paint.dto.ShadeResponse;
+import com.gridstore.huevista.paint.model.Shade;
 import com.gridstore.huevista.paint.repository.ShadeRepository;
 import com.gridstore.huevista.paint.service.ShadeSeederService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -98,6 +100,38 @@ public class ShadeController {
                 .map(ShadeResponse::from)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    @Operation(
+            summary = "Match nearest shades to a color",
+            description = "Given any hex color the user picks, returns the closest catalogue shades by "
+                    + "CIELAB ΔE (perceptual distance), closest first. Optionally restrict to one brand."
+    )
+    @ApiResponse(responseCode = "200", description = "Nearest shades, closest first")
+    @ApiResponse(responseCode = "400", description = "Invalid hex")
+    @SecurityRequirements
+    @GetMapping("/api/shades/match")
+    public ResponseEntity<List<ShadeResponse>> matchColor(
+            @Parameter(description = "Target hex color, e.g. A47148 or #A47148") @RequestParam String hex,
+            @Parameter(description = "Optional brand slug to restrict the match") @RequestParam(required = false) String brand,
+            @Parameter(description = "How many matches to return (1-20, default 5)") @RequestParam(required = false, defaultValue = "5") int limit
+    ) {
+        String normalized = hex.startsWith("#") ? hex : "#" + hex;
+        if (!normalized.matches("^#[0-9a-fA-F]{6}$")) {
+            throw new IllegalArgumentException("hex must be a 6-digit color like #A47148");
+        }
+        List<Shade> catalog = (brand != null && !brand.isBlank())
+                ? shadeRepository.findByBrandSlugOrderByPopularityAsc(brand)
+                : shadeRepository.findAll();
+        int n = Math.max(1, Math.min(limit, 20));
+        List<ShadeResponse> matches = catalog.stream()
+                .filter(s -> s.getHexCode() != null && s.getHexCode().matches("^#?[0-9a-fA-F]{6}$"))
+                .sorted(java.util.Comparator.comparingDouble(
+                        s -> DeltaEMatcher.computeDeltaE(normalized, s.getHexCode())))
+                .limit(n)
+                .map(ShadeResponse::from)
+                .toList();
+        return ResponseEntity.ok(matches);
     }
 
     @Operation(
