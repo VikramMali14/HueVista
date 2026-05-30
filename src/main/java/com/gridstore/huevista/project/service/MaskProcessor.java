@@ -497,10 +497,10 @@ final class MaskProcessor {
      * Splits a color-coded segmentation mask (produced by a single
      * Nano Banana / Gemini call) into per-category binary masks.
      *
-     * Pixel classification:
-     *   - WHITE-ish  (R+G+B > 600 AND R≈G≈B within 60)            → "main"
-     *   - GREEN-dom  (G ≥ R+40 AND G ≥ B+40 AND G ≥ 100)          → "trim"
-     *   - BLUE-dom   (B ≥ R+40 AND B ≥ G+40 AND B ≥ 100)          → "accent"
+     * Pixel classification (distinct-hue scheme — high chroma separates reliably):
+     *   - RED-dom    (R ≥ G+40 AND R ≥ B+40 AND R ≥ 100)          → "main"
+     *   - GREEN-dom  (G ≥ R+40 AND G ≥ B+40 AND G ≥ 100)          → "accent"
+     *   - BLUE-dom   (B ≥ R+40 AND B ≥ G+40 AND B ≥ 100)          → "trim"
      *   - everything else (black, ambiguous, anti-aliased edges)  → unassigned
      *
      * Returns a map keyed by "main", "trim", "accent". Categories with
@@ -526,23 +526,23 @@ final class MaskProcessor {
                 int b = rgb & 0xff;
                 int idx = y * w + x;
 
-                // WHITE: bright AND roughly equal channels (tolerates JPEG/diffusion drift).
-                int chanRange = Math.max(Math.max(r, g), b) - Math.min(Math.min(r, g), b);
-                if (r + g + b > 600 && chanRange < 60) {
+                // Distinct-hue scheme (pushed apart for reliable separation):
+                //   RED-dominant   → main wall
+                //   GREEN-dominant → accent wall
+                //   BLUE-dominant  → trim
+                if (r >= g + 40 && r >= b + 40 && r >= 100) {
                     mainBin[idx] = true;
                     mainCount++;
                     continue;
                 }
-                // GREEN-dominant: clearly more green than red and blue.
                 if (g >= r + 40 && g >= b + 40 && g >= 100) {
-                    trimBin[idx] = true;
-                    trimCount++;
-                    continue;
-                }
-                // BLUE-dominant.
-                if (b >= r + 40 && b >= g + 40 && b >= 100) {
                     accentBin[idx] = true;
                     accentCount++;
+                    continue;
+                }
+                if (b >= r + 40 && b >= g + 40 && b >= 100) {
+                    trimBin[idx] = true;
+                    trimCount++;
                 }
                 // else: black or ambiguous — leave unassigned.
             }

@@ -103,7 +103,7 @@ public class SegmentationService {
 
             // Load + cache dimensions on the upload entity so click-segment
             // later doesn't have to.
-            loadAndEnsureDimensions(projectId);
+            UploadedImage uploadedImage = loadAndEnsureDimensions(projectId);
 
             // Step 1: Image cleaner (optional, opt-in). Sends the photo to
             // Nano Banana Pro asking for clutter removed AND painted
@@ -112,7 +112,7 @@ public class SegmentationService {
             // otherwise we mask the original directly.
             String maskImageUrl = imageUrl;
             try {
-                Optional<byte[]> cleanedOpt = imageCleaner.cleanImage(imageUrl);
+                Optional<byte[]> cleanedOpt = imageCleaner.cleanImage(imageUrl, uploadedImage.getImageType());
                 if (cleanedOpt.isPresent()) {
                     byte[] cleanedBytes = cleanedOpt.get();
                     String cleanedKey = storageService.store(

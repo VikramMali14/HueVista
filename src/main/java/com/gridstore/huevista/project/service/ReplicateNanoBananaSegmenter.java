@@ -122,8 +122,8 @@ public class ReplicateNanoBananaSegmenter {
 
     /**
      * Generates a SINGLE color-coded segmentation mask covering all three
-     * paint categories at once. White = main wall, Green = trim, Blue =
-     * accent wall, Black = everything else. The caller splits the image
+     * paint categories at once. Red = main wall, Green = accent wall,
+     * Blue = trim, Black = everything else. The caller splits the image
      * into per-category binary masks server-side via
      * {@link MaskProcessor#splitColorCodedMask}.
      *
@@ -174,30 +174,30 @@ public class ReplicateNanoBananaSegmenter {
      * plus a "nothing" background. Tested wording — be careful editing.
      */
     private static final String COLOR_CODED_PROMPT =
-            "Look at this house photograph. Generate a SINGLE color-coded "
+            "Look at this room or building photograph. Generate a SINGLE color-coded "
           + "segmentation mask image of the same exact dimensions as the input. "
           + "Mark each surface using one of these four specific colors only:\n\n"
-          + "- WHITE pixels (#FFFFFF) — the MAIN painted wall surface. The "
-          + "dominant flat painted plaster/concrete that someone would repaint "
-          + "with a single color (the largest cream/beige/painted area).\n\n"
-          + "- BLUE pixels (#0000FF) — an ACCENT or HIGHLIGHTER wall: a "
+          + "- RED pixels (#FF0000) — the MAIN painted wall surface. The "
+          + "dominant flat painted plaster/concrete/drywall that someone would repaint "
+          + "with a single color (the largest painted area).\n\n"
+          + "- GREEN pixels (#00FF00) — an ACCENT or feature wall: a "
           + "secondary painted wall surface clearly a DIFFERENT color from the "
           + "main wall — a feature wall, an accent strip, or a perpendicular "
           + "wall painted differently. If there is no obviously different-colored "
-          + "secondary wall, DO NOT use blue anywhere. Leave it out entirely.\n\n"
-          + "- GREEN pixels (#00FF00) — TRIM, borders and frames: window frames, "
-          + "door frames, balcony railings, fascia under the roof, parapet "
-          + "edges, decorative banding. Narrow elements typically painted in a "
-          + "contrasting trim color.\n\n"
+          + "secondary wall, DO NOT use green anywhere. Leave it out entirely.\n\n"
+          + "- BLUE pixels (#0000FF) — TRIM, borders and frames: window frames, "
+          + "door frames, skirting/baseboards, balcony railings, fascia under the "
+          + "roof, parapet edges, decorative banding. Narrow elements typically "
+          + "painted in a contrasting trim color.\n\n"
           + "- BLACK pixels (#000000) — everything else: sky, clouds, ground, "
-          + "dirt, road, sidewalk, vegetation, trees, vehicles, the doors "
-          + "themselves, glass panes inside windows, stone cladding, exposed "
-          + "brick, ceramic tile, marble, AC units, light fixtures, electrical "
+          + "dirt, road, sidewalk, vegetation, trees, vehicles, furniture, floor, "
+          + "the doors themselves, glass panes inside windows, stone cladding, exposed "
+          + "brick, ceramic tile, marble, wood, AC units, light fixtures, electrical "
           + "boxes, drainpipes, signage, mailboxes, decor, people — anything "
-          + "that is NOT a paintable surface.\n\n"
+          + "that is NOT a paintable wall or trim surface.\n\n"
           + "RULES:\n"
-          + "- Use ONLY these four colors. No other colors at all. No grey, no "
-          + "gradients, no shading.\n"
+          + "- Use ONLY these four colors (pure red, green, blue, black). No other "
+          + "colors at all. No grey, no gradients, no shading.\n"
           + "- Each pixel belongs to exactly ONE category. Never two at once.\n"
           + "- The mask must be PIXEL-ALIGNED with the input photo (same "
           + "resolution).\n"
