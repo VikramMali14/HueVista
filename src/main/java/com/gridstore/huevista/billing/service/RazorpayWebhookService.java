@@ -61,8 +61,11 @@ public class RazorpayWebhookService {
 
     private void verifySignature(String payload, String signature) {
         if (webhookSecret == null || webhookSecret.isBlank()) {
-            log.warn("Razorpay webhook secret not configured — skipping signature verification");
-            return;
+            // Fail CLOSED. With no secret we cannot trust the payload, and this endpoint is
+            // public (permitAll). Accepting unsigned events would let anyone forge
+            // subscription.activated / payment.captured to grant plans or reset AI quota.
+            log.error("Razorpay webhook secret not configured — rejecting webhook. Set RAZORPAY_WEBHOOK_SECRET.");
+            throw new SecurityException("Webhook signature verification is not configured.");
         }
         try {
             boolean valid = Utils.verifyWebhookSignature(payload, signature, webhookSecret);

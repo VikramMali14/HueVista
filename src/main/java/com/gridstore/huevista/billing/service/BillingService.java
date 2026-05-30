@@ -8,6 +8,7 @@ import com.gridstore.huevista.billing.model.Plan;
 import com.gridstore.huevista.billing.model.Subscription;
 import com.gridstore.huevista.billing.model.SubscriptionStatus;
 import com.gridstore.huevista.billing.repository.SubscriptionRepository;
+import com.gridstore.huevista.common.exception.QuotaExceededException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.razorpay.RazorpayClient;
 import com.razorpay.RazorpayException;
@@ -17,6 +18,7 @@ import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -137,15 +139,19 @@ public class BillingService {
      * Called before any AI generation. Throws if the user has no active subscription or has hit their limit.
      * Increments the usage counter atomically within the same transaction.
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void checkAndIncrementAiUsage(String userId) {
+        // REQUIRES_NEW so the usage increment commits independently of the caller's transaction.
+        // The AI recommendation flow runs in a read-only transaction; with the old default the
+        // increment joined that read-only tx and was never flushed — the quota never decremented
+        // and was effectively unlimited.
         Subscription sub = subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
-                .orElseThrow(() -> new IllegalStateException(
+                .orElseThrow(() -> new QuotaExceededException(
                         "No active subscription. Subscribe to use AI features."));
 
         if (sub.getAiGenerationsUsed() >= sub.getAiGenerationsLimit()) {
-            throw new IllegalStateException(
+            throw new QuotaExceededException(
                     "Monthly AI generation limit reached (" + sub.getAiGenerationsLimit() + "). " +
                     "Upgrade your plan or wait for next billing cycle.");
         }

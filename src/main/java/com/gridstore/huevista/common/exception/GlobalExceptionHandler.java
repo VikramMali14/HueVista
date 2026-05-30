@@ -6,6 +6,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.DisabledException;
 import org.springframework.security.authentication.LockedException;
+import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -15,7 +16,6 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 @Slf4j
 @RestControllerAdvice
@@ -44,10 +44,16 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, Object>> handleValidation(MethodArgumentNotValidException ex) {
-        String errors = ex.getBindingResult().getFieldErrors().stream()
-                .map(e -> e.getField() + ": " + e.getDefaultMessage())
-                .collect(Collectors.joining(", "));
-        return errorResponse(HttpStatus.BAD_REQUEST, errors);
+        // The frontend (api.ts -> ApiError.fieldErrors) expects a `fieldErrors` map keyed by
+        // field name so it can highlight individual inputs. Keep a human-readable message too.
+        Map<String, String> fieldErrors = new LinkedHashMap<>();
+        for (FieldError fe : ex.getBindingResult().getFieldErrors()) {
+            fieldErrors.putIfAbsent(fe.getField(),
+                    fe.getDefaultMessage() != null ? fe.getDefaultMessage() : "Invalid value");
+        }
+        Map<String, Object> body = baseError(HttpStatus.BAD_REQUEST, "Some fields need your attention.");
+        body.put("fieldErrors", fieldErrors);
+        return ResponseEntity.badRequest().body(body);
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -55,10 +61,23 @@ public class GlobalExceptionHandler {
         return errorResponse(HttpStatus.BAD_REQUEST, ex.getMessage());
     }
 
+    @ExceptionHandler(AccessExpiredException.class)
+    public ResponseEntity<Map<String, Object>> handleAccessExpired(AccessExpiredException ex) {
+        // A customer's time-limited access has ended — full lock (create + view + manage).
+        return errorResponse(HttpStatus.FORBIDDEN, ex.getMessage());
+    }
+
+    @ExceptionHandler(QuotaExceededException.class)
+    public ResponseEntity<Map<String, Object>> handleQuota(QuotaExceededException ex) {
+        // No active subscription / AI limit reached, or a customer's project allowance is used up.
+        return errorResponse(HttpStatus.PAYMENT_REQUIRED, ex.getMessage());
+    }
+
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<Map<String, Object>> handleIllegalState(IllegalStateException ex) {
-        // Subscription quota exceeded and similar business rule violations
-        return errorResponse(HttpStatus.PAYMENT_REQUIRED, ex.getMessage());
+        // State conflicts: "you already have an active subscription", "segmentation already
+        // in progress", etc. (Quota/payment cases throw QuotaExceededException -> 402 instead.)
+        return errorResponse(HttpStatus.CONFLICT, ex.getMessage());
     }
 
     @ExceptionHandler(SecurityException.class)
@@ -77,6 +96,33 @@ public class GlobalExceptionHandler {
         return errorResponse(status, ex.getReason() != null ? ex.getReason() : status.getReasonPhrase());
     }
 
+    // --- Framework-level request faults: map to clean 4xx instead of falling through to 500 ---
+
+    @ExceptionHandler(org.springframework.security.access.AccessDeniedException.class)
+    public ResponseEntity<Map<String, Object>> handleAccessDenied(org.springframework.security.access.AccessDeniedException ex) {
+        return errorResponse(HttpStatus.FORBIDDEN, "You do not have permission to perform this action.");
+    }
+
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<Map<String, Object>> handleUnreadable(org.springframework.http.converter.HttpMessageNotReadableException ex) {
+        return errorResponse(HttpStatus.BAD_REQUEST, "Malformed or missing request body.");
+    }
+
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Map<String, Object>> handleTypeMismatch(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException ex) {
+        return errorResponse(HttpStatus.BAD_REQUEST, "Invalid value for parameter '" + ex.getName() + "'.");
+    }
+
+    @ExceptionHandler(org.springframework.web.bind.MissingServletRequestParameterException.class)
+    public ResponseEntity<Map<String, Object>> handleMissingParam(org.springframework.web.bind.MissingServletRequestParameterException ex) {
+        return errorResponse(HttpStatus.BAD_REQUEST, "Missing required parameter '" + ex.getParameterName() + "'.");
+    }
+
+    @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<Map<String, Object>> handleMethodNotSupported(org.springframework.web.HttpRequestMethodNotSupportedException ex) {
+        return errorResponse(HttpStatus.METHOD_NOT_ALLOWED, "HTTP method not supported for this endpoint.");
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleGeneric(Exception ex) {
         log.error("Unhandled exception: {}", ex.getMessage(), ex);
@@ -84,11 +130,15 @@ public class GlobalExceptionHandler {
     }
 
     private ResponseEntity<Map<String, Object>> errorResponse(HttpStatus status, String message) {
+        return ResponseEntity.status(status).body(baseError(status, message));
+    }
+
+    private Map<String, Object> baseError(HttpStatus status, String message) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("status", status.value());
         body.put("error", status.getReasonPhrase());
         body.put("message", message);
         body.put("timestamp", LocalDateTime.now().toString());
-        return ResponseEntity.status(status).body(body);
+        return body;
     }
 }

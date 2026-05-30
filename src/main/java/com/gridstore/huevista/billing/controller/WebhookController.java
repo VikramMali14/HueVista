@@ -32,8 +32,12 @@ public class WebhookController {
             log.warn("Webhook signature invalid: {}", e.getMessage());
             return ResponseEntity.status(401).body(Map.of("error", "Invalid signature"));
         } catch (Exception e) {
+            // Return 5xx so Razorpay RETRIES (its webhooks use exponential backoff).
+            // Returning 200 here would silently drop a genuine event — e.g. a transient DB
+            // failure during activation would permanently lose that subscription transition.
+            // Don't echo the raw exception message back to the caller.
             log.error("Webhook processing error: {}", e.getMessage(), e);
-            return ResponseEntity.ok(Map.of("status", "error", "message", e.getMessage()));
+            return ResponseEntity.status(500).body(Map.of("status", "error", "message", "Processing failed"));
         }
     }
 }

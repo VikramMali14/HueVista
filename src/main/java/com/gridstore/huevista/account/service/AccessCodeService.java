@@ -31,6 +31,7 @@ public class AccessCodeService {
     private final OrganizationRepository orgRepository;
     private final OrgMembershipRepository membershipRepository;
     private final UserRepository userRepository;
+    private final CustomerEntitlementService entitlementService;
 
     private static final String CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
     private static final int CODE_LENGTH = 8;
@@ -94,6 +95,9 @@ public class AccessCodeService {
         accessCode.setUsedByUser(user);
         accessCode.setUsedAt(LocalDateTime.now());
         codeRepository.save(accessCode);
+
+        // Create/refresh the customer's project entitlement: 1 included project, valid for validDays.
+        entitlementService.onAccessCodeRedeemed(user, accessCode.getOrganization(), accessCode.getValidDays());
 
         log.info("Access code redeemed: user={} org={} code={}", userId, accessCode.getOrganization().getId(), code);
         return AccessCodeResponse.from(accessCode);
