@@ -155,7 +155,7 @@ public class ProjectService {
     @Transactional(readOnly = true)
     public ProjectResponse getStatus(String userId, String projectId) {
         Project project = findOwned(userId, projectId);
-        return ProjectResponse.from(project, storageService.getPublicUrl(project.getImage().getStorageKey()));
+        return toResponse(project);
     }
 
     @Transactional
