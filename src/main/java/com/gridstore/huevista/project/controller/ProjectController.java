@@ -136,6 +136,29 @@ public class ProjectController {
         ));
     }
 
+    @Operation(
+            summary = "Save a hand-drawn mask as a region",
+            description = """
+                    Persists a mask the user drew by hand in the browser (polygon → PNG)
+                    as a new region under the chosen category. No AI / Replicate call —
+                    the client supplies the finished mask, so this works without SAM 2.
+                    """
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "201", description = "Region created from the drawn mask"),
+            @ApiResponse(responseCode = "400", description = "Mask is missing or not a valid image"),
+            @ApiResponse(responseCode = "404", description = "Project not found or not owned by user")
+    })
+    @PostMapping("/{id}/regions/custom-mask")
+    public ResponseEntity<RegionResponse> createCustomMaskRegion(
+            @PathVariable String id,
+            @Valid @RequestBody CustomMaskRequest request,
+            Authentication auth
+    ) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(projectService.createCustomMaskRegion(userId(auth), id, request));
+    }
+
     @Operation(summary = "Poll segmentation status", description = "Returns the current project status and regions. Poll this every 1–2 s after calling /segment until status is SEGMENTED or FAILED.")
     @ApiResponse(responseCode = "200", description = "Current project status")
     @GetMapping("/{id}/status")

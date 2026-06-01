@@ -11,6 +11,7 @@ import com.gridstore.huevista.project.dto.*;
 import com.gridstore.huevista.project.model.Project;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
+import com.gridstore.huevista.project.model.RegionCategory;
 import com.gridstore.huevista.project.queue.SegmentationJobQueue;
 import com.gridstore.huevista.project.repository.ProjectRepository;
 import com.gridstore.huevista.project.repository.RegionRepository;
@@ -213,6 +214,93 @@ public class ProjectService {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Point segmentation interrupted", e);
         }
+    }
+
+    /**
+     * Persists a mask the user drew by hand (polygon → PNG) as a new region.
+     * No AI call: the client sends the finished mask, we decode + validate it,
+     * store the PNG, and create a Region under the requested category. Mirrors
+     * how auto/click segmentation persist masks (store bytes → save the URL).
+     */
+    @Transactional
+    public RegionResponse createCustomMaskRegion(String userId, String projectId, CustomMaskRequest request) {
+        findOwned(userId, projectId);
+
+        byte[] png = decodeMask(request.getMaskBase64());
+        try {
+            BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(png));
+            if (decoded == null) {
+                throw new IllegalArgumentException("Mask is not a valid image.");
+            }
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Mask is not a valid image.");
+        }
+
+        RegionCategory category = parseCategory(request.getCategory());
+        int displayOrder = regionRepository.countByProjectId(projectId);
+        String label = (request.getLabel() != null && !request.getLabel().isBlank())
+                ? request.getLabel()
+                : defaultLabel(category, displayOrder);
+
+        String key;
+        try {
+            key = storageService.store(
+                    png, userId, category.name().toLowerCase() + "-custom.png", "image/png");
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to store custom mask", e);
+        }
+
+        String url = storageService.getPublicUrl(key);
+        Region region = regionRepository.save(Region.builder()
+                .project(projectRepository.getReferenceById(projectId))
+                .label(label)
+                .category(category)
+                .maskUrl(url)
+                .maskData(url)
+                .displayOrder(displayOrder)
+                .build());
+
+        log.info("Custom mask region saved: project={} region={} category={}",
+                projectId, region.getId(), category);
+        return RegionResponse.from(region);
+    }
+
+    /** Strips an optional data-URL prefix and base64-decodes the mask bytes. */
+    private byte[] decodeMask(String input) {
+        String b64 = input == null ? "" : input.trim();
+        int comma = b64.indexOf(',');
+        if (b64.startsWith("data:") && comma >= 0) {
+            b64 = b64.substring(comma + 1);
+        }
+        // A hand-drawn binary mask PNG is tens of KB; reject anything past ~12 MB of
+        // base64 before decoding so an oversized payload can't exhaust the heap.
+        if (b64.length() > 12_000_000) {
+            throw new IllegalArgumentException("Mask is too large.");
+        }
+        try {
+            return java.util.Base64.getMimeDecoder().decode(b64);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Mask is not valid base64.");
+        }
+    }
+
+    private RegionCategory parseCategory(String raw) {
+        if (raw == null || raw.isBlank()) return RegionCategory.MANUAL;
+        try {
+            return RegionCategory.valueOf(raw.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return RegionCategory.MANUAL;
+        }
+    }
+
+    private String defaultLabel(RegionCategory category, int displayOrder) {
+        return switch (category) {
+            case MAIN_WALL -> "Main wall";
+            case ACCENT_WALL -> "Accent wall";
+            case TRIM -> "Trim & Frames";
+            case OTHER_WALL -> "Wall";
+            case MANUAL -> "Region " + (displayOrder + 1);
+        };
     }
 
     /**
