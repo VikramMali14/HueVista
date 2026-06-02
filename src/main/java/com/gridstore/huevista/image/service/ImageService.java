@@ -40,6 +40,11 @@ public class ImageService {
         ImageType imageType;
         try {
             imageType = claudeVisionService.classify(file);
+        } catch (ImageValidationException e) {
+            // The bytes aren't a decodable image (corrupt / HEIC / AVIF) — a client error.
+            // Surface it as-is (422) instead of letting it fall into the "Claude down" branch
+            // below, which would mislabel it as UNKNOWN and store an unusable upload.
+            throw e;
         } catch (IOException e) {
             throw new StorageException("Failed to read uploaded file", e);
         } catch (RuntimeException e) {
