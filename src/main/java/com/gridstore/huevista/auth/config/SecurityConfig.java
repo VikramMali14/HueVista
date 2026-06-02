@@ -93,6 +93,9 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/share/**").permitAll()
                 // Razorpay webhook — no user auth, signature-verified in service
                 .requestMatchers(HttpMethod.POST, "/api/billing/webhooks/**").permitAll()
+                // Channel webhooks (WhatsApp, ElevenLabs) — called by external
+                // providers, not the user; verified by token/secret per channel.
+                .requestMatchers("/api/support/webhooks/**").permitAll()
                 // Admin endpoints — ROLE_ADMIN only
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()

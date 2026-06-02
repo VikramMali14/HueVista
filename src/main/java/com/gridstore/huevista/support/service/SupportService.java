@@ -82,6 +82,64 @@ public class SupportService {
         return toResponse(c);
     }
 
+    // ── External channels (WhatsApp / voice) ─────────────────────────────────
+
+    /**
+     * Handle an inbound message from an external contact (no app account). Finds
+     * or creates their conversation on the channel, runs the AI agent, and returns
+     * the text to send back (or null if a human is handling it / nothing to say).
+     */
+    @Transactional
+    public String handleInbound(SupportChannel channel, String contactChannelId, String contactName, String text) {
+        Conversation c = conversationRepo
+                .findFirstByChannelAndContactChannelIdAndStatusNotOrderByUpdatedAtDesc(
+                        channel, contactChannelId, ConversationStatus.RESOLVED)
+                .orElseGet(() -> conversationRepo.save(Conversation.builder()
+                        .channel(channel)
+                        .status(ConversationStatus.OPEN)
+                        .contactChannelId(contactChannelId)
+                        .contactName(contactName)
+                        .subject(deriveSubject(text))
+                        .build()));
+        addMessage(c, MessageSender.USER, text);
+
+        if (c.getStatus() == ConversationStatus.NEEDS_HUMAN) {
+            return null; // a human is handling it; just record the inbound message
+        }
+        if (wantsHuman(text)) {
+            escalate(c);
+            return "Okay — I'm connecting you with a team member who'll reply here shortly.";
+        }
+        Optional<String> reply = claude.complete(systemPrompt(c.getContactName(), "CUSTOMER"), buildTurns(c.getId()), 600);
+        if (reply.isEmpty()) {
+            String fallback = "Thanks for your message. I can't answer that automatically right now — "
+                    + "a team member will follow up shortly.";
+            addMessage(c, MessageSender.AI, fallback);
+            escalate(c);
+            return fallback;
+        }
+        String t = reply.get();
+        boolean needsHuman = t.contains(ESCALATE);
+        if (needsHuman) t = t.replace(ESCALATE, "").trim();
+        if (!t.isBlank()) addMessage(c, MessageSender.AI, t);
+        if (needsHuman) escalate(c);
+        return t.isBlank() ? null : t;
+    }
+
+    /** Record a finished voice call (e.g. an ElevenLabs post-call transcript). */
+    @Transactional
+    public void recordVoiceTranscript(String contactChannelId, String contactName, String transcript, boolean escalate) {
+        Conversation c = conversationRepo.save(Conversation.builder()
+                .channel(SupportChannel.VOICE)
+                .status(escalate ? ConversationStatus.NEEDS_HUMAN : ConversationStatus.RESOLVED)
+                .contactChannelId(contactChannelId)
+                .contactName(contactName)
+                .subject("Voice call")
+                .build());
+        addMessage(c, MessageSender.SYSTEM, "Voice call transcript:");
+        addMessage(c, MessageSender.USER, transcript);
+    }
+
     // ── Staff (ADMIN) ────────────────────────────────────────────────────────
 
     @Transactional(readOnly = true)
@@ -126,7 +184,8 @@ public class SupportService {
             return;
         }
         List<ClaudeService.Turn> turns = buildTurns(c.getId());
-        Optional<String> reply = claude.complete(systemPrompt(user), turns, 600);
+        String role = user.getRole() != null ? user.getRole().name() : "USER";
+        Optional<String> reply = claude.complete(systemPrompt(user.getName(), role), turns, 600);
         if (reply.isEmpty()) {
             // AI disabled (dev) or errored → graceful fallback + handoff.
             addMessage(c, MessageSender.AI,
@@ -156,8 +215,7 @@ public class SupportService {
         }
     }
 
-    private String systemPrompt(User user) {
-        String role = user.getRole() != null ? user.getRole().name() : "USER";
+    private String systemPrompt(String name, String role) {
         return """
                 You are HueVista's customer-support assistant. HueVista is an AI paint-shade
                 visualiser for the Indian paint retail trade: retailers (shops) onboard walk-in
@@ -168,7 +226,7 @@ public class SupportService {
                 disputes, account problems, anything you're unsure about), add the token
                 %s on its own line at the end of your reply.
                 The person you're helping is %s (role: %s).
-                """.formatted(ESCALATE, user.getName(), role);
+                """.formatted(ESCALATE, name != null ? name : "the customer", role != null ? role : "USER");
     }
 
     /** Build alternating user/assistant turns from the stored messages (collapsing

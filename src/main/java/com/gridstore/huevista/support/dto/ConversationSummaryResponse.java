@@ -23,14 +23,17 @@ public class ConversationSummaryResponse {
     private LocalDateTime updatedAt;
 
     public static ConversationSummaryResponse from(Conversation c, String lastMessage) {
+        var u = c.getUser();
+        String name = u != null ? u.getName()
+                : (c.getContactName() != null ? c.getContactName() : c.getContactChannelId());
         return ConversationSummaryResponse.builder()
                 .id(c.getId())
                 .channel(c.getChannel())
                 .status(c.getStatus())
                 .subject(c.getSubject())
-                .requesterName(c.getUser().getName())
-                .requesterEmail(c.getUser().getEmail())
-                .requesterRole(c.getUser().getRole() != null ? c.getUser().getRole().name() : null)
+                .requesterName(name)
+                .requesterEmail(u != null ? u.getEmail() : null)
+                .requesterRole(u != null && u.getRole() != null ? u.getRole().name() : c.getChannel().name())
                 .lastMessage(lastMessage)
                 .updatedAt(c.getUpdatedAt())
                 .build();
