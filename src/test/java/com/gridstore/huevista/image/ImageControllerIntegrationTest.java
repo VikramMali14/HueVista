@@ -81,6 +81,23 @@ class ImageControllerIntegrationTest {
     }
 
     @Test
+    void uploadWhenClaudeUnavailable_succeedsAsUnknown() throws Exception {
+        // Genuine Claude outage (e.g. 529): classification is skipped and the upload is stored
+        // as UNKNOWN rather than rejected. Guards that UNKNOWN is a persistable image_type.
+        when(claudeVisionService.classify(any()))
+                .thenThrow(new RuntimeException("Image classification service is temporarily unavailable."));
+
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "room.jpg", "image/jpeg", fakeJpegBytes());
+
+        mockMvc.perform(multipart("/api/images/upload")
+                        .file(file)
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.imageType").value("UNKNOWN"));
+    }
+
+    @Test
     void uploadUndecodableImage_returns422_andDoesNotPersist() throws Exception {
         // Bytes that pass the content-type check but can't be decoded (corrupt / HEIC / AVIF)
         // surface as a 422 client error, not a 500 or an UNKNOWN-typed row.
