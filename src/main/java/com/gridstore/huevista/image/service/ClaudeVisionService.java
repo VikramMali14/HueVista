@@ -1,5 +1,6 @@
 package com.gridstore.huevista.image.service;
 
+import com.gridstore.huevista.common.exception.ImageValidationException;
 import com.gridstore.huevista.image.model.ImageType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -10,6 +11,7 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import net.coobird.thumbnailator.Thumbnails;
+import net.coobird.thumbnailator.tasks.UnsupportedFormatException;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -98,12 +100,21 @@ public class ClaudeVisionService {
     // Cuts input tokens ~10x and keeps classification accuracy identical.
     private byte[] resizeForClassification(MultipartFile file) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        Thumbnails.of(file.getInputStream())
-                .size(1024, 1024)
-                .keepAspectRatio(true)
-                .outputFormat("jpeg")
-                .outputQuality(0.85)
-                .toOutputStream(out);
+        try {
+            Thumbnails.of(file.getInputStream())
+                    .size(1024, 1024)
+                    .keepAspectRatio(true)
+                    .outputFormat("jpeg")
+                    .outputQuality(0.85)
+                    .toOutputStream(out);
+        } catch (UnsupportedFormatException e) {
+            // Content-Type header said JPEG/PNG/WebP, but the bytes are not a format
+            // ImageIO can decode (e.g. HEIC from iOS, AVIF, or a corrupted file).
+            throw new ImageValidationException(
+                    "Unable to read the image. The file may be corrupted or in an unsupported format " +
+                    "(e.g. HEIC from iPhone). Please upload a JPEG, PNG, or WebP image."
+            );
+        }
         return out.toByteArray();
     }
 }

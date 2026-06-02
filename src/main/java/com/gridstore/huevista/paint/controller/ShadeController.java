@@ -1,6 +1,7 @@
 package com.gridstore.huevista.paint.controller;
 
 import com.gridstore.huevista.ai.util.DeltaEMatcher;
+import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.paint.dto.AsianPaintsApiResponse;
 import com.gridstore.huevista.paint.dto.ShadeResponse;
 import com.gridstore.huevista.paint.model.Shade;
@@ -12,7 +13,6 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
-import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -45,19 +45,18 @@ public class ShadeController {
     @SecurityRequirements
     @Cacheable(value = "shades", key = "#brand + ':' + #family + ':' + #temperature + ':' + #tonality + ':' + #search")
     @GetMapping("/api/shades")
-    public ResponseEntity<List<ShadeResponse>> getShades(
+    public List<ShadeResponse> getShades(
             @Parameter(description = "Brand slug, e.g. asian-paints") @RequestParam(required = false) String brand,
             @Parameter(description = "Shade family, e.g. off whites") @RequestParam(required = false) String family,
             @Parameter(description = "cool / warm / neutral") @RequestParam(required = false) String temperature,
             @Parameter(description = "light / medium / dark") @RequestParam(required = false) String tonality,
             @Parameter(description = "Name or exact shade code") @RequestParam(required = false) String search
     ) {
-        List<ShadeResponse> shades = shadeRepository
+        return shadeRepository
                 .findWithFilters(brand, family, temperature, tonality, search)
                 .stream()
                 .map(ShadeResponse::from)
                 .toList();
-        return ResponseEntity.ok(shades);
     }
 
     @Operation(summary = "List shades by brand", description = "Returns all shades for a brand slug ordered by popularity.")
@@ -80,10 +79,10 @@ public class ShadeController {
     @SecurityRequirements
     @Cacheable(value = "shade-families", key = "#brand")
     @GetMapping("/api/shades/{brand}/families")
-    public ResponseEntity<List<String>> getShadesFamilies(
+    public List<String> getShadesFamilies(
             @Parameter(description = "Brand slug, e.g. asian-paints") @PathVariable String brand
     ) {
-        return ResponseEntity.ok(shadeRepository.findDistinctFamiliesByBrandSlug(brand));
+        return shadeRepository.findDistinctFamiliesByBrandSlug(brand);
     }
 
     @Operation(summary = "Get a single shade", description = "Returns full detail for one shade by brand slug and shade code.")
@@ -92,14 +91,13 @@ public class ShadeController {
     @SecurityRequirements
     @Cacheable(value = "shade-detail", key = "#brand + ':' + #code")
     @GetMapping("/api/shades/{brand}/{code}")
-    public ResponseEntity<ShadeResponse> getShade(
+    public ShadeResponse getShade(
             @Parameter(description = "Brand slug, e.g. asian-paints") @PathVariable String brand,
             @Parameter(description = "Shade code, e.g. 9436") @PathVariable String code
     ) {
         return shadeRepository.findByBrandSlugAndShadeCode(brand, code)
                 .map(ShadeResponse::from)
-                .map(ResponseEntity::ok)
-                .orElse(ResponseEntity.notFound().build());
+                .orElseThrow(() -> new ResourceNotFoundException("Shade not found: " + brand + "/" + code));
     }
 
     @Operation(

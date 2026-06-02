@@ -37,10 +37,13 @@ class ShadeControllerIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        asianPaints = brandRepository.save(Brand.builder()
-                .name("Asian Paints")
-                .slug("asian-paints")
-                .build());
+        // PaintLineSeeder (an ApplicationRunner) seeds "Asian Paints" at startup,
+        // so reuse the existing row instead of inserting a duplicate.
+        asianPaints = brandRepository.findBySlug("asian-paints")
+                .orElseGet(() -> brandRepository.save(Brand.builder()
+                        .name("Asian Paints")
+                        .slug("asian-paints")
+                        .build()));
 
         shadeRepository.save(Shade.builder()
                 .brand(asianPaints)
