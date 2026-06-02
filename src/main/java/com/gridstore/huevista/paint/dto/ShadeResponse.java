@@ -4,12 +4,17 @@ import com.gridstore.huevista.paint.model.Shade;
 import lombok.Builder;
 import lombok.Data;
 
+import java.io.Serializable;
 import java.math.BigDecimal;
 import java.util.List;
 
+// Serializable so the @Cacheable shade endpoints can be stored in Redis
+// (the cache uses JDK serialization for values).
 @Data
 @Builder
-public class ShadeResponse {
+public class ShadeResponse implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     private Long id;
     private String brandName;

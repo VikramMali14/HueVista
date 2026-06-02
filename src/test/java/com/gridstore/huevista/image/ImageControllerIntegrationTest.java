@@ -4,6 +4,7 @@ import com.gridstore.huevista.auth.dto.AuthResponse;
 import com.gridstore.huevista.auth.model.AuthProvider;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.common.exception.ImageValidationException;
 import com.gridstore.huevista.image.model.ImageType;
 import com.gridstore.huevista.image.service.ClaudeVisionService;
 import com.razorpay.RazorpayClient;
@@ -77,6 +78,27 @@ class ImageControllerIntegrationTest {
                 .andExpect(jsonPath("$.imageId").isNotEmpty())
                 .andExpect(jsonPath("$.imageType").value("INDOOR"))
                 .andExpect(jsonPath("$.originalFilename").value("room.jpg"));
+    }
+
+    @Test
+    void uploadUndecodableImage_returns422_andDoesNotPersist() throws Exception {
+        // Bytes that pass the content-type check but can't be decoded (corrupt / HEIC / AVIF)
+        // surface as a 422 client error, not a 500 or an UNKNOWN-typed row.
+        when(claudeVisionService.classify(any()))
+                .thenThrow(new ImageValidationException("Unable to read the image."));
+
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "broken.webp", "image/webp", fakeJpegBytes());
+
+        mockMvc.perform(multipart("/api/images/upload")
+                        .file(file)
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isUnprocessableEntity());
+
+        mockMvc.perform(get("/api/images")
+                        .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
     }
 
     @Test
