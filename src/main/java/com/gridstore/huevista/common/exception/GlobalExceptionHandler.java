@@ -85,9 +85,16 @@ public class GlobalExceptionHandler {
         return errorResponse(HttpStatus.FORBIDDEN, ex.getMessage());
     }
 
-    @ExceptionHandler({BadCredentialsException.class, DisabledException.class, LockedException.class})
+    @ExceptionHandler({BadCredentialsException.class, DisabledException.class})
     public ResponseEntity<Map<String, Object>> handleAuthenticationException(Exception ex) {
         return errorResponse(HttpStatus.UNAUTHORIZED, "Invalid email or password.");
+    }
+
+    // Account temporarily locked after too many failed logins — surface the real
+    // message + 429 so the UI can tell the user how long to wait.
+    @ExceptionHandler(LockedException.class)
+    public ResponseEntity<Map<String, Object>> handleLocked(LockedException ex) {
+        return errorResponse(HttpStatus.TOO_MANY_REQUESTS, ex.getMessage());
     }
 
     @ExceptionHandler(ResponseStatusException.class)

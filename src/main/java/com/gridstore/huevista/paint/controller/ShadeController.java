@@ -15,10 +15,13 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 @RestController
 @RequiredArgsConstructor
@@ -148,14 +151,44 @@ public class ShadeController {
                     """
     )
     @ApiResponse(responseCode = "200", description = "Seeding result with count of inserted shades")
+    @PreAuthorize("hasRole('ADMIN')")
     @PostMapping("/api/admin/paint/seed/asian-paints")
     public ResponseEntity<Map<String, Object>> seedAsianPaints(@RequestBody AsianPaintsApiResponse body) {
-        int seeded = seederService.seed("Asian Paints", "asian-paints", body.getShade());
+        return seedBrand("asian-paints", "Asian Paints", body);
+    }
+
+    @Operation(
+            summary = "Seed any brand's catalog (admin)",
+            description = """
+                    Generic version of the seeder for brands beyond Asian Paints (Berger, Nerolac,
+                    Dulux, …). Same idempotent behaviour; the brand slug comes from the path and the
+                    display name from the optional `brandName` query param (defaults to a prettified
+                    slug). Body is the same `{ "shade": [ ... ] }` shape.
+                    """
+    )
+    @ApiResponse(responseCode = "200", description = "Seeding result with count of inserted shades")
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/api/admin/paint/seed/{brandSlug}")
+    public ResponseEntity<Map<String, Object>> seedBrand(
+            @Parameter(description = "Brand slug, e.g. berger") @PathVariable String brandSlug,
+            @Parameter(description = "Display name; defaults to a prettified slug") @RequestParam(required = false) String brandName,
+            @RequestBody AsianPaintsApiResponse body
+    ) {
+        String name = (brandName != null && !brandName.isBlank()) ? brandName : prettifySlug(brandSlug);
+        int seeded = seederService.seed(name, brandSlug, body.getShade());
         return ResponseEntity.ok(Map.of(
+                "brand", name,
                 "seeded", seeded,
                 "message", seeded > 0
-                        ? "Successfully seeded " + seeded + " shades"
+                        ? "Successfully seeded " + seeded + " " + name + " shades"
                         : "No new shades to seed -- all already exist"
         ));
+    }
+
+    private static String prettifySlug(String slug) {
+        return Arrays.stream(slug.split("[-_]"))
+                .filter(s -> !s.isBlank())
+                .map(s -> Character.toUpperCase(s.charAt(0)) + s.substring(1))
+                .collect(Collectors.joining(" "));
     }
 }

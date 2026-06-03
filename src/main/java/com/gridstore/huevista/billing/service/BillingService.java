@@ -33,6 +33,7 @@ public class BillingService {
     private final SubscriptionRepository subscriptionRepository;
     private final UserRepository userRepository;
     private final RazorpayClient razorpayClient;
+    private final com.gridstore.huevista.common.audit.AuditService auditService;
 
     @Value("${razorpay.plan.starter:}")
     private String planIdStarter;
@@ -97,6 +98,36 @@ public class BillingService {
         }
     }
 
+    /**
+     * Grant a free trial subscription (no Razorpay) so a newly-signed-up retailer can
+     * use AI features immediately. Status is ACTIVE with a {@code trialDays} window;
+     * the daily {@link #expireStaleSubscriptions()} job flips it to EXPIRED at the end.
+     * Idempotent — no-op (returns the existing one) if the user already has an active sub.
+     */
+    @Transactional
+    public SubscriptionResponse grantTrial(String userId, Plan plan, int trialDays) {
+        if (subscriptionRepository.existsByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE)) {
+            return getCurrentSubscription(userId);
+        }
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+        Plan p = (plan == null || plan == Plan.ENTERPRISE) ? Plan.PROFESSIONAL : plan;
+        LocalDateTime now = LocalDateTime.now();
+        Subscription sub = Subscription.builder()
+                .user(user)
+                .plan(p)
+                .status(SubscriptionStatus.ACTIVE)
+                .trial(true)
+                .currentPeriodStart(now)
+                .currentPeriodEnd(now.plusDays(trialDays))
+                .aiGenerationsUsed(0)
+                .aiGenerationsLimit(p.getMonthlyAiLimit())
+                .build();
+        subscriptionRepository.save(sub);
+        log.info("Trial granted: user={} plan={} days={}", userId, p, trialDays);
+        return SubscriptionResponse.from(sub);
+    }
+
     @Transactional(readOnly = true)
     public SubscriptionResponse getCurrentSubscription(String userId) {
         Subscription sub = subscriptionRepository
@@ -126,6 +157,7 @@ public class BillingService {
             razorpayClient.subscriptions.cancel(sub.getRazorpaySubscriptionId(), cancelRequest);
             sub.setCancelAtPeriodEnd(true);
             subscriptionRepository.save(sub);
+            auditService.record(userId, "SUBSCRIPTION_CANCEL", "SUBSCRIPTION", sub.getId(), "plan=" + sub.getPlan());
             log.info("Subscription cancel-at-period-end set: user={} subId={}", userId, sub.getId());
         } catch (RazorpayException e) {
             log.error("Razorpay cancel failed: {}", e.getMessage());

@@ -43,6 +43,7 @@ public class ProjectService {
     private final StorageService storageService;
     private final SegmentationService segmentationService;
     private final CustomerEntitlementService entitlementService;
+    private final com.gridstore.huevista.common.audit.AuditService auditService;
 
     @Autowired(required = false)
     private SegmentationJobQueue segmentationJobQueue;
@@ -114,7 +115,29 @@ public class ProjectService {
     @Transactional
     public void deleteProject(String userId, String projectId) {
         Project project = findOwned(userId, projectId);
+        // Best-effort cleanup so we don't orphan blobs in S3/local storage. The
+        // original uploaded image is owned by UploadedImage and left intact; only
+        // the per-region masks and the (project-specific) cleaned image are removed.
+        for (Region region : project.getRegions()) {
+            String maskUrl = region.getMaskUrl();
+            if (maskUrl != null && !maskUrl.isBlank()) {
+                try {
+                    storageService.delete(extractStorageKey(maskUrl));
+                } catch (Exception e) {
+                    log.warn("Failed to delete mask for region {}: {}", region.getId(), e.getMessage());
+                }
+            }
+        }
+        String cleanedKey = project.getCleanedImageStorageKey();
+        if (cleanedKey != null && !cleanedKey.isBlank()) {
+            try {
+                storageService.delete(cleanedKey);
+            } catch (Exception e) {
+                log.warn("Failed to delete cleaned image {}: {}", cleanedKey, e.getMessage());
+            }
+        }
         projectRepository.delete(project);
+        auditService.record(userId, "PROJECT_DELETE", "PROJECT", projectId, "name=" + project.getName());
         log.info("Project deleted: id={} user={}", projectId, userId);
     }
 

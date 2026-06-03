@@ -1,0 +1,9 @@
+target/
+data/
+logs/
+.git/
+.idea/
+*.iml
+.env
+*.log
+HELP.md

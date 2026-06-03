@@ -15,10 +15,12 @@ import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.repository.ProjectRepository;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import com.gridstore.huevista.common.audit.AuditService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
@@ -37,6 +39,7 @@ public class AdminController {
     private final OrganizationRepository orgRepository;
     private final SubscriptionRepository subscriptionRepository;
     private final ProjectRepository projectRepository;
+    private final AuditService auditService;
 
     @Operation(summary = "List all users")
     @GetMapping("/users")
@@ -57,11 +60,15 @@ public class AdminController {
     @PatchMapping("/users/{userId}/role")
     public ResponseEntity<AdminUserResponse> changeRole(
             @PathVariable String userId,
-            @Valid @RequestBody ChangeRoleRequest request) {
+            @Valid @RequestBody ChangeRoleRequest request,
+            Authentication auth) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
+        var previous = user.getRole();
         user.setRole(request.getRole());
         userRepository.save(user);
+        auditService.record(auth.getName(), "ROLE_CHANGE", "USER", userId,
+                previous + " -> " + request.getRole());
         return ResponseEntity.ok(AdminUserResponse.from(user));
     }
 

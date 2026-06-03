@@ -32,6 +32,10 @@ public class Organization {
     @Column(nullable = false)
     private OrgType type;
 
+    // Optional location captured at retailer signup.
+    private String city;
+    private String state;
+
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "owner_user_id", nullable = false)
     private User owner;
