@@ -13,6 +13,8 @@ public class ProjectResponse {
 
     private String id;
     private String name;
+    private String roomType;
+    private String notes;
     private String status;
     private String imageId;
     private String imageUrl;
@@ -37,6 +39,8 @@ public class ProjectResponse {
         return ProjectResponse.builder()
                 .id(project.getId())
                 .name(project.getName())
+                .roomType(project.getRoomType())
+                .notes(project.getNotes())
                 .status(project.getStatus().name())
                 .imageId(project.getImage().getId())
                 .imageUrl(imageUrl)

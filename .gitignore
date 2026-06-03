@@ -16,6 +16,8 @@ target/
 # Spring Boot
 *.log
 logs/
+# Local dev H2 database (created by the `dev` profile)
+data/
 
 # OS
 .DS_Store

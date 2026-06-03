@@ -16,6 +16,8 @@ public class UserProfileResponse {
     private String provider;
     private String role;
     private boolean emailVerified;
+    private String phoneNumber;
+    private boolean phoneVerified;
     private LocalDateTime createdAt;
 
     public static UserProfileResponse from(User user) {
@@ -27,6 +29,8 @@ public class UserProfileResponse {
                 .provider(user.getProvider().name())
                 .role(user.getRole().name())
                 .emailVerified(user.isEmailVerified())
+                .phoneNumber(user.getPhoneNumber())
+                .phoneVerified(user.isPhoneVerified())
                 .createdAt(user.getCreatedAt())
                 .build();
     }

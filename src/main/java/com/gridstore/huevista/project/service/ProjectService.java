@@ -70,6 +70,8 @@ public class ProjectService {
                 .user(user)
                 .image(image)
                 .name(name)
+                .roomType(blankToNull(request.getRoomType()))
+                .notes(blankToNull(request.getNotes()))
                 .status(ProjectStatus.CREATED)
                 .build());
 
@@ -334,6 +336,10 @@ public class ProjectService {
      * project.image being fetched lazily; we re-look-up the image to be safe
      * when the project was loaded via a projection.
      */
+    private static String blankToNull(String s) {
+        return (s == null || s.isBlank()) ? null : s.trim();
+    }
+
     private ProjectResponse toResponse(Project project) {
         return toResponse(project, project.getImage());
     }
