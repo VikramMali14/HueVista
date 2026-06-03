@@ -47,6 +47,15 @@ public class User {
     @Builder.Default
     private boolean emailVerified = false;
 
+    // Login brute-force throttling. columnDefinition gives a DB default so the
+    // NOT-NULL column backfills on existing rows under ddl-auto=update.
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int failedLoginAttempts = 0;
+
+    /** When set and in the future, login is blocked until this time. */
+    private LocalDateTime lockedUntil;
+
     // Optional mobile number (E.164-ish), captured during phone verification.
     private String phoneNumber;
 

@@ -52,6 +52,12 @@ public class Subscription {
     @Builder.Default
     private boolean cancelAtPeriodEnd = false;
 
+    // True for a free trial granted at signup (status ACTIVE, no Razorpay id). The
+    // daily expiry job flips it to EXPIRED once currentPeriodEnd passes.
+    @Column(nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean trial = false;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

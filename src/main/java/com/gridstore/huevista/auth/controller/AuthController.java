@@ -24,6 +24,7 @@ import java.util.Map;
 public class AuthController {
 
     private final AuthService authService;
+    private final com.gridstore.huevista.auth.service.PasswordResetService passwordResetService;
 
     @Operation(summary = "Register a new user", description = "Creates a local account and returns JWT access + refresh tokens.")
     @ApiResponses({
@@ -56,6 +57,22 @@ public class AuthController {
     @PostMapping("/refresh")
     public ResponseEntity<AuthResponse> refresh(@Valid @RequestBody RefreshTokenRequest request) {
         return ResponseEntity.ok(authService.refreshToken(request.getRefreshToken()));
+    }
+
+    @Operation(summary = "Request a password reset", description = "Emails a 6-digit reset code if the account exists. Always 200 (no account enumeration).")
+    @SecurityRequirements
+    @PostMapping("/forgot-password")
+    public ResponseEntity<Map<String, String>> forgotPassword(@Valid @RequestBody ForgotPasswordRequest request) {
+        passwordResetService.requestReset(request.getEmail());
+        return ResponseEntity.ok(Map.of("message", "If an account exists for that email, a reset code is on its way."));
+    }
+
+    @Operation(summary = "Reset password with a code", description = "Validates the emailed code and sets a new password, revoking existing sessions.")
+    @SecurityRequirements
+    @PostMapping("/reset-password")
+    public ResponseEntity<Map<String, String>> resetPassword(@Valid @RequestBody ResetPasswordRequest request) {
+        passwordResetService.resetPassword(request.getEmail(), request.getCode(), request.getNewPassword());
+        return ResponseEntity.ok(Map.of("message", "Your password has been reset. Please sign in."));
     }
 
     @Operation(summary = "Logout", description = "Revokes all refresh tokens for the authenticated user.")

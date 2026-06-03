@@ -83,7 +83,9 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST,
                         "/api/auth/register",
                         "/api/auth/login",
-                        "/api/auth/refresh").permitAll()
+                        "/api/auth/refresh",
+                        "/api/auth/forgot-password",
+                        "/api/auth/reset-password").permitAll()
                 .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
                 // Swagger UI / OpenAPI spec — public
                 .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()

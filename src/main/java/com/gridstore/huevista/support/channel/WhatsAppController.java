@@ -1,5 +1,6 @@
 package com.gridstore.huevista.support.channel;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gridstore.huevista.support.model.SupportChannel;
 import com.gridstore.huevista.support.service.SupportService;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +24,7 @@ public class WhatsAppController {
 
     private final WhatsAppService whatsApp;
     private final SupportService supportService;
+    private final ObjectMapper objectMapper;
 
     /** Webhook verification handshake (Meta calls this once when you subscribe). */
     @GetMapping
@@ -39,8 +41,15 @@ public class WhatsAppController {
     /** Inbound messages. Always 200 quickly so Meta doesn't retry. */
     @PostMapping
     @SuppressWarnings("unchecked")
-    public ResponseEntity<Void> receive(@RequestBody Map<String, Object> payload) {
+    public ResponseEntity<Void> receive(
+            @RequestBody(required = false) byte[] rawBody,
+            @RequestHeader(value = "X-Hub-Signature-256", required = false) String signature) {
+        if (rawBody == null || !whatsApp.verifySignature(rawBody, signature)) {
+            log.warn("WhatsApp webhook rejected: missing body or bad signature");
+            return ResponseEntity.ok().build(); // 200 so Meta doesn't retry a forged/bad request
+        }
         try {
+            Map<String, Object> payload = objectMapper.readValue(rawBody, Map.class);
             List<Map<String, Object>> entry = (List<Map<String, Object>>) payload.get("entry");
             if (entry == null) return ResponseEntity.ok().build();
             for (Map<String, Object> e : entry) {

@@ -1,11 +1,14 @@
 package com.gridstore.huevista.support.channel;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gridstore.huevista.support.service.SupportService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -28,10 +31,26 @@ import java.util.Map;
 public class ElevenLabsController {
 
     private final SupportService supportService;
+    private final ObjectMapper objectMapper;
+
+    @Value("${elevenlabs.webhook-secret:}")
+    private String webhookSecret;
 
     /** A server tool the voice agent can invoke mid-call (e.g. escalate to a human). */
     @PostMapping("/tool")
-    public ResponseEntity<Map<String, Object>> tool(@RequestBody Map<String, Object> body) {
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<Map<String, Object>> tool(
+            @RequestBody(required = false) byte[] rawBody,
+            @RequestHeader(value = "ElevenLabs-Signature", required = false) String signature) {
+        if (rawBody == null || !verified(rawBody, signature)) {
+            return ResponseEntity.status(401).body(Map.of("status", "error", "message", "Invalid signature."));
+        }
+        Map<String, Object> body;
+        try {
+            body = objectMapper.readValue(rawBody, Map.class);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("status", "error", "message", "Bad payload."));
+        }
         String action = str(body.get("action"));
         String caller = firstNonBlank(str(body.get("caller")), str(body.get("phone")), "voice-caller");
         String summary = firstNonBlank(str(body.get("summary")), str(body.get("reason")), "Caller requested assistance.");
@@ -47,8 +66,15 @@ public class ElevenLabsController {
     /** Post-call webhook: log the finished call's transcript as a VOICE conversation. */
     @PostMapping("/post-call")
     @SuppressWarnings("unchecked")
-    public ResponseEntity<Void> postCall(@RequestBody Map<String, Object> payload) {
+    public ResponseEntity<Void> postCall(
+            @RequestBody(required = false) byte[] rawBody,
+            @RequestHeader(value = "ElevenLabs-Signature", required = false) String signature) {
+        if (rawBody == null || !verified(rawBody, signature)) {
+            log.warn("ElevenLabs post-call webhook rejected: bad/missing signature");
+            return ResponseEntity.status(401).build();
+        }
         try {
+            Map<String, Object> payload = objectMapper.readValue(rawBody, Map.class);
             Map<String, Object> data = (Map<String, Object>) payload.getOrDefault("data", payload);
             String caller = firstNonBlank(deepStr(data, "metadata", "phone_number"),
                     str(data.get("conversation_id")), "voice-caller");
@@ -91,6 +117,26 @@ public class ElevenLabsController {
         Object inner = map.get(a);
         if (inner instanceof Map<?, ?> m) return str(((Map<String, Object>) m).get(b));
         return null;
+    }
+
+    /**
+     * Verify the ElevenLabs HMAC signature header ("t=<ts>,v0=<hex>") over
+     * "{timestamp}.{body}". If no webhook secret is configured we don't block
+     * (the channel is inert until set up); once set, a bad signature is rejected.
+     */
+    private boolean verified(byte[] body, String signatureHeader) {
+        if (webhookSecret == null || webhookSecret.isBlank()) return true;
+        if (signatureHeader == null) return false;
+        String t = null, v0 = null;
+        for (String part : signatureHeader.split(",")) {
+            String p = part.trim();
+            if (p.startsWith("t=")) t = p.substring(2);
+            else if (p.startsWith("v0=")) v0 = p.substring(3);
+        }
+        if (t == null || v0 == null) return false;
+        String signedPayload = t + "." + new String(body, StandardCharsets.UTF_8);
+        String expected = WebhookSignatures.hmacSha256Hex(webhookSecret, signedPayload.getBytes(StandardCharsets.UTF_8));
+        return WebhookSignatures.constantTimeEquals(expected, v0);
     }
 
     private String str(Object o) {

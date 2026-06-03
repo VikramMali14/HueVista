@@ -49,6 +49,58 @@ public class AccountService {
         return OrgResponse.from(org);
     }
 
+    /**
+     * Provision a RETAILER organization for a newly-signed-up shop owner: derives a
+     * unique slug from the shop name and creates the org (+ OWNER membership). Reuses
+     * an existing retailer org if the user already owns one. Called from trial signup.
+     */
+    @Transactional
+    public Organization provisionRetailerOrg(String userId, String shopName, String city, String state) {
+        User owner = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+        var existing = membershipRepository.findByUserId(userId).stream()
+                .map(OrgMembership::getOrganization)
+                .filter(o -> o.getType() == OrgType.RETAILER)
+                .findFirst();
+        if (existing.isPresent()) return existing.get();
+
+        Organization org = orgRepository.save(Organization.builder()
+                .name(shopName)
+                .slug(uniqueSlug(shopName))
+                .type(OrgType.RETAILER)
+                .city(blankToNull(city))
+                .state(blankToNull(state))
+                .owner(owner)
+                .build());
+
+        membershipRepository.save(OrgMembership.builder()
+                .user(owner)
+                .organization(org)
+                .role(OrgMemberRole.OWNER)
+                .build());
+
+        log.info("Retailer org provisioned at signup: id={} slug={}", org.getId(), org.getSlug());
+        return org;
+    }
+
+    private String uniqueSlug(String name) {
+        String base = name == null ? "" : name.toLowerCase()
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("(^-+|-+$)", "");
+        if (base.isBlank()) base = "shop";
+        String slug = base;
+        int n = 2;
+        while (orgRepository.existsBySlug(slug)) {
+            slug = base + "-" + n++;
+        }
+        return slug;
+    }
+
+    private static String blankToNull(String s) {
+        return (s == null || s.isBlank()) ? null : s.trim();
+    }
+
     @Transactional(readOnly = true)
     public OrgResponse getOrganization(String orgId) {
         return OrgResponse.from(findOrg(orgId));

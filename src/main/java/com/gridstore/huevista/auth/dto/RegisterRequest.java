@@ -18,4 +18,13 @@ public class RegisterRequest {
     @NotBlank(message = "Password is required")
     @Size(min = 8, message = "Password must be at least 8 characters")
     private String password;
+
+    // Optional retailer trial-signup fields. When shopName is present we provision a
+    // RETAILER organization + a free trial subscription so AI features work immediately.
+    private String shopName;
+    private String city;
+    private String state;
+    private String phone;
+    /** "starter" | "pro"/"professional" | "business" — the trial tier. */
+    private String tier;
 }

@@ -24,6 +24,7 @@ public class SubscriptionResponse {
     private int aiGenerationsLimit;
     private int aiGenerationsRemaining;
     private boolean cancelAtPeriodEnd;
+    private boolean trial;
     private LocalDateTime createdAt;
 
     public static SubscriptionResponse from(Subscription sub) {
@@ -48,6 +49,7 @@ public class SubscriptionResponse {
                 .aiGenerationsLimit(sub.getAiGenerationsLimit())
                 .aiGenerationsRemaining(remaining)
                 .cancelAtPeriodEnd(sub.isCancelAtPeriodEnd())
+                .trial(sub.isTrial())
                 .createdAt(sub.getCreatedAt())
                 .build();
     }
