@@ -10,4 +10,8 @@ public class CreateProjectRequest {
     private String imageId;
 
     private String name; // optional — defaults to "Project N" if blank
+
+    private String roomType; // optional — e.g. "Living room", "Bedroom"
+
+    private String notes; // optional — free-text context for the project
 }

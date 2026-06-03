@@ -47,6 +47,15 @@ public class User {
     @Builder.Default
     private boolean emailVerified = false;
 
+    // Optional mobile number (E.164-ish), captured during phone verification.
+    private String phoneNumber;
+
+    // columnDefinition supplies a DB default so adding this NOT NULL column to an
+    // existing users table (ddl-auto=update on prod Postgres) backfills cleanly.
+    @Column(nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean phoneVerified = false;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

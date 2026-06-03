@@ -35,6 +35,12 @@ public class Project {
     @Column(nullable = false)
     private String name;
 
+    // Optional context captured on the "new project" details step (nullable).
+    private String roomType;
+
+    @Column(columnDefinition = "TEXT")
+    private String notes;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     @Builder.Default
