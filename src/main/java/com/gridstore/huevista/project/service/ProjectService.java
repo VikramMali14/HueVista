@@ -43,6 +43,7 @@ public class ProjectService {
     private final StorageService storageService;
     private final SegmentationService segmentationService;
     private final CustomerEntitlementService entitlementService;
+    private final ProjectAccessPolicy projectAccessPolicy;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
 
     @Autowired(required = false)
@@ -59,6 +60,10 @@ public class ProjectService {
         // Enforce the customer's project entitlement (expiry + included/granted/purchased allowance).
         // No-op for non-customer roles (retailers/distributors/admins).
         entitlementService.assertCanCreateProject(userId);
+
+        // Retailer funnel gate: email+mobile verified, and the free trial includes
+        // just one project (more require a paid plan). No-op for non-retailers.
+        projectAccessPolicy.assertCanCreateProject(user);
 
         UploadedImage image = imageRepository.findByIdAndUserId(request.getImageId(), userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Image not found: " + request.getImageId()));

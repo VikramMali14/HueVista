@@ -67,10 +67,28 @@ public class GlobalExceptionHandler {
         return errorResponse(HttpStatus.FORBIDDEN, ex.getMessage());
     }
 
+    @ExceptionHandler(SubscriptionRequiredException.class)
+    public ResponseEntity<Map<String, Object>> handleSubscriptionRequired(SubscriptionRequiredException ex) {
+        // Retailer must start/upgrade a paid plan. 402 like other quota errors, but
+        // tagged so the frontend routes to pricing (not the customer buy-one-extra flow).
+        Map<String, Object> body = baseError(HttpStatus.PAYMENT_REQUIRED, ex.getMessage());
+        body.put("code", "SUBSCRIPTION_REQUIRED");
+        return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).body(body);
+    }
+
     @ExceptionHandler(QuotaExceededException.class)
     public ResponseEntity<Map<String, Object>> handleQuota(QuotaExceededException ex) {
         // No active subscription / AI limit reached, or a customer's project allowance is used up.
         return errorResponse(HttpStatus.PAYMENT_REQUIRED, ex.getMessage());
+    }
+
+    @ExceptionHandler(VerificationRequiredException.class)
+    public ResponseEntity<Map<String, Object>> handleVerificationRequired(VerificationRequiredException ex) {
+        // Email + mobile must be verified first. Tag with a machine-readable code so
+        // the frontend can surface the verify UI rather than a generic 403 error.
+        Map<String, Object> body = baseError(HttpStatus.FORBIDDEN, ex.getMessage());
+        body.put("code", "VERIFICATION_REQUIRED");
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
     }
 
     @ExceptionHandler(IllegalStateException.class)
