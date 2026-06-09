@@ -1,5 +1,6 @@
 package com.gridstore.huevista.auth.config;
 
+import com.gridstore.huevista.auth.filter.GuestAuthFilter;
 import com.gridstore.huevista.auth.filter.JwtAuthFilter;
 import com.gridstore.huevista.common.ratelimit.SignupRateLimitFilter;
 import com.gridstore.huevista.auth.handler.OAuth2AuthenticationFailureHandler;
@@ -62,6 +63,7 @@ public class SecurityConfig {
 
     private final UserRepository userRepository;
     private final JwtAuthFilter jwtAuthFilter;
+    private final GuestAuthFilter guestAuthFilter;
     private final SignupRateLimitFilter signupRateLimitFilter;
     private final CustomOAuth2UserService customOAuth2UserService;
     private final OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler;
@@ -95,6 +97,10 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/shades", "/api/shades/**").permitAll()
                 // Shared project view — public, no auth
                 .requestMatchers(HttpMethod.GET, "/api/share/**").permitAll()
+                // Anonymous guest redemption of a shop access code — issues a guest token
+                .requestMatchers(HttpMethod.POST, "/api/access-codes/redeem-guest").permitAll()
+                // Guest-scoped endpoints (image upload + project create/recolour) — guests only
+                .requestMatchers("/api/guest/**").hasRole("GUEST")
                 // Razorpay webhook — no user auth, signature-verified in service
                 .requestMatchers(HttpMethod.POST, "/api/billing/webhooks/**").permitAll()
                 // Channel webhooks (WhatsApp, ElevenLabs) — called by external
@@ -127,6 +133,13 @@ public class SecurityConfig {
             // ── Wire in our authentication provider ───────────────────────
             .authenticationProvider(authenticationProvider())
 
+            // ── Guest auth is inserted (just) before the JWT user filter. Both sit
+            //    before UsernamePasswordAuthenticationFilter — a custom filter class
+            //    can't be used as a position reference, so we anchor to that core
+            //    filter. Order between the two doesn't affect correctness: JwtAuthFilter
+            //    ignores a guest token (no user has the code's id), and each filter only
+            //    acts when the context is still empty.
+            .addFilterBefore(guestAuthFilter, UsernamePasswordAuthenticationFilter.class)
             // ── Insert JWT filter BEFORE UsernamePasswordAuthenticationFilter
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
             // ── Per-IP signup throttle (only acts on POST /api/auth/register).

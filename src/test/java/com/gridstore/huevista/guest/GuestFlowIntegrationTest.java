@@ -1,0 +1,199 @@
+package com.gridstore.huevista.guest;
+
+import com.gridstore.huevista.account.model.CustomerAccessCode;
+import com.gridstore.huevista.account.model.OrgMemberRole;
+import com.gridstore.huevista.account.model.OrgMembership;
+import com.gridstore.huevista.account.model.OrgType;
+import com.gridstore.huevista.account.model.Organization;
+import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
+import com.gridstore.huevista.account.repository.OrgMembershipRepository;
+import com.gridstore.huevista.account.repository.OrganizationRepository;
+import com.gridstore.huevista.auth.dto.AuthResponse;
+import com.gridstore.huevista.auth.model.AuthProvider;
+import com.gridstore.huevista.auth.model.User;
+import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.image.service.ClaudeVisionService;
+import com.razorpay.RazorpayClient;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+@Transactional
+@TestPropertySource(locations = "classpath:application-test.properties")
+class GuestFlowIntegrationTest {
+
+    @MockitoBean RazorpayClient razorpayClient;
+    @MockitoBean ClaudeVisionService claudeVisionService; // unused by the guest path, but keep context light
+
+    @Autowired MockMvc mockMvc;
+    @Autowired ObjectMapper objectMapper;
+    @Autowired UserRepository userRepository;
+    @Autowired OrganizationRepository orgRepository;
+    @Autowired OrgMembershipRepository membershipRepository;
+    @Autowired CustomerAccessCodeRepository codeRepository;
+    @Autowired PasswordEncoder passwordEncoder;
+
+    private static final String CODE = "GUESTAB2";
+    private String codeId;
+    private String retailerToken;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        User retailer = userRepository.save(User.builder()
+                .name("Shop Owner").email("shop@example.com")
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL).emailVerified(true).build());
+
+        Organization org = orgRepository.save(Organization.builder()
+                .name("Sharda Paints").slug("sharda-paints-guesttest")
+                .type(OrgType.RETAILER).owner(retailer).build());
+
+        membershipRepository.save(OrgMembership.builder()
+                .user(retailer).organization(org).role(OrgMemberRole.OWNER).build());
+
+        CustomerAccessCode code = codeRepository.save(CustomerAccessCode.builder()
+                .organization(org).code(CODE).validDays(7)
+                .expiresAt(LocalDateTime.now().plusDays(7)).build());
+        codeId = code.getId();
+
+        retailerToken = login("shop@example.com", "password123");
+    }
+
+    @Test
+    void guest_redeems_creates_one_project_and_shop_resolves() throws Exception {
+        String guestToken = redeemAsGuest();
+        String imageId = guestUpload(guestToken);
+        String projectId = guestCreateProject(guestToken, imageId);
+
+        // Second project is blocked — the guest gets exactly one.
+        mockMvc.perform(post("/api/guest/projects")
+                        .header("Authorization", "Bearer " + guestToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"imageId\":\"" + imageId + "\"}"))
+                .andExpect(status().isPaymentRequired());
+
+        // The issuing shop can resolve the guest's project (full view) by the code.
+        mockMvc.perform(get("/api/access-codes/" + codeId + "/guest-project")
+                        .header("Authorization", "Bearer " + retailerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(projectId));
+    }
+
+    @Test
+    void code_is_single_use_for_guests() throws Exception {
+        redeemAsGuest();
+        mockMvc.perform(post("/api/access-codes/redeem-guest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + CODE + "\"}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void guest_endpoints_reject_a_normal_user_token() throws Exception {
+        userRepository.save(User.builder().name("Plain").email("plain@example.com")
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL).emailVerified(true).build());
+        String userToken = login("plain@example.com", "password123");
+
+        mockMvc.perform(get("/api/guest/projects")
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void guest_can_claim_projects_after_signing_up() throws Exception {
+        String guestToken = redeemAsGuest();
+        String imageId = guestUpload(guestToken);
+        String projectId = guestCreateProject(guestToken, imageId);
+
+        userRepository.save(User.builder().name("Walk In").email("walkin@example.com")
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL).emailVerified(true).build());
+        String userToken = login("walkin@example.com", "password123");
+
+        mockMvc.perform(post("/api/projects/claim-guest")
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"guestToken\":\"" + guestToken + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.linked").value(1));
+
+        // The signed-up user now owns the project.
+        mockMvc.perform(get("/api/projects/" + projectId)
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(projectId));
+    }
+
+    // --- helpers ---
+
+    private String redeemAsGuest() throws Exception {
+        MvcResult r = mockMvc.perform(post("/api/access-codes/redeem-guest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + CODE + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.guestToken").isNotEmpty())
+                .andReturn();
+        return objectMapper.readTree(r.getResponse().getContentAsString()).get("guestToken").asText();
+    }
+
+    private String guestUpload(String guestToken) throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "room.jpg", "image/jpeg", fakeJpegBytes());
+        MvcResult r = mockMvc.perform(multipart("/api/guest/images/upload").file(file)
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isCreated())
+                .andReturn();
+        return objectMapper.readTree(r.getResponse().getContentAsString()).get("imageId").asText();
+    }
+
+    private String guestCreateProject(String guestToken, String imageId) throws Exception {
+        MvcResult r = mockMvc.perform(post("/api/guest/projects")
+                        .header("Authorization", "Bearer " + guestToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"imageId\":\"" + imageId + "\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("CREATED"))
+                .andReturn();
+        return objectMapper.readTree(r.getResponse().getContentAsString()).get("id").asText();
+    }
+
+    private String login(String email, String password) throws Exception {
+        MvcResult r = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"" + email + "\",\"password\":\"" + password + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readValue(r.getResponse().getContentAsString(), AuthResponse.class).getAccessToken();
+    }
+
+    private static byte[] fakeJpegBytes() {
+        byte[] header = {
+                (byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0,
+                0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+                0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00
+        };
+        byte[] out = new byte[header.length + 256 + 2];
+        System.arraycopy(header, 0, out, 0, header.length);
+        out[out.length - 2] = (byte) 0xFF;
+        out[out.length - 1] = (byte) 0xD9;
+        return out;
+    }
+}

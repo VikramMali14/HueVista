@@ -28,6 +28,14 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
     @Query("SELECT COUNT(p) FROM Project p WHERE p.user.id = :userId")
     long countByUserId(@Param("userId") String userId);
 
+    // --- Guest (anonymous, access-code-scoped) ownership ---
+    List<Project> findByAccessCodeIdOrderByUpdatedAtDesc(String accessCodeId);
+
+    Optional<Project> findByIdAndAccessCodeId(String id, String accessCodeId);
+
+    @Query("SELECT COUNT(p) FROM Project p WHERE p.accessCode.id = :accessCodeId")
+    long countByAccessCodeId(@Param("accessCodeId") String accessCodeId);
+
     /**
      * Pulls the owning user's id without triggering lazy initialization on the
      * Project.user association — needed inside the async segmentation worker,

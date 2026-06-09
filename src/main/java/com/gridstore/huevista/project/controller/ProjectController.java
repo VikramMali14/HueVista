@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/projects")
@@ -213,6 +214,19 @@ public class ProjectController {
                 .contentType(MediaType.IMAGE_PNG)
                 .cacheControl(CacheControl.maxAge(Duration.ofMinutes(15)).cachePrivate())
                 .body(bytes);
+    }
+
+    @Operation(summary = "Claim guest projects after signing up",
+            description = "Re-points projects created as a guest (owned by the redeemed access code) to the "
+                    + "now-authenticated account. The shop keeps visibility via the code. Pass the guest token.")
+    @ApiResponse(responseCode = "200", description = "Number of projects linked")
+    @PostMapping("/claim-guest")
+    public ResponseEntity<Map<String, Integer>> claimGuestProjects(
+            @Valid @RequestBody GuestLinkRequest request,
+            Authentication auth
+    ) {
+        int linked = projectService.linkGuestProjectsToUser(userId(auth), request.getGuestToken());
+        return ResponseEntity.ok(Map.of("linked", linked));
     }
 
     private String userId(Authentication auth) {

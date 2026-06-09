@@ -42,12 +42,35 @@ public class JwtService {
                 .compact();
     }
 
+    /**
+     * Generates a signed guest JWT for an anonymous customer who redeemed a shop
+     * access code (no account). Subject = the access code id; {@code scope=guest}
+     * marks it so it can never be mistaken for a user token. Expiry is the code's
+     * own validity window (passed in), so guest access dies with the code.
+     */
+    public String generateGuestToken(String accessCodeId, long ttlMs) {
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("scope", "guest");
+        return Jwts.builder()
+                .claims(claims)
+                .subject(accessCodeId)
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + Math.max(60_000L, ttlMs)))
+                .signWith(getSigningKey())
+                .compact();
+    }
+
     public String extractUserId(String token) {
         return extractClaim(token, Claims::getSubject);
     }
 
     public String extractEmail(String token) {
         return extractClaim(token, claims -> claims.get("email", String.class));
+    }
+
+    /** The token's scope claim ("guest" for guest tokens; null for normal user tokens). */
+    public String extractScope(String token) {
+        return extractClaim(token, claims -> claims.get("scope", String.class));
     }
 
     public boolean isTokenValid(String token) {

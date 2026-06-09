@@ -1,5 +1,6 @@
 package com.gridstore.huevista.project.model;
 
+import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.image.model.UploadedImage;
 import jakarta.persistence.*;
@@ -24,9 +25,17 @@ public class Project {
     @GeneratedValue(strategy = GenerationType.UUID)
     private String id;
 
+    // Owner is EITHER a registered user OR — for an anonymous guest who redeemed a
+    // shop access code — the access code (user stays null). Exactly one is set.
+    // On guest sign-up the project is re-pointed to the new user (the shop keeps
+    // visibility through the accessCode link, which is never cleared).
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
+    @JoinColumn(name = "user_id")
     private User user;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "access_code_id")
+    private CustomerAccessCode accessCode;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "image_id", nullable = false)

@@ -2,9 +2,14 @@ package com.gridstore.huevista.account.controller;
 
 import com.gridstore.huevista.account.dto.AccessCodeResponse;
 import com.gridstore.huevista.account.dto.GenerateAccessCodeRequest;
+import com.gridstore.huevista.account.dto.GuestRedeemResponse;
 import com.gridstore.huevista.account.dto.RedeemCodeRequest;
 import com.gridstore.huevista.account.service.AccessCodeService;
+import com.gridstore.huevista.common.exception.ResourceNotFoundException;
+import com.gridstore.huevista.project.dto.ProjectResponse;
+import com.gridstore.huevista.project.service.ProjectService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +27,7 @@ import java.util.List;
 public class AccessCodeController {
 
     private final AccessCodeService accessCodeService;
+    private final ProjectService projectService;
 
     @Operation(summary = "Generate access code",
             description = "Generates a time-limited access code for walk-in customers. Only retailer org owners/managers can call this.")
@@ -49,5 +55,29 @@ public class AccessCodeController {
             @AuthenticationPrincipal UserDetails userDetails,
             @Valid @RequestBody RedeemCodeRequest request) {
         return ResponseEntity.ok(accessCodeService.redeemCode(userDetails.getUsername(), request.getCode()));
+    }
+
+    @Operation(summary = "Redeem access code as a guest",
+            description = "Public. Redeems a code without an account and returns a guest token scoped to it. "
+                    + "The guest can create a single project; the issuing shop sees it via the code.")
+    @SecurityRequirements
+    @PostMapping("/api/access-codes/redeem-guest")
+    public ResponseEntity<GuestRedeemResponse> redeemAsGuest(@Valid @RequestBody RedeemCodeRequest request) {
+        return ResponseEntity.ok(accessCodeService.redeemAsGuest(request.getCode()));
+    }
+
+    @Operation(summary = "View a guest's selections for a code",
+            description = "Shop-only. Returns the guest project created against this code WITH real shade "
+                    + "codes, so the counter can fulfil the order. Requires owner/manager of the issuing org.")
+    @GetMapping("/api/access-codes/{codeId}/guest-project")
+    public ResponseEntity<ProjectResponse> getGuestProjectForShop(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String codeId) {
+        accessCodeService.requireManagedCode(userDetails.getUsername(), codeId);
+        ProjectResponse project = projectService.getGuestProjectForShop(codeId);
+        if (project == null) {
+            throw new ResourceNotFoundException("No guest project created for this code yet.");
+        }
+        return ResponseEntity.ok(project);
     }
 }
