@@ -1,8 +1,12 @@
 package com.gridstore.huevista.billing;
 
 import com.razorpay.RazorpayClient;
+import com.razorpay.Utils;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -11,6 +15,8 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
+
+import static org.mockito.ArgumentMatchers.anyString;
 
 import com.gridstore.huevista.billing.model.Subscription;
 import com.gridstore.huevista.billing.model.Plan;
@@ -27,8 +33,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @Transactional
-@TestPropertySource(locations = "classpath:application-test.properties")
+// A non-blank webhook secret so the service doesn't (correctly) fail closed; the
+// HMAC check itself is stubbed below so the test isn't coupled to the SDK's exact
+// signature encoding — it verifies event handling, not the crypto primitive.
+@TestPropertySource(
+        locations = "classpath:application-test.properties",
+        properties = "razorpay.webhook-secret=test_whsec_huevista")
 class BillingWebhookIntegrationTest {
+
+    private static final String SIGNATURE = "stubbed-signature";
 
     @MockitoBean
     RazorpayClient razorpayClient;
@@ -38,9 +51,17 @@ class BillingWebhookIntegrationTest {
     @Autowired UserRepository userRepository;
 
     private Subscription testSubscription;
+    private MockedStatic<Utils> utilsMock;
 
     @BeforeEach
     void setUp() {
+        // Treat any presented signature as valid (constant-true). Razorpay's real
+        // HMAC verification is exercised by the SDK's own tests; here we only care
+        // that a verified webhook drives the correct subscription state transitions.
+        utilsMock = Mockito.mockStatic(Utils.class);
+        utilsMock.when(() -> Utils.verifyWebhookSignature(anyString(), anyString(), anyString()))
+                .thenReturn(true);
+
         User user = userRepository.save(User.builder()
                 .name("Webhook User")
                 .email("webhook@example.com")
@@ -55,6 +76,11 @@ class BillingWebhookIntegrationTest {
                 .razorpaySubscriptionId("sub_test_123")
                 .aiGenerationsLimit(Plan.STARTER.getMonthlyAiLimit())
                 .build());
+    }
+
+    @AfterEach
+    void tearDown() {
+        utilsMock.close();
     }
 
     @Test
@@ -75,6 +101,7 @@ class BillingWebhookIntegrationTest {
                 """;
 
         mockMvc.perform(post("/api/billing/webhooks/razorpay")
+                        .header("X-Razorpay-Signature", SIGNATURE)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk())
@@ -100,6 +127,7 @@ class BillingWebhookIntegrationTest {
                 """;
 
         mockMvc.perform(post("/api/billing/webhooks/razorpay")
+                        .header("X-Razorpay-Signature", SIGNATURE)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk());
@@ -131,6 +159,7 @@ class BillingWebhookIntegrationTest {
                 """;
 
         mockMvc.perform(post("/api/billing/webhooks/razorpay")
+                        .header("X-Razorpay-Signature", SIGNATURE)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk());
@@ -150,6 +179,7 @@ class BillingWebhookIntegrationTest {
                 """;
 
         mockMvc.perform(post("/api/billing/webhooks/razorpay")
+                        .header("X-Razorpay-Signature", SIGNATURE)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(payload))
                 .andExpect(status().isOk())

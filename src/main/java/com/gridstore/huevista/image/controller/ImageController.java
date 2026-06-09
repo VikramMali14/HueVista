@@ -83,7 +83,13 @@ public class ImageController {
         String storageKey = extractStorageKey(request);
         String userId = userDetails.getUsername();
 
-        if (!storageKey.startsWith(userId + "/")) {
+        // Access control + path-traversal guard. A naive `startsWith(userId + "/")`
+        // check is bypassable with traversal sequences — e.g. the key
+        // "<myId>/../<otherId>/<uuid>.jpg" both starts with "<myId>/" AND escapes to
+        // another user's directory (or, with enough "../", outside the storage root
+        // entirely). Reject any traversal / absolute / backslash / NUL payload, then
+        // require the (now-clean) key to live under the caller's own prefix.
+        if (!isOwnedKey(storageKey, userId)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
@@ -91,6 +97,25 @@ public class ImageController {
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(detectContentType(storageKey)))
                 .body(data);
+    }
+
+    /**
+     * True only when {@code storageKey} is a clean relative key owned by {@code userId}.
+     * Storage keys are always of the form "{userId}/{uuid}.{ext}" — they never contain
+     * "..", a leading slash, a backslash or a NUL byte — so anything that does is an
+     * attempted traversal and is rejected.
+     */
+    static boolean isOwnedKey(String storageKey, String userId) {
+        if (storageKey == null || storageKey.isBlank() || userId == null || userId.isBlank()) {
+            return false;
+        }
+        if (storageKey.contains("..")
+                || storageKey.contains("\\")
+                || storageKey.indexOf('\0') >= 0
+                || storageKey.startsWith("/")) {
+            return false;
+        }
+        return storageKey.startsWith(userId + "/");
     }
 
     private String extractStorageKey(HttpServletRequest request) {

@@ -31,10 +31,12 @@ public class AccountController {
                 .body(accountService.createOrganization(userDetails.getUsername(), request));
     }
 
-    @Operation(summary = "Get organization", description = "Returns organization details by ID.")
+    @Operation(summary = "Get organization", description = "Returns organization details by ID. Caller must be a member.")
     @GetMapping("/{orgId}")
-    public ResponseEntity<OrgResponse> getOrganization(@PathVariable String orgId) {
-        return ResponseEntity.ok(accountService.getOrganization(orgId));
+    public ResponseEntity<OrgResponse> getOrganization(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String orgId) {
+        return ResponseEntity.ok(accountService.getOrganization(userDetails.getUsername(), orgId));
     }
 
     @Operation(summary = "Get my organizations", description = "Returns all organizations the authenticated user belongs to.")
@@ -44,10 +46,12 @@ public class AccountController {
         return ResponseEntity.ok(accountService.getMyOrganizations(userDetails.getUsername()));
     }
 
-    @Operation(summary = "List members", description = "Returns all members of an organization.")
+    @Operation(summary = "List members", description = "Returns all members of an organization. Caller must be a member.")
     @GetMapping("/{orgId}/members")
-    public ResponseEntity<List<MemberResponse>> getMembers(@PathVariable String orgId) {
-        return ResponseEntity.ok(accountService.getMembers(orgId));
+    public ResponseEntity<List<MemberResponse>> getMembers(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String orgId) {
+        return ResponseEntity.ok(accountService.getMembers(userDetails.getUsername(), orgId));
     }
 
     @Operation(summary = "Add member", description = "Adds a user to the organization. Requires OWNER role.")
@@ -81,15 +85,19 @@ public class AccountController {
                 .body(accountService.linkRetailer(userDetails.getUsername(), distributorOrgId, request));
     }
 
-    @Operation(summary = "Get linked retailers", description = "Returns all retailer orgs linked under a distributor.")
+    @Operation(summary = "Get linked retailers", description = "Returns all retailer orgs linked under a distributor. Caller must be a member of the distributor.")
     @GetMapping("/{distributorOrgId}/retailers")
-    public ResponseEntity<List<OrgResponse>> getLinkedRetailers(@PathVariable String distributorOrgId) {
-        return ResponseEntity.ok(accountService.getLinkedRetailers(distributorOrgId));
+    public ResponseEntity<List<OrgResponse>> getLinkedRetailers(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String distributorOrgId) {
+        return ResponseEntity.ok(accountService.getLinkedRetailers(userDetails.getUsername(), distributorOrgId));
     }
 
-    @Operation(summary = "Get distributors for retailer", description = "Returns all distributor orgs that have linked this retailer.")
+    @Operation(summary = "Get distributors for retailer", description = "Returns all distributor orgs that have linked this retailer. Caller must be a member of the retailer.")
     @GetMapping("/{retailerOrgId}/distributors")
-    public ResponseEntity<List<OrgResponse>> getDistributors(@PathVariable String retailerOrgId) {
-        return ResponseEntity.ok(accountService.getDistributorsForRetailer(retailerOrgId));
+    public ResponseEntity<List<OrgResponse>> getDistributors(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String retailerOrgId) {
+        return ResponseEntity.ok(accountService.getDistributorsForRetailer(userDetails.getUsername(), retailerOrgId));
     }
 }
