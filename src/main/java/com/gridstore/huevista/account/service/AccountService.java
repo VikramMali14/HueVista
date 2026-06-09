@@ -102,8 +102,10 @@ public class AccountService {
     }
 
     @Transactional(readOnly = true)
-    public OrgResponse getOrganization(String orgId) {
-        return OrgResponse.from(findOrg(orgId));
+    public OrgResponse getOrganization(String requestingUserId, String orgId) {
+        Organization org = findOrg(orgId);
+        requireMember(requestingUserId, orgId);
+        return OrgResponse.from(org);
     }
 
     @Transactional(readOnly = true)
@@ -146,7 +148,8 @@ public class AccountService {
     }
 
     @Transactional(readOnly = true)
-    public List<MemberResponse> getMembers(String orgId) {
+    public List<MemberResponse> getMembers(String requestingUserId, String orgId) {
+        requireMember(requestingUserId, orgId);
         return membershipRepository.findByOrganizationId(orgId).stream()
                 .map(MemberResponse::from)
                 .toList();
@@ -183,14 +186,16 @@ public class AccountService {
     }
 
     @Transactional(readOnly = true)
-    public List<OrgResponse> getLinkedRetailers(String distributorOrgId) {
+    public List<OrgResponse> getLinkedRetailers(String requestingUserId, String distributorOrgId) {
+        requireMember(requestingUserId, distributorOrgId);
         return linkRepository.findByDistributorId(distributorOrgId).stream()
                 .map(l -> OrgResponse.from(l.getRetailer()))
                 .toList();
     }
 
     @Transactional(readOnly = true)
-    public List<OrgResponse> getDistributorsForRetailer(String retailerOrgId) {
+    public List<OrgResponse> getDistributorsForRetailer(String requestingUserId, String retailerOrgId) {
+        requireMember(requestingUserId, retailerOrgId);
         return linkRepository.findByRetailerId(retailerOrgId).stream()
                 .map(l -> OrgResponse.from(l.getDistributor()))
                 .toList();
@@ -199,6 +204,14 @@ public class AccountService {
     private Organization findOrg(String orgId) {
         return orgRepository.findById(orgId)
                 .orElseThrow(() -> new ResourceNotFoundException("Organization not found: " + orgId));
+    }
+
+    /** Any membership role (OWNER/MANAGER/member) may read org-scoped data. Blocks the
+     *  cross-tenant IDOR where any authenticated user could read another org by id. */
+    private void requireMember(String userId, String orgId) {
+        if (membershipRepository.findByUserIdAndOrganizationId(userId, orgId).isEmpty()) {
+            throw new SecurityException("You are not a member of this organization");
+        }
     }
 
     private void requireOwner(String userId, String orgId) {

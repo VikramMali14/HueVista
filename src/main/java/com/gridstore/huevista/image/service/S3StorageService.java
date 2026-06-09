@@ -117,8 +117,22 @@ public class S3StorageService implements StorageService {
         return presigned.url().toString();
     }
 
+    /**
+     * Returns a safe, normalised extension derived from the (untrusted) original
+     * filename: only the characters after the final dot, reduced to lowercase
+     * alphanumerics and capped in length, so a crafted filename can never inject
+     * unexpected characters into the S3 object key.
+     */
     private String extractExtension(String filename) {
-        if (filename == null || !filename.contains(".")) return "";
-        return filename.substring(filename.lastIndexOf('.'));
+        if (filename == null) return "";
+        int dot = filename.lastIndexOf('.');
+        if (dot < 0 || dot == filename.length() - 1) return "";
+        String raw = filename.substring(dot + 1).toLowerCase();
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < raw.length() && sb.length() < 5; i++) {
+            char c = raw.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) sb.append(c);
+        }
+        return sb.length() == 0 ? "" : "." + sb;
     }
 }
