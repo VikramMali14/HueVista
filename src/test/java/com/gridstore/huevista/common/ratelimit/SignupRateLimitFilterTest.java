@@ -12,7 +12,7 @@ class SignupRateLimitFilterTest {
         MockHttpServletRequest req = new MockHttpServletRequest();
         req.addHeader("X-Forwarded-For", "203.0.113.7, 10.0.0.1");
         req.setRemoteAddr("10.0.0.99");
-        assertThat(SignupRateLimitFilter.clientIp(req)).isEqualTo("203.0.113.7");
+        assertThat(SignupRateLimitFilter.clientIp(req, true)).isEqualTo("203.0.113.7");
     }
 
     @Test
@@ -20,13 +20,22 @@ class SignupRateLimitFilterTest {
         MockHttpServletRequest req = new MockHttpServletRequest();
         req.addHeader("X-Real-IP", "198.51.100.5");
         req.setRemoteAddr("10.0.0.99");
-        assertThat(SignupRateLimitFilter.clientIp(req)).isEqualTo("198.51.100.5");
+        assertThat(SignupRateLimitFilter.clientIp(req, true)).isEqualTo("198.51.100.5");
     }
 
     @Test
     void fallsBackToRemoteAddrWhenNoHeaders() {
         MockHttpServletRequest req = new MockHttpServletRequest();
         req.setRemoteAddr("192.0.2.44");
-        assertThat(SignupRateLimitFilter.clientIp(req)).isEqualTo("192.0.2.44");
+        assertThat(SignupRateLimitFilter.clientIp(req, true)).isEqualTo("192.0.2.44");
+    }
+
+    @Test
+    void ignoresForwardedHeadersWhenNotTrusted() {
+        MockHttpServletRequest req = new MockHttpServletRequest();
+        req.addHeader("X-Forwarded-For", "203.0.113.7");
+        req.addHeader("X-Real-IP", "198.51.100.5");
+        req.setRemoteAddr("192.0.2.44");
+        assertThat(SignupRateLimitFilter.clientIp(req, false)).isEqualTo("192.0.2.44");
     }
 }

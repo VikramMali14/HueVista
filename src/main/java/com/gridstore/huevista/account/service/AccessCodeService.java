@@ -91,12 +91,19 @@ public class AccessCodeService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
+        // Compare-and-set consumption: if a concurrent request redeemed this code
+        // between our isUsed() check and here, the guarded UPDATE matches 0 rows.
+        LocalDateTime now = LocalDateTime.now();
+        if (codeRepository.consumeForUser(accessCode.getId(), user, now) == 0) {
+            throw new IllegalStateException("This access code has already been used");
+        }
+
         user.setRole(UserRole.CUSTOMER);
         userRepository.save(user);
 
+        // Mirror what the UPDATE wrote so the response (and any flush) is consistent.
         accessCode.setUsedByUser(user);
-        accessCode.setUsedAt(LocalDateTime.now());
-        codeRepository.save(accessCode);
+        accessCode.setUsedAt(now);
 
         // Create/refresh the customer's project entitlement: 1 included project, valid for validDays.
         entitlementService.onAccessCodeRedeemed(user, accessCode.getOrganization(), accessCode.getValidDays());
@@ -123,9 +130,13 @@ public class AccessCodeService {
             throw new IllegalStateException("This access code has expired");
         }
 
-        accessCode.setUsedAt(LocalDateTime.now());
+        // Same compare-and-set as redeemCode: only one concurrent redeemer can win.
+        LocalDateTime now = LocalDateTime.now();
+        if (codeRepository.consumeForGuest(accessCode.getId(), now) == 0) {
+            throw new IllegalStateException("This access code has already been used");
+        }
+        accessCode.setUsedAt(now);
         accessCode.setGuestRedeemed(true);
-        codeRepository.save(accessCode);
 
         long ttlMs = java.time.Duration.between(LocalDateTime.now(), accessCode.getExpiresAt()).toMillis();
         String token = jwtService.generateGuestToken(accessCode.getId(), ttlMs);

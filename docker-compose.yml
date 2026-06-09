@@ -1,6 +1,8 @@
 # Local prod-like stack: PostgreSQL + Redis + the backend.
-# Values come from a sibling `.env` (see .env.example); the defaults below let it
-# boot out of the box for local testing. Schema is auto-created (ddl-auto=update).
+# Values come from a sibling `.env` (see .env.example); most defaults below let it
+# boot out of the box for local testing. JWT_SECRET is deliberately NOT defaulted —
+# generate one (`openssl rand -base64 32`) and put it in .env, so no deployment can
+# ever run on a publicly known signing key. Schema is auto-created (ddl-auto=update).
 #
 #   docker compose up --build
 #
@@ -44,8 +46,8 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
       REDIS_HOST: redis
       REDIS_PORT: "6379"
-      # Required placeholders (override in .env for real use).
-      JWT_SECRET: ${JWT_SECRET:-ZGV2LW9ubHktc2VjcmV0LWtleS1jaGFuZ2UtbWUtMzJieXRlcyE=}
+      # Required — compose fails fast if missing rather than running on a known key.
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env — generate with: openssl rand -base64 32}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-dev-disabled}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-dev-google-client-id}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-dev-google-client-secret}

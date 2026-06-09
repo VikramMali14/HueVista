@@ -1,11 +1,15 @@
 package com.gridstore.huevista.billing.service;
 
+import com.gridstore.huevista.billing.model.ProcessedWebhookEvent;
+import com.gridstore.huevista.billing.repository.ProcessedWebhookEventRepository;
 import com.razorpay.Utils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 @Slf4j
 @Service
@@ -13,12 +17,29 @@ import org.springframework.stereotype.Service;
 public class RazorpayWebhookService {
 
     private final BillingService billingService;
+    private final ProcessedWebhookEventRepository processedEventRepository;
 
     @Value("${razorpay.webhook-secret:}")
     private String webhookSecret;
 
-    public void handleWebhook(String payload, String signature) {
+    @Transactional
+    public void handleWebhook(String payload, String signature, String eventId) {
         verifySignature(payload, signature);
+
+        // Idempotency: Razorpay retries deliveries, and a captured request could be
+        // replayed within signature validity. Each event id is processed at most once;
+        // the marker insert shares this transaction, so a mid-processing failure rolls
+        // it back and the retry is processed cleanly. A duplicate racing insert dies
+        // on the primary key, returns 5xx, and the retry is skipped here.
+        if (StringUtils.hasText(eventId)) {
+            if (processedEventRepository.existsById(eventId)) {
+                log.info("Razorpay webhook already processed, skipping: {}", eventId);
+                return;
+            }
+            processedEventRepository.save(ProcessedWebhookEvent.builder().eventId(eventId).build());
+        } else {
+            log.warn("Razorpay webhook without X-Razorpay-Event-Id — processing without replay protection");
+        }
 
         JSONObject event = new JSONObject(payload);
         String eventType = event.getString("event");

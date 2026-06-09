@@ -1,8 +1,13 @@
 package com.gridstore.huevista.account.repository;
 
 import com.gridstore.huevista.account.model.CustomerAccessCode;
+import com.gridstore.huevista.auth.model.User;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -13,4 +18,27 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
     List<CustomerAccessCode> findByOrganizationIdOrderByCreatedAtDesc(String organizationId);
 
     boolean existsByCode(String code);
+
+    /**
+     * Atomically consumes a code for a signed-in user. The {@code usedByUser IS NULL
+     * AND usedAt IS NULL} guard makes this a compare-and-set: when two requests race
+     * on the same code, exactly one UPDATE matches and returns 1 — the loser gets 0
+     * and must treat the code as already used.
+     */
+    @Modifying
+    @Query("""
+            UPDATE CustomerAccessCode c
+               SET c.usedByUser = :user, c.usedAt = :now
+             WHERE c.id = :id AND c.usedByUser IS NULL AND c.usedAt IS NULL
+            """)
+    int consumeForUser(@Param("id") String id, @Param("user") User user, @Param("now") LocalDateTime now);
+
+    /** Atomic guest-redemption variant of {@link #consumeForUser}. */
+    @Modifying
+    @Query("""
+            UPDATE CustomerAccessCode c
+               SET c.usedAt = :now, c.guestRedeemed = true
+             WHERE c.id = :id AND c.usedByUser IS NULL AND c.usedAt IS NULL
+            """)
+    int consumeForGuest(@Param("id") String id, @Param("now") LocalDateTime now);
 }

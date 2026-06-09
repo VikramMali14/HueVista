@@ -28,8 +28,13 @@ import java.time.LocalDateTime;
  * Notes:
  *  - The browser never calls the backend directly for register; the Next.js
  *    server action forwards the real client IP in {@code X-Forwarded-For}, which
- *    we read here (first hop), falling back to the socket address. The backend
- *    origin is internal, so this header is set by our own trusted frontend.
+ *    we read here (first hop), falling back to the socket address. This is only
+ *    safe while the backend is reachable exclusively through our own frontend —
+ *    if the backend port is ever exposed directly, a caller can spoof the header
+ *    and rotate "IPs" to bypass the limit. Set
+ *    {@code app.rate-limit.trust-forwarded-headers=false} (env
+ *    {@code RATE_LIMIT_TRUST_FORWARDED=false}) in such deployments to key the
+ *    limiter on the socket address instead.
  *  - Fail-OPEN: if Redis is unreachable we allow the request rather than lock
  *    everyone out — this is defense-in-depth, not the only guard.
  *  - Disabled in tests / local dev via {@code app.rate-limit.enabled=false}
@@ -44,16 +49,19 @@ public class SignupRateLimitFilter extends OncePerRequestFilter {
 
     private final StringRedisTemplate redis;
     private final boolean enabled;
+    private final boolean trustForwardedHeaders;
     private final int maxAttempts;
     private final Duration window;
 
     public SignupRateLimitFilter(
             StringRedisTemplate redis,
             @Value("${app.rate-limit.enabled:true}") boolean enabled,
+            @Value("${app.rate-limit.trust-forwarded-headers:true}") boolean trustForwardedHeaders,
             @Value("${app.rate-limit.signup.max-attempts:10}") int maxAttempts,
             @Value("${app.rate-limit.signup.window-seconds:3600}") long windowSeconds) {
         this.redis = redis;
         this.enabled = enabled;
+        this.trustForwardedHeaders = trustForwardedHeaders;
         this.maxAttempts = maxAttempts;
         this.window = Duration.ofSeconds(windowSeconds);
     }
@@ -69,7 +77,7 @@ public class SignupRateLimitFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
-        String ip = clientIp(request);
+        String ip = clientIp(request, trustForwardedHeaders);
         String key = KEY_PREFIX + ip;
         try {
             Long count = redis.opsForValue().increment(key);
@@ -89,15 +97,21 @@ public class SignupRateLimitFilter extends OncePerRequestFilter {
         filterChain.doFilter(request, response);
     }
 
-    /** Real client IP: prefer the frontend-forwarded header, else the socket address. */
-    static String clientIp(HttpServletRequest request) {
-        String fwd = request.getHeader("X-Forwarded-For");
-        if (StringUtils.hasText(fwd)) {
-            int comma = fwd.indexOf(',');
-            return (comma > 0 ? fwd.substring(0, comma) : fwd).trim();
+    /**
+     * Real client IP. Forwarded headers are client-controlled, so they are only
+     * consulted when {@code trustForwardedHeaders} is set — i.e. when the deployment
+     * guarantees the backend sits behind our own proxy that overwrites them.
+     */
+    static String clientIp(HttpServletRequest request, boolean trustForwardedHeaders) {
+        if (trustForwardedHeaders) {
+            String fwd = request.getHeader("X-Forwarded-For");
+            if (StringUtils.hasText(fwd)) {
+                int comma = fwd.indexOf(',');
+                return (comma > 0 ? fwd.substring(0, comma) : fwd).trim();
+            }
+            String real = request.getHeader("X-Real-IP");
+            if (StringUtils.hasText(real)) return real.trim();
         }
-        String real = request.getHeader("X-Real-IP");
-        if (StringUtils.hasText(real)) return real.trim();
         return request.getRemoteAddr();
     }
 
