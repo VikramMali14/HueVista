@@ -9,4 +9,7 @@ import java.util.Optional;
 public interface ImageRepository extends JpaRepository<UploadedImage, String> {
     List<UploadedImage> findByUserIdOrderByUploadedAtDesc(String userId);
     Optional<UploadedImage> findByIdAndUserId(String id, String userId);
+
+    // Guest (anonymous, access-code-scoped) ownership.
+    Optional<UploadedImage> findByIdAndAccessCodeId(String id, String accessCodeId);
 }

@@ -1,5 +1,7 @@
 package com.gridstore.huevista.image.service;
 
+import com.gridstore.huevista.account.model.CustomerAccessCode;
+import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.common.exception.ImageValidationException;
@@ -29,6 +31,7 @@ public class ImageService {
 
     private final ImageRepository imageRepository;
     private final UserRepository userRepository;
+    private final CustomerAccessCodeRepository accessCodeRepository;
     private final StorageService storageService;
     private final ClaudeVisionService claudeVisionService;
 
@@ -84,6 +87,40 @@ public class ImageService {
         );
 
         log.info("Image uploaded: id={} type={} user={}", saved.getId(), imageType, userId);
+        return toResponse(saved);
+    }
+
+    /**
+     * Upload for an anonymous GUEST, owned by their access code (no user). We skip
+     * Claude Vision classification here on purpose: it costs an AI call per upload,
+     * which is an abuse vector for an unauthenticated endpoint. Guests draw their
+     * own regions by hand anyway, so the image type isn't needed — stored as UNKNOWN.
+     */
+    public ImageResponse uploadForGuest(MultipartFile file, String accessCodeId) {
+        validateFile(file);
+
+        CustomerAccessCode accessCode = accessCodeRepository.findById(accessCodeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + accessCodeId));
+
+        String storageKey;
+        try {
+            storageKey = storageService.store(file, accessCodeId);
+        } catch (IOException e) {
+            throw new StorageException("Failed to store image", e);
+        }
+
+        UploadedImage saved = imageRepository.save(
+                UploadedImage.builder()
+                        .accessCode(accessCode)
+                        .originalFilename(file.getOriginalFilename())
+                        .storageKey(storageKey)
+                        .contentType(file.getContentType())
+                        .fileSize(file.getSize())
+                        .imageType(ImageType.UNKNOWN)
+                        .build()
+        );
+
+        log.info("Guest image uploaded: id={} accessCode={}", saved.getId(), accessCodeId);
         return toResponse(saved);
     }
 

@@ -39,6 +39,13 @@ public class CustomerAccessCode {
 
     private LocalDateTime usedAt;
 
+    // True when the code was redeemed by an anonymous guest (no account). usedByUser
+    // stays null in that case; usedAt is still set. Lets the shop tell guest
+    // redemptions apart, and keeps isUsed() correct for single-use enforcement.
+    @Column(nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean guestRedeemed = false;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 
@@ -46,7 +53,8 @@ public class CustomerAccessCode {
         return LocalDateTime.now().isAfter(expiresAt);
     }
 
+    /** Single-use: consumed once a real user redeems it OR a guest redeems it (usedAt set). */
     public boolean isUsed() {
-        return usedByUser != null;
+        return usedByUser != null || usedAt != null;
     }
 }

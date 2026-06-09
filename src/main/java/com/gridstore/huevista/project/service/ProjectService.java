@@ -1,8 +1,12 @@
 package com.gridstore.huevista.project.service;
 
+import com.gridstore.huevista.account.model.CustomerAccessCode;
+import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.service.CustomerEntitlementService;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.common.exception.AccessExpiredException;
+import com.gridstore.huevista.common.exception.QuotaExceededException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
@@ -40,9 +44,12 @@ public class ProjectService {
     private final RegionRepository regionRepository;
     private final UserRepository userRepository;
     private final ImageRepository imageRepository;
+    private final CustomerAccessCodeRepository accessCodeRepository;
     private final StorageService storageService;
     private final SegmentationService segmentationService;
     private final CustomerEntitlementService entitlementService;
+    private final ProjectAccessPolicy projectAccessPolicy;
+    private final com.gridstore.huevista.auth.service.JwtService jwtService;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
 
     @Autowired(required = false)
@@ -59,6 +66,10 @@ public class ProjectService {
         // Enforce the customer's project entitlement (expiry + included/granted/purchased allowance).
         // No-op for non-customer roles (retailers/distributors/admins).
         entitlementService.assertCanCreateProject(userId);
+
+        // Retailer funnel gate: email+mobile verified, and the free trial includes
+        // just one project (more require a paid plan). No-op for non-retailers.
+        projectAccessPolicy.assertCanCreateProject(user);
 
         UploadedImage image = imageRepository.findByIdAndUserId(request.getImageId(), userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Image not found: " + request.getImageId()));
@@ -250,7 +261,12 @@ public class ProjectService {
     @Transactional
     public RegionResponse createCustomMaskRegion(String userId, String projectId, CustomMaskRequest request) {
         findOwned(userId, projectId);
+        return persistCustomMask(userId, projectId, request);
+    }
 
+    /** Shared body for persisting a hand-drawn mask. {@code storageScope} is the
+     *  owner key used as the storage folder (a userId or, for guests, an access code id). */
+    private RegionResponse persistCustomMask(String storageScope, String projectId, CustomMaskRequest request) {
         byte[] png = decodeMask(request.getMaskBase64());
         try {
             BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(png));
@@ -270,7 +286,7 @@ public class ProjectService {
         String key;
         try {
             key = storageService.store(
-                    png, userId, category.name().toLowerCase() + "-custom.png", "image/png");
+                    png, storageScope, category.name().toLowerCase() + "-custom.png", "image/png");
         } catch (IOException e) {
             throw new RuntimeException("Failed to store custom mask", e);
         }
@@ -288,6 +304,137 @@ public class ProjectService {
         log.info("Custom mask region saved: project={} region={} category={}",
                 projectId, region.getId(), category);
         return RegionResponse.from(region);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  GUEST (anonymous, access-code-scoped) FLOWS
+    //
+    //  A walk-in customer who redeemed a shop code (no account) owns a SINGLE
+    //  project by their access code. Responses are the PUBLIC projection, so the
+    //  guest never sees real shade codes — the issuing shop resolves those from
+    //  the code. Guests build regions by hand (no AI auto-segment / Replicate cost
+    //  on an anonymous endpoint).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static final int GUEST_PROJECT_LIMIT = 1;
+
+    @Transactional
+    public ProjectResponse createGuestProject(String accessCodeId, CreateProjectRequest request) {
+        CustomerAccessCode code = accessCodeRepository.findById(accessCodeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found"));
+        if (code.isExpired()) {
+            throw new AccessExpiredException("Your access has ended. Ask the shop for a new code.");
+        }
+        if (projectRepository.countByAccessCodeId(accessCodeId) >= GUEST_PROJECT_LIMIT) {
+            throw new QuotaExceededException(
+                    "Your guest access includes one project. Sign up to keep going and create more.");
+        }
+
+        UploadedImage image = imageRepository.findByIdAndAccessCodeId(request.getImageId(), accessCodeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Image not found: " + request.getImageId()));
+
+        String name = (request.getName() != null && !request.getName().isBlank())
+                ? request.getName() : "My room";
+
+        Project project = projectRepository.save(Project.builder()
+                .accessCode(code)
+                .image(image)
+                .name(name)
+                .roomType(blankToNull(request.getRoomType()))
+                .notes(blankToNull(request.getNotes()))
+                .status(ProjectStatus.CREATED)
+                .build());
+
+        log.info("Guest project created: id={} accessCode={}", project.getId(), accessCodeId);
+        return toPublicResponse(project);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ProjectSummaryResponse> getGuestProjects(String accessCodeId) {
+        return projectRepository.findByAccessCodeIdOrderByUpdatedAtDesc(accessCodeId).stream()
+                .map(p -> ProjectSummaryResponse.from(p, storageService.getPublicUrl(p.getImage().getStorageKey())))
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public ProjectResponse getGuestProject(String accessCodeId, String projectId) {
+        return toPublicResponse(findGuestOwned(accessCodeId, projectId));
+    }
+
+    @Transactional
+    public ProjectResponse updateGuestRegionColors(String accessCodeId, String projectId, List<RegionColorUpdate> updates) {
+        findGuestOwned(accessCodeId, projectId);
+        for (RegionColorUpdate update : updates) {
+            regionRepository.findByIdAndProjectId(update.getRegionId(), projectId).ifPresent(region -> {
+                region.setAppliedShadeCode(update.getShadeCode());
+                region.setAppliedHexCode(update.getHexCode());
+                regionRepository.save(region);
+            });
+        }
+        return toPublicResponse(projectRepository.findById(projectId).orElseThrow());
+    }
+
+    @Transactional
+    public RegionResponse createGuestCustomMaskRegion(String accessCodeId, String projectId, CustomMaskRequest request) {
+        findGuestOwned(accessCodeId, projectId);
+        return persistCustomMask(accessCodeId, projectId, request);
+    }
+
+    private Project findGuestOwned(String accessCodeId, String projectId) {
+        return projectRepository.findByIdAndAccessCodeId(projectId, accessCodeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+    }
+
+    /**
+     * The issuing shop's view of a guest's project — FULL response WITH real shade
+     * codes (the opposite of what the guest sees). Caller must have already verified
+     * the requester owns/manages the code's organization. Null if the guest hasn't
+     * created a project yet.
+     */
+    @Transactional(readOnly = true)
+    public ProjectResponse getGuestProjectForShop(String accessCodeId) {
+        return projectRepository.findByAccessCodeIdOrderByUpdatedAtDesc(accessCodeId).stream()
+                .findFirst()
+                .map(this::toResponse)
+                .orElse(null);
+    }
+
+    /**
+     * Links the projects a guest created (owned by their access code) to a real user
+     * account — called when the guest signs up. The accessCode link is kept, so the
+     * issuing shop keeps visibility; the user becomes the owner and can keep working.
+     * Only valid while the guest token (and thus the code) is still live.
+     */
+    @Transactional
+    public int linkGuestProjectsToUser(String userId, String guestToken) {
+        if (guestToken == null || !jwtService.isTokenValid(guestToken)
+                || !"guest".equals(jwtService.extractScope(guestToken))) {
+            throw new IllegalArgumentException("Invalid or expired guest session.");
+        }
+        String accessCodeId = jwtService.extractUserId(guestToken); // subject
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+        List<Project> projects = projectRepository.findByAccessCodeIdOrderByUpdatedAtDesc(accessCodeId);
+        for (Project p : projects) {
+            if (p.getUser() == null) {
+                p.setUser(user);          // claim ownership…
+                projectRepository.save(p); // …keeping accessCode so the shop still sees it.
+            }
+        }
+        log.info("Linked {} guest project(s) for code {} to user {}", projects.size(), accessCodeId, userId);
+        return projects.size();
+    }
+
+    /** Masked (public) projection — hides real shade codes from the guest. */
+    private ProjectResponse toPublicResponse(Project project) {
+        UploadedImage image = project.getImage();
+        String originalUrl = storageService.getPublicUrl(image.getStorageKey());
+        String cleanedUrl = project.getCleanedImageStorageKey() != null
+                ? storageService.getPublicUrl(project.getCleanedImageStorageKey()) : null;
+        ProjectResponse r = ProjectResponse.fromPublic(project, originalUrl);
+        r.setCleanedImageUrl(cleanedUrl);
+        return r;
     }
 
     /** Strips an optional data-URL prefix and base64-decodes the mask bytes. */

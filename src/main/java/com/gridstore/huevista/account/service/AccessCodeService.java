@@ -2,6 +2,7 @@ package com.gridstore.huevista.account.service;
 
 import com.gridstore.huevista.account.dto.AccessCodeResponse;
 import com.gridstore.huevista.account.dto.GenerateAccessCodeRequest;
+import com.gridstore.huevista.account.dto.GuestRedeemResponse;
 import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.model.OrgType;
@@ -32,6 +33,7 @@ public class AccessCodeService {
     private final OrgMembershipRepository membershipRepository;
     private final UserRepository userRepository;
     private final CustomerEntitlementService entitlementService;
+    private final com.gridstore.huevista.auth.service.JwtService jwtService;
 
     private static final String CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
     private static final int CODE_LENGTH = 8;
@@ -101,6 +103,51 @@ public class AccessCodeService {
 
         log.info("Access code redeemed: user={} org={} code={}", userId, accessCode.getOrganization().getId(), code);
         return AccessCodeResponse.from(accessCode);
+    }
+
+    /**
+     * Redeems an access code for an ANONYMOUS guest (no account). Marks the code
+     * consumed (usedAt set, usedByUser null, guestRedeemed=true) and returns a guest
+     * token scoped to this code, valid until the code expires. The guest owns their
+     * single image+project by this code; the issuing shop sees it via the code.
+     */
+    @Transactional
+    public GuestRedeemResponse redeemAsGuest(String code) {
+        CustomerAccessCode accessCode = codeRepository.findByCode(code.toUpperCase())
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + code));
+
+        if (accessCode.isUsed()) {
+            throw new IllegalStateException("This access code has already been used");
+        }
+        if (accessCode.isExpired()) {
+            throw new IllegalStateException("This access code has expired");
+        }
+
+        accessCode.setUsedAt(LocalDateTime.now());
+        accessCode.setGuestRedeemed(true);
+        codeRepository.save(accessCode);
+
+        long ttlMs = java.time.Duration.between(LocalDateTime.now(), accessCode.getExpiresAt()).toMillis();
+        String token = jwtService.generateGuestToken(accessCode.getId(), ttlMs);
+
+        log.info("Access code redeemed by guest: org={} code={}", accessCode.getOrganization().getId(), code);
+        return GuestRedeemResponse.builder()
+                .guestToken(token)
+                .code(accessCode.getCode())
+                .shopName(accessCode.getOrganization().getName())
+                .validDays(accessCode.getValidDays())
+                .expiresAt(accessCode.getExpiresAt())
+                .build();
+    }
+
+    /** Loads a code, asserting the requester owns/manages its organization. For the
+     *  shop's "view what the guest selected" lookup. */
+    @Transactional(readOnly = true)
+    public CustomerAccessCode requireManagedCode(String requestingUserId, String codeId) {
+        CustomerAccessCode code = codeRepository.findById(codeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + codeId));
+        requireOwnerOrManager(requestingUserId, code.getOrganization().getId());
+        return code;
     }
 
     private String generateUniqueCode() {

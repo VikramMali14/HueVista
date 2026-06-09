@@ -4,12 +4,18 @@ import com.gridstore.huevista.auth.dto.AuthResponse;
 import com.gridstore.huevista.auth.model.AuthProvider;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.billing.model.Plan;
+import com.gridstore.huevista.billing.model.Subscription;
+import com.gridstore.huevista.billing.model.SubscriptionStatus;
+import com.gridstore.huevista.billing.repository.SubscriptionRepository;
 import com.gridstore.huevista.image.model.ImageType;
 import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.project.dto.CreateProjectRequest;
 import com.gridstore.huevista.project.repository.ProjectRepository;
 import com.razorpay.RazorpayClient;
+
+import java.time.LocalDateTime;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,6 +48,7 @@ class ProjectFlowIntegrationTest {
     @Autowired UserRepository userRepository;
     @Autowired ImageRepository imageRepository;
     @Autowired ProjectRepository projectRepository;
+    @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired PasswordEncoder passwordEncoder;
 
     private String userToken;
@@ -50,14 +57,29 @@ class ProjectFlowIntegrationTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        // A retailer who can create projects under the new rules: email + mobile
+        // verified, with an active free-trial subscription (one project included).
         User user = userRepository.save(User.builder()
                 .name("Project User")
                 .email("projectuser@example.com")
                 .password(passwordEncoder.encode("password123"))
                 .provider(AuthProvider.LOCAL)
-                .emailVerified(false)
+                .emailVerified(true)
+                .phoneNumber("+919886547321")
+                .phoneVerified(true)
                 .build());
         userId = user.getId();
+
+        subscriptionRepository.save(Subscription.builder()
+                .user(user)
+                .plan(Plan.PROFESSIONAL)
+                .status(SubscriptionStatus.ACTIVE)
+                .trial(true)
+                .currentPeriodStart(LocalDateTime.now())
+                .currentPeriodEnd(LocalDateTime.now().plusDays(14))
+                .aiGenerationsUsed(0)
+                .aiGenerationsLimit(Plan.PROFESSIONAL.getMonthlyAiLimit())
+                .build());
 
         // Login
         MvcResult loginResult = mockMvc.perform(post("/api/auth/login")

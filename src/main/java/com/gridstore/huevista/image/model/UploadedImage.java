@@ -1,5 +1,6 @@
 package com.gridstore.huevista.image.model;
 
+import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.auth.model.User;
 import jakarta.persistence.*;
 import lombok.*;
@@ -20,9 +21,15 @@ public class UploadedImage {
     @GeneratedValue(strategy = GenerationType.UUID)
     private String id;
 
+    // Owner is EITHER a registered user OR — for an anonymous guest who redeemed a
+    // shop access code — the access code (user stays null). Exactly one is set.
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
+    @JoinColumn(name = "user_id")
     private User user;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "access_code_id")
+    private CustomerAccessCode accessCode;
 
     @Column(nullable = false)
     private String originalFilename;
