@@ -4,6 +4,8 @@ import com.gridstore.huevista.account.dto.CustomerEntitlementResponse;
 import com.gridstore.huevista.account.service.CustomerEntitlementService;
 import com.gridstore.huevista.billing.dto.ProjectCreditOrderResponse;
 import com.gridstore.huevista.billing.dto.VerifyProjectCreditRequest;
+import com.gridstore.huevista.billing.model.ProjectCreditPayment;
+import com.gridstore.huevista.billing.repository.ProjectCreditPaymentRepository;
 import com.razorpay.Order;
 import com.razorpay.RazorpayClient;
 import com.razorpay.RazorpayException;
@@ -12,7 +14,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * One-time payment so a customer can buy one extra project beyond their included allowance.
@@ -25,6 +29,7 @@ public class ProjectCreditService {
 
     private final RazorpayClient razorpayClient;
     private final CustomerEntitlementService entitlementService;
+    private final ProjectCreditPaymentRepository paymentRepository;
 
     @Value("${razorpay.key-id:}")
     private String keyId;
@@ -71,6 +76,7 @@ public class ProjectCreditService {
     }
 
     /** Verify the Checkout signature and, if valid, credit one project to the customer. */
+    @Transactional
     public CustomerEntitlementResponse verifyAndCredit(String userId, VerifyProjectCreditRequest req) {
         try {
             JSONObject options = new JSONObject();
@@ -85,7 +91,24 @@ public class ProjectCreditService {
             log.error("Razorpay signature verification error: {}", e.getMessage());
             throw new SecurityException("Payment verification error.");
         }
-        log.info("Project-credit payment verified: user={} order={}", userId, req.getOrderId());
+
+        // Idempotency / replay protection: a verified Razorpay payment buys exactly ONE
+        // project credit. The signature stays valid on every replay, so without this a
+        // client could re-POST the same (order, payment, signature) triple and mint
+        // unlimited credits from a single payment. The unique paymentId column is the
+        // race-safe backstop for two concurrent submits that both pass the pre-check.
+        if (paymentRepository.existsByPaymentId(req.getPaymentId())) {
+            throw new IllegalStateException("This payment has already been redeemed.");
+        }
+        try {
+            paymentRepository.saveAndFlush(
+                    ProjectCreditPayment.of(req.getPaymentId(), req.getOrderId(), userId));
+        } catch (DataIntegrityViolationException duplicate) {
+            throw new IllegalStateException("This payment has already been redeemed.");
+        }
+
+        log.info("Project-credit payment verified: user={} order={} payment={}",
+                userId, req.getOrderId(), req.getPaymentId());
         return entitlementService.creditPurchasedProject(userId);
     }
 }
