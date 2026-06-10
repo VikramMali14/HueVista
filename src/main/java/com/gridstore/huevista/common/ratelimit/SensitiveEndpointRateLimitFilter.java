@@ -51,11 +51,13 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
 
     private final StringRedisTemplate redis;
     private final boolean enabled;
+    private final boolean trustForwardedHeaders;
     private final List<Rule> rules;
 
     public SensitiveEndpointRateLimitFilter(
             StringRedisTemplate redis,
             @Value("${app.rate-limit.enabled:true}") boolean enabled,
+            @Value("${app.rate-limit.trust-forwarded-headers:true}") boolean trustForwardedHeaders,
             // login: spray defence (per-account lockout already exists; this caps per IP).
             @Value("${app.rate-limit.login.max-attempts:15}") int loginMax,
             @Value("${app.rate-limit.login.window-seconds:300}") long loginWindow,
@@ -76,6 +78,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             @Value("${app.rate-limit.code-redeem.window-seconds:900}") long redeemWindow) {
         this.redis = redis;
         this.enabled = enabled;
+        this.trustForwardedHeaders = trustForwardedHeaders;
 
         Policy login = new Policy("login", loginMax, Duration.ofSeconds(loginWindow));
         Policy refresh = new Policy("refresh", refreshMax, Duration.ofSeconds(refreshWindow));
@@ -126,7 +129,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             return;
         }
 
-        String ip = SignupRateLimitFilter.clientIp(request);
+        String ip = SignupRateLimitFilter.clientIp(request, trustForwardedHeaders);
         String key = KEY_PREFIX + policy.name() + ":" + ip;
         try {
             Long count = redis.opsForValue().increment(key);

@@ -24,9 +24,10 @@ public class WebhookController {
     @PostMapping("/razorpay")
     public ResponseEntity<Map<String, String>> razorpayWebhook(
             @RequestBody String payload,
-            @RequestHeader(value = "X-Razorpay-Signature", required = false) String signature) {
+            @RequestHeader(value = "X-Razorpay-Signature", required = false) String signature,
+            @RequestHeader(value = "X-Razorpay-Event-Id", required = false) String eventId) {
         try {
-            webhookService.handleWebhook(payload, signature);
+            webhookService.handleWebhook(payload, signature, eventId);
             return ResponseEntity.ok(Map.of("status", "processed"));
         } catch (SecurityException e) {
             log.warn("Webhook signature invalid: {}", e.getMessage());
