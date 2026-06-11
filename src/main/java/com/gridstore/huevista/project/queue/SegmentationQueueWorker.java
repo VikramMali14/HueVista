@@ -22,12 +22,14 @@ public class SegmentationQueueWorker {
 
     private static final long POLL_INTERVAL_MS = 2_000;
     private static final long REDIS_ERROR_BACKOFF_MS = 15_000;
+    private static final long STALE_CHECK_INTERVAL_MS = 60_000;
 
     private final SegmentationJobQueue jobQueue;
     private final SegmentationService segmentationService;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private ExecutorService workerThread;
+    private long lastStaleCheckMs = 0;
 
     @PostConstruct
     public void start() {
@@ -51,6 +53,13 @@ public class SegmentationQueueWorker {
     private void processLoop() {
         while (running.get()) {
             try {
+                // Recover jobs whose worker crashed after dequeue but before ack.
+                long now = System.currentTimeMillis();
+                if (now - lastStaleCheckMs >= STALE_CHECK_INTERVAL_MS) {
+                    lastStaleCheckMs = now;
+                    jobQueue.requeueStale();
+                }
+
                 SegmentationJob job = jobQueue.dequeue();
                 if (job != null) {
                     log.info("Processing segmentation job: project={}", job.getProjectId());

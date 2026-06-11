@@ -17,6 +17,9 @@ public class RegisterRequest {
 
     @NotBlank(message = "Password is required")
     @Size(min = 8, message = "Password must be at least 8 characters")
+    @jakarta.validation.constraints.Pattern(
+            regexp = "^(?=.*\\p{L})(?=.*\\d).*$",
+            message = "Password must contain at least one letter and one number")
     private String password;
 
     // Optional retailer trial-signup fields. When shopName is present we provision a

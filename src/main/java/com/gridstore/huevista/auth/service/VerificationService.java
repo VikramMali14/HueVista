@@ -40,6 +40,7 @@ public class VerificationService {
     private final PasswordEncoder passwordEncoder;
     private final EmailSender emailSender;
     private final SmsSender smsSender;
+    private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final SecureRandom random = new SecureRandom();
 
     @Transactional
@@ -110,6 +111,7 @@ public class VerificationService {
             user.setPhoneVerified(true);
         }
         userRepository.save(user);
+        auditService.record(userId, channel + "_VERIFIED", "USER", userId, null);
         log.info("{} verified for user {}", channel, userId);
         return UserProfileResponse.from(user);
     }

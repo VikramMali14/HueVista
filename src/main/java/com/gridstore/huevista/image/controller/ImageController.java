@@ -96,6 +96,7 @@ public class ImageController {
         byte[] data = storageService.load(storageKey);
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(detectContentType(storageKey)))
+                .header("X-Content-Type-Options", "nosniff")
                 .body(data);
     }
 

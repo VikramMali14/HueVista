@@ -54,6 +54,15 @@ public class CustomerEntitlement {
     @Builder.Default
     private int projectsCreated = 0;
 
+    /**
+     * Optimistic lock: allowance/usage counters are read-modify-write, so two
+     * concurrent grants (or a grant racing a project creation) would otherwise
+     * silently lose one of the increments.
+     */
+    @Version
+    @Column(nullable = false, columnDefinition = "bigint default 0 not null")
+    private long version;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

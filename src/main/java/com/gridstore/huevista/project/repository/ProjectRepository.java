@@ -14,6 +14,15 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
 
     List<Project> findByUserIdOrderByUpdatedAtDesc(String userId);
 
+    /**
+     * Fetch-joins the image because the project list response needs every
+     * project's storage key — without the JOIN FETCH that's one lazy-load
+     * SELECT per project (N+1). Pageable bounds the result size.
+     */
+    @Query("SELECT p FROM Project p JOIN FETCH p.image WHERE p.user.id = :userId ORDER BY p.updatedAt DESC")
+    List<Project> findByUserIdWithImage(@Param("userId") String userId,
+                                        org.springframework.data.domain.Pageable pageable);
+
     Optional<Project> findByIdAndUserId(String id, String userId);
 
     Optional<Project> findByShareToken(String shareToken);

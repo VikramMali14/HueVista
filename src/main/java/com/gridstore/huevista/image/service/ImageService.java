@@ -36,8 +36,8 @@ public class ImageService {
     private final ClaudeVisionService claudeVisionService;
 
     public ImageResponse upload(MultipartFile file, String userId) {
-        // Step 1: basic file checks
-        validateFile(file);
+        // Step 1: basic file checks (size, declared type, magic bytes)
+        String contentType = validateFile(file);
 
         // Step 2: AI classification — reject non-house images before touching storage
         ImageType imageType;
@@ -80,7 +80,7 @@ public class ImageService {
                         .user(user)
                         .originalFilename(file.getOriginalFilename())
                         .storageKey(storageKey)
-                        .contentType(file.getContentType())
+                        .contentType(contentType)
                         .fileSize(file.getSize())
                         .imageType(imageType)
                         .build()
@@ -97,7 +97,7 @@ public class ImageService {
      * own regions by hand anyway, so the image type isn't needed — stored as UNKNOWN.
      */
     public ImageResponse uploadForGuest(MultipartFile file, String accessCodeId) {
-        validateFile(file);
+        String contentType = validateFile(file);
 
         CustomerAccessCode accessCode = accessCodeRepository.findById(accessCodeId)
                 .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + accessCodeId));
@@ -114,7 +114,7 @@ public class ImageService {
                         .accessCode(accessCode)
                         .originalFilename(file.getOriginalFilename())
                         .storageKey(storageKey)
-                        .contentType(file.getContentType())
+                        .contentType(contentType)
                         .fileSize(file.getSize())
                         .imageType(ImageType.UNKNOWN)
                         .build()
@@ -131,13 +131,20 @@ public class ImageService {
     }
 
     public List<ImageResponse> listImages(String userId) {
-        return imageRepository.findByUserIdOrderByUploadedAtDesc(userId)
+        // Capped: bounds memory and response size; newest uploads win.
+        return imageRepository.findByUserIdOrderByUploadedAtDesc(
+                        userId, org.springframework.data.domain.PageRequest.of(0, 200))
                 .stream()
                 .map(this::toResponse)
                 .collect(Collectors.toList());
     }
 
-    private void validateFile(MultipartFile file) {
+    /**
+     * Validates the upload and returns the content type detected from the file's
+     * magic bytes. The client-declared Content-Type header is checked too, but it is
+     * attacker-controlled — the sniffed type is what gets persisted and trusted.
+     */
+    private String validateFile(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw new ImageValidationException("No file provided.");
         }
@@ -147,6 +154,40 @@ public class ImageService {
         if (file.getSize() > MAX_SIZE_BYTES) {
             throw new ImageValidationException("File size must not exceed 10MB.");
         }
+        String detected;
+        try {
+            detected = sniffImageType(file);
+        } catch (IOException e) {
+            throw new StorageException("Failed to read uploaded file", e);
+        }
+        if (detected == null) {
+            throw new ImageValidationException("File content is not a valid JPEG, PNG, or WebP image.");
+        }
+        return detected;
+    }
+
+    /** Returns the MIME type implied by the file's magic bytes, or null if not an allowed image. */
+    private static String sniffImageType(MultipartFile file) throws IOException {
+        byte[] header = new byte[12];
+        int read;
+        try (var in = file.getInputStream()) {
+            read = in.readNBytes(header, 0, header.length);
+        }
+        if (read >= 3
+                && (header[0] & 0xFF) == 0xFF && (header[1] & 0xFF) == 0xD8 && (header[2] & 0xFF) == 0xFF) {
+            return "image/jpeg";
+        }
+        if (read >= 8
+                && (header[0] & 0xFF) == 0x89 && header[1] == 'P' && header[2] == 'N' && header[3] == 'G'
+                && header[4] == 0x0D && header[5] == 0x0A && header[6] == 0x1A && header[7] == 0x0A) {
+            return "image/png";
+        }
+        if (read >= 12
+                && header[0] == 'R' && header[1] == 'I' && header[2] == 'F' && header[3] == 'F'
+                && header[8] == 'W' && header[9] == 'E' && header[10] == 'B' && header[11] == 'P') {
+            return "image/webp";
+        }
+        return null;
     }
 
     private ImageResponse toResponse(UploadedImage image) {

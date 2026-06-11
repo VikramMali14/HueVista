@@ -90,6 +90,13 @@ public class PainterInvitationService {
         User painter = userRepository.findById(painterUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + painterUserId));
 
+        // Atomically claim the invitation. The isUsed() pre-check above is only a
+        // fast path — two concurrent redeems can both pass it, and this CAS update
+        // is what guarantees a single winner. (Rolls back if linking fails below.)
+        if (invitationRepository.claimIfUnused(invitation.getId(), painter, LocalDateTime.now()) == 0) {
+            throw new IllegalArgumentException("Invitation code has already been redeemed.");
+        }
+
         // Reject if a link already exists in any non-REMOVED state
         linkRepository.findByPainterIdAndRetailerId(painter.getId(), invitation.getRetailer().getId())
                 .filter(l -> l.getStatus() != PainterLinkStatus.REMOVED)
@@ -109,10 +116,6 @@ public class PainterInvitationService {
                 .acceptedAt(LocalDateTime.now())
                 .build();
         link = linkRepository.save(link);
-
-        invitation.setUsedAt(LocalDateTime.now());
-        invitation.setUsedByPainter(painter);
-        invitationRepository.save(invitation);
 
         log.info("Painter {} redeemed invitation {} from retailer {}",
                 painter.getId(), code, invitation.getRetailer().getId());

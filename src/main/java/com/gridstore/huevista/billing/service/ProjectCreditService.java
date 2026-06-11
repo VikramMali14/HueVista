@@ -92,6 +92,28 @@ public class ProjectCreditService {
             throw new SecurityException("Payment verification error.");
         }
 
+        // The signature only proves the payment belongs to *some* order on this merchant
+        // account. Fetch the order and confirm it is a project-credit order that we
+        // created for this user, for the configured amount — otherwise a payment for any
+        // other (cheaper) order could be redeemed here.
+        try {
+            Order order = razorpayClient.orders.fetch(req.getOrderId());
+            int orderAmount = ((Number) order.get("amount")).intValue();
+            JSONObject notes = order.get("notes");
+            String orderPurpose = notes != null ? notes.optString("purpose", "") : "";
+            String orderUserId = notes != null ? notes.optString("userId", "") : "";
+            if (orderAmount != amountPaise
+                    || !"project_credit".equals(orderPurpose)
+                    || !userId.equals(orderUserId)) {
+                log.warn("Project-credit order mismatch: user={} order={} amount={} purpose={} orderUser={}",
+                        userId, req.getOrderId(), orderAmount, orderPurpose, orderUserId);
+                throw new SecurityException("Payment verification failed.");
+            }
+        } catch (RazorpayException e) {
+            log.error("Razorpay order fetch failed during verification: {}", e.getMessage());
+            throw new SecurityException("Payment verification error.");
+        }
+
         // Idempotency / replay protection: a verified Razorpay payment buys exactly ONE
         // project credit. The signature stays valid on every replay, so without this a
         // client could re-POST the same (order, payment, signature) triple and mint

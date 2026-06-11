@@ -115,20 +115,21 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
             "  CORS Origins : {}\n" +
             "\n  ⚠  S3 active = {}\n" +
             "  ⚠  Local storage active = {}\n",
-            // DB
-            dbUrl, dbUsername, mask(dbPassword),
-            // JWT
-            mask(jwtSecret), jwtExpiry, refreshExpiry,
+            // DB — only presence, never any part of the password (logs are often
+            // shipped to external aggregators).
+            dbUrl, dbUsername, isSet(dbPassword),
+            // JWT — the secret is the crown jewels; never print any part of it.
+            isSet(jwtSecret), jwtExpiry, refreshExpiry,
             // Claude
             mask(claudeApiKey), claudeModel, claudeEnrichmentModel,
             // S3
-            s3BucketName, s3Region, mask(s3AccessKey), mask(s3SecretKey),
+            s3BucketName, s3Region, mask(s3AccessKey), isSet(s3SecretKey),
             // Local
             localStoragePath,
             // Replicate
             mask(replicateToken), sam2Version,
             // Google
-            mask(googleClientId), mask(googleClientSecret),
+            mask(googleClientId), isSet(googleClientSecret),
             // App
             baseUrl, corsOrigins,
             // Summary flags
@@ -142,5 +143,10 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
         if (value == null || value.isBlank() || "NOT SET".equals(value)) return "NOT SET";
         if (value.length() <= 6) return "***";
         return value.substring(0, 6) + "***";
+    }
+
+    // For values where even a prefix is too much (passwords): only SET / NOT SET.
+    private String isSet(String value) {
+        return (value == null || value.isBlank() || "NOT SET".equals(value)) ? "NOT SET" : "SET";
     }
 }

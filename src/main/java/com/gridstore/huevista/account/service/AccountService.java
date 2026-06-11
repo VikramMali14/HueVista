@@ -171,6 +171,14 @@ public class AccountService {
             throw new IllegalArgumentException("Target organization is not a retailer");
         }
 
+        // Consent: linking grants the distributor visibility into the retailer's data,
+        // so the caller must also control the retailer org. Without this, any
+        // distributor could link an arbitrary retailer by guessing its id.
+        if (!membershipRepository.existsByUserIdAndOrganizationIdAndRole(
+                requestingUserId, request.getRetailerOrgId(), OrgMemberRole.OWNER)) {
+            throw new SecurityException("You can only link a retailer organization that you own");
+        }
+
         if (linkRepository.existsByDistributorIdAndRetailerId(distributorOrgId, request.getRetailerOrgId())) {
             throw new IllegalArgumentException("Retailer is already linked to this distributor");
         }

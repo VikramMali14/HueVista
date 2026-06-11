@@ -107,7 +107,7 @@ class AuthIntegrationTest {
         RegisterRequest reg = new RegisterRequest();
         reg.setName("Test User 2");
         reg.setEmail("test2@example.com");
-        reg.setPassword("correct-password");
+        reg.setPassword("correct-password1");
 
         mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)

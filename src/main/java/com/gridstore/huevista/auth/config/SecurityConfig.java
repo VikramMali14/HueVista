@@ -84,6 +84,15 @@ public class SecurityConfig {
             .sessionManagement(session ->
                 session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
 
+            // ── Security headers (API responses) ──────────────────────────
+            .headers(headers -> headers
+                .contentTypeOptions(org.springframework.security.config.Customizer.withDefaults()) // X-Content-Type-Options: nosniff
+                .frameOptions(frame -> frame.deny())
+                .httpStrictTransportSecurity(hsts -> hsts
+                    .includeSubDomains(true)
+                    .maxAgeInSeconds(31536000))
+            )
+
             // ── Route access rules ─────────────────────────────────────────
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.POST,
@@ -164,7 +173,8 @@ public class SecurityConfig {
     @Bean
     public UserDetailsService userDetailsService() {
         return email -> {
-            com.gridstore.huevista.auth.model.User user = userRepository.findByEmail(email)
+            com.gridstore.huevista.auth.model.User user = userRepository
+                    .findByEmail(com.gridstore.huevista.auth.util.Emails.normalize(email))
                     .orElseThrow(() -> new UsernameNotFoundException("User not found: " + email));
             return org.springframework.security.core.userdetails.User.builder()
                     .username(user.getId())

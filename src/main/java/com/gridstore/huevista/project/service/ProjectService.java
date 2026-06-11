@@ -97,7 +97,8 @@ public class ProjectService {
     @Transactional(readOnly = true)
     public List<ProjectSummaryResponse> getUserProjects(String userId) {
         entitlementService.assertAccessValid(userId);
-        return projectRepository.findByUserIdOrderByUpdatedAtDesc(userId).stream()
+        return projectRepository.findByUserIdWithImage(
+                        userId, org.springframework.data.domain.PageRequest.of(0, 200)).stream()
                 .map(p -> ProjectSummaryResponse.from(p, storageService.getPublicUrl(p.getImage().getStorageKey())))
                 .toList();
     }
@@ -110,14 +111,11 @@ public class ProjectService {
 
     @Transactional
     public ProjectResponse updateRegionColors(String userId, String projectId, List<RegionColorUpdate> updates) {
-        Project project = findOwned(userId, projectId);
+        findOwned(userId, projectId); // ownership check
 
         for (RegionColorUpdate update : updates) {
-            regionRepository.findByIdAndProjectId(update.getRegionId(), projectId).ifPresent(region -> {
-                region.setAppliedShadeCode(update.getShadeCode());
-                region.setAppliedHexCode(update.getHexCode());
-                regionRepository.save(region);
-            });
+            regionRepository.updateAppliedColor(
+                    update.getRegionId(), projectId, update.getShadeCode(), update.getHexCode());
         }
 
         return toResponse(projectRepository.findById(projectId).orElseThrow());
@@ -444,16 +442,24 @@ public class ProjectService {
         if (b64.startsWith("data:") && comma >= 0) {
             b64 = b64.substring(comma + 1);
         }
-        // A hand-drawn binary mask PNG is tens of KB; reject anything past ~12 MB of
-        // base64 before decoding so an oversized payload can't exhaust the heap.
-        if (b64.length() > 12_000_000) {
+        // A hand-drawn binary mask PNG is tens of KB; even a full-resolution photo
+        // mask stays well under 2 MB. Reject past ~4 MB of base64 (~3 MB decoded)
+        // before decoding so concurrent oversized payloads can't exhaust the heap.
+        if (b64.length() > 4_000_000) {
             throw new IllegalArgumentException("Mask is too large.");
         }
+        byte[] decoded;
         try {
-            return java.util.Base64.getMimeDecoder().decode(b64);
+            decoded = java.util.Base64.getMimeDecoder().decode(b64);
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("Mask is not valid base64.");
         }
+        // Cheap PNG signature check before handing the bytes to ImageIO.
+        if (decoded.length < 8
+                || (decoded[0] & 0xFF) != 0x89 || decoded[1] != 'P' || decoded[2] != 'N' || decoded[3] != 'G') {
+            throw new IllegalArgumentException("Mask must be a PNG image.");
+        }
+        return decoded;
     }
 
     private RegionCategory parseCategory(String raw) {
