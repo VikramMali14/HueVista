@@ -63,6 +63,10 @@ public class SegmentationService {
     private final ImageCleanerService imageCleaner;
     private final ImageRepository imageRepository;
 
+    /** Optional, mirrors ProjectService: present when the Redis-backed queue is in play. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.gridstore.huevista.project.queue.SegmentationJobQueue segmentationJobQueue;
+
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
 
@@ -75,8 +79,18 @@ public class SegmentationService {
     private String sam2ModelVersion;
 
     private static final String REPLICATE_BASE = "https://api.replicate.com/v1";
-    private static final int POLL_INTERVAL_MS = 3000;
-    private static final int MAX_POLL_ATTEMPTS = 60;
+    private static final int POLL_INTERVAL_MS = 2000;
+    private static final int MAX_POLL_ATTEMPTS = 30; // 60s worst case per request
+
+    /**
+     * Click-to-segment is synchronous: the request thread blocks while SAM 2 runs
+     * (up to ~60s). Without a cap, a burst of clicks can hold every Tomcat worker
+     * hostage and wedge the whole API. Beyond this many concurrent segmentations
+     * we fail fast with 503 instead of queueing more blocked threads.
+     */
+    private static final int MAX_CONCURRENT_POINT_SEGMENTATIONS = 8;
+    private final java.util.concurrent.Semaphore pointSegmentationSlots =
+            new java.util.concurrent.Semaphore(MAX_CONCURRENT_POINT_SEGMENTATIONS);
 
     // ========================================================================
     // AUTO PATH
@@ -143,6 +157,17 @@ public class SegmentationService {
         } catch (Exception e) {
             log.error("Segmentation error for project {}: {}", projectId, e.getMessage(), e);
             markFailed(projectId, "Segmentation failed: " + e.getMessage());
+        } finally {
+            // The run reached a terminal outcome (SEGMENTED or FAILED), so the queue
+            // entry must not be retried. No-op when the job didn't come from the queue.
+            if (segmentationJobQueue != null) {
+                try {
+                    segmentationJobQueue.acknowledge(projectId, imageUrl);
+                } catch (Exception ackError) {
+                    log.warn("Could not acknowledge segmentation job for project {}: {}",
+                            projectId, ackError.getMessage());
+                }
+            }
         }
     }
 
@@ -264,6 +289,21 @@ public class SegmentationService {
                                       int imageWidth, int imageHeight,
                                       double x, double y, String label)
             throws InterruptedException {
+        if (!pointSegmentationSlots.tryAcquire()) {
+            throw new java.util.concurrent.RejectedExecutionException(
+                    "Too many segmentations are running right now. Please try again in a moment.");
+        }
+        try {
+            return doSegmentPointAndSave(projectId, imageUrl, imageWidth, imageHeight, x, y, label);
+        } finally {
+            pointSegmentationSlots.release();
+        }
+    }
+
+    private Region doSegmentPointAndSave(String projectId, String imageUrl,
+                                         int imageWidth, int imageHeight,
+                                         double x, double y, String label)
+            throws InterruptedException {
         log.info("Point segmentation: project={} x={} y={} size={}x{} label={}",
                 projectId, x, y, imageWidth, imageHeight, label);
 
@@ -332,6 +372,25 @@ public class SegmentationService {
                     Map.class
             );
             return (String) response.getBody().get("id");
+        } catch (org.springframework.web.client.HttpClientErrorException e) {
+            // 401/403 = bad token (config problem, will never recover by retrying);
+            // 429 = rate limited (transient). Log them distinctly so ops can tell.
+            if (e.getStatusCode().value() == 401 || e.getStatusCode().value() == 403) {
+                log.error("Replicate rejected our API token ({}). Check REPLICATE_API_TOKEN.",
+                        e.getStatusCode());
+            } else if (e.getStatusCode().value() == 429) {
+                log.warn("Replicate rate limit hit while starting SAM 2 prediction");
+            } else {
+                log.error("SAM 2 prediction request rejected: {} {}",
+                        e.getStatusCode(), e.getResponseBodyAsString());
+            }
+            return null;
+        } catch (org.springframework.web.client.HttpServerErrorException e) {
+            log.error("Replicate server error starting SAM 2 prediction: {}", e.getStatusCode());
+            return null;
+        } catch (org.springframework.web.client.ResourceAccessException e) {
+            log.error("Replicate unreachable or timed out starting SAM 2 prediction: {}", e.getMessage());
+            return null;
         } catch (Exception e) {
             log.error("Failed to start SAM 2 prediction: {}", e.getMessage());
             return null;

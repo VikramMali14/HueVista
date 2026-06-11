@@ -47,12 +47,13 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
                     new OAuth2Error("email_unavailable"),
                     "Google did not return an email address. Please grant email permission and try again.");
         }
+        final String normalizedEmail = com.gridstore.huevista.auth.util.Emails.normalize(email);
 
-        User user = userRepository.findByEmail(email)
+        User user = userRepository.findByEmail(normalizedEmail)
                 .map(existing -> updateExistingUser(existing, name, picture, providerId))
-                .orElseGet(() -> createOAuth2User(email, name, picture, providerId));
+                .orElseGet(() -> createOAuth2User(normalizedEmail, name, picture, providerId));
 
-        log.info("OAuth2 user loaded: {} via Google", email);
+        log.info("OAuth2 user loaded: {} via Google", normalizedEmail);
 
         // Pass our internal id forward so the success handler can build the JWT
         return new DefaultOAuth2User(

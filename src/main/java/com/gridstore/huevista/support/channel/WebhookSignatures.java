@@ -27,11 +27,7 @@ public final class WebhookSignatures {
     /** Constant-time comparison to avoid timing leaks. */
     public static boolean constantTimeEquals(String a, String b) {
         if (a == null || b == null) return false;
-        byte[] x = a.getBytes(StandardCharsets.UTF_8);
-        byte[] y = b.getBytes(StandardCharsets.UTF_8);
-        if (x.length != y.length) return false;
-        int r = 0;
-        for (int i = 0; i < x.length; i++) r |= x[i] ^ y[i];
-        return r == 0;
+        return java.security.MessageDigest.isEqual(
+                a.getBytes(StandardCharsets.UTF_8), b.getBytes(StandardCharsets.UTF_8));
     }
 }

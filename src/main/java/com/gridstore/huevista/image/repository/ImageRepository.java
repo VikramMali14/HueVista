@@ -7,7 +7,8 @@ import java.util.List;
 import java.util.Optional;
 
 public interface ImageRepository extends JpaRepository<UploadedImage, String> {
-    List<UploadedImage> findByUserIdOrderByUploadedAtDesc(String userId);
+    List<UploadedImage> findByUserIdOrderByUploadedAtDesc(String userId,
+            org.springframework.data.domain.Pageable pageable);
     Optional<UploadedImage> findByIdAndUserId(String id, String userId);
 
     // Guest (anonymous, access-code-scoped) ownership.

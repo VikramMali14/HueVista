@@ -148,6 +148,14 @@ public class GlobalExceptionHandler {
         return errorResponse(HttpStatus.METHOD_NOT_ALLOWED, "HTTP method not supported for this endpoint.");
     }
 
+    @ExceptionHandler(java.util.concurrent.RejectedExecutionException.class)
+    public ResponseEntity<Map<String, Object>> handleRejectedExecution(java.util.concurrent.RejectedExecutionException ex) {
+        // Server-side capacity guard tripped (e.g. too many concurrent segmentations).
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header("Retry-After", "10")
+                .body(baseError(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleGeneric(Exception ex) {
         log.error("Unhandled exception: {}", ex.getMessage(), ex);

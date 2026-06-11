@@ -30,6 +30,7 @@ public class AuthService {
     private final AuthenticationManager authenticationManager;
     private final com.gridstore.huevista.account.service.AccountService accountService;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
+    private final com.gridstore.huevista.common.audit.AuditService auditService;
 
     private static final int TRIAL_DAYS = 14;
 
@@ -39,7 +40,8 @@ public class AuthService {
                        PasswordEncoder passwordEncoder,
                        @Lazy AuthenticationManager authenticationManager,
                        com.gridstore.huevista.account.service.AccountService accountService,
-                       com.gridstore.huevista.billing.service.BillingService billingService) {
+                       com.gridstore.huevista.billing.service.BillingService billingService,
+                       com.gridstore.huevista.common.audit.AuditService auditService) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.jwtService = jwtService;
@@ -47,6 +49,7 @@ public class AuthService {
         this.authenticationManager = authenticationManager;
         this.accountService = accountService;
         this.billingService = billingService;
+        this.auditService = auditService;
     }
 
     @Value("${app.refresh-token.expiration-ms}")
@@ -57,15 +60,16 @@ public class AuthService {
 
     @Transactional
     public AuthResponse register(RegisterRequest request) {
-        if (userRepository.existsByEmail(request.getEmail())) {
+        String email = com.gridstore.huevista.auth.util.Emails.normalize(request.getEmail());
+        if (userRepository.existsByEmail(email)) {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.CONFLICT,
-                    "Email already in use: " + request.getEmail());
+                    "Email already in use: " + email);
         }
 
         User user = User.builder()
                 .name(request.getName())
-                .email(request.getEmail())
+                .email(email)
                 .password(passwordEncoder.encode(request.getPassword()))
                 .provider(AuthProvider.LOCAL)
                 .emailVerified(false)
@@ -110,7 +114,8 @@ public class AuthService {
             org.springframework.security.authentication.LockedException.class,
     })
     public AuthResponse login(LoginRequest request) {
-        User user = userRepository.findByEmail(request.getEmail()).orElse(null);
+        String email = com.gridstore.huevista.auth.util.Emails.normalize(request.getEmail());
+        User user = userRepository.findByEmail(email).orElse(null);
 
         // Reject early if the account is currently locked.
         if (user != null && user.getLockedUntil() != null
@@ -124,7 +129,7 @@ public class AuthService {
             // AuthenticationManager delegates to DaoAuthenticationProvider →
             // UserDetailsService → BCrypt comparison. Throws on bad credentials.
             authenticationManager.authenticate(
-                    new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword())
+                    new UsernamePasswordAuthenticationToken(email, request.getPassword())
             );
         } catch (org.springframework.security.authentication.BadCredentialsException e) {
             if (user != null) {
@@ -148,7 +153,7 @@ public class AuthService {
             userRepository.save(user);
         }
         User authed = user != null ? user
-                : userRepository.findByEmail(request.getEmail())
+                : userRepository.findByEmail(email)
                         .orElseThrow(() -> new IllegalStateException("User not found after authentication"));
 
         log.info("User logged in: {}", authed.getEmail());
@@ -175,6 +180,7 @@ public class AuthService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
         refreshTokenRepository.deleteByUser(user);
+        auditService.record(userId, "LOGOUT", "USER", userId, "all refresh tokens revoked");
         log.info("User logged out, refresh tokens revoked: {}", user.getEmail());
     }
 
@@ -211,6 +217,7 @@ public class AuthService {
         user.setPassword(passwordEncoder.encode(request.getNewPassword()));
         userRepository.save(user);
         refreshTokenRepository.deleteByUser(user);
+        auditService.record(userId, "PASSWORD_CHANGE", "USER", userId, "all sessions revoked");
         log.info("Password changed, all sessions revoked: {}", user.getEmail());
     }
 

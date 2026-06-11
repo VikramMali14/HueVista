@@ -265,8 +265,9 @@ public class SupportService {
     }
 
     private String lastMessageText(String conversationId) {
-        List<SupportMessage> msgs = messageRepo.findByConversationIdOrderByCreatedAtAsc(conversationId);
-        return msgs.isEmpty() ? "" : msgs.get(msgs.size() - 1).getBody();
+        return messageRepo.findTopByConversationIdOrderByCreatedAtDesc(conversationId)
+                .map(SupportMessage::getBody)
+                .orElse("");
     }
 
     private ConversationResponse toResponse(Conversation c) {

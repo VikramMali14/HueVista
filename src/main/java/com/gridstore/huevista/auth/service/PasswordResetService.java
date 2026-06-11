@@ -37,6 +37,7 @@ public class PasswordResetService {
     private final RefreshTokenRepository refreshTokenRepository;
     private final PasswordEncoder passwordEncoder;
     private final EmailSender emailSender;
+    private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final SecureRandom random = new SecureRandom();
 
     /** Send a reset code. Silent (no exception) if the email isn't registered. */
@@ -115,6 +116,8 @@ public class PasswordResetService {
         user.setLockedUntil(null);
         userRepository.save(user);
         refreshTokenRepository.deleteByUser(user);
+        auditService.record(user.getId(), "PASSWORD_RESET", "USER", user.getId(),
+                "via emailed reset code; all sessions revoked");
         log.info("Password reset for {}", user.getEmail());
     }
 }

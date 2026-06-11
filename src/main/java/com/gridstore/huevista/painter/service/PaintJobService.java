@@ -92,9 +92,13 @@ public class PaintJobService {
         return PaintJobResponse.from(job);
     }
 
+    /** Hard cap on list sizes — bounds memory/serialization, newest jobs win. */
+    private static final org.springframework.data.domain.Pageable LIST_LIMIT =
+            org.springframework.data.domain.PageRequest.of(0, 200);
+
     @Transactional(readOnly = true)
     public List<PaintJobResponse> listForPainter(String painterUserId) {
-        return jobRepository.findByPainterIdOrderByCreatedAtDesc(painterUserId)
+        return jobRepository.findForPainterWithDetails(painterUserId, LIST_LIMIT)
                 .stream().map(PaintJobResponse::from).toList();
     }
 
@@ -105,13 +109,13 @@ public class PaintJobService {
         if (!retailer.getOwner().getId().equals(requesterUserId)) {
             throw new SecurityException("Only the retailer owner may list jobs for this retailer.");
         }
-        return jobRepository.findByRetailerIdOrderByCreatedAtDesc(retailerOrgId)
+        return jobRepository.findForRetailerWithDetails(retailerOrgId, LIST_LIMIT)
                 .stream().map(PaintJobResponse::from).toList();
     }
 
     @Transactional(readOnly = true)
     public List<PaintJobResponse> listForCustomer(String customerUserId) {
-        return jobRepository.findByCustomerIdOrderByCreatedAtDesc(customerUserId)
+        return jobRepository.findForCustomerWithDetails(customerUserId, LIST_LIMIT)
                 .stream().map(PaintJobResponse::from).toList();
     }
 

@@ -17,5 +17,8 @@ public class ResetPasswordRequest {
 
     @NotBlank(message = "New password is required")
     @Size(min = 8, message = "Password must be at least 8 characters")
+    @jakarta.validation.constraints.Pattern(
+            regexp = "^(?=.*\\p{L})(?=.*\\d).*$",
+            message = "Password must contain at least one letter and one number")
     private String newPassword;
 }

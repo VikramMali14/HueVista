@@ -42,7 +42,7 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
 
         OAuth2User oAuth2User = (OAuth2User) authentication.getPrincipal();
         Map<String, Object> attrs = oAuth2User.getAttributes();
-        String email = (String) attrs.get("email");
+        String email = com.gridstore.huevista.auth.util.Emails.normalize((String) attrs.get("email"));
 
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new IllegalStateException("User not found after OAuth2 login: " + email));
