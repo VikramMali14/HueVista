@@ -6,8 +6,10 @@ import com.gridstore.huevista.account.service.CustomerEntitlementService;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.common.exception.AccessExpiredException;
+import com.gridstore.huevista.common.exception.ProcessingInterruptedException;
 import com.gridstore.huevista.common.exception.QuotaExceededException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
+import com.gridstore.huevista.common.exception.StorageException;
 import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.StorageService;
@@ -95,10 +97,12 @@ public class ProjectService {
     }
 
     @Transactional(readOnly = true)
-    public List<ProjectSummaryResponse> getUserProjects(String userId) {
+    public List<ProjectSummaryResponse> getUserProjects(String userId, int page, int size) {
         entitlementService.assertAccessValid(userId);
+        // Clamp instead of rejecting: page >= 0, 1 <= size <= 200.
         return projectRepository.findByUserIdWithImage(
-                        userId, org.springframework.data.domain.PageRequest.of(0, 200)).stream()
+                        userId, org.springframework.data.domain.PageRequest.of(
+                                Math.max(0, page), Math.min(Math.max(1, size), 200))).stream()
                 .map(p -> ProjectSummaryResponse.from(p, storageService.getPublicUrl(p.getImage().getStorageKey())))
                 .toList();
     }
@@ -246,7 +250,7 @@ public class ProjectService {
             return RegionResponse.from(region);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RuntimeException("Point segmentation interrupted", e);
+            throw new ProcessingInterruptedException("Point segmentation interrupted", e);
         }
     }
 
@@ -286,7 +290,7 @@ public class ProjectService {
             key = storageService.store(
                     png, storageScope, category.name().toLowerCase() + "-custom.png", "image/png");
         } catch (IOException e) {
-            throw new RuntimeException("Failed to store custom mask", e);
+            throw new StorageException("Failed to store custom mask", e);
         }
 
         String url = storageService.getPublicUrl(key);
@@ -493,7 +497,7 @@ public class ProjectService {
             byte[] bytes = storageService.load(image.getStorageKey());
             BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(bytes));
             if (decoded == null) {
-                throw new IllegalStateException("Unable to decode image: " + image.getStorageKey());
+                throw new IllegalStateException("Unable to decode the project image.");
             }
             image.setWidth(decoded.getWidth());
             image.setHeight(decoded.getHeight());
@@ -501,7 +505,7 @@ public class ProjectService {
             log.info("Cached dimensions for image {}: {}x{}",
                     image.getId(), decoded.getWidth(), decoded.getHeight());
         } catch (IOException e) {
-            throw new RuntimeException("Failed to read image dimensions for " + image.getStorageKey(), e);
+            throw new StorageException("Failed to read image dimensions", e);
         }
     }
 
@@ -549,7 +553,7 @@ public class ProjectService {
         try {
             return storageService.load(key);
         } catch (IOException e) {
-            throw new RuntimeException("Failed to load mask for region " + regionId, e);
+            throw new StorageException("Failed to load mask for region " + regionId, e);
         }
     }
 

@@ -14,10 +14,14 @@ import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.repository.ProjectRepository;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import com.gridstore.huevista.common.audit.AuditService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -41,11 +45,24 @@ public class AdminController {
     private final ProjectRepository projectRepository;
     private final AuditService auditService;
 
+    /** Hard cap on admin page sizes — these tables are unbounded. */
+    private static final int MAX_PAGE_SIZE = 500;
+
+    /** Clamps page/size (page >= 0, 1 <= size <= 500); stable newest-first ordering. */
+    private static Pageable pageOf(int page, int size) {
+        return PageRequest.of(
+                Math.max(0, page), Math.min(Math.max(1, size), MAX_PAGE_SIZE),
+                Sort.by(Sort.Direction.DESC, "createdAt").and(Sort.by("id")));
+    }
+
     @Operation(summary = "List all users")
     @GetMapping("/users")
-    public ResponseEntity<List<AdminUserResponse>> listUsers() {
+    public ResponseEntity<List<AdminUserResponse>> listUsers(
+            @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "Page size, max 500") @RequestParam(defaultValue = "200") int size) {
         return ResponseEntity.ok(
-                userRepository.findAll().stream().map(AdminUserResponse::from).toList());
+                userRepository.findAll(pageOf(page, size)).getContent()
+                        .stream().map(AdminUserResponse::from).toList());
     }
 
     @Operation(summary = "Get user by ID")
@@ -74,16 +91,22 @@ public class AdminController {
 
     @Operation(summary = "List all organizations")
     @GetMapping("/organizations")
-    public ResponseEntity<List<OrgResponse>> listOrganizations() {
+    public ResponseEntity<List<OrgResponse>> listOrganizations(
+            @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "Page size, max 500") @RequestParam(defaultValue = "200") int size) {
         return ResponseEntity.ok(
-                orgRepository.findAll().stream().map(OrgResponse::from).toList());
+                orgRepository.findAll(pageOf(page, size)).getContent()
+                        .stream().map(OrgResponse::from).toList());
     }
 
     @Operation(summary = "List all subscriptions")
     @GetMapping("/subscriptions")
-    public ResponseEntity<List<SubscriptionResponse>> listSubscriptions() {
+    public ResponseEntity<List<SubscriptionResponse>> listSubscriptions(
+            @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "Page size, max 500") @RequestParam(defaultValue = "200") int size) {
         return ResponseEntity.ok(
-                subscriptionRepository.findAll().stream().map(SubscriptionResponse::from).toList());
+                subscriptionRepository.findAll(pageOf(page, size)).getContent()
+                        .stream().map(SubscriptionResponse::from).toList());
     }
 
     @Operation(summary = "Platform health summary")

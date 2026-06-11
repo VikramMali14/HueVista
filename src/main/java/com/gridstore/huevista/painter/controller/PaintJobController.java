@@ -3,6 +3,7 @@ package com.gridstore.huevista.painter.controller;
 import com.gridstore.huevista.painter.dto.*;
 import com.gridstore.huevista.painter.service.PaintJobService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -43,23 +44,29 @@ public class PaintJobController {
     @Operation(summary = "List my jobs as painter")
     @GetMapping("/mine/painter")
     public ResponseEntity<List<PaintJobResponse>> listMineAsPainter(
-            @AuthenticationPrincipal UserDetails userDetails) {
-        return ResponseEntity.ok(jobService.listForPainter(userDetails.getUsername()));
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "Page size, max 200") @RequestParam(defaultValue = "200") int size) {
+        return ResponseEntity.ok(jobService.listForPainter(userDetails.getUsername(), page, size));
     }
 
     @Operation(summary = "List jobs for a retailer (owner only)")
     @GetMapping("/by-retailer/{retailerOrgId}")
     public ResponseEntity<List<PaintJobResponse>> listByRetailer(
             @AuthenticationPrincipal UserDetails userDetails,
-            @PathVariable String retailerOrgId) {
-        return ResponseEntity.ok(jobService.listForRetailer(userDetails.getUsername(), retailerOrgId));
+            @PathVariable String retailerOrgId,
+            @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "Page size, max 200") @RequestParam(defaultValue = "200") int size) {
+        return ResponseEntity.ok(jobService.listForRetailer(userDetails.getUsername(), retailerOrgId, page, size));
     }
 
     @Operation(summary = "List jobs as the customer")
     @GetMapping("/mine/customer")
     public ResponseEntity<List<PaintJobResponse>> listMineAsCustomer(
-            @AuthenticationPrincipal UserDetails userDetails) {
-        return ResponseEntity.ok(jobService.listForCustomer(userDetails.getUsername()));
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "Page size, max 200") @RequestParam(defaultValue = "200") int size) {
+        return ResponseEntity.ok(jobService.listForCustomer(userDetails.getUsername(), page, size));
     }
 
     @Operation(summary = "Accept a job (painter only)", description = "Sets status ACCEPTED, captures quote + estimated days + optional schedule.")

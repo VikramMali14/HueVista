@@ -1,5 +1,7 @@
 package com.gridstore.huevista.project.service;
 
+import com.gridstore.huevista.common.exception.ExternalServiceException;
+import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.StorageService;
@@ -320,15 +322,15 @@ public class SegmentationService {
 
         String predictionId = startSam2Prediction(input);
         if (predictionId == null) {
-            throw new RuntimeException("Failed to create Replicate prediction for point segmentation");
+            throw new ExternalServiceException("Failed to create Replicate prediction for point segmentation");
         }
         Map<String, Object> result = pollUntilDone(predictionId);
         if (result == null) {
-            throw new RuntimeException("Point segmentation timed out or failed");
+            throw new ExternalServiceException("Point segmentation timed out or failed");
         }
         String maskUrl = extractFirstMaskUrl(result.get("output"));
         if (maskUrl == null) {
-            throw new RuntimeException("No mask URL in SAM 2 point segmentation output");
+            throw new ExternalServiceException("No mask URL in SAM 2 point segmentation output");
         }
 
         int displayOrder = regionRepository.countByProjectId(projectId);
@@ -446,9 +448,9 @@ public class SegmentationService {
      */
     private UploadedImage loadAndEnsureDimensions(String projectId) throws java.io.IOException {
         String imageId = projectRepository.findImageIdById(projectId)
-                .orElseThrow(() -> new RuntimeException("Project has no image: " + projectId));
+                .orElseThrow(() -> new ResourceNotFoundException("Project has no image: " + projectId));
         UploadedImage image = imageRepository.findById(imageId)
-                .orElseThrow(() -> new RuntimeException("Image not found: " + imageId));
+                .orElseThrow(() -> new ResourceNotFoundException("Image not found: " + imageId));
 
         if (image.getWidth() == null || image.getHeight() == null) {
             byte[] bytes = storageService.load(image.getStorageKey());

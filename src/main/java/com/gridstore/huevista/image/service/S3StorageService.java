@@ -85,7 +85,7 @@ public class S3StorageService implements StorageService {
                             .build()
             ).asByteArray();
         } catch (Exception e) {
-            throw new StorageException("Failed to load image from S3: " + storageKey, e);
+            throw new StorageException("Failed to load image from S3", e);
         }
     }
 
@@ -100,7 +100,7 @@ public class S3StorageService implements StorageService {
             );
             log.info("Deleted image from S3: key={}", storageKey);
         } catch (Exception e) {
-            throw new StorageException("Failed to delete image from S3: " + storageKey, e);
+            throw new StorageException("Failed to delete image from S3", e);
         }
     }
 

@@ -1,5 +1,6 @@
 package com.gridstore.huevista.image.service;
 
+import com.gridstore.huevista.common.exception.ExternalServiceException;
 import com.gridstore.huevista.common.exception.ImageValidationException;
 import com.gridstore.huevista.image.model.ImageType;
 import lombok.RequiredArgsConstructor;
@@ -92,7 +93,7 @@ public class ClaudeVisionService {
             };
         } catch (Exception e) {
             log.error("Claude Vision API call failed: {}", e.getMessage());
-            throw new RuntimeException("Image classification service is temporarily unavailable. Please try again.", e);
+            throw new ExternalServiceException("Image classification service is temporarily unavailable. Please try again.", e);
         }
     }
 

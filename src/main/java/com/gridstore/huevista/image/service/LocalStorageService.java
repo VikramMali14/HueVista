@@ -47,7 +47,7 @@ public class LocalStorageService implements StorageService {
         try {
             Files.deleteIfExists(Path.of(storagePath, storageKey));
         } catch (IOException e) {
-            throw new StorageException("Failed to delete file: " + storageKey, e);
+            throw new StorageException("Failed to delete file", e);
         }
     }
 

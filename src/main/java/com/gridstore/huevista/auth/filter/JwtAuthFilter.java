@@ -74,7 +74,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                             authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
 
                             SecurityContextHolder.getContext().setAuthentication(authToken);
-                            log.debug("JWT authenticated user [{}] role={} for {}", email, role, request.getServletPath());
+                            log.debug("JWT authenticated user [{}] role={} for {}",
+                                    maskEmail(email), role, request.getServletPath());
                         },
                         () -> log.warn("JWT contained unknown userId: {}", userId)
                 );
@@ -82,6 +83,23 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    /**
+     * Masks an email address for log output — emails are PII and must not appear
+     * raw in logs, even at DEBUG. Keeps the first two characters of the local part
+     * and the full domain: {@code vikram@example.com -> vi****@example.com}.
+     */
+    private static String maskEmail(String email) {
+        if (email == null || email.isBlank()) {
+            return "<no-email>";
+        }
+        int at = email.indexOf('@');
+        if (at <= 0) {
+            return "****";
+        }
+        String visible = email.substring(0, Math.min(2, at));
+        return visible + "****" + email.substring(at);
     }
 
     private String extractBearerToken(HttpServletRequest request) {
