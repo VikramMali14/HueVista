@@ -67,12 +67,14 @@ public class ImageController {
         return ResponseEntity.ok(imageService.getImage(imageId, userDetails.getUsername()));
     }
 
-    @Operation(summary = "List my images", description = "Lists all images uploaded by the authenticated user, newest first.")
+    @Operation(summary = "List my images", description = "Lists images uploaded by the authenticated user, newest first. Paged; defaults return the newest 200.")
     @ApiResponse(responseCode = "200", description = "Image list")
     @GetMapping
     public ResponseEntity<List<ImageResponse>> listImages(
-            @AuthenticationPrincipal UserDetails userDetails) {
-        return ResponseEntity.ok(imageService.listImages(userDetails.getUsername()));
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "Page size, max 200") @RequestParam(defaultValue = "200") int size) {
+        return ResponseEntity.ok(imageService.listImages(userDetails.getUsername(), page, size));
     }
 
     @Operation(hidden = true)

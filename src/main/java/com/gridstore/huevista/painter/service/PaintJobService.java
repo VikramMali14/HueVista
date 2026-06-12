@@ -92,30 +92,35 @@ public class PaintJobService {
         return PaintJobResponse.from(job);
     }
 
-    /** Hard cap on list sizes — bounds memory/serialization, newest jobs win. */
-    private static final org.springframework.data.domain.Pageable LIST_LIMIT =
-            org.springframework.data.domain.PageRequest.of(0, 200);
+    /** Hard cap on page sizes — bounds memory/serialization, newest jobs win. */
+    private static final int MAX_PAGE_SIZE = 200;
+
+    /** Clamps page/size (page >= 0, 1 <= size <= 200) instead of rejecting out-of-range values. */
+    private static org.springframework.data.domain.Pageable pageOf(int page, int size) {
+        return org.springframework.data.domain.PageRequest.of(
+                Math.max(0, page), Math.min(Math.max(1, size), MAX_PAGE_SIZE));
+    }
 
     @Transactional(readOnly = true)
-    public List<PaintJobResponse> listForPainter(String painterUserId) {
-        return jobRepository.findForPainterWithDetails(painterUserId, LIST_LIMIT)
+    public List<PaintJobResponse> listForPainter(String painterUserId, int page, int size) {
+        return jobRepository.findForPainterWithDetails(painterUserId, pageOf(page, size))
                 .stream().map(PaintJobResponse::from).toList();
     }
 
     @Transactional(readOnly = true)
-    public List<PaintJobResponse> listForRetailer(String requesterUserId, String retailerOrgId) {
+    public List<PaintJobResponse> listForRetailer(String requesterUserId, String retailerOrgId, int page, int size) {
         Organization retailer = organizationRepository.findById(retailerOrgId)
                 .orElseThrow(() -> new ResourceNotFoundException("Retailer org not found: " + retailerOrgId));
         if (!retailer.getOwner().getId().equals(requesterUserId)) {
             throw new SecurityException("Only the retailer owner may list jobs for this retailer.");
         }
-        return jobRepository.findForRetailerWithDetails(retailerOrgId, LIST_LIMIT)
+        return jobRepository.findForRetailerWithDetails(retailerOrgId, pageOf(page, size))
                 .stream().map(PaintJobResponse::from).toList();
     }
 
     @Transactional(readOnly = true)
-    public List<PaintJobResponse> listForCustomer(String customerUserId) {
-        return jobRepository.findForCustomerWithDetails(customerUserId, LIST_LIMIT)
+    public List<PaintJobResponse> listForCustomer(String customerUserId, int page, int size) {
+        return jobRepository.findForCustomerWithDetails(customerUserId, pageOf(page, size))
                 .stream().map(PaintJobResponse::from).toList();
     }
 

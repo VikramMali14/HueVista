@@ -1,5 +1,6 @@
 package com.gridstore.huevista.project.service;
 
+import com.gridstore.huevista.common.exception.ExternalServiceException;
 import com.gridstore.huevista.image.model.ImageType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -297,7 +298,7 @@ public class ImageCleanerService {
         ResponseEntity<byte[]> response = restTemplate.exchange(
                 url, HttpMethod.GET, HttpEntity.EMPTY, byte[].class);
         byte[] body = response.getBody();
-        if (body == null) throw new RuntimeException("Empty response downloading " + url);
+        if (body == null) throw new ExternalServiceException("Empty response downloading " + url);
         return body;
     }
 }

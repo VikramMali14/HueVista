@@ -7,6 +7,7 @@ import com.gridstore.huevista.ai.dto.MatchedShade;
 import com.gridstore.huevista.ai.dto.RecommendationResponse;
 import com.gridstore.huevista.ai.util.DeltaEMatcher;
 import com.gridstore.huevista.billing.service.BillingService;
+import com.gridstore.huevista.common.exception.ExternalServiceException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.image.service.StorageService;
 import com.gridstore.huevista.paint.model.Shade;
@@ -155,7 +156,7 @@ public class ColorRecommendationService {
             return objectMapper.readValue(raw, new TypeReference<>() {});
         } catch (Exception e) {
             log.error("Claude recommendation API call failed: {}", e.getMessage());
-            throw new RuntimeException("Color recommendation service is temporarily unavailable.", e);
+            throw new ExternalServiceException("Color recommendation service is temporarily unavailable.", e);
         }
     }
 

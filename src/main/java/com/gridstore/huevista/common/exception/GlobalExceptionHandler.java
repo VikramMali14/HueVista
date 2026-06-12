@@ -32,6 +32,23 @@ public class GlobalExceptionHandler {
         return errorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "File storage failed. Please try again.");
     }
 
+    @ExceptionHandler(ExternalServiceException.class)
+    public ResponseEntity<Map<String, Object>> handleExternalService(ExternalServiceException ex) {
+        // An upstream AI provider (Claude / Replicate) failed or returned garbage.
+        // 502 so clients know it's the provider, not us — usually transient.
+        log.warn("External service error: {}", ex.getMessage(), ex);
+        return errorResponse(HttpStatus.BAD_GATEWAY, ex.getMessage());
+    }
+
+    @ExceptionHandler(ProcessingInterruptedException.class)
+    public ResponseEntity<Map<String, Object>> handleProcessingInterrupted(ProcessingInterruptedException ex) {
+        // A blocking step (e.g. SAM 2 polling) was interrupted, likely during
+        // shutdown or pool cancellation. The work was abandoned, so just retry.
+        log.warn("Processing interrupted: {}", ex.getMessage());
+        return errorResponse(HttpStatus.SERVICE_UNAVAILABLE,
+                "The operation was interrupted, please retry.");
+    }
+
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<Map<String, Object>> handleNotFound(ResourceNotFoundException ex) {
         return errorResponse(HttpStatus.NOT_FOUND, ex.getMessage());

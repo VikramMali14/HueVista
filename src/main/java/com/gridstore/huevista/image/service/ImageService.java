@@ -130,10 +130,12 @@ public class ImageService {
         return toResponse(image);
     }
 
-    public List<ImageResponse> listImages(String userId) {
+    public List<ImageResponse> listImages(String userId, int page, int size) {
         // Capped: bounds memory and response size; newest uploads win.
+        // Clamp instead of rejecting: page >= 0, 1 <= size <= 200.
         return imageRepository.findByUserIdOrderByUploadedAtDesc(
-                        userId, org.springframework.data.domain.PageRequest.of(0, 200))
+                        userId, org.springframework.data.domain.PageRequest.of(
+                                Math.max(0, page), Math.min(Math.max(1, size), 200)))
                 .stream()
                 .map(this::toResponse)
                 .collect(Collectors.toList());
