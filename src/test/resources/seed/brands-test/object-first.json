@@ -1,0 +1,7 @@
+{
+  "company": "Test Co",
+  "total_shades": 1,
+  "shades": [
+    { "name": "Shared", "code": "S1", "hex": "#123456", "category": "Blues" }
+  ]
+}

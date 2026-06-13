@@ -5,13 +5,13 @@ import com.gridstore.huevista.paint.model.Brand;
 import com.gridstore.huevista.paint.model.Shade;
 import com.gridstore.huevista.paint.repository.BrandRepository;
 import com.gridstore.huevista.paint.repository.ShadeRepository;
+import com.gridstore.huevista.paint.util.ColorMath;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -73,14 +73,14 @@ public class ShadeSeederService {
             AsianPaintsShadeDto dto = toSeed.get(i);
             ShadeEnrichmentService.EnrichmentResult enrichment = enrichments.get(i);
 
-            int[] rgb = hexToRgb(dto.getShadeHexCode());
-            BigDecimal lrv = calculateLrv(rgb[0], rgb[1], rgb[2]);
+            int[] rgb = ColorMath.hexToRgb(dto.getShadeHexCode());
+            BigDecimal lrv = ColorMath.calculateLrv(rgb[0], rgb[1], rgb[2]);
 
             shades.add(Shade.builder()
                     .brand(brand)
                     .shadeCode(dto.getEntityCode())
                     .name(dto.getEntityName())
-                    .hexCode(normalizeHex(dto.getShadeHexCode()))
+                    .hexCode(ColorMath.normalizeHex(dto.getShadeHexCode()))
                     .shadeFamily(dto.getShadeFamily())
                     .featureTag(nullIfBlank(dto.getFeatureTag()))
                     .popularity(parsePopularity(dto.getPopularity()))
@@ -102,34 +102,6 @@ public class ShadeSeederService {
         shadeRepository.saveAll(shades);
         log.info("Seeding complete — {} shades saved for brand '{}'", shades.size(), brandName);
         return shades.size();
-    }
-
-    // ── Hex / LRV helpers ────────────────────────────────────────────────────
-
-    private BigDecimal calculateLrv(int r, int g, int b) {
-        double lrv = (0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b)) * 100.0;
-        return BigDecimal.valueOf(lrv).setScale(2, RoundingMode.HALF_UP);
-    }
-
-    // sRGB component (0–255) → linearized value
-    private double linearize(int c) {
-        double s = c / 255.0;
-        return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
-    }
-
-    private int[] hexToRgb(String hex) {
-        if (hex == null || hex.length() < 7) return new int[]{0, 0, 0};
-        String h = hex.startsWith("#") ? hex.substring(1) : hex;
-        return new int[]{
-                Integer.parseInt(h.substring(0, 2), 16),
-                Integer.parseInt(h.substring(2, 4), 16),
-                Integer.parseInt(h.substring(4, 6), 16)
-        };
-    }
-
-    private String normalizeHex(String hex) {
-        if (hex == null) return null;
-        return hex.startsWith("#") ? hex.toUpperCase() : ("#" + hex).toUpperCase();
     }
 
     // ── AP API filterTitle helpers ────────────────────────────────────────────

@@ -1,0 +1,7 @@
+[
+  { "name": "Red One",       "code": "R1", "hex": "#ff0000", "category": "Reds" },
+  { "name": "Red Dup",        "code": "R1", "hex": "#00ff00", "category": "Reds" },
+  { "name": "Bad Hex",        "code": "B1", "hex": "#FFEBC",  "category": "Reds" },
+  { "name": "Missing Hex",    "code": "N1",                    "category": "Reds" },
+  { "name": "Green No Hash",  "code": "G1", "hex": "00aa00",  "category": "Greens" }
+]

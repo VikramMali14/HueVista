@@ -171,6 +171,14 @@ The endpoint is **idempotent** — re-running only inserts shades not already pr
 
 For production, replace the sample with the full Asian Paints API export (~2,400 shades). The expected JSON shape is documented at the top of the seed file.
 
+### 4. Berger / Dulux / Nerolac / Nippon catalogues (auto-loaded)
+
+The Berger, Dulux, Nerolac and Nippon catalogues ship bundled under [`src/main/resources/seed/brands/`](src/main/resources/seed/brands/) and are **loaded automatically on startup** (`BrandCatalogSeeder`) — ~8,000 shades total, no admin call required. These files use a simpler `{name, code, hex, category}` shape; `category` maps to `shadeFamily`, and hex/RGB/LRV are computed locally.
+
+Unlike the Asian Paints path, this import is **raw — no Claude enrichment** (style tags, mood, etc. are left empty). It is idempotent and de-duplicated by `(brand, code)` — duplicate codes within or across files are skipped (the two Nerolac files overlap heavily and merge into one `nerolac` brand), and rows with malformed hex are dropped with a warning.
+
+To skip this bulk load (e.g. in a constrained environment), set `app.catalog.auto-seed=false`. Tests disable it so their fixtures aren't drowned out.
+
 ---
 
 ## Subscription tiers
