@@ -54,6 +54,14 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
     Optional<String> findUserIdById(@Param("projectId") String projectId);
 
     /**
+     * Pulls the owning access code's id (for guest projects, which have no user)
+     * without lazy-loading the association — used by the async segmentation worker
+     * to derive the storage scope when the project belongs to a guest.
+     */
+    @Query("SELECT p.accessCode.id FROM Project p WHERE p.id = :projectId")
+    Optional<String> findAccessCodeIdById(@Param("projectId") String projectId);
+
+    /**
      * Reads the upload's image type (INDOOR / OUTDOOR) classified at upload
      * time. Lets the segmentation worker branch prompts and thresholds without
      * pulling the full Project + UploadedImage graph through a lazy proxy.

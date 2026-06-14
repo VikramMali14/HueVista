@@ -6,6 +6,8 @@ import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
 
 import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.List;
 
 @Entity
 @Table(name = "customer_access_codes")
@@ -46,8 +48,36 @@ public class CustomerAccessCode {
     @Builder.Default
     private boolean guestRedeemed = false;
 
+    // Paint companies (brand display names) the shop has unlocked for this guest, stored
+    // comma-separated. Empty/null means "no restriction" — the guest may browse every brand.
+    // The guest only ever sees these brands in the studio; real shade codes stay hidden.
+    @Column(length = 512)
+    private String allowedBrands;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
+
+    /** Allowed brand names as a list. Empty list means no restriction (all brands). */
+    public List<String> getAllowedBrandList() {
+        if (allowedBrands == null || allowedBrands.isBlank()) return List.of();
+        return Arrays.stream(allowedBrands.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
+    }
+
+    public void setAllowedBrandList(List<String> brands) {
+        if (brands == null || brands.isEmpty()) {
+            this.allowedBrands = null;
+            return;
+        }
+        this.allowedBrands = brands.stream()
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .distinct()
+                .reduce((a, b) -> a + "," + b)
+                .orElse(null);
+    }
 
     public boolean isExpired() {
         return LocalDateTime.now().isAfter(expiresAt);

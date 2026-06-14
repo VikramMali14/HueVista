@@ -67,6 +67,15 @@ public class GuestController {
         return ResponseEntity.ok(projectService.getGuestProject(accessCodeId(auth), id));
     }
 
+    @Operation(summary = "Run AI wall-detection (guest) — billed to the issuing shop's quota",
+            description = "Triggers asynchronous wall segmentation for the guest's project. The Replicate "
+                    + "cost is charged to the issuing shop's monthly AI quota; returns 402 when the shop "
+                    + "is out of credits, in which case the guest marks walls by hand instead.")
+    @PostMapping("/projects/{id}/segment")
+    public ResponseEntity<ProjectResponse> segment(@PathVariable String id, Authentication auth) {
+        return ResponseEntity.ok(projectService.requestGuestSegmentation(accessCodeId(auth), id));
+    }
+
     @Operation(summary = "Save a hand-drawn region mask (guest)")
     @PostMapping("/projects/{id}/regions/custom-mask")
     public ResponseEntity<RegionResponse> customMask(

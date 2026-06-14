@@ -53,14 +53,17 @@ public class AccessCodeService {
         String code = generateUniqueCode();
         LocalDateTime expiresAt = LocalDateTime.now().plusDays(request.getValidDays());
 
-        CustomerAccessCode accessCode = codeRepository.save(CustomerAccessCode.builder()
+        CustomerAccessCode accessCode = CustomerAccessCode.builder()
                 .organization(org)
                 .code(code)
                 .validDays(request.getValidDays())
                 .expiresAt(expiresAt)
-                .build());
+                .build();
+        accessCode.setAllowedBrandList(request.getAllowedBrands());
+        accessCode = codeRepository.save(accessCode);
 
-        log.info("Access code generated: org={} code={} validDays={}", orgId, code, request.getValidDays());
+        log.info("Access code generated: org={} code={} validDays={} brands={}",
+                orgId, code, request.getValidDays(), accessCode.getAllowedBrandList());
         return AccessCodeResponse.from(accessCode);
     }
 
@@ -148,6 +151,7 @@ public class AccessCodeService {
                 .shopName(accessCode.getOrganization().getName())
                 .validDays(accessCode.getValidDays())
                 .expiresAt(accessCode.getExpiresAt())
+                .allowedBrands(accessCode.getAllowedBrandList())
                 .build();
     }
 

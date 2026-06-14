@@ -12,6 +12,11 @@ import com.gridstore.huevista.auth.dto.AuthResponse;
 import com.gridstore.huevista.auth.model.AuthProvider;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.billing.model.Plan;
+import com.gridstore.huevista.billing.model.Subscription;
+import com.gridstore.huevista.billing.model.SubscriptionStatus;
+import com.gridstore.huevista.billing.repository.SubscriptionRepository;
+import com.gridstore.huevista.billing.service.BillingService;
 import com.gridstore.huevista.image.service.ClaudeVisionService;
 import com.razorpay.RazorpayClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -42,6 +47,9 @@ class GuestFlowIntegrationTest {
 
     @MockitoBean RazorpayClient razorpayClient;
     @MockitoBean ClaudeVisionService claudeVisionService; // unused by the guest path, but keep context light
+    // The queue is Redis-backed and Redis isn't available under test; mock it so the
+    // segment request enqueues a no-op instead of failing to connect.
+    @MockitoBean com.gridstore.huevista.project.queue.SegmentationJobQueue segmentationJobQueue;
 
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
@@ -50,9 +58,13 @@ class GuestFlowIntegrationTest {
     @Autowired OrgMembershipRepository membershipRepository;
     @Autowired CustomerAccessCodeRepository codeRepository;
     @Autowired PasswordEncoder passwordEncoder;
+    @Autowired BillingService billingService;
+    @Autowired SubscriptionRepository subscriptionRepository;
 
     private static final String CODE = "GUESTAB2";
     private String codeId;
+    private String orgId;
+    private String retailerId;
     private String retailerToken;
 
     @BeforeEach
@@ -61,10 +73,12 @@ class GuestFlowIntegrationTest {
                 .name("Shop Owner").email("shop@example.com")
                 .password(passwordEncoder.encode("password123"))
                 .provider(AuthProvider.LOCAL).emailVerified(true).build());
+        retailerId = retailer.getId();
 
         Organization org = orgRepository.save(Organization.builder()
                 .name("Sharda Paints").slug("sharda-paints-guesttest")
                 .type(OrgType.RETAILER).owner(retailer).build());
+        orgId = org.getId();
 
         membershipRepository.save(OrgMembership.builder()
                 .user(retailer).organization(org).role(OrgMemberRole.OWNER).build());
@@ -95,6 +109,64 @@ class GuestFlowIntegrationTest {
                         .header("Authorization", "Bearer " + retailerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(projectId));
+    }
+
+    @Test
+    void guest_segmentation_is_blocked_when_shop_has_no_ai_credits() throws Exception {
+        String guestToken = redeemAsGuest();
+        String imageId = guestUpload(guestToken);
+        String projectId = guestCreateProject(guestToken, imageId);
+
+        // The test shop owner was created directly (no trial / subscription), so the
+        // shop has no AI quota. Guest AI must be blocked with 402 — the UI then falls
+        // back to letting the guest mark walls by hand.
+        mockMvc.perform(post("/api/guest/projects/" + projectId + "/segment")
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isPaymentRequired());
+    }
+
+    @Test
+    void guest_segmentation_is_allowed_and_not_charged_upfront_when_shop_has_credits() throws Exception {
+        // Give the shop owner an active subscription with AI quota.
+        billingService.grantTrial(retailerId, Plan.STARTER, 14);
+
+        String guestToken = redeemAsGuest();
+        String imageId = guestUpload(guestToken);
+        String projectId = guestCreateProject(guestToken, imageId);
+
+        mockMvc.perform(post("/api/guest/projects/" + projectId + "/segment")
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SEGMENTING"));
+
+        // Decrement-on-success: nothing is charged at request time. The async run can
+        // only bill the shop once it actually produces walls, so quota stays untouched here.
+        Subscription sub = subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(retailerId, SubscriptionStatus.ACTIVE)
+                .orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals(0, sub.getAiGenerationsUsed());
+    }
+
+    @Test
+    void shop_scopes_a_code_to_companies_and_guest_redeem_returns_them() throws Exception {
+        // Owner issues a brand-scoped code.
+        MvcResult issued = mockMvc.perform(post("/api/organizations/" + orgId + "/access-codes")
+                        .header("Authorization", "Bearer " + retailerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"validDays\":7,\"allowedBrands\":[\"Asian Paints\",\"Berger\"]}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.allowedBrands.length()").value(2))
+                .andReturn();
+        String scopedCode = objectMapper.readTree(issued.getResponse().getContentAsString()).get("code").asText();
+
+        // A guest redeeming that code gets the allowed companies back, so the studio
+        // can limit their shade picker to just those brands.
+        mockMvc.perform(post("/api/access-codes/redeem-guest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + scopedCode + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.allowedBrands.length()").value(2))
+                .andExpect(jsonPath("$.allowedBrands[0]").value("Asian Paints"));
     }
 
     @Test

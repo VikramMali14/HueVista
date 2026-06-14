@@ -1,7 +1,9 @@
 package com.gridstore.huevista.project.service;
 
 import com.gridstore.huevista.account.model.CustomerAccessCode;
+import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
+import com.gridstore.huevista.account.repository.OrgMembershipRepository;
 import com.gridstore.huevista.account.service.CustomerEntitlementService;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
@@ -53,6 +55,8 @@ public class ProjectService {
     private final ProjectAccessPolicy projectAccessPolicy;
     private final com.gridstore.huevista.auth.service.JwtService jwtService;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
+    private final OrgMembershipRepository orgMembershipRepository;
+    private final com.gridstore.huevista.billing.service.BillingService billingService;
 
     @Autowired(required = false)
     private SegmentationJobQueue segmentationJobQueue;
@@ -314,8 +318,9 @@ public class ProjectService {
     //  A walk-in customer who redeemed a shop code (no account) owns a SINGLE
     //  project by their access code. Responses are the PUBLIC projection, so the
     //  guest never sees real shade codes — the issuing shop resolves those from
-    //  the code. Guests build regions by hand (no AI auto-segment / Replicate cost
-    //  on an anonymous endpoint).
+    //  the code. Guests can run AI wall-detection, but the Replicate cost is billed
+    //  to the issuing shop's monthly AI quota; when the shop is out of credits the
+    //  guest is blocked and falls back to marking walls by hand.
     // ─────────────────────────────────────────────────────────────────────────
 
     private static final int GUEST_PROJECT_LIMIT = 1;
@@ -380,6 +385,65 @@ public class ProjectService {
     public RegionResponse createGuestCustomMaskRegion(String accessCodeId, String projectId, CustomMaskRequest request) {
         findGuestOwned(accessCodeId, projectId);
         return persistCustomMask(accessCodeId, projectId, request);
+    }
+
+    /**
+     * Runs AI wall-detection for a guest project. The Replicate cost is billed to the
+     * issuing shop: we resolve the shop's owner and decrement their monthly AI quota
+     * before kicking off the async run. If the shop has no active subscription or has
+     * exhausted its quota, {@link QuotaExceededException} (HTTP 402) bubbles up and the
+     * guest UI falls back to marking walls by hand.
+     */
+    @Transactional
+    public ProjectResponse requestGuestSegmentation(String accessCodeId, String projectId) {
+        Project project = findGuestOwned(accessCodeId, projectId);
+
+        CustomerAccessCode code = accessCodeRepository.findById(accessCodeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found"));
+        if (code.isExpired()) {
+            throw new AccessExpiredException("Your access has ended. Ask the shop for a new code.");
+        }
+
+        // Gate on the shop's quota WITHOUT charging yet: throws 402 when the owning
+        // retailer has no active subscription or has hit their limit — the guest then
+        // falls back to manual. The credit is only charged once the AI actually
+        // produces walls (SegmentationService bills on success), so a failed run is free.
+        String shopOwnerUserId = resolveShopOwnerUserId(code);
+        billingService.assertAiQuotaAvailable(shopOwnerUserId);
+
+        // Re-trigger guard mirrors requestSegmentation: a run stuck >5 min is treated as stale.
+        if (project.getStatus() == ProjectStatus.SEGMENTING) {
+            LocalDateTime updatedAt = project.getUpdatedAt();
+            boolean stale = updatedAt == null || updatedAt.isBefore(LocalDateTime.now().minusMinutes(5));
+            if (!stale) {
+                throw new IllegalStateException("Segmentation already in progress for this project.");
+            }
+        }
+
+        project.setStatus(ProjectStatus.SEGMENTING);
+        project.setFailureReason(null);
+        projectRepository.save(project);
+
+        String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
+        if (segmentationJobQueue != null) {
+            segmentationJobQueue.enqueue(projectId, imageUrl);
+        } else {
+            segmentationService.segmentAsync(projectId, imageUrl);
+        }
+
+        log.info("Guest segmentation requested: project={} accessCode={} billedShopOwner={}",
+                projectId, accessCodeId, shopOwnerUserId);
+        return toPublicResponse(project);
+    }
+
+    /** Finds the OWNER user of the access code's organization — the account billed for guest AI. */
+    private String resolveShopOwnerUserId(CustomerAccessCode code) {
+        String orgId = code.getOrganization().getId();
+        return orgMembershipRepository.findUserIdsByOrganizationIdAndRole(orgId, OrgMemberRole.OWNER)
+                .stream()
+                .findFirst()
+                .orElseThrow(() -> new QuotaExceededException(
+                        "This shop can't run AI previews right now. You can still mark walls by hand."));
     }
 
     private Project findGuestOwned(String accessCodeId, String projectId) {
