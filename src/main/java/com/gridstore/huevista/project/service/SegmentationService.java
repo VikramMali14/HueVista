@@ -108,11 +108,17 @@ public class SegmentationService {
                 return;
             }
 
-            String userId = projectRepository.findUserIdById(projectId).orElse(null);
-            if (userId == null) {
+            // Storage scope: a normal project is owned by a user; a guest project
+            // (no user) is owned by its access code. Either way this string is only
+            // used as the storage prefix for the cleaned image and mask uploads.
+            String storageScope = projectRepository.findUserIdById(projectId)
+                    .or(() -> projectRepository.findAccessCodeIdById(projectId))
+                    .orElse(null);
+            if (storageScope == null) {
                 markFailed(projectId, "Project owner not found");
                 return;
             }
+            String userId = storageScope;
 
             // Wipe stale auto regions; MANUAL click-segments are preserved.
             regionRepository.deleteAutoRegionsByProjectId(projectId);

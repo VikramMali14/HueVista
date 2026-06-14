@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Data
 @Builder
@@ -19,6 +20,8 @@ public class AccessCodeResponse {
     private boolean expired;
     private LocalDateTime usedAt;
     private LocalDateTime createdAt;
+    // Paint companies unlocked for this guest. Empty = all brands.
+    private List<String> allowedBrands;
 
     public static AccessCodeResponse from(CustomerAccessCode c) {
         return AccessCodeResponse.builder()
@@ -32,6 +35,7 @@ public class AccessCodeResponse {
                 .expired(c.isExpired())
                 .usedAt(c.getUsedAt())
                 .createdAt(c.getCreatedAt())
+                .allowedBrands(c.getAllowedBrandList())
                 .build();
     }
 }

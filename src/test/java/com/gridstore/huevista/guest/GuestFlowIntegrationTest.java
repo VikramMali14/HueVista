@@ -53,6 +53,7 @@ class GuestFlowIntegrationTest {
 
     private static final String CODE = "GUESTAB2";
     private String codeId;
+    private String orgId;
     private String retailerToken;
 
     @BeforeEach
@@ -65,6 +66,7 @@ class GuestFlowIntegrationTest {
         Organization org = orgRepository.save(Organization.builder()
                 .name("Sharda Paints").slug("sharda-paints-guesttest")
                 .type(OrgType.RETAILER).owner(retailer).build());
+        orgId = org.getId();
 
         membershipRepository.save(OrgMembership.builder()
                 .user(retailer).organization(org).role(OrgMemberRole.OWNER).build());
@@ -95,6 +97,42 @@ class GuestFlowIntegrationTest {
                         .header("Authorization", "Bearer " + retailerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(projectId));
+    }
+
+    @Test
+    void guest_segmentation_is_blocked_when_shop_has_no_ai_credits() throws Exception {
+        String guestToken = redeemAsGuest();
+        String imageId = guestUpload(guestToken);
+        String projectId = guestCreateProject(guestToken, imageId);
+
+        // The test shop owner was created directly (no trial / subscription), so the
+        // shop has no AI quota. Guest AI must be blocked with 402 — the UI then falls
+        // back to letting the guest mark walls by hand.
+        mockMvc.perform(post("/api/guest/projects/" + projectId + "/segment")
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isPaymentRequired());
+    }
+
+    @Test
+    void shop_scopes_a_code_to_companies_and_guest_redeem_returns_them() throws Exception {
+        // Owner issues a brand-scoped code.
+        MvcResult issued = mockMvc.perform(post("/api/organizations/" + orgId + "/access-codes")
+                        .header("Authorization", "Bearer " + retailerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"validDays\":7,\"allowedBrands\":[\"Asian Paints\",\"Berger\"]}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.allowedBrands.length()").value(2))
+                .andReturn();
+        String scopedCode = objectMapper.readTree(issued.getResponse().getContentAsString()).get("code").asText();
+
+        // A guest redeeming that code gets the allowed companies back, so the studio
+        // can limit their shade picker to just those brands.
+        mockMvc.perform(post("/api/access-codes/redeem-guest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + scopedCode + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.allowedBrands.length()").value(2))
+                .andExpect(jsonPath("$.allowedBrands[0]").value("Asian Paints"));
     }
 
     @Test

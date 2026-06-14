@@ -4,6 +4,7 @@ import lombok.Builder;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * Returned when an anonymous guest redeems a shop access code (no account).
@@ -19,4 +20,7 @@ public class GuestRedeemResponse {
     private String shopName;
     private int validDays;
     private LocalDateTime expiresAt;
+    // Paint companies the shop unlocked for this guest. Empty = all brands; the
+    // studio limits the guest's shade picker to these.
+    private List<String> allowedBrands;
 }
