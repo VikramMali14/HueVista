@@ -18,6 +18,9 @@ public interface ShadeRepository extends JpaRepository<Shade, Long>, JpaSpecific
 
     boolean existsByBrandIdAndShadeCode(Long brandId, String shadeCode);
 
+    @Query("SELECT s.shadeCode FROM Shade s WHERE s.brand.id = :brandId")
+    List<String> findShadeCodesByBrandId(@Param("brandId") Long brandId);
+
     default List<Shade> findWithFilters(String brand, String family, String temperature, String tonality, String search) {
         return findAll(
                 ShadeSpecifications.withFilters(brand, family, temperature, tonality, search),

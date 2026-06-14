@@ -1,0 +1,4 @@
+[
+  { "name": "Shared Alt",  "code": "S1", "hex": "#654321" },
+  { "name": "Only Colour", "code": "C1", "hex": "#abcdef" }
+]
