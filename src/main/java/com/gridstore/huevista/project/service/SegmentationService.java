@@ -64,6 +64,9 @@ public class SegmentationService {
     private final ReplicateNanoBananaSegmenter replicateNanoBanana;
     private final ImageCleanerService imageCleaner;
     private final ImageRepository imageRepository;
+    private final com.gridstore.huevista.billing.service.BillingService billingService;
+    private final com.gridstore.huevista.account.repository.CustomerAccessCodeRepository accessCodeRepository;
+    private final com.gridstore.huevista.account.repository.OrgMembershipRepository orgMembershipRepository;
 
     /** Optional, mirrors ProjectService: present when the Redis-backed queue is in play. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -111,14 +114,16 @@ public class SegmentationService {
             // Storage scope: a normal project is owned by a user; a guest project
             // (no user) is owned by its access code. Either way this string is only
             // used as the storage prefix for the cleaned image and mask uploads.
-            String storageScope = projectRepository.findUserIdById(projectId)
-                    .or(() -> projectRepository.findAccessCodeIdById(projectId))
-                    .orElse(null);
-            if (storageScope == null) {
+            // A non-null accessCodeId here also marks this as a GUEST run, whose AI
+            // cost is billed to the issuing shop — but only once it succeeds (below).
+            String ownerUserId = projectRepository.findUserIdById(projectId).orElse(null);
+            String guestAccessCodeId = ownerUserId == null
+                    ? projectRepository.findAccessCodeIdById(projectId).orElse(null) : null;
+            String userId = ownerUserId != null ? ownerUserId : guestAccessCodeId;
+            if (userId == null) {
                 markFailed(projectId, "Project owner not found");
                 return;
             }
-            String userId = storageScope;
 
             // Wipe stale auto regions; MANUAL click-segments are preserved.
             regionRepository.deleteAutoRegionsByProjectId(projectId);
@@ -152,6 +157,9 @@ public class SegmentationService {
             // Step 2: Nano Banana color-coded mask via Replicate.
             if (tryReplicateNanoBananaSegmentation(projectId, userId, maskImageUrl)) {
                 markSegmented(projectId);
+                // Guest runs are billed to the issuing shop, but only now that walls
+                // were actually produced — a failed run never costs the shop a credit.
+                billGuestSegmentationIfNeeded(guestAccessCodeId);
                 log.info("Segmentation complete: project={}", projectId);
                 return;
             }
@@ -280,6 +288,27 @@ public class SegmentationService {
             return MaskProcessor.countForeground(mask);
         } catch (Exception e) {
             return 0;
+        }
+    }
+
+    /**
+     * Charges one AI generation to the shop that issued a guest's access code, after a
+     * guest run has actually produced walls. No-op for normal (user-owned) runs — pass
+     * null. Best-effort: a missing code/org/owner just means no charge (the guest still
+     * got their result), so billing problems never fail an otherwise-successful run.
+     */
+    private void billGuestSegmentationIfNeeded(String guestAccessCodeId) {
+        if (guestAccessCodeId == null) return;
+        try {
+            String orgId = accessCodeRepository.findOrganizationIdById(guestAccessCodeId).orElse(null);
+            if (orgId == null) return;
+            orgMembershipRepository
+                    .findUserIdsByOrganizationIdAndRole(orgId, com.gridstore.huevista.account.model.OrgMemberRole.OWNER)
+                    .stream().findFirst()
+                    .ifPresent(billingService::incrementAiUsage);
+        } catch (Exception e) {
+            log.warn("Guest segmentation succeeded but billing the shop failed (code={}): {}",
+                    guestAccessCodeId, e.getMessage());
         }
     }
 

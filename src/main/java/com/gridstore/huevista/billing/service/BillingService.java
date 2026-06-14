@@ -193,6 +193,41 @@ public class BillingService {
     }
 
     /**
+     * Read-only quota gate: throws if {@code userId} has no active subscription or has
+     * hit their limit, but does NOT increment. Used when the actual charge should only
+     * land once the AI work succeeds (see {@link #incrementAiUsage}) — e.g. guest
+     * wall-detection billed to the shop, so a failed run never costs a credit.
+     */
+    @Transactional(readOnly = true)
+    public void assertAiQuotaAvailable(String userId) {
+        Subscription sub = subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+                .orElseThrow(() -> new QuotaExceededException(
+                        "No active subscription. Subscribe to use AI features."));
+        if (sub.getAiGenerationsUsed() >= sub.getAiGenerationsLimit()) {
+            throw new QuotaExceededException(
+                    "Monthly AI generation limit reached (" + sub.getAiGenerationsLimit() + "). " +
+                    "Upgrade your plan or wait for next billing cycle.");
+        }
+    }
+
+    /**
+     * Charges one AI generation to {@code userId} once the work has actually succeeded.
+     * Best-effort and idempotent-ish: a missing subscription is a no-op (we never charge
+     * an account that can't be billed), and the increment is not limit-gated because the
+     * generation already happened. Commits independently of the caller.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void incrementAiUsage(String userId) {
+        subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+                .ifPresent(sub -> {
+                    sub.setAiGenerationsUsed(sub.getAiGenerationsUsed() + 1);
+                    subscriptionRepository.save(sub);
+                });
+    }
+
+    /**
      * Activated by Razorpay webhook: subscription.activated
      */
     @Transactional

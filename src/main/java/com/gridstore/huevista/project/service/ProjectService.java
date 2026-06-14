@@ -2,7 +2,6 @@ package com.gridstore.huevista.project.service;
 
 import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.OrgMemberRole;
-import com.gridstore.huevista.account.model.OrgMembership;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.repository.OrgMembershipRepository;
 import com.gridstore.huevista.account.service.CustomerEntitlementService;
@@ -405,10 +404,12 @@ public class ProjectService {
             throw new AccessExpiredException("Your access has ended. Ask the shop for a new code.");
         }
 
-        // Bill the shop: decrement the owning retailer's monthly AI quota. Throws 402
-        // when there's no active subscription or the limit is hit — guest then goes manual.
+        // Gate on the shop's quota WITHOUT charging yet: throws 402 when the owning
+        // retailer has no active subscription or has hit their limit — the guest then
+        // falls back to manual. The credit is only charged once the AI actually
+        // produces walls (SegmentationService bills on success), so a failed run is free.
         String shopOwnerUserId = resolveShopOwnerUserId(code);
-        billingService.checkAndIncrementAiUsage(shopOwnerUserId);
+        billingService.assertAiQuotaAvailable(shopOwnerUserId);
 
         // Re-trigger guard mirrors requestSegmentation: a run stuck >5 min is treated as stale.
         if (project.getStatus() == ProjectStatus.SEGMENTING) {
@@ -438,10 +439,8 @@ public class ProjectService {
     /** Finds the OWNER user of the access code's organization — the account billed for guest AI. */
     private String resolveShopOwnerUserId(CustomerAccessCode code) {
         String orgId = code.getOrganization().getId();
-        return orgMembershipRepository.findByOrganizationId(orgId).stream()
-                .filter(m -> m.getRole() == OrgMemberRole.OWNER)
-                .map(OrgMembership::getUser)
-                .map(User::getId)
+        return orgMembershipRepository.findUserIdsByOrganizationIdAndRole(orgId, OrgMemberRole.OWNER)
+                .stream()
                 .findFirst()
                 .orElseThrow(() -> new QuotaExceededException(
                         "This shop can't run AI previews right now. You can still mark walls by hand."));

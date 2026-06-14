@@ -19,6 +19,10 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
 
     boolean existsByCode(String code);
 
+    /** Owning organization id without initializing the lazy association — for the async worker. */
+    @Query("SELECT c.organization.id FROM CustomerAccessCode c WHERE c.id = :id")
+    Optional<String> findOrganizationIdById(@Param("id") String id);
+
     /**
      * Atomically consumes a code for a signed-in user. The {@code usedByUser IS NULL
      * AND usedAt IS NULL} guard makes this a compare-and-set: when two requests race
