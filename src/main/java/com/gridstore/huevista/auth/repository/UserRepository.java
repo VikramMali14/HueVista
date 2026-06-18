@@ -13,6 +13,9 @@ public interface UserRepository extends JpaRepository<User, String> {
     Optional<User> findByEmail(String email);
     boolean existsByEmail(String email);
 
+    /** A user who has VERIFIED this mobile number — the only valid SMS-reset target. */
+    Optional<User> findByPhoneNumberAndPhoneVerifiedTrue(String phoneNumber);
+
     List<User> findTop10ByOrderByCreatedAtDesc();
 
     @Query("SELECT COUNT(u) FROM User u WHERE u.createdAt >= :since")

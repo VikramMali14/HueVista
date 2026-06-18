@@ -92,6 +92,9 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 new Rule("POST", "/api/auth/refresh", refresh),
                 new Rule("POST", "/api/auth/forgot-password", reset),
                 new Rule("POST", "/api/auth/reset-password", reset),
+                // SMS reset: the SEND costs money (otp-send bucket); the confirm is a code brute-force (reset bucket).
+                new Rule("POST", "/api/auth/forgot-password/phone", otpSend),
+                new Rule("POST", "/api/auth/reset-password/phone", reset),
                 new Rule("POST", "/api/auth/verify/email/send", otpSend),
                 new Rule("POST", "/api/auth/verify/phone/send", otpSend),
                 new Rule("POST", "/api/auth/verify/email/confirm", otpConfirm),

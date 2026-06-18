@@ -67,6 +67,10 @@ public class AuthService {
                     "Email already in use: " + email);
         }
 
+        // A self-serve customer (e.g. redeemed a shop code and wants to keep their own
+        // work) is a CUSTOMER, not a RETAILER, so they never see shop-management UI.
+        // Everyone else defaults to RETAILER (the trial / shop signup path).
+        boolean isCustomer = "customer".equalsIgnoreCase(request.getAccountType());
         User user = User.builder()
                 .name(request.getName())
                 .email(email)
@@ -74,6 +78,9 @@ public class AuthService {
                 .provider(AuthProvider.LOCAL)
                 .emailVerified(false)
                 .phoneNumber(blankToNull(request.getPhone()))
+                .role(isCustomer
+                        ? com.gridstore.huevista.auth.model.UserRole.CUSTOMER
+                        : com.gridstore.huevista.auth.model.UserRole.RETAILER)
                 .build();
 
         userRepository.save(user);
@@ -189,6 +196,32 @@ public class AuthService {
         refreshTokenRepository.deleteByUser(user);
         auditService.record(userId, "LOGOUT", "USER", userId, "all refresh tokens revoked");
         log.info("User logged out, refresh tokens revoked: {}", user.getEmail());
+    }
+
+    /**
+     * Soft-deletes the authenticated user's account: revokes all sessions and scrubs
+     * personal data, keeping the row (projects/images/orgs reference it via FK) but
+     * tombstoning it. The original email is freed so the person can re-register, and
+     * the account becomes unusable (no one can log in as a tombstoned email).
+     */
+    @Transactional
+    public void deleteAccount(String userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        refreshTokenRepository.deleteByUser(user);
+        user.setEmail("deleted-" + user.getId() + "@deleted.huevista.invalid");
+        user.setName("Deleted user");
+        user.setPassword(null);
+        user.setPicture(null);
+        user.setProviderId(null);
+        user.setPhoneNumber(null);
+        user.setPhoneVerified(false);
+        user.setEmailVerified(false);
+        user.setDeletedAt(java.time.LocalDateTime.now());
+        userRepository.save(user);
+        auditService.record(userId, "ACCOUNT_DELETED", "USER", userId,
+                "account soft-deleted: PII scrubbed, sessions revoked");
+        log.info("Account soft-deleted: {}", userId);
     }
 
     @Transactional(readOnly = true)

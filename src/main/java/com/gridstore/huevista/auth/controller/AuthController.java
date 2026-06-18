@@ -75,12 +75,36 @@ public class AuthController {
         return ResponseEntity.ok(Map.of("message", "Your password has been reset. Please sign in."));
     }
 
+    @Operation(summary = "Request a password reset by SMS", description = "Texts a 6-digit reset code to a verified mobile number if one matches. Always 200 (no enumeration).")
+    @SecurityRequirements
+    @PostMapping("/forgot-password/phone")
+    public ResponseEntity<Map<String, String>> forgotPasswordByPhone(@Valid @RequestBody ForgotPasswordPhoneRequest request) {
+        passwordResetService.requestResetByPhone(request.getPhone());
+        return ResponseEntity.ok(Map.of("message", "If a verified mobile matches, a reset code is on its way."));
+    }
+
+    @Operation(summary = "Reset password with an SMS code", description = "Validates the texted code for the verified mobile and sets a new password, revoking existing sessions.")
+    @SecurityRequirements
+    @PostMapping("/reset-password/phone")
+    public ResponseEntity<Map<String, String>> resetPasswordByPhone(@Valid @RequestBody ResetPasswordPhoneRequest request) {
+        passwordResetService.resetPasswordByPhone(request.getPhone(), request.getCode(), request.getNewPassword());
+        return ResponseEntity.ok(Map.of("message", "Your password has been reset. Please sign in."));
+    }
+
     @Operation(summary = "Logout", description = "Revokes all refresh tokens for the authenticated user.")
     @ApiResponse(responseCode = "200", description = "Logged out successfully")
     @PostMapping("/logout")
     public ResponseEntity<Map<String, String>> logout(@AuthenticationPrincipal UserDetails userDetails) {
         authService.logout(userDetails.getUsername());
         return ResponseEntity.ok(Map.of("message", "Logged out successfully"));
+    }
+
+    @Operation(summary = "Delete account", description = "Permanently deletes the authenticated user's account: scrubs personal data and revokes all sessions.")
+    @ApiResponse(responseCode = "204", description = "Account deleted")
+    @DeleteMapping("/account")
+    public ResponseEntity<Void> deleteAccount(@AuthenticationPrincipal UserDetails userDetails) {
+        authService.deleteAccount(userDetails.getUsername());
+        return ResponseEntity.noContent().build();
     }
 
     @Operation(summary = "Get current user", description = "Returns the authenticated user's ID. Useful for verifying a token is still valid.")
