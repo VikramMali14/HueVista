@@ -31,6 +31,7 @@ public class AuthService {
     private final com.gridstore.huevista.account.service.AccountService accountService;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
+    private final com.gridstore.huevista.notification.EmailSender emailSender;
 
     private static final int TRIAL_DAYS = 14;
 
@@ -41,7 +42,8 @@ public class AuthService {
                        @Lazy AuthenticationManager authenticationManager,
                        com.gridstore.huevista.account.service.AccountService accountService,
                        com.gridstore.huevista.billing.service.BillingService billingService,
-                       com.gridstore.huevista.common.audit.AuditService auditService) {
+                       com.gridstore.huevista.common.audit.AuditService auditService,
+                       com.gridstore.huevista.notification.EmailSender emailSender) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.jwtService = jwtService;
@@ -50,10 +52,14 @@ public class AuthService {
         this.accountService = accountService;
         this.billingService = billingService;
         this.auditService = auditService;
+        this.emailSender = emailSender;
     }
 
     @Value("${app.refresh-token.expiration-ms}")
     private long refreshTokenExpirationMs;
+
+    @Value("${app.cors.allowed-origins:http://localhost:3000}")
+    private String allowedOrigins;
 
     private static final int MAX_LOGIN_ATTEMPTS = 5;
     private static final java.time.Duration LOGIN_LOCK = java.time.Duration.ofMinutes(15);
@@ -108,8 +114,40 @@ public class AuthService {
         userRepository.save(user);
         accountService.provisionRetailerOrg(user.getId(), request.getShopName(), request.getCity(), request.getState());
         billingService.grantTrial(user.getId(), planFromTier(request.getTier()), TRIAL_DAYS);
+        sendShopWelcomeEmail(user, request);
         log.info("Admin created RETAILER {} (shop: {})", user.getEmail(), request.getShopName());
         return AdminUserResponse.from(user);
+    }
+
+    /** Best-effort welcome email with the new shop's login — never fails creation. */
+    private void sendShopWelcomeEmail(User user, CreateRetailerRequest request) {
+        try {
+            String url = firstFrontendOrigin();
+            emailSender.send(user.getEmail(),
+                    "Your HueVista shop account is ready",
+                    "Hi " + request.getName() + ",\n\n"
+                            + "Your HueVista shop account for \"" + request.getShopName() + "\" is ready.\n\n"
+                            + "Sign in:  " + url + "/sign-in\n"
+                            + "Email:    " + user.getEmail() + "\n"
+                            + "Password: " + request.getPassword() + "\n\n"
+                            + "Please change your password after signing in (or use \"Forgot password\" to set your own).\n\n"
+                            + "— HueVista");
+        } catch (Exception e) {
+            log.warn("Welcome email to {} failed: {}", user.getEmail(), e.getMessage());
+        }
+    }
+
+    /** The first configured CORS origin is the frontend base URL; fall back to local dev. */
+    private String firstFrontendOrigin() {
+        if (allowedOrigins != null) {
+            for (String o : allowedOrigins.split(",")) {
+                String t = o.trim();
+                if (!t.isEmpty() && !"*".equals(t)) {
+                    return t.endsWith("/") ? t.substring(0, t.length() - 1) : t;
+                }
+            }
+        }
+        return "http://localhost:3000";
     }
 
     private static com.gridstore.huevista.billing.model.Plan planFromTier(String tier) {
