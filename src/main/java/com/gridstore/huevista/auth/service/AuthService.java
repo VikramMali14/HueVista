@@ -162,12 +162,19 @@ public class AuthService {
 
     @Transactional
     public AuthResponse refreshToken(String rawToken) {
+        // 401 (not 400) for refresh-token problems: an expired/invalid refresh token is
+        // an auth failure, matching the endpoint's documented contract and the client's
+        // "session expired -> re-login" handling.
         RefreshToken stored = refreshTokenRepository.findByToken(rawToken)
-                .orElseThrow(() -> new IllegalArgumentException("Refresh token not found"));
+                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.UNAUTHORIZED,
+                        "Refresh token invalid — please log in again."));
 
         if (stored.getExpiryDate().isBefore(Instant.now())) {
             refreshTokenRepository.delete(stored);
-            throw new IllegalArgumentException("Refresh token expired — please log in again");
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.UNAUTHORIZED,
+                    "Refresh token expired — please log in again.");
         }
 
         // Rotate: invalidate the old token, issue a fresh pair

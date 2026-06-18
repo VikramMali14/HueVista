@@ -106,7 +106,7 @@ public class ProjectController {
     )
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Segmentation started, status = SEGMENTING"),
-            @ApiResponse(responseCode = "400", description = "Segmentation already in progress")
+            @ApiResponse(responseCode = "409", description = "Segmentation already in progress")
     })
     @PostMapping("/{id}/segment")
     public ResponseEntity<ProjectResponse> requestSegmentation(

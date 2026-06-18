@@ -150,7 +150,7 @@ public class AccessCodeService {
                 .code(accessCode.getCode())
                 .shopName(accessCode.getOrganization().getName())
                 .validDays(accessCode.getValidDays())
-                .expiresAt(accessCode.getExpiresAt())
+                .expiresAt(accessCode.getExpiresAt().atZone(java.time.ZoneId.systemDefault()).toInstant())
                 .allowedBrands(accessCode.getAllowedBrandList())
                 .build();
     }
