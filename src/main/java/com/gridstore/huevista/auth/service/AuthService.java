@@ -67,10 +67,9 @@ public class AuthService {
                     "Email already in use: " + email);
         }
 
-        // A self-serve customer (e.g. redeemed a shop code and wants to keep their own
-        // work) is a CUSTOMER, not a RETAILER, so they never see shop-management UI.
-        // Everyone else defaults to RETAILER (the trial / shop signup path).
-        boolean isCustomer = "customer".equalsIgnoreCase(request.getAccountType());
+        // Public signup ALWAYS creates a CUSTOMER. Shops/retailers are provisioned by an
+        // admin only (see adminCreateRetailer), so the public path can never make a RETAILER
+        // or self-provision a shop org/trial.
         User user = User.builder()
                 .name(request.getName())
                 .email(email)
@@ -78,26 +77,39 @@ public class AuthService {
                 .provider(AuthProvider.LOCAL)
                 .emailVerified(false)
                 .phoneNumber(blankToNull(request.getPhone()))
-                .role(isCustomer
-                        ? com.gridstore.huevista.auth.model.UserRole.CUSTOMER
-                        : com.gridstore.huevista.auth.model.UserRole.RETAILER)
+                .role(com.gridstore.huevista.auth.model.UserRole.CUSTOMER)
                 .build();
 
         userRepository.save(user);
-        log.info("Registered new user: {}", user.getEmail());
-
-        // Retailer trial signup: provision a shop org + a free trial subscription so AI
-        // features work immediately. Best-effort — a provisioning hiccup must not fail
-        // the registration itself (the user can still sign in).
-        if (request.getShopName() != null && !request.getShopName().isBlank()) {
-            try {
-                accountService.provisionRetailerOrg(user.getId(), request.getShopName(), request.getCity(), request.getState());
-                billingService.grantTrial(user.getId(), planFromTier(request.getTier()), TRIAL_DAYS);
-            } catch (Exception e) {
-                log.warn("Trial provisioning failed for {}: {}", user.getEmail(), e.getMessage());
-            }
-        }
+        log.info("Registered new CUSTOMER: {}", user.getEmail());
         return buildAuthResponse(user);
+    }
+
+    /**
+     * ADMIN-only: create a RETAILER (shop) account with a provisioned org + free trial.
+     * Atomic — if org/trial provisioning fails, the whole creation rolls back.
+     */
+    @Transactional
+    public AdminUserResponse adminCreateRetailer(CreateRetailerRequest request) {
+        String email = com.gridstore.huevista.auth.util.Emails.normalize(request.getEmail());
+        if (userRepository.existsByEmail(email)) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT, "Email already in use: " + email);
+        }
+        User user = User.builder()
+                .name(request.getName())
+                .email(email)
+                .password(passwordEncoder.encode(request.getPassword()))
+                .provider(AuthProvider.LOCAL)
+                .emailVerified(true) // admin-vetted
+                .phoneNumber(blankToNull(request.getPhone()))
+                .role(com.gridstore.huevista.auth.model.UserRole.RETAILER)
+                .build();
+        userRepository.save(user);
+        accountService.provisionRetailerOrg(user.getId(), request.getShopName(), request.getCity(), request.getState());
+        billingService.grantTrial(user.getId(), planFromTier(request.getTier()), TRIAL_DAYS);
+        log.info("Admin created RETAILER {} (shop: {})", user.getEmail(), request.getShopName());
+        return AdminUserResponse.from(user);
     }
 
     private static com.gridstore.huevista.billing.model.Plan planFromTier(String tier) {
