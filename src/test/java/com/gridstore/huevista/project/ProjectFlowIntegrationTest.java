@@ -11,6 +11,7 @@ import com.gridstore.huevista.billing.repository.SubscriptionRepository;
 import com.gridstore.huevista.image.model.ImageType;
 import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
+import com.gridstore.huevista.image.service.StorageService;
 import com.gridstore.huevista.project.dto.CreateProjectRequest;
 import com.gridstore.huevista.project.repository.ProjectRepository;
 import com.razorpay.RazorpayClient;
@@ -47,6 +48,7 @@ class ProjectFlowIntegrationTest {
     @Autowired ObjectMapper objectMapper;
     @Autowired UserRepository userRepository;
     @Autowired ImageRepository imageRepository;
+    @Autowired StorageService storageService;
     @Autowired ProjectRepository projectRepository;
     @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired PasswordEncoder passwordEncoder;
@@ -211,5 +213,52 @@ class ProjectFlowIntegrationTest {
         mockMvc.perform(get("/api/share/" + shareToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(projectId));
+    }
+
+    @Test
+    void shared_project_image_is_publicly_streamable() throws Exception {
+        // Store a real file so the public, token-scoped share-image endpoint can read it.
+        byte[] bytes = "fake-png-bytes".getBytes();
+        String key = storageService.store(bytes, userId, "room.png", "image/png");
+        UploadedImage stored = imageRepository.save(UploadedImage.builder()
+                .user(userRepository.findById(userId).orElseThrow())
+                .originalFilename("room.png")
+                .storageKey(key)
+                .contentType("image/png")
+                .fileSize(bytes.length)
+                .imageType(ImageType.INDOOR)
+                .build());
+
+        CreateProjectRequest req = new CreateProjectRequest();
+        req.setImageId(stored.getId());
+        MvcResult createResult = mockMvc.perform(post("/api/projects")
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String projectId = objectMapper.readTree(createResult.getResponse().getContentAsString())
+                .get("id").asText();
+
+        MvcResult shareResult = mockMvc.perform(post("/api/projects/" + projectId + "/share")
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"validDays\": 7}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String shareToken = objectMapper.readTree(shareResult.getResponse().getContentAsString())
+                .get("shareToken").asText();
+
+        // In local-storage mode the public projection rewrites the image URL to the
+        // token-scoped endpoint (the owner-authenticated /api/images path would 401 here).
+        mockMvc.perform(get("/api/share/" + shareToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.imageUrl").value("/api/share/" + shareToken + "/image"));
+
+        // And that endpoint streams the bytes to an ANONYMOUS viewer (no auth header).
+        mockMvc.perform(get("/api/share/" + shareToken + "/image"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.IMAGE_PNG))
+                .andExpect(content().bytes(bytes));
     }
 }

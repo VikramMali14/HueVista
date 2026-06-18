@@ -229,12 +229,69 @@ public class ProjectService {
                         || p.getShareExpiresAt().isAfter(LocalDateTime.now()))
                 .orElseThrow(() -> new ResourceNotFoundException("Share link not found or expired."));
 
-        String originalUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
+        // In local-storage mode getPublicUrl returns a relative, owner-authenticated
+        // path an anonymous share viewer can't fetch — point those at the public,
+        // token-scoped share image endpoints instead. S3 mode returns absolute
+        // presigned URLs (already public), which are left untouched.
+        String originalUrl = shareImageUrl(shareToken, "image",
+                storageService.getPublicUrl(project.getImage().getStorageKey()));
         String cleanedUrl = project.getCleanedImageStorageKey() != null
-                ? storageService.getPublicUrl(project.getCleanedImageStorageKey()) : null;
+                ? shareImageUrl(shareToken, "cleaned-image",
+                        storageService.getPublicUrl(project.getCleanedImageStorageKey()))
+                : null;
         ProjectResponse r = ProjectResponse.fromPublic(project, originalUrl);
         r.setCleanedImageUrl(cleanedUrl);
         return r;
+    }
+
+    /** A shared project's image bytes + content type, fetched by share token. */
+    public record SharedImage(byte[] data, String contentType) {}
+
+    /**
+     * Streams a shared project's original (or cleaned) image by share token. Public:
+     * the token is the capability and only that project's images are reachable. Lets
+     * anonymous share viewers load the preview when the backend uses local storage,
+     * where the normal image endpoint is owner-authenticated.
+     */
+    @Transactional(readOnly = true)
+    public SharedImage getSharedImage(String shareToken, boolean cleaned) {
+        Project project = projectRepository.findByShareToken(shareToken)
+                .filter(p -> p.getShareExpiresAt() == null
+                        || p.getShareExpiresAt().isAfter(LocalDateTime.now()))
+                .orElseThrow(() -> new ResourceNotFoundException("Share link not found or expired."));
+
+        String key;
+        String contentType;
+        if (cleaned) {
+            key = project.getCleanedImageStorageKey();
+            if (key == null) {
+                throw new ResourceNotFoundException("No cleaned image for this project.");
+            }
+            contentType = contentTypeForKey(key);
+        } else {
+            key = project.getImage().getStorageKey();
+            contentType = project.getImage().getContentType();
+        }
+        try {
+            return new SharedImage(storageService.load(key), contentType);
+        } catch (IOException e) {
+            throw new StorageException("Failed to read shared image", e);
+        }
+    }
+
+    /** Keep absolute (presigned) URLs as-is; rewrite a relative local-storage path to
+     *  the public token-scoped share endpoint so anonymous viewers can load it. */
+    private static String shareImageUrl(String token, String kind, String rawUrl) {
+        if (rawUrl == null) return null;
+        if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) return rawUrl;
+        return "/api/share/" + token + "/" + kind;
+    }
+
+    private static String contentTypeForKey(String key) {
+        String k = key.toLowerCase();
+        if (k.endsWith(".png")) return "image/png";
+        if (k.endsWith(".webp")) return "image/webp";
+        return "image/jpeg";
     }
 
     @Transactional

@@ -7,8 +7,12 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.CacheControl;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.time.Duration;
 
 @RestController
 @RequestMapping("/api/share")
@@ -32,5 +36,27 @@ public class SharedProjectController {
     @GetMapping("/{token}")
     public ResponseEntity<ProjectResponse> getSharedProject(@PathVariable String token) {
         return ResponseEntity.ok(projectService.getSharedProject(token));
+    }
+
+    @Operation(summary = "Shared project original image", description = "Public — streams the shared project's photo by token (used in local-storage mode where the normal image endpoint is owner-authenticated).")
+    @SecurityRequirements
+    @GetMapping("/{token}/image")
+    public ResponseEntity<byte[]> getSharedImage(@PathVariable String token) {
+        return stream(projectService.getSharedImage(token, false));
+    }
+
+    @Operation(summary = "Shared project cleaned image", description = "Public — streams the shared project's cleaned photo by token. 404 if there is no cleaned image.")
+    @SecurityRequirements
+    @GetMapping("/{token}/cleaned-image")
+    public ResponseEntity<byte[]> getSharedCleanedImage(@PathVariable String token) {
+        return stream(projectService.getSharedImage(token, true));
+    }
+
+    private ResponseEntity<byte[]> stream(ProjectService.SharedImage image) {
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(image.contentType()))
+                .header("X-Content-Type-Options", "nosniff")
+                .cacheControl(CacheControl.maxAge(Duration.ofMinutes(10)).cachePublic())
+                .body(image.data());
     }
 }
