@@ -4,8 +4,10 @@ import com.gridstore.huevista.account.dto.OrgResponse;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.auth.dto.AdminUserResponse;
 import com.gridstore.huevista.auth.dto.ChangeRoleRequest;
+import com.gridstore.huevista.auth.dto.CreateRetailerRequest;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.auth.service.AuthService;
 import com.gridstore.huevista.billing.dto.SubscriptionResponse;
 import com.gridstore.huevista.billing.model.Plan;
 import com.gridstore.huevista.billing.model.SubscriptionStatus;
@@ -22,6 +24,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -39,6 +42,7 @@ import java.util.Map;
 @Tag(name = "Admin", description = "Super-admin endpoints — ROLE_ADMIN only")
 public class AdminController {
 
+    private final AuthService authService;
     private final UserRepository userRepository;
     private final OrganizationRepository orgRepository;
     private final SubscriptionRepository subscriptionRepository;
@@ -87,6 +91,18 @@ public class AdminController {
         auditService.record(auth.getName(), "ROLE_CHANGE", "USER", userId,
                 previous + " -> " + request.getRole());
         return ResponseEntity.ok(AdminUserResponse.from(user));
+    }
+
+    @Operation(summary = "Create a shop (retailer) account",
+            description = "Provisions a RETAILER user + organization + free trial. ADMIN only.")
+    @PostMapping("/retailers")
+    public ResponseEntity<AdminUserResponse> createRetailer(
+            @Valid @RequestBody CreateRetailerRequest request,
+            Authentication auth) {
+        AdminUserResponse created = authService.adminCreateRetailer(request);
+        auditService.record(auth.getName(), "RETAILER_CREATED", "USER", created.getId(),
+                "shop account created by admin");
+        return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
     @Operation(summary = "List all organizations")

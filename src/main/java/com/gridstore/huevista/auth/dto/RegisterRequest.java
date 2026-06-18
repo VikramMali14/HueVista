@@ -30,4 +30,7 @@ public class RegisterRequest {
     private String phone;
     /** "starter" | "pro"/"professional" | "business" — the trial tier. */
     private String tier;
+    /** "customer" creates a CUSTOMER-role account (a walk-in keeping their own work);
+     *  anything else (incl. null) is the default RETAILER signup. */
+    private String accountType;
 }

@@ -100,7 +100,9 @@ public class SecurityConfig {
                         "/api/auth/login",
                         "/api/auth/refresh",
                         "/api/auth/forgot-password",
-                        "/api/auth/reset-password").permitAll()
+                        "/api/auth/forgot-password/phone",
+                        "/api/auth/reset-password",
+                        "/api/auth/reset-password/phone").permitAll()
                 .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
                 // Swagger UI / OpenAPI spec — public
                 .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()

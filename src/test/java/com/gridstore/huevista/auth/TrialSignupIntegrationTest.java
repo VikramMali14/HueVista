@@ -3,8 +3,12 @@ package com.gridstore.huevista.auth;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
+import com.gridstore.huevista.auth.dto.AuthResponse;
+import com.gridstore.huevista.auth.dto.CreateRetailerRequest;
 import com.gridstore.huevista.auth.dto.RegisterRequest;
+import com.gridstore.huevista.auth.model.AuthProvider;
 import com.gridstore.huevista.auth.model.User;
+import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.billing.model.Plan;
 import com.gridstore.huevista.billing.model.Subscription;
@@ -16,9 +20,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
@@ -42,31 +48,45 @@ class TrialSignupIntegrationTest {
     @Autowired UserRepository userRepository;
     @Autowired OrganizationRepository organizationRepository;
     @Autowired SubscriptionRepository subscriptionRepository;
+    @Autowired PasswordEncoder passwordEncoder;
 
+    /** Shops are admin-created now: only ROLE_ADMIN can provision a RETAILER + org + trial. */
     @Test
-    void retailer_trial_signup_provisions_org_and_trial_subscription() throws Exception {
-        RegisterRequest reg = new RegisterRequest();
-        reg.setName("Shop Owner");
-        reg.setEmail("shop@example.com");
-        reg.setPassword("password123");
-        reg.setShopName("Sharda Paints");
-        reg.setCity("Belgavi");
-        reg.setState("Karnataka");
-        reg.setTier("pro");
-
-        mockMvc.perform(post("/api/auth/register")
+    void admin_creating_a_retailer_provisions_org_and_trial() throws Exception {
+        userRepository.save(User.builder()
+                .name("Root Admin").email("root@example.com")
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL).emailVerified(true)
+                .role(UserRole.ADMIN).build());
+        MvcResult login = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(reg)))
+                        .content("{\"email\":\"root@example.com\",\"password\":\"password123\"}"))
+                .andExpect(status().isOk()).andReturn();
+        String adminToken = objectMapper.readValue(
+                login.getResponse().getContentAsString(), AuthResponse.class).getAccessToken();
+
+        CreateRetailerRequest req = new CreateRetailerRequest();
+        req.setName("Shop Owner");
+        req.setEmail("shop@example.com");
+        req.setPassword("password123");
+        req.setShopName("Sharda Paints");
+        req.setCity("Belgavi");
+        req.setState("Karnataka");
+        req.setTier("pro");
+
+        mockMvc.perform(post("/api/admin/retailers")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
                 .andExpect(status().isCreated());
 
-        User user = userRepository.findByEmail("shop@example.com").orElseThrow();
+        User retailer = userRepository.findByEmail("shop@example.com").orElseThrow();
+        assertThat(retailer.getRole()).isEqualTo(UserRole.RETAILER);
 
-        // A RETAILER org was provisioned from the shop name.
         assertThat(organizationRepository.findAll())
                 .anyMatch(o -> "Sharda Paints".equals(o.getName()) && o.getType() == OrgType.RETAILER);
 
-        // A free trial subscription (ACTIVE, no Razorpay id) was granted.
-        List<Subscription> subs = subscriptionRepository.findByUserIdOrderByCreatedAtDesc(user.getId());
+        List<Subscription> subs = subscriptionRepository.findByUserIdOrderByCreatedAtDesc(retailer.getId());
         assertThat(subs).hasSize(1);
         Subscription sub = subs.get(0);
         assertThat(sub.isTrial()).isTrue();
@@ -76,8 +96,9 @@ class TrialSignupIntegrationTest {
         assertThat(sub.getAiGenerationsLimit()).isEqualTo(Plan.PROFESSIONAL.getMonthlyAiLimit());
     }
 
+    /** Public signup creates a plain CUSTOMER — no shop, no subscription. */
     @Test
-    void plain_signup_does_not_create_a_subscription() throws Exception {
+    void public_signup_creates_a_customer_with_no_subscription() throws Exception {
         RegisterRequest reg = new RegisterRequest();
         reg.setName("Plain User");
         reg.setEmail("plain@example.com");
@@ -89,6 +110,7 @@ class TrialSignupIntegrationTest {
                 .andExpect(status().isCreated());
 
         User user = userRepository.findByEmail("plain@example.com").orElseThrow();
+        assertThat(user.getRole()).isEqualTo(UserRole.CUSTOMER);
         assertThat(subscriptionRepository.findByUserIdOrderByCreatedAtDesc(user.getId())).isEmpty();
     }
 

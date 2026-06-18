@@ -65,6 +65,10 @@ public class User {
     @Builder.Default
     private boolean phoneVerified = false;
 
+    // Soft-delete tombstone. When set, the account is deleted: PII has been scrubbed,
+    // sessions revoked, and the original email freed for re-registration.
+    private LocalDateTime deletedAt;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

@@ -31,6 +31,7 @@ public class AuthService {
     private final com.gridstore.huevista.account.service.AccountService accountService;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
+    private final com.gridstore.huevista.notification.EmailSender emailSender;
 
     private static final int TRIAL_DAYS = 14;
 
@@ -41,7 +42,8 @@ public class AuthService {
                        @Lazy AuthenticationManager authenticationManager,
                        com.gridstore.huevista.account.service.AccountService accountService,
                        com.gridstore.huevista.billing.service.BillingService billingService,
-                       com.gridstore.huevista.common.audit.AuditService auditService) {
+                       com.gridstore.huevista.common.audit.AuditService auditService,
+                       com.gridstore.huevista.notification.EmailSender emailSender) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.jwtService = jwtService;
@@ -50,10 +52,14 @@ public class AuthService {
         this.accountService = accountService;
         this.billingService = billingService;
         this.auditService = auditService;
+        this.emailSender = emailSender;
     }
 
     @Value("${app.refresh-token.expiration-ms}")
     private long refreshTokenExpirationMs;
+
+    @Value("${app.cors.allowed-origins:http://localhost:3000}")
+    private String allowedOrigins;
 
     private static final int MAX_LOGIN_ATTEMPTS = 5;
     private static final java.time.Duration LOGIN_LOCK = java.time.Duration.ofMinutes(15);
@@ -67,6 +73,9 @@ public class AuthService {
                     "Email already in use: " + email);
         }
 
+        // Public signup ALWAYS creates a CUSTOMER. Shops/retailers are provisioned by an
+        // admin only (see adminCreateRetailer), so the public path can never make a RETAILER
+        // or self-provision a shop org/trial.
         User user = User.builder()
                 .name(request.getName())
                 .email(email)
@@ -74,23 +83,71 @@ public class AuthService {
                 .provider(AuthProvider.LOCAL)
                 .emailVerified(false)
                 .phoneNumber(blankToNull(request.getPhone()))
+                .role(com.gridstore.huevista.auth.model.UserRole.CUSTOMER)
                 .build();
 
         userRepository.save(user);
-        log.info("Registered new user: {}", user.getEmail());
+        log.info("Registered new CUSTOMER: {}", user.getEmail());
+        return buildAuthResponse(user);
+    }
 
-        // Retailer trial signup: provision a shop org + a free trial subscription so AI
-        // features work immediately. Best-effort — a provisioning hiccup must not fail
-        // the registration itself (the user can still sign in).
-        if (request.getShopName() != null && !request.getShopName().isBlank()) {
-            try {
-                accountService.provisionRetailerOrg(user.getId(), request.getShopName(), request.getCity(), request.getState());
-                billingService.grantTrial(user.getId(), planFromTier(request.getTier()), TRIAL_DAYS);
-            } catch (Exception e) {
-                log.warn("Trial provisioning failed for {}: {}", user.getEmail(), e.getMessage());
+    /**
+     * ADMIN-only: create a RETAILER (shop) account with a provisioned org + free trial.
+     * Atomic — if org/trial provisioning fails, the whole creation rolls back.
+     */
+    @Transactional
+    public AdminUserResponse adminCreateRetailer(CreateRetailerRequest request) {
+        String email = com.gridstore.huevista.auth.util.Emails.normalize(request.getEmail());
+        if (userRepository.existsByEmail(email)) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT, "Email already in use: " + email);
+        }
+        User user = User.builder()
+                .name(request.getName())
+                .email(email)
+                .password(passwordEncoder.encode(request.getPassword()))
+                .provider(AuthProvider.LOCAL)
+                .emailVerified(true) // admin-vetted
+                .phoneNumber(blankToNull(request.getPhone()))
+                .role(com.gridstore.huevista.auth.model.UserRole.RETAILER)
+                .build();
+        userRepository.save(user);
+        accountService.provisionRetailerOrg(user.getId(), request.getShopName(), request.getCity(), request.getState());
+        billingService.grantTrial(user.getId(), planFromTier(request.getTier()), TRIAL_DAYS);
+        sendShopWelcomeEmail(user, request);
+        log.info("Admin created RETAILER {} (shop: {})", user.getEmail(), request.getShopName());
+        return AdminUserResponse.from(user);
+    }
+
+    /** Best-effort welcome email with the new shop's login — never fails creation. */
+    private void sendShopWelcomeEmail(User user, CreateRetailerRequest request) {
+        try {
+            String url = firstFrontendOrigin();
+            emailSender.send(user.getEmail(),
+                    "Your HueVista shop account is ready",
+                    "Hi " + request.getName() + ",\n\n"
+                            + "Your HueVista shop account for \"" + request.getShopName() + "\" is ready.\n\n"
+                            + "Sign in:  " + url + "/sign-in\n"
+                            + "Email:    " + user.getEmail() + "\n"
+                            + "Password: " + request.getPassword() + "\n\n"
+                            + "Please change your password after signing in (or use \"Forgot password\" to set your own).\n\n"
+                            + "— HueVista");
+        } catch (Exception e) {
+            log.warn("Welcome email to {} failed: {}", user.getEmail(), e.getMessage());
+        }
+    }
+
+    /** The first configured CORS origin is the frontend base URL; fall back to local dev. */
+    private String firstFrontendOrigin() {
+        if (allowedOrigins != null) {
+            for (String o : allowedOrigins.split(",")) {
+                String t = o.trim();
+                if (!t.isEmpty() && !"*".equals(t)) {
+                    return t.endsWith("/") ? t.substring(0, t.length() - 1) : t;
+                }
             }
         }
-        return buildAuthResponse(user);
+        return "http://localhost:3000";
     }
 
     private static com.gridstore.huevista.billing.model.Plan planFromTier(String tier) {
@@ -162,12 +219,19 @@ public class AuthService {
 
     @Transactional
     public AuthResponse refreshToken(String rawToken) {
+        // 401 (not 400) for refresh-token problems: an expired/invalid refresh token is
+        // an auth failure, matching the endpoint's documented contract and the client's
+        // "session expired -> re-login" handling.
         RefreshToken stored = refreshTokenRepository.findByToken(rawToken)
-                .orElseThrow(() -> new IllegalArgumentException("Refresh token not found"));
+                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.UNAUTHORIZED,
+                        "Refresh token invalid — please log in again."));
 
         if (stored.getExpiryDate().isBefore(Instant.now())) {
             refreshTokenRepository.delete(stored);
-            throw new IllegalArgumentException("Refresh token expired — please log in again");
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.UNAUTHORIZED,
+                    "Refresh token expired — please log in again.");
         }
 
         // Rotate: invalidate the old token, issue a fresh pair
@@ -182,6 +246,32 @@ public class AuthService {
         refreshTokenRepository.deleteByUser(user);
         auditService.record(userId, "LOGOUT", "USER", userId, "all refresh tokens revoked");
         log.info("User logged out, refresh tokens revoked: {}", user.getEmail());
+    }
+
+    /**
+     * Soft-deletes the authenticated user's account: revokes all sessions and scrubs
+     * personal data, keeping the row (projects/images/orgs reference it via FK) but
+     * tombstoning it. The original email is freed so the person can re-register, and
+     * the account becomes unusable (no one can log in as a tombstoned email).
+     */
+    @Transactional
+    public void deleteAccount(String userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found"));
+        refreshTokenRepository.deleteByUser(user);
+        user.setEmail("deleted-" + user.getId() + "@deleted.huevista.invalid");
+        user.setName("Deleted user");
+        user.setPassword(null);
+        user.setPicture(null);
+        user.setProviderId(null);
+        user.setPhoneNumber(null);
+        user.setPhoneVerified(false);
+        user.setEmailVerified(false);
+        user.setDeletedAt(java.time.LocalDateTime.now());
+        userRepository.save(user);
+        auditService.record(userId, "ACCOUNT_DELETED", "USER", userId,
+                "account soft-deleted: PII scrubbed, sessions revoked");
+        log.info("Account soft-deleted: {}", userId);
     }
 
     @Transactional(readOnly = true)

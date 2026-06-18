@@ -6,6 +6,7 @@ import com.gridstore.huevista.auth.repository.PasswordResetCodeRepository;
 import com.gridstore.huevista.auth.repository.RefreshTokenRepository;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.notification.EmailSender;
+import com.gridstore.huevista.notification.SmsSender;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -18,10 +19,11 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * Forgot-password flow via a 6-digit emailed code. Mirrors {@link VerificationService}:
- * codes are BCrypt-hashed, single-use, expire after {@link #TTL}, are rate-limited
- * by {@link #COOLDOWN}, and lock out after {@link #MAX_ATTEMPTS} bad tries. To avoid
- * account enumeration, requesting a reset for an unknown email is a silent no-op.
+ * Forgot-password flow via a 6-digit single-use code, delivered over EMAIL or SMS.
+ * Codes are BCrypt-hashed, expire after {@link #TTL}, are rate-limited by
+ * {@link #COOLDOWN}, and lock out after {@link #MAX_ATTEMPTS} bad tries. To avoid
+ * account enumeration, requesting a reset for an unknown destination is a silent
+ * no-op. The two channels share the same per-user code store and verification core.
  */
 @Service
 @Slf4j
@@ -37,20 +39,42 @@ public class PasswordResetService {
     private final RefreshTokenRepository refreshTokenRepository;
     private final PasswordEncoder passwordEncoder;
     private final EmailSender emailSender;
+    private final SmsSender smsSender;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final SecureRandom random = new SecureRandom();
 
-    /** Send a reset code. Silent (no exception) if the email isn't registered. */
+    private enum Channel { EMAIL, SMS }
+
+    // --- Request a code -----------------------------------------------------
+
+    /** Send a reset code by email. Silent (no exception) if the email isn't registered. */
     @Transactional
     public void requestReset(String email) {
+        if (email == null || email.isBlank()) return;
         User user = userRepository.findByEmail(email.trim().toLowerCase()).orElse(null);
         if (user == null) {
             log.info("Password reset requested for unknown email (silently ignored)");
             return;
         }
+        issueCode(user, Channel.EMAIL);
+    }
+
+    /** Send a reset code by SMS to a VERIFIED mobile. Silent if no verified phone matches. */
+    @Transactional
+    public void requestResetByPhone(String phone) {
+        if (phone == null || phone.isBlank()) return;
+        User user = userRepository.findByPhoneNumberAndPhoneVerifiedTrue(phone.trim()).orElse(null);
+        if (user == null) {
+            log.info("Password reset requested for unknown/unverified phone (silently ignored)");
+            return;
+        }
+        issueCode(user, Channel.SMS);
+    }
+
+    private void issueCode(User user, Channel channel) {
         if (user.getPassword() == null) {
             // OAuth-only account — no local password to reset.
-            log.info("Password reset requested for an OAuth-only account: {}", user.getEmail());
+            log.info("Password reset requested for an OAuth-only account: {}", user.getId());
             return;
         }
 
@@ -58,7 +82,7 @@ public class PasswordResetService {
         if (last.isPresent()
                 && Duration.between(last.get().getCreatedAt(), LocalDateTime.now()).getSeconds() < COOLDOWN.getSeconds()) {
             // Within cooldown — silently skip re-sending (don't reveal timing).
-            log.info("Password reset resend within cooldown; skipping for {}", user.getEmail());
+            log.info("Password reset resend within cooldown; skipping for {}", user.getId());
             return;
         }
 
@@ -75,16 +99,35 @@ public class PasswordResetService {
                 .consumed(false)
                 .build());
 
-        emailSender.send(user.getEmail(),
-                "Reset your HueVista password",
-                "Your HueVista password reset code is " + code + ".\n\nIt expires in " + TTL.toMinutes()
-                        + " minutes. If you didn't request this, you can ignore this email.");
+        if (channel == Channel.SMS) {
+            smsSender.send(user.getPhoneNumber(),
+                    "Your HueVista password reset code is " + code + ". It expires in "
+                            + TTL.toMinutes() + " minutes. If you didn't request this, ignore this message.");
+        } else {
+            emailSender.send(user.getEmail(),
+                    "Reset your HueVista password",
+                    "Your HueVista password reset code is " + code + ".\n\nIt expires in " + TTL.toMinutes()
+                            + " minutes. If you didn't request this, you can ignore this email.");
+        }
     }
+
+    // --- Apply a reset ------------------------------------------------------
 
     @Transactional(noRollbackFor = IllegalArgumentException.class)
     public void resetPassword(String email, String codeInput, String newPassword) {
-        User user = userRepository.findByEmail(email.trim().toLowerCase())
+        User user = userRepository.findByEmail(email == null ? "" : email.trim().toLowerCase())
                 .orElseThrow(() -> new IllegalArgumentException("Incorrect or expired code."));
+        applyReset(user, codeInput, newPassword, "emailed reset code");
+    }
+
+    @Transactional(noRollbackFor = IllegalArgumentException.class)
+    public void resetPasswordByPhone(String phone, String codeInput, String newPassword) {
+        User user = userRepository.findByPhoneNumberAndPhoneVerifiedTrue(phone == null ? "" : phone.trim())
+                .orElseThrow(() -> new IllegalArgumentException("Incorrect or expired code."));
+        applyReset(user, codeInput, newPassword, "SMS reset code");
+    }
+
+    private void applyReset(User user, String codeInput, String newPassword, String via) {
         List<PasswordResetCode> active = codeRepository.findActiveForUpdate(user.getId());
         if (active.isEmpty()) {
             throw new IllegalArgumentException("Request a reset code first.");
@@ -117,7 +160,7 @@ public class PasswordResetService {
         userRepository.save(user);
         refreshTokenRepository.deleteByUser(user);
         auditService.record(user.getId(), "PASSWORD_RESET", "USER", user.getId(),
-                "via emailed reset code; all sessions revoked");
-        log.info("Password reset for {}", user.getEmail());
+                "via " + via + "; all sessions revoked");
+        log.info("Password reset for {} ({})", user.getId(), via);
     }
 }
