@@ -15,6 +15,10 @@ WORKDIR /app
 # Run as a non-root user.
 RUN useradd -r -u 1001 huevista
 COPY --from=build /app/target/*.jar app.jar
+# The logback FILE appender writes to ./logs/huevista.log (relative to WORKDIR
+# /app). /app is root-owned, so the non-root user can't create the dir and file
+# logging fails on every boot. Pre-create it owned by the runtime user.
+RUN mkdir -p /app/logs && chown -R huevista:huevista /app/logs
 USER huevista
 EXPOSE 8080
 ENV JAVA_OPTS=""

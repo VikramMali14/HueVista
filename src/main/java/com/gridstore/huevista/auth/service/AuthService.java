@@ -227,16 +227,33 @@ public class AuthService {
                         org.springframework.http.HttpStatus.UNAUTHORIZED,
                         "Refresh token invalid — please log in again."));
 
-        if (stored.getExpiryDate().isBefore(Instant.now())) {
-            refreshTokenRepository.delete(stored);
+        // Capture the owner while the entity is still managed (lazy proxy resolves
+        // within this transaction) so we can build the response after the row is gone.
+        User user = stored.getUser();
+        boolean expired = stored.getExpiryDate().isBefore(Instant.now());
+
+        // Rotate atomically. When an access token expires, the client commonly fires
+        // several API calls at once and each retries through /auth/refresh with the SAME
+        // refresh token. With an entity delete, every racing request loads the row and
+        // calls delete(), so the loser commits a delete of an already-gone row and blows
+        // up with StaleObjectStateException -> 500. A bulk delete-by-id returns the row
+        // count instead: exactly one request removes the row and proceeds; the rest get 0.
+        int deleted = refreshTokenRepository.deleteByIdReturningCount(stored.getId());
+
+        if (expired) {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.UNAUTHORIZED,
                     "Refresh token expired — please log in again.");
         }
+        if (deleted == 0) {
+            // Lost the rotation race: a concurrent request already consumed this token.
+            // Treat as an auth failure rather than minting a second pair for one rotation.
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.UNAUTHORIZED,
+                    "Refresh token already used — please log in again.");
+        }
 
-        // Rotate: invalidate the old token, issue a fresh pair
-        refreshTokenRepository.delete(stored);
-        return buildAuthResponse(stored.getUser());
+        return buildAuthResponse(user);
     }
 
     @Transactional
