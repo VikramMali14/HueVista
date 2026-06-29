@@ -173,6 +173,17 @@ public class GlobalExceptionHandler {
                 .body(baseError(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage()));
     }
 
+    @ExceptionHandler(org.springframework.dao.OptimisticLockingFailureException.class)
+    public ResponseEntity<Map<String, Object>> handleOptimisticLock(org.springframework.dao.OptimisticLockingFailureException ex) {
+        // Two requests modified the same row concurrently (e.g. a refresh-token rotation
+        // race). The loser's commit fails. The token-refresh path settles this itself and
+        // returns 401; this is a safety net so any other concurrent write returns a clean
+        // 409 ("retry") instead of falling through to a 500.
+        log.warn("Concurrent modification conflict: {}", ex.getMessage());
+        return errorResponse(HttpStatus.CONFLICT,
+                "The resource was modified at the same time by another request. Please retry.");
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleGeneric(Exception ex) {
         log.error("Unhandled exception: {}", ex.getMessage(), ex);
