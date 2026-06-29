@@ -95,6 +95,16 @@ public class GuestController {
         return ResponseEntity.ok(projectService.updateGuestRegionColors(accessCodeId(auth), id, updates));
     }
 
+    @Operation(summary = "Delete a hand-drawn wall (guest)")
+    @DeleteMapping("/projects/{id}/regions/{regionId}")
+    public ResponseEntity<Void> deleteRegion(
+            @PathVariable String id,
+            @PathVariable Long regionId,
+            Authentication auth) {
+        projectService.deleteGuestRegion(accessCodeId(auth), id, regionId);
+        return ResponseEntity.noContent().build();
+    }
+
     /** For a guest, the principal name is the access code id (set by GuestAuthFilter). */
     private String accessCodeId(Authentication auth) {
         return auth.getName();
