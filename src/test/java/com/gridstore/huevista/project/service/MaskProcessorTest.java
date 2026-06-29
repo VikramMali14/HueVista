@@ -13,9 +13,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Unit tests for {@link MaskProcessor#splitColorCodedMask}, focused on the
- * distinct-hue scheme that maps the Nano Banana color-coded mask to paintable
- * categories — including the secondary hues (yellow/cyan/magenta) added for
- * ceiling, door and window.
+ * distinct-hue scheme that maps the Nano Banana color-coded mask to the three
+ * paintable categories (main wall = red, accent wall = green, trim = blue).
  */
 class MaskProcessorTest {
 
@@ -46,28 +45,24 @@ class MaskProcessorTest {
     }
 
     @Test
-    void splitsAllSixCategoriesFromDistinctHues() throws Exception {
-        // Bands: red, green, blue, yellow, cyan, magenta, black
-        byte[] coded = strip(Color.RED, Color.GREEN, Color.BLUE,
-                Color.YELLOW, Color.CYAN, Color.MAGENTA, Color.BLACK);
+    void splitsAllThreeCategoriesFromDistinctHues() throws Exception {
+        // Bands: red, green, blue, black
+        byte[] coded = strip(Color.RED, Color.GREEN, Color.BLUE, Color.BLACK);
 
         Map<String, byte[]> parts = MaskProcessor.splitColorCodedMask(coded, MIN_PIXELS);
 
-        assertThat(parts).containsOnlyKeys("main", "accent", "trim", "ceiling", "door", "window");
+        assertThat(parts).containsOnlyKeys("main", "accent", "trim");
 
         // Each category is white in its own band and nowhere else.
         assertThat(bandIsForeground(parts.get("main"), 0)).isTrue();      // red
         assertThat(bandIsForeground(parts.get("accent"), 1)).isTrue();    // green
         assertThat(bandIsForeground(parts.get("trim"), 2)).isTrue();      // blue
-        assertThat(bandIsForeground(parts.get("ceiling"), 3)).isTrue();   // yellow
-        assertThat(bandIsForeground(parts.get("door"), 4)).isTrue();      // cyan
-        assertThat(bandIsForeground(parts.get("window"), 5)).isTrue();    // magenta
 
-        // No cross-contamination: e.g. the door (cyan) mask must not claim the
-        // accent (green) or window (magenta) bands.
-        assertThat(bandIsForeground(parts.get("door"), 1)).isFalse();
-        assertThat(bandIsForeground(parts.get("door"), 5)).isFalse();
-        assertThat(bandIsForeground(parts.get("ceiling"), 0)).isFalse();
+        // No cross-contamination: e.g. the main (red) mask must not claim the
+        // accent (green) or trim (blue) bands.
+        assertThat(bandIsForeground(parts.get("main"), 1)).isFalse();
+        assertThat(bandIsForeground(parts.get("main"), 2)).isFalse();
+        assertThat(bandIsForeground(parts.get("accent"), 0)).isFalse();
     }
 
     @Test

@@ -178,30 +178,24 @@ public class ReplicateNanoBananaSegmenter {
 
     /**
      * Single comprehensive prompt for the color-coded approach. Asks for ONE
-     * image with specific colors marking each paint category plus a "nothing"
-     * background. Tested wording — be careful editing.
+     * image with four specific colors marking the three paint categories
+     * plus a "nothing" background. Tested wording — be careful editing.
      *
-     * Two parts vary by scene, both keyed off {@code interior} (true for INDOOR):
-     *  - GREEN (accent): {@link #ACCENT_ALWAYS} (interiors) forces exactly one
-     *    accent wall so the user can paint a highlight shade; {@link #ACCENT_CONDITIONAL}
-     *    (exteriors) only marks an accent when a visibly different-coloured wall exists.
-     *  - YELLOW (ceiling): only requested for interiors — exteriors have no ceiling.
+     * The GREEN (accent) paragraph is the only part that varies by scene:
+     * {@link #ACCENT_ALWAYS} (interiors) forces exactly one accent wall so the
+     * user can paint a highlight shade; {@link #ACCENT_CONDITIONAL} (exteriors)
+     * only marks an accent when a visibly different-coloured wall exists.
      */
-    static String colorCodedPrompt(boolean interior) {
+    static String colorCodedPrompt(boolean forceAccent) {
         return COLOR_CODED_HEAD
-             + (interior ? ACCENT_ALWAYS : ACCENT_CONDITIONAL)
-             + (interior ? CEILING_BLOCK : "")
-             + DOOR_BLOCK
-             + WINDOW_BLOCK
-             + TRIM_BLOCK
-             + blackBlock(interior)
-             + rules(interior);
+             + (forceAccent ? ACCENT_ALWAYS : ACCENT_CONDITIONAL)
+             + COLOR_CODED_TAIL;
     }
 
     private static final String COLOR_CODED_HEAD =
             "Look at this room or building photograph. Generate a SINGLE color-coded "
           + "segmentation mask image of the same exact dimensions as the input. "
-          + "Mark each surface using one of these specific colors only:\n\n"
+          + "Mark each surface using one of these four specific colors only:\n\n"
           + "- RED pixels (#FF0000) — the MAIN painted wall surface. The "
           + "dominant flat painted plaster/concrete/drywall that someone would repaint "
           + "with a single color (the largest painted area). Mark every painted wall "
@@ -225,57 +219,26 @@ public class ReplicateNanoBananaSegmenter {
           + "Mark exactly ONE wall green and leave the remaining painted walls red. "
           + "Always designate one accent wall — never leave green out.\n\n";
 
-    /** Interior only: the overhead ceiling surface, painted yellow. */
-    private static final String CEILING_BLOCK =
-            "- YELLOW pixels (#FFFF00) — the CEILING: the overhead horizontal "
-          + "interior surface above the walls. Mark only the ceiling; never the "
-          + "floor and never a wall.\n\n";
-
-    /** The door leaves/slabs themselves — NOT their frame (that stays trim). */
-    private static final String DOOR_BLOCK =
-            "- CYAN pixels (#00FFFF) — DOORS: the solid door panels/leaves "
-          + "themselves (the part that swings or slides open), including front "
-          + "doors, internal doors and garage doors. Mark the door slab only — its "
-          + "surrounding frame stays trim (blue), not cyan.\n\n";
-
-    /** The window openings — glass/sashes — NOT their frame (that stays trim). */
-    private static final String WINDOW_BLOCK =
-            "- MAGENTA pixels (#FF00FF) — WINDOWS: the window openings, including "
-          + "the glass panes and the sashes inside the opening. Mark the window "
-          + "opening only — its surrounding frame stays trim (blue), not magenta.\n\n";
-
-    /** Trim/border: the narrow framing elements, painted blue. */
-    private static final String TRIM_BLOCK =
+    private static final String COLOR_CODED_TAIL =
             "- BLUE pixels (#0000FF) — TRIM, borders and frames: window frames, "
           + "door frames, skirting/baseboards, balcony railings, fascia under the "
           + "roof, parapet edges, decorative banding. Narrow elements typically "
-          + "painted in a contrasting trim color.\n\n";
-
-    /** Everything non-paintable. Interiors also exclude the ceiling here (it's yellow). */
-    private static String blackBlock(boolean interior) {
-        return "- BLACK pixels (#000000) — everything else: sky, clouds, ground, "
-             + "dirt, road, sidewalk, vegetation, trees, vehicles, furniture, floor, "
-             + (interior ? "" : "the ceiling/soffit, ")
-             + "stone cladding, exposed brick, ceramic tile, marble, wood, AC units, "
-             + "light fixtures, electrical boxes, drainpipes, signage, mailboxes, "
-             + "decor, people — anything that is NOT one of the surfaces named "
-             + "above.\n\n";
-    }
-
-    private static String rules(boolean interior) {
-        String colors = interior
-                ? "pure red, green, blue, yellow, cyan, magenta, black"
-                : "pure red, green, blue, cyan, magenta, black";
-        return "RULES:\n"
-             + "- Use ONLY these colors (" + colors + "). No other colors at all. "
-             + "No grey, no gradients, no shading.\n"
-             + "- Each pixel belongs to exactly ONE category. Never two at once.\n"
-             + "- The mask must be PIXEL-ALIGNED with the input photo (same "
-             + "resolution).\n"
-             + "- Hard color boundaries only — no anti-aliasing, no soft edges.\n"
-             + "- No text, watermarks, or annotations.\n"
-             + "- Output: just the color-coded mask image.\n";
-    }
+          + "painted in a contrasting trim color.\n\n"
+          + "- BLACK pixels (#000000) — everything else: sky, clouds, ground, "
+          + "dirt, road, sidewalk, vegetation, trees, vehicles, furniture, floor, "
+          + "the doors themselves, glass panes inside windows, stone cladding, exposed "
+          + "brick, ceramic tile, marble, wood, AC units, light fixtures, electrical "
+          + "boxes, drainpipes, signage, mailboxes, decor, people — anything "
+          + "that is NOT a paintable wall or trim surface.\n\n"
+          + "RULES:\n"
+          + "- Use ONLY these four colors (pure red, green, blue, black). No other "
+          + "colors at all. No grey, no gradients, no shading.\n"
+          + "- Each pixel belongs to exactly ONE category. Never two at once.\n"
+          + "- The mask must be PIXEL-ALIGNED with the input photo (same "
+          + "resolution).\n"
+          + "- Hard color boundaries only — no anti-aliasing, no soft edges.\n"
+          + "- No text, watermarks, or annotations.\n"
+          + "- Output: just the color-coded mask image.\n";
 
     private String buildMaskPrompt(String surfaceDescription) {
         return ("Generate a black-and-white binary segmentation MASK image. The mask must be the "
