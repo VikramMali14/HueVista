@@ -241,6 +241,7 @@ public class ProjectService {
                 : null;
         ProjectResponse r = ProjectResponse.fromPublic(project, originalUrl);
         r.setCleanedImageUrl(cleanedUrl);
+        refreshMaskUrls(r);
         return r;
     }
 
@@ -308,7 +309,9 @@ public class ProjectService {
                     image.getWidth(), image.getHeight(),
                     x, y, label
             );
-            return RegionResponse.from(region);
+            RegionResponse response = RegionResponse.from(region);
+            refreshMaskUrls(response);
+            return response;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ProcessingInterruptedException("Point segmentation interrupted", e);
@@ -381,20 +384,23 @@ public class ProjectService {
             throw new StorageException("Failed to store custom mask", e);
         }
 
-        String url = storageService.getPublicUrl(key);
+        // Store the S3 KEY, not a presigned URL (which would expire ~60 min later).
+        // The read path presigns it fresh — see resolveMaskUrl / refreshMaskUrls.
         Region region = regionRepository.save(Region.builder()
                 .project(projectRepository.getReferenceById(projectId))
                 .label(label)
                 .category(category)
-                .maskUrl(url)
-                .maskData(url)
+                .maskUrl(key)
+                .maskData(key)
                 .displayOrder(displayOrder)
                 .manual(true)
                 .build());
 
         log.info("Custom mask region saved: project={} region={} category={}",
                 projectId, region.getId(), category);
-        return RegionResponse.from(region);
+        RegionResponse response = RegionResponse.from(region);
+        refreshMaskUrls(response);
+        return response;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -591,6 +597,7 @@ public class ProjectService {
                 ? storageService.getPublicUrl(project.getCleanedImageStorageKey()) : null;
         ProjectResponse r = ProjectResponse.fromPublic(project, originalUrl);
         r.setCleanedImageUrl(cleanedUrl);
+        refreshMaskUrls(r);
         return r;
     }
 
@@ -685,6 +692,7 @@ public class ProjectService {
                 ? storageService.getPublicUrl(project.getCleanedImageStorageKey()) : null;
         ProjectResponse r = ProjectResponse.from(project, originalUrl);
         r.setCleanedImageUrl(cleanedUrl);
+        refreshMaskUrls(r);
         return r;
     }
 
@@ -710,6 +718,36 @@ public class ProjectService {
         } catch (IOException e) {
             throw new StorageException("Failed to load mask for region " + regionId, e);
         }
+    }
+
+    // Rewrites a project's region mask references into FRESH, live URLs on every read.
+    // Masks are stored as S3 keys, so a presigned URL must be minted per response —
+    // exactly like the original image URL — otherwise a once-generated link expires.
+    private void refreshMaskUrls(ProjectResponse response) {
+        if (response == null || response.getRegions() == null) return;
+        response.getRegions().forEach(this::refreshMaskUrls);
+    }
+
+    private void refreshMaskUrls(RegionResponse region) {
+        if (region == null) return;
+        region.setMaskUrl(resolveMaskUrl(region.getMaskUrl()));
+        region.setMaskData(resolveMaskUrl(region.getMaskData()));
+    }
+
+    /**
+     * Turns a stored mask reference into a usable URL:
+     *   - bare S3 key (new format)                 -> presign fresh
+     *   - legacy presigned URL of our own bucket    -> recover the key, presign fresh
+     *   - foreign URL (e.g. Replicate SAM 2 output) -> leave untouched (not ours to sign)
+     */
+    private String resolveMaskUrl(String stored) {
+        if (stored == null || stored.isBlank()) return stored;
+        if (stored.startsWith("http://") || stored.startsWith("https://")) {
+            // Only re-presign URLs that point at our own S3 bucket; pass through anything else.
+            if (!stored.contains("amazonaws.com")) return stored;
+            return storageService.getPublicUrl(extractStorageKey(stored));
+        }
+        return storageService.getPublicUrl(stored);
     }
 
     // Strips host + query from a presigned S3 URL to recover the object key

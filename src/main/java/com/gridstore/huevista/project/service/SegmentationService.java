@@ -262,12 +262,16 @@ public class SegmentationService {
             throws java.io.IOException {
         String key = storageService.store(
                 maskBytes, userId, category.name().toLowerCase() + ".png", "image/png");
+        // Persist the S3 KEY, not a presigned URL. Presigned URLs expire (default 60 min)
+        // so storing one freezes a dead link into the DB. The read path presigns the key
+        // fresh on every response (see ProjectService#resolveMaskUrl), exactly like the
+        // original image URL is built.
         regionRepository.save(Region.builder()
                 .project(projectRepository.getReferenceById(projectId))
                 .label(label)
                 .category(category)
-                .maskUrl(storageService.getPublicUrl(key))
-                .maskData(storageService.getPublicUrl(key))
+                .maskUrl(key)
+                .maskData(key)
                 .displayOrder(displayOrder)
                 .build());
         log.info("Saved {} region for project {}: {}", category, projectId, key);
