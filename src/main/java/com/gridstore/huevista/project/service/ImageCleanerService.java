@@ -4,11 +4,16 @@ import com.gridstore.huevista.common.exception.ExternalServiceException;
 import com.gridstore.huevista.image.model.ImageType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.coobird.thumbnailator.Thumbnails;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -63,6 +68,14 @@ public class ImageCleanerService {
 
     @Value("${replicate.image-cleaner.enabled:false}")
     private boolean enabled;
+
+    /** Resolution requested from the model (Nano Banana Pro: 1K/2K/4K). Blank = omit. */
+    @Value("${replicate.image-cleaner.resolution:1K}")
+    private String resolution;
+
+    /** Longest edge (px) to upscale the cleaned image to locally. 0 = no upscale. */
+    @Value("${replicate.image-cleaner.upscale-longest-px:3840}")
+    private int upscaleLongestPx;
 
     private static final String REPLICATE_BASE = "https://api.replicate.com/v1";
     private static final int POLL_INTERVAL_MS = 2000;
@@ -123,11 +136,16 @@ public class ImageCleanerService {
             log.info("ImageCleaner [{}]: cleaning image (scene={}, imageHints={})",
                     model, imageType, hints.isPresent());
 
-            Map<String, Object> input = Map.of(
-                    "prompt", prompt,
-                    "image_input", List.of(imageUrl),
-                    "output_format", "jpg"
-            );
+            // Generate at a smaller resolution (cheaper/faster), then upscale
+            // locally — see upscaleToLongestEdge below. Only send the resolution
+            // param when set, so models that don't accept it aren't rejected.
+            Map<String, Object> input = new java.util.HashMap<>();
+            input.put("prompt", prompt);
+            input.put("image_input", List.of(imageUrl));
+            input.put("output_format", "jpg");
+            if (resolution != null && !resolution.isBlank()) {
+                input.put("resolution", resolution.trim());
+            }
 
             String predictionId = startPrediction(input);
             if (predictionId == null) return Optional.empty();
@@ -143,8 +161,10 @@ public class ImageCleanerService {
                 return Optional.empty();
             }
             byte[] bytes = downloadBytes(cleanedUrl);
-            log.info("ImageCleaner produced cleaned image: {} bytes", bytes.length);
-            return Optional.of(bytes);
+            byte[] upscaled = upscaleToLongestEdge(bytes, upscaleLongestPx);
+            log.info("ImageCleaner produced cleaned image: {} bytes (gen={}, upscaled to ~{}px: {} bytes)",
+                    bytes.length, resolution, upscaleLongestPx, upscaled.length);
+            return Optional.of(upscaled);
         } catch (Exception e) {
             log.warn("ImageCleaner failed, falling back to original image: {}", e.getMessage());
             return Optional.empty();
@@ -350,6 +370,38 @@ public class ImageCleanerService {
             }
         }
         return null;
+    }
+
+    /**
+     * Upscales the cleaned image so its longest edge is {@code longestPx}, using
+     * Thumbnailator's high-quality resampler (the same library used elsewhere for
+     * downscaling). Aspect ratio is preserved. This is a classic resampler, not an
+     * AI super-resolution model — it gives a clean, sharp 4K-sized canvas from the
+     * cheaper 1K generation, without the cost of a generative upscale.
+     *
+     * Best-effort: any decode/encode problem (or an already-large image) returns the
+     * original bytes unchanged, so upscaling can never fail the clean step.
+     */
+    static byte[] upscaleToLongestEdge(byte[] bytes, int longestPx) {
+        if (longestPx <= 0) return bytes;
+        try {
+            BufferedImage img = ImageIO.read(new ByteArrayInputStream(bytes));
+            if (img == null) return bytes;
+            int longest = Math.max(img.getWidth(), img.getHeight());
+            if (longest >= longestPx) return bytes; // already at/above target — don't enlarge needlessly
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            Thumbnails.of(img)
+                    .size(longestPx, longestPx)   // bounding box; keepAspectRatio fits longest edge to it
+                    .keepAspectRatio(true)
+                    .outputFormat("jpeg")
+                    .outputQuality(0.9)
+                    .toOutputStream(out);
+            return out.toByteArray();
+        } catch (Exception e) {
+            log.warn("ImageCleaner upscale to {}px failed, using model output as-is: {}",
+                    longestPx, e.getMessage());
+            return bytes;
+        }
     }
 
     private byte[] downloadBytes(String url) {
