@@ -33,9 +33,9 @@ import java.util.Optional;
  * <h3>Auto flow (segmentAsync)</h3>
  * <ol>
  *   <li>(Optional) Send the photo to {@link ImageCleanerService} —
- *       Nano Banana Pro removes wires/bushes/clutter AND refreshes the
- *       painted surfaces in their existing color, so the canvas the masks
- *       are aligned to looks like a fresh repaint. Opt-in via
+ *       Nano Banana Pro removes wires/bushes/clutter AND repaints the
+ *       painted surfaces into the reference palette, so the canvas the masks
+ *       are aligned to already looks freshly painted. Opt-in via
  *       REPLICATE_IMAGE_CLEANER_ENABLED.</li>
  *   <li>One Nano Banana call ({@link ReplicateNanoBananaSegmenter})
  *       returns a single color-coded mask: WHITE = main paintable wall,
@@ -134,8 +134,8 @@ public class SegmentationService {
             UploadedImage uploadedImage = loadAndEnsureDimensions(projectId);
 
             // Step 1: Image cleaner (optional, opt-in). Sends the photo to
-            // Nano Banana Pro asking for clutter removed AND painted
-            // surfaces refreshed in the SAME color. When it succeeds the
+            // Nano Banana Pro asking for clutter removed AND painted surfaces
+            // repainted into the reference palette. When it succeeds the
             // cleaned image becomes the canvas the masks are aligned to;
             // otherwise we mask the original directly.
             String maskImageUrl = imageUrl;

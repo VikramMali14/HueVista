@@ -17,7 +17,10 @@ import java.util.Optional;
  * Calls Replicate's Nano Banana (Gemini Image) family to produce a
  * "cleaned" version of the user's house photo — wires, bushes, parked
  * cars, garbage, hanging laundry, and other clutter removed; the
- * architecture itself preserved as faithfully as the model allows.
+ * architecture itself preserved as faithfully as the model allows; and the
+ * painted surfaces (walls, trim/border, ceiling, doors, windows) repainted
+ * into the project's reference palette so the canvas opens already coloured.
+ * The downstream mask-based recolor uses the same hexes, so the two agree.
  *
  * The cleaned image is then used:
  *   1. As the canvas for the painted preview shown to the user
@@ -150,20 +153,35 @@ public class ImageCleanerService {
 
     /**
      * The cleaning prompt — written to be as surgical as possible. Asks
-     * the model to keep architecture pristine, remove clutter, AND refresh
-     * the painted surfaces so the cleaned image looks freshly repainted
-     * with the SAME colors. The refresh pass gives the mask generator a
-     * more uniform canvas to work with (no weathering, no stains, no
-     * peeling) which makes "this pixel is painted wall" decisions easier.
-     * Generative models still drift, but this constrains them as much as
-     * a text prompt can.
+     * the model to keep architecture pristine, remove clutter, AND repaint
+     * the painted surfaces into the project's reference palette (walls,
+     * trim/border, ceiling, doors, windows) while preserving each surface's
+     * existing light and shade. Repainting also gives the mask generator a
+     * uniform canvas to work with (no weathering, no stains, no peeling)
+     * which makes "this pixel is painted wall" decisions easier. Generative
+     * models still drift, but this constrains them as much as a text prompt
+     * can; the precise per-region colours are still enforced downstream by
+     * the mask-based recolor, which uses the same hexes.
      */
+    // Reference repaint palette. MUST stay in sync with
+    // SegmentationService#defaultHexFor and the frontend DEFAULT_HEX_FOR_KIND so
+    // the generative repaint here and the downstream mask-based recolor agree on
+    // the same colours.
+    private static final String EXT_WALL = "#e2e2d9";      // light greige
+    private static final String EXT_BORDER = "#585858";    // mid grey trim
+    private static final String INT_WALL = "#baad9c";      // soft sage
+    private static final String INT_BORDER = "#432211";    // deep brown trim
+    private static final String INT_CEILING = "#ffffff";   // white
+    private static final String DOOR_WINDOW = "#3b2110";   // wood brown
+
     private static final String CLEAN_PROMPT_EXTERIOR =
             "Look at this photograph of a house. Edit the image so the house "
-          + "looks freshly painted and free of clutter — like a real estate "
-          + "listing photo taken right after a clean repaint. Keep every "
-          + "architectural element pristine and preserve the exact perspective, "
-          + "layout, dimensions, materials, paint COLORS, lighting, and shadows.\n\n"
+          + "looks freshly painted in new colours and free of clutter — like a "
+          + "real estate listing photo taken right after a clean repaint. Keep "
+          + "every architectural element pristine and preserve the exact "
+          + "perspective, layout, dimensions, materials, lighting, and shadows. "
+          + "Only the COLOUR of the painted surfaces changes — repaint them in the "
+          + "specific colours below.\n\n"
           + "REMOVE (unwanted clutter):\n"
           + "- Electrical wires, telephone wires, power lines, cables crossing the building\n"
           + "- Garbage, trash bags, construction debris on the ground\n"
@@ -172,16 +190,22 @@ public class ImageCleanerService {
           + "- Hanging laundry, temporary banners (not permanent signage)\n"
           + "- Construction scaffolding, ladders\n"
           + "- People and animals\n\n"
-          + "REFRESH (make painted surfaces look freshly repainted, SAME color):\n"
-          + "- Painted walls (cream/beige plaster, painted concrete) should look "
-          + "like they were just professionally repainted: no peeling, no water "
-          + "stains, no dust streaks, no faded patches, no graffiti.\n"
-          + "- Use the SAME paint color the wall currently has — only make the "
-          + "coat appear evenly and freshly applied. Do not lighten or darken it.\n"
-          + "- Door frames, window frames, balcony railings, fascia and trim: "
-          + "same treatment — fresh, evenly applied trim paint in the same color.\n"
-          + "- DO NOT refresh non-painted surfaces. Intentional stone cladding, "
-          + "decorative exposed-brick feature walls, ceramic tile, marble, wood "
+          + "REPAINT (apply these exact reference colours, evenly and freshly):\n"
+          + "- Painted walls (plaster, painted concrete): repaint EVERY painted "
+          + "wall a single even coat of " + EXT_WALL + " (a soft light greige). "
+          + "No peeling, no water stains, no dust streaks, no faded patches, no "
+          + "graffiti — one clean uniform colour across the whole wall.\n"
+          + "- Door frames, window frames, balcony railings, fascia, parapet edges "
+          + "and trim: repaint these the trim/border colour " + EXT_BORDER
+          + " (a mid grey), evenly.\n"
+          + "- Door leaves/panels and window shutters/sashes: repaint these "
+          + DOOR_WINDOW + " (a deep wood brown).\n"
+          + "- Preserve each surface's existing light and shade: keep the original "
+          + "highlights, shadows and soft gradients so the new colour still looks "
+          + "three-dimensional. Recolour the surfaces — do not flatten them into a "
+          + "solid sticker of colour.\n"
+          + "- DO NOT repaint non-painted surfaces. Intentional stone cladding, "
+          + "decorative exposed-brick feature walls, ceramic tile, marble and wood "
           + "siding stay EXACTLY as they appear — those will be excluded from paint "
           + "masks downstream.\n\n"
           + "FINISH (complete unfinished / half-plastered walls):\n"
@@ -189,9 +213,9 @@ public class ImageCleanerService {
           + "bare cement, raw blockwork or brick, or patchy half-applied plaster "
           + "showing where the wall has NOT been plastered yet — complete the "
           + "plaster across the WHOLE wall so it becomes one smooth, even, paintable "
-          + "plastered surface in the same neutral plaster tone as the finished part. "
-          + "Paint only the already-plastered colour onto the newly finished area so "
-          + "the entire wall reads as a single uniform paintable surface.\n"
+          + "plastered surface, then repaint the whole wall — finished and newly "
+          + "completed parts alike — the single wall colour " + EXT_WALL + " so the "
+          + "entire wall reads as one uniform freshly painted surface.\n"
           + "- Follow the wall's existing plane, perspective and outline exactly: "
           + "only fill in the missing render. Do NOT move or invent corners, windows, "
           + "doors, edges, or change the wall's shape or size.\n"
@@ -199,57 +223,72 @@ public class ImageCleanerService {
           + "unfinished. Do NOT plaster over intentional exposed-brick feature walls, "
           + "natural stone cladding or decorative tile — those are finished design "
           + "choices and stay exactly as they are (see KEEP UNCHANGED).\n\n"
-          + "KEEP COMPLETELY UNCHANGED:\n"
-          + "- Every architectural feature: doors, windows, window grilles, balconies, "
-          + "railings, columns, parapets, moldings, ledges (their shapes and positions).\n"
+          + "KEEP UNCHANGED (shape & position only — painted ones are recoloured above):\n"
+          + "- Every architectural feature keeps its exact SHAPE and POSITION: doors, "
+          + "windows, window grilles, balconies, railings, columns, parapets, moldings, "
+          + "ledges. Do not move, resize, add or remove them — only their paint colour "
+          + "changes, per REPAINT.\n"
           + "- The roof, eaves, chimneys, AC units mounted on the wall, drainpipes "
           + "(these are part of the house, not clutter — keep them visible).\n"
           + "- Lighting, shadows, time of day, weather, sky.\n"
           + "- Camera angle, perspective, framing, image dimensions.\n"
           + "- The building's exact proportions — do NOT widen, narrow, or reshape it.\n"
           + "- Finished/decorative stone, brick, tile, marble, wood materials kept as "
-          + "a design feature stay in their current state (a half-plastered wall mid-"
-          + "construction is NOT such a feature — finish it per the FINISH rules).\n\n"
+          + "a design feature stay in their current state and ORIGINAL colour (a half-"
+          + "plastered wall mid-construction is NOT such a feature — finish it per the "
+          + "FINISH rules).\n\n"
           + "OUTPUT: The same photograph with the clutter removed, any unfinished "
           + "walls completed into smooth paintable plaster, and the painted surfaces "
-          + "refreshed to look like a clean repaint. The house must remain pixel-"
-          + "faithful to the original in shape, proportion, and material — the paint "
-          + "color is never changed, and finished non-painted materials are never "
-          + "altered.\n";
+          + "repainted in the reference colours above (walls " + EXT_WALL + ", trim "
+          + EXT_BORDER + ", doors & windows " + DOOR_WINDOW + "). The house must "
+          + "remain pixel-faithful to the original in shape, proportion and material; "
+          + "only the colour of painted surfaces changes, and non-painted materials "
+          + "are never altered.\n";
 
     /**
      * Interior-room variant. Clutter here is furniture mess, cables, boxes and stains;
      * the anchors to preserve are windows, doors, built-in cabinetry, fireplaces and
-     * fixtures. Same conservative rules: refresh paint in the SAME color, change nothing
-     * structural, leave non-painted materials (floors, counters, cabinetry finish) alone.
+     * fixtures. Same conservative rules, except paint: repaint walls/ceiling/trim/doors/
+     * windows into the interior reference palette, change nothing structural, and leave
+     * non-painted materials (floors, counters, cabinetry finish) alone.
      */
     private static final String CLEAN_PROMPT_INTERIOR =
             "Look at this photograph of an interior room. Edit the image so the room "
-          + "looks freshly painted and tidy — like a real-estate listing photo taken right "
-          + "after a clean repaint. Preserve the exact perspective, layout, dimensions, wall "
-          + "COLORS, materials, lighting and shadows.\n\n"
+          + "looks freshly painted in new colours and tidy — like a real-estate listing "
+          + "photo taken right after a clean repaint. Preserve the exact perspective, "
+          + "layout, dimensions, materials, lighting and shadows. Only the COLOUR of the "
+          + "painted surfaces changes — repaint them in the specific colours below.\n\n"
           + "REMOVE (clutter):\n"
           + "- Loose papers, boxes, bags, laundry, toys, dishes, bottles, small loose objects\n"
           + "- Visible cables and wires behind TV/desk, power strips, chargers\n"
           + "- Wall stains, scuff marks, scribbles, damp patches, peeling paint, nail holes\n"
           + "- Spills and clutter on the floor\n"
           + "- People and pets\n\n"
-          + "REFRESH (painted surfaces, SAME color):\n"
-          + "- Walls and ceiling: look evenly and freshly repainted in the SAME color they "
-          + "currently have — no stains, no patchiness. Do not lighten or darken.\n"
-          + "- Painted trim, skirting, door and window frames: same fresh, even coat, same color.\n"
-          + "- DO NOT change non-painted surfaces: wood/tile/marble/stone floors, countertops, "
-          + "cabinetry finish, glass and metal stay EXACTLY as they appear.\n\n"
-          + "KEEP COMPLETELY UNCHANGED:\n"
+          + "REPAINT (apply these exact reference colours, evenly and freshly):\n"
+          + "- Walls: repaint every painted wall a single even coat of " + INT_WALL
+          + " (a soft sage). No stains, no patchiness.\n"
+          + "- Ceiling: repaint it " + INT_CEILING + " (clean white).\n"
+          + "- Trim, skirting, door frames and window frames: repaint these the "
+          + "trim/border colour " + INT_BORDER + " (a deep brown), even coat.\n"
+          + "- Door leaves/panels and window shutters/sashes: repaint these "
+          + DOOR_WINDOW + " (a deep wood brown).\n"
+          + "- Preserve each surface's existing light and shade — keep the highlights, "
+          + "shadows and soft gradients so the new colour still looks three-dimensional. "
+          + "Recolour the surfaces, do not flatten them.\n"
+          + "- DO NOT change non-painted surfaces: wood/tile/marble/stone floors, "
+          + "countertops, cabinetry finish, glass and metal stay EXACTLY as they appear.\n\n"
+          + "KEEP UNCHANGED (shape & position only — painted ones are recoloured above):\n"
           + "- Windows, doors, frames, built-in cabinetry and wardrobes, kitchen units, "
-          + "fireplaces, shelving, switchboards — their shapes and positions.\n"
+          + "fireplaces, shelving, switchboards keep their exact shapes and positions; "
+          + "only the paint colour of painted ones changes, per REPAINT.\n"
           + "- Large furniture that defines the room (sofa, bed, dining table): keep it in place; "
           + "only clear small clutter and mess, never remove the furniture itself.\n"
-          + "- Flooring material, ceiling features, lighting, shadows, time of day.\n"
+          + "- Flooring material, lighting, shadows, time of day.\n"
           + "- Camera angle, perspective, framing, image dimensions, room proportions.\n\n"
-          + "OUTPUT: the same room, decluttered, with painted walls/ceiling/trim refreshed to a "
-          + "clean even coat in their EXISTING colors. Pixel-faithful in structure and materials; "
-          + "never invent new colors and never restyle the room.\n";
+          + "OUTPUT: the same room, decluttered, with walls repainted " + INT_WALL
+          + ", ceiling " + INT_CEILING + ", trim " + INT_BORDER + ", and doors & windows "
+          + DOOR_WINDOW + ". Pixel-faithful in structure and materials; change only the "
+          + "colour of painted surfaces and never restyle the room.\n";
 
     private String startPrediction(Map<String, Object> input) {
         try {
