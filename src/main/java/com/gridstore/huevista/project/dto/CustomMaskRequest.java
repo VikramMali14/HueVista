@@ -19,7 +19,8 @@ public class CustomMaskRequest {
     @NotBlank(message = "maskBase64 is required")
     private String maskBase64;
 
-    /** MAIN_WALL, ACCENT_WALL, TRIM, OTHER_WALL or MANUAL. Defaults to MANUAL. */
+    /** MAIN_WALL, ACCENT_WALL, OTHER_WALL, TRIM, CEILING, DOOR, WINDOW or MANUAL.
+     *  Unrecognised values fall back to MANUAL. */
     private String category;
 
     /** Optional display label; defaults to a category-derived name. */
