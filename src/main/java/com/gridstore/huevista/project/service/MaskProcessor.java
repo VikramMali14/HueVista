@@ -497,15 +497,20 @@ final class MaskProcessor {
      * Splits a color-coded segmentation mask (produced by a single
      * Nano Banana / Gemini call) into per-category binary masks.
      *
-     * Pixel classification (distinct-hue scheme — high chroma separates reliably):
-     *   - RED-dom    (R ≥ G+40 AND R ≥ B+40 AND R ≥ 100)          → "main"
-     *   - GREEN-dom  (G ≥ R+40 AND G ≥ B+40 AND G ≥ 100)          → "accent"
-     *   - BLUE-dom   (B ≥ R+40 AND B ≥ G+40 AND B ≥ 100)          → "trim"
+     * Pixel classification (distinct-hue scheme — high chroma separates reliably).
+     * The two-channel secondary hues are tested first so a pure yellow/cyan/magenta
+     * pixel isn't mis-claimed by the single-channel checks below:
+     *   - YELLOW   (R,G high, B low)                              → "ceiling"
+     *   - CYAN     (G,B high, R low)                              → "door"
+     *   - MAGENTA  (R,B high, G low)                              → "window"
+     *   - RED-dom  (R ≥ G+40 AND R ≥ B+40 AND R ≥ 100)            → "main"
+     *   - GREEN-dom(G ≥ R+40 AND G ≥ B+40 AND G ≥ 100)            → "accent"
+     *   - BLUE-dom (B ≥ R+40 AND B ≥ G+40 AND B ≥ 100)            → "trim"
      *   - everything else (black, ambiguous, anti-aliased edges)  → unassigned
      *
-     * Returns a map keyed by "main", "trim", "accent". Categories with
-     * fewer than {@code minPixels} foreground pixels are omitted from the
-     * map so callers can skip saving empty regions.
+     * Returns a map keyed by "main", "accent", "trim", "ceiling", "door",
+     * "window". Categories with fewer than {@code minPixels} foreground pixels
+     * are omitted from the map so callers can skip saving empty regions.
      */
     static java.util.Map<String, byte[]> splitColorCodedMask(byte[] colorMaskBytes, int minPixels)
             throws IOException {
@@ -516,7 +521,11 @@ final class MaskProcessor {
         boolean[] mainBin = new boolean[w * h];
         boolean[] trimBin = new boolean[w * h];
         boolean[] accentBin = new boolean[w * h];
+        boolean[] ceilingBin = new boolean[w * h];
+        boolean[] doorBin = new boolean[w * h];
+        boolean[] windowBin = new boolean[w * h];
         int mainCount = 0, trimCount = 0, accentCount = 0;
+        int ceilingCount = 0, doorCount = 0, windowCount = 0;
 
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
@@ -526,10 +535,26 @@ final class MaskProcessor {
                 int b = rgb & 0xff;
                 int idx = y * w + x;
 
-                // Distinct-hue scheme (pushed apart for reliable separation):
-                //   RED-dominant   → main wall
-                //   GREEN-dominant → accent wall
-                //   BLUE-dominant  → trim
+                // Distinct-hue scheme (pushed apart for reliable separation). Test
+                // the two-channel secondaries first — pure yellow/cyan/magenta would
+                // otherwise satisfy one of the single-channel dominance checks.
+                //   YELLOW  → ceiling   CYAN → door   MAGENTA → window
+                //   RED     → main      GREEN → accent   BLUE → trim
+                if (r >= b + 40 && g >= b + 40 && r >= 100 && g >= 100) {
+                    ceilingBin[idx] = true;
+                    ceilingCount++;
+                    continue;
+                }
+                if (g >= r + 40 && b >= r + 40 && g >= 100 && b >= 100) {
+                    doorBin[idx] = true;
+                    doorCount++;
+                    continue;
+                }
+                if (r >= g + 40 && b >= g + 40 && r >= 100 && b >= 100) {
+                    windowBin[idx] = true;
+                    windowCount++;
+                    continue;
+                }
                 if (r >= g + 40 && r >= b + 40 && r >= 100) {
                     mainBin[idx] = true;
                     mainCount++;
@@ -552,6 +577,9 @@ final class MaskProcessor {
         if (mainCount >= minPixels) out.put("main", encodeBinaryPng(mainBin, w, h));
         if (trimCount >= minPixels) out.put("trim", encodeBinaryPng(trimBin, w, h));
         if (accentCount >= minPixels) out.put("accent", encodeBinaryPng(accentBin, w, h));
+        if (ceilingCount >= minPixels) out.put("ceiling", encodeBinaryPng(ceilingBin, w, h));
+        if (doorCount >= minPixels) out.put("door", encodeBinaryPng(doorBin, w, h));
+        if (windowCount >= minPixels) out.put("window", encodeBinaryPng(windowBin, w, h));
         return out;
     }
 

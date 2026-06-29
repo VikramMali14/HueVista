@@ -231,20 +231,47 @@ public class SegmentationService {
             byte[] mainBytes = parts.get("main");
             if (mainBytes != null && safeForegroundCount(mainBytes) >= 5000) {
                 saveCategoryRegion(projectId, userId, safeClean(mainBytes),
-                        "Main Wall", RegionCategory.MAIN_WALL, displayOrder++);
+                        "Main Wall", RegionCategory.MAIN_WALL, displayOrder++,
+                        defaultHexFor(RegionCategory.MAIN_WALL, scene));
                 saved++;
                 mainSaved = true;
             }
             byte[] accentBytes = parts.get("accent");
             if (accentBytes != null && safeForegroundCount(accentBytes) >= 5000) {
                 saveCategoryRegion(projectId, userId, safeClean(accentBytes),
-                        "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder++);
+                        "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder++,
+                        defaultHexFor(RegionCategory.ACCENT_WALL, scene));
+                saved++;
+            }
+            // Interior ceiling (yellow in the color-coded mask). Only marked for
+            // indoor scenes by the prompt, so this is naturally absent outdoors.
+            byte[] ceilingBytes = parts.get("ceiling");
+            if (ceilingBytes != null && safeForegroundCount(ceilingBytes) >= 2000) {
+                saveCategoryRegion(projectId, userId, safeClean(ceilingBytes),
+                        "Ceiling", RegionCategory.CEILING, displayOrder++,
+                        defaultHexFor(RegionCategory.CEILING, scene));
                 saved++;
             }
             byte[] trimBytes = parts.get("trim");
             if (trimBytes != null && safeForegroundCount(trimBytes) >= 2000) {
                 saveCategoryRegion(projectId, userId, safeClean(trimBytes),
-                        "Trim & Frames", RegionCategory.TRIM, displayOrder++);
+                        "Trim & Frames", RegionCategory.TRIM, displayOrder++,
+                        defaultHexFor(RegionCategory.TRIM, scene));
+                saved++;
+            }
+            // Doors and windows are painted the same brown in both scenes.
+            byte[] doorBytes = parts.get("door");
+            if (doorBytes != null && safeForegroundCount(doorBytes) >= 2000) {
+                saveCategoryRegion(projectId, userId, safeClean(doorBytes),
+                        "Doors", RegionCategory.DOOR, displayOrder++,
+                        defaultHexFor(RegionCategory.DOOR, scene));
+                saved++;
+            }
+            byte[] windowBytes = parts.get("window");
+            if (windowBytes != null && safeForegroundCount(windowBytes) >= 2000) {
+                saveCategoryRegion(projectId, userId, safeClean(windowBytes),
+                        "Windows", RegionCategory.WINDOW, displayOrder++,
+                        defaultHexFor(RegionCategory.WINDOW, scene));
                 saved++;
             }
 
@@ -261,7 +288,8 @@ public class SegmentationService {
     }
 
     private void saveCategoryRegion(String projectId, String userId, byte[] maskBytes,
-                                    String label, RegionCategory category, int displayOrder)
+                                    String label, RegionCategory category, int displayOrder,
+                                    String appliedHex)
             throws java.io.IOException {
         String key = storageService.store(
                 maskBytes, userId, category.name().toLowerCase() + ".png", "image/png");
@@ -269,6 +297,10 @@ public class SegmentationService {
         // so storing one freezes a dead link into the DB. The read path presigns the key
         // fresh on every response (see ProjectService#resolveMaskUrl), exactly like the
         // original image URL is built.
+        //
+        // appliedHexCode is pre-filled with the scene's default reference colour so the
+        // project opens already painted ("colour on create"); the user can still recolour
+        // any region afterwards. Frontend treats a non-null appliedHexCode as "painted".
         regionRepository.save(Region.builder()
                 .project(projectRepository.getReferenceById(projectId))
                 .label(label)
@@ -276,8 +308,31 @@ public class SegmentationService {
                 .maskUrl(key)
                 .maskData(key)
                 .displayOrder(displayOrder)
+                .appliedHexCode(appliedHex)
                 .build());
-        log.info("Saved {} region for project {}: {}", category, projectId, key);
+        log.info("Saved {} region for project {}: {} (default {})",
+                category, projectId, key, appliedHex);
+    }
+
+    /**
+     * Default "colour on create" reference shade for an auto-detected category,
+     * chosen by scene. Interiors and exteriors use distinct wall/accent/border
+     * palettes; doors and windows are always painted the same brown. Returns null
+     * for categories without a default (none currently — kept for safety).
+     */
+    private static String defaultHexFor(RegionCategory category, ImageType scene) {
+        // Interior palette only for a confirmed INDOOR scene — UNKNOWN takes the
+        // exterior palette, matching the color-coded prompt (which only requests a
+        // ceiling and forces an accent wall for INDOOR).
+        boolean exterior = scene != ImageType.INDOOR;
+        return switch (category) {
+            case MAIN_WALL, OTHER_WALL -> exterior ? "#e2e2d9" : "#baad9c";
+            case ACCENT_WALL -> exterior ? "#b6b7b0" : "#a77e60";
+            case TRIM -> exterior ? "#585858" : "#432211";
+            case CEILING -> "#ffffff";
+            case DOOR, WINDOW -> "#3b2110";
+            case MANUAL -> null;
+        };
     }
 
     /** Morph-cleans a mask, falling back to the input if cleaning fails. */

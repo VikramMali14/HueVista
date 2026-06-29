@@ -643,6 +643,9 @@ public class ProjectService {
             case ACCENT_WALL -> "Accent wall";
             case TRIM -> "Trim & Frames";
             case OTHER_WALL -> "Wall";
+            case CEILING -> "Ceiling";
+            case DOOR -> "Doors";
+            case WINDOW -> "Windows";
             case MANUAL -> "Region " + (displayOrder + 1);
         };
     }
