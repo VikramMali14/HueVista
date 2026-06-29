@@ -2,6 +2,7 @@ package com.gridstore.huevista.project.service;
 
 import com.gridstore.huevista.common.exception.ExternalServiceException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
+import com.gridstore.huevista.image.model.ImageType;
 import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.StorageService;
@@ -154,8 +155,10 @@ public class SegmentationService {
                         projectId, e.getMessage());
             }
 
-            // Step 2: Nano Banana color-coded mask via Replicate.
-            if (tryReplicateNanoBananaSegmentation(projectId, userId, maskImageUrl)) {
+            // Step 2: Nano Banana color-coded mask via Replicate. Scene drives the
+            // accent-wall rule: interiors always get one accent wall to highlight.
+            if (tryReplicateNanoBananaSegmentation(projectId, userId, maskImageUrl,
+                    uploadedImage.getImageType())) {
                 markSegmented(projectId);
                 // Guest runs are billed to the issuing shop, but only now that walls
                 // were actually produced — a failed run never costs the shop a credit.
@@ -198,7 +201,7 @@ public class SegmentationService {
      * wall). We skip saving them rather than persisting a tiny noise mask.
      */
     private boolean tryReplicateNanoBananaSegmentation(String projectId, String userId,
-                                                       String imageUrl) {
+                                                       String imageUrl, ImageType scene) {
         try {
             if (!replicateNanoBanana.isConfigured()) {
                 log.warn("Nano Banana (Replicate) not configured — set " +
@@ -206,7 +209,7 @@ public class SegmentationService {
                 return false;
             }
 
-            Optional<byte[]> colorRaw = replicateNanoBanana.generateColorCodedMask(imageUrl);
+            Optional<byte[]> colorRaw = replicateNanoBanana.generateColorCodedMask(imageUrl, scene);
             if (colorRaw.isEmpty()) {
                 log.info("Nano Banana returned no color-coded mask for project {}", projectId);
                 return false;
