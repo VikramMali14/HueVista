@@ -47,16 +47,27 @@ public class CleaningHintService {
         if (!enabled || apiKey == null || apiKey.isBlank() || "dev-disabled".equals(apiKey)) {
             return Optional.empty();
         }
-        String sceneWord = (scene == ImageType.INDOOR) ? "interior room" : "building exterior";
+        boolean exterior = scene != ImageType.INDOOR;
+        String sceneWord = exterior ? "building exterior" : "interior room";
+        // Exteriors can be photographed mid-construction (half-plastered walls), so we also
+        // ask for a FINISH list there; interiors only get REMOVE/PRESERVE.
+        String finishList = exterior
+                ? "FINISH: any wall that is clearly unfinished or only partly plastered — bare "
+                + "cement, raw brick/blockwork, or patchy half-applied plaster — that should be "
+                + "completed into one smooth paintable plastered wall. Omit this list if every "
+                + "wall is already finished.\n"
+                : "";
+        String headings = exterior ? "'REMOVE:', 'PRESERVE:' and 'FINISH:'" : "'REMOVE:' and 'PRESERVE:'";
         String instruction =
                 "You are preparing edit instructions to CLEAN this " + sceneWord + " photo for a paint "
               + "visualizer (remove clutter, keep the structure identical). Look at THIS image and output "
-              + "exactly two short bulleted lists, nothing else:\n"
+              + "short bulleted lists, nothing else:\n"
               + "REMOVE: the specific clutter, temporary objects, wires, or damage actually visible here.\n"
               + "PRESERVE: the specific architectural features actually visible here that must stay "
               + "identical (windows, doors, frames, fixtures, cabinetry, railings, etc.).\n"
+              + finishList
               + "Be concrete and brief, one item per line. No preamble and no headings other than "
-              + "'REMOVE:' and 'PRESERVE:'.";
+              + headings + ".";
         try {
             Map<String, Object> imageBlock = Map.of(
                     "type", "image",

@@ -1,6 +1,7 @@
 package com.gridstore.huevista.project.service;
 
 import com.gridstore.huevista.common.exception.ExternalServiceException;
+import com.gridstore.huevista.image.model.ImageType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -132,17 +133,23 @@ public class ReplicateNanoBananaSegmenter {
      * call instead of 3 (3× faster, 3× cheaper), Gemini sees all categories
      * at once so a pixel can only belong to ONE category — no inter-mask
      * overlap.
+     *
+     * @param scene INDOOR rooms always get one designated accent wall (so the user
+     *              has a wall to paint a highlight shade); exteriors keep the accent
+     *              conditional on an actually-different-coloured secondary wall.
      */
-    public Optional<byte[]> generateColorCodedMask(String imageUrl) {
+    public Optional<byte[]> generateColorCodedMask(String imageUrl, ImageType scene) {
         if (!isConfigured()) {
             log.debug("Nano Banana (Replicate) not configured — skipping");
             return Optional.empty();
         }
         try {
-            log.info("Nano Banana (Replicate) [{}]: requesting COLOR-CODED mask", model);
+            boolean forceAccent = scene == ImageType.INDOOR;
+            log.info("Nano Banana (Replicate) [{}]: requesting COLOR-CODED mask (scene={}, forceAccent={})",
+                    model, scene, forceAccent);
 
             Map<String, Object> input = Map.of(
-                    "prompt", COLOR_CODED_PROMPT,
+                    "prompt", colorCodedPrompt(forceAccent),
                     "image_input", List.of(imageUrl),
                     "output_format", "png"
             );
@@ -173,20 +180,47 @@ public class ReplicateNanoBananaSegmenter {
      * Single comprehensive prompt for the color-coded approach. Asks for ONE
      * image with four specific colors marking the three paint categories
      * plus a "nothing" background. Tested wording — be careful editing.
+     *
+     * The GREEN (accent) paragraph is the only part that varies by scene:
+     * {@link #ACCENT_ALWAYS} (interiors) forces exactly one accent wall so the
+     * user can paint a highlight shade; {@link #ACCENT_CONDITIONAL} (exteriors)
+     * only marks an accent when a visibly different-coloured wall exists.
      */
-    private static final String COLOR_CODED_PROMPT =
+    static String colorCodedPrompt(boolean forceAccent) {
+        return COLOR_CODED_HEAD
+             + (forceAccent ? ACCENT_ALWAYS : ACCENT_CONDITIONAL)
+             + COLOR_CODED_TAIL;
+    }
+
+    private static final String COLOR_CODED_HEAD =
             "Look at this room or building photograph. Generate a SINGLE color-coded "
           + "segmentation mask image of the same exact dimensions as the input. "
           + "Mark each surface using one of these four specific colors only:\n\n"
           + "- RED pixels (#FF0000) — the MAIN painted wall surface. The "
           + "dominant flat painted plaster/concrete/drywall that someone would repaint "
-          + "with a single color (the largest painted area).\n\n"
-          + "- GREEN pixels (#00FF00) — an ACCENT or feature wall: a "
+          + "with a single color (the largest painted area). Mark every painted wall "
+          + "RED except the single accent wall described next.\n\n";
+
+    /** Exterior/unknown: only mark an accent wall when one is genuinely a different colour. */
+    private static final String ACCENT_CONDITIONAL =
+            "- GREEN pixels (#00FF00) — an ACCENT or feature wall: a "
           + "secondary painted wall surface clearly a DIFFERENT color from the "
           + "main wall — a feature wall, an accent strip, or a perpendicular "
           + "wall painted differently. If there is no obviously different-colored "
-          + "secondary wall, DO NOT use green anywhere. Leave it out entirely.\n\n"
-          + "- BLUE pixels (#0000FF) — TRIM, borders and frames: window frames, "
+          + "secondary wall, DO NOT use green anywhere. Leave it out entirely.\n\n";
+
+    /** Interior: always designate exactly one wall as the accent (highlight) wall. */
+    private static final String ACCENT_ALWAYS =
+            "- GREEN pixels (#00FF00) — exactly ONE ACCENT / feature wall, ALWAYS "
+          + "chosen. Pick the single best wall to highlight: if one wall is already a "
+          + "different color, use that one; otherwise choose one prominent, mostly "
+          + "unobstructed wall (typically the largest uninterrupted wall behind a "
+          + "bed/sofa or the wall facing the camera) and mark that ENTIRE wall green. "
+          + "Mark exactly ONE wall green and leave the remaining painted walls red. "
+          + "Always designate one accent wall — never leave green out.\n\n";
+
+    private static final String COLOR_CODED_TAIL =
+            "- BLUE pixels (#0000FF) — TRIM, borders and frames: window frames, "
           + "door frames, skirting/baseboards, balcony railings, fascia under the "
           + "roof, parapet edges, decorative banding. Narrow elements typically "
           + "painted in a contrasting trim color.\n\n"
