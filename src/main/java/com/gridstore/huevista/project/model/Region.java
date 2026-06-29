@@ -44,6 +44,13 @@ public class Region {
 
     private Integer displayOrder;
 
+    // True for walls the user drew by hand in the browser (createCustomMaskRegion),
+    // as opposed to AI-detected surfaces. Tracked independently of category so a
+    // hand-drawn "Main wall" is still recognised as user-made (and deletable)
+    // after a reload. Defaults to false for existing/auto rows.
+    @Column(nullable = false)
+    private boolean manual;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 }

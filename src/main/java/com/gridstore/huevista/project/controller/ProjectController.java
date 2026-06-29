@@ -164,6 +164,28 @@ public class ProjectController {
                 .body(projectService.createCustomMaskRegion(userId(auth), id, request));
     }
 
+    @Operation(
+            summary = "Delete a hand-drawn wall",
+            description = """
+                    Removes a region the user created by hand (manual = true). AI-detected
+                    surfaces are protected and return 400 — only hand-drawn walls can be deleted.
+                    """
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "204", description = "Region deleted"),
+            @ApiResponse(responseCode = "400", description = "Region is AI-detected, not hand-drawn"),
+            @ApiResponse(responseCode = "404", description = "Project or region not found / not owned")
+    })
+    @DeleteMapping("/{id}/regions/{regionId}")
+    public ResponseEntity<Void> deleteRegion(
+            @PathVariable String id,
+            @PathVariable Long regionId,
+            Authentication auth
+    ) {
+        projectService.deleteRegion(userId(auth), id, regionId);
+        return ResponseEntity.noContent().build();
+    }
+
     @Operation(summary = "Poll segmentation status", description = "Returns the current project status and regions. Poll this every 1–2 s after calling /segment until status is SEGMENTED or FAILED.")
     @ApiResponse(responseCode = "200", description = "Current project status")
     @GetMapping("/{id}/status")

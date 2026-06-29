@@ -17,6 +17,7 @@ public class RegionResponse {
     private String appliedShadeCode;
     private String appliedHexCode;
     private Integer displayOrder;
+    private boolean manual;
 
     public static RegionResponse from(Region region) {
         return RegionResponse.builder()
@@ -28,6 +29,7 @@ public class RegionResponse {
                 .appliedShadeCode(region.getAppliedShadeCode())
                 .appliedHexCode(region.getAppliedHexCode())
                 .displayOrder(region.getDisplayOrder())
+                .manual(region.isManual())
                 .build();
     }
 
@@ -41,6 +43,7 @@ public class RegionResponse {
                 .maskUrl(region.getMaskUrl())
                 .appliedHexCode(region.getAppliedHexCode()) // hex shown, shade code hidden
                 .displayOrder(region.getDisplayOrder())
+                .manual(region.isManual())
                 .build();
     }
 }

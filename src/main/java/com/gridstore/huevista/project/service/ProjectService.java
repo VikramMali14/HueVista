@@ -327,6 +327,33 @@ public class ProjectService {
         return persistCustomMask(userId, projectId, request);
     }
 
+    /** Delete a hand-drawn wall. Only {@code manual} regions may be removed —
+     *  AI-detected surfaces are protected (400). Best-effort cleanup of the
+     *  stored mask; the row delete is what matters. */
+    @Transactional
+    public void deleteRegion(String userId, String projectId, Long regionId) {
+        findOwned(userId, projectId);
+        deleteManualRegion(projectId, regionId);
+    }
+
+    private void deleteManualRegion(String projectId, Long regionId) {
+        Region region = regionRepository.findByIdAndProjectId(regionId, projectId)
+                .orElseThrow(() -> new ResourceNotFoundException("Region not found: " + regionId));
+        if (!region.isManual()) {
+            throw new IllegalArgumentException("Only hand-drawn walls can be deleted.");
+        }
+        String maskUrl = region.getMaskUrl();
+        regionRepository.delete(region);
+        if (maskUrl != null && !maskUrl.isBlank()) {
+            try {
+                storageService.delete(extractStorageKey(maskUrl));
+            } catch (RuntimeException e) {
+                log.warn("Could not delete mask for region {} (row already removed): {}", regionId, e.getMessage());
+            }
+        }
+        log.info("Manual region deleted: project={} region={}", projectId, regionId);
+    }
+
     /** Shared body for persisting a hand-drawn mask. {@code storageScope} is the
      *  owner key used as the storage folder (a userId or, for guests, an access code id). */
     private RegionResponse persistCustomMask(String storageScope, String projectId, CustomMaskRequest request) {
@@ -362,6 +389,7 @@ public class ProjectService {
                 .maskUrl(url)
                 .maskData(url)
                 .displayOrder(displayOrder)
+                .manual(true)
                 .build());
 
         log.info("Custom mask region saved: project={} region={} category={}",
@@ -442,6 +470,12 @@ public class ProjectService {
     public RegionResponse createGuestCustomMaskRegion(String accessCodeId, String projectId, CustomMaskRequest request) {
         findGuestOwned(accessCodeId, projectId);
         return persistCustomMask(accessCodeId, projectId, request);
+    }
+
+    @Transactional
+    public void deleteGuestRegion(String accessCodeId, String projectId, Long regionId) {
+        findGuestOwned(accessCodeId, projectId);
+        deleteManualRegion(projectId, regionId);
     }
 
     /**
