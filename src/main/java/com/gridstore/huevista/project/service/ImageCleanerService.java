@@ -23,9 +23,9 @@ import java.util.Optional;
  * "cleaned" version of the user's house photo — wires, bushes, parked
  * cars, garbage, hanging laundry, and other clutter removed; the
  * architecture itself preserved as faithfully as the model allows; and the
- * painted surfaces (walls, trim/border, ceiling, doors, windows) repainted
- * into the project's reference palette so the canvas opens already coloured.
- * The downstream mask-based recolor uses the same hexes, so the two agree.
+ * painted surfaces (walls and trim/border) repainted into the project's
+ * reference palette so the canvas opens already coloured. The downstream
+ * mask-based recolor uses the same hexes, so the two agree.
  *
  * The cleaned image is then used:
  *   1. As the canvas for the painted preview shown to the user
@@ -174,9 +174,9 @@ public class ImageCleanerService {
     /**
      * The cleaning prompt — written to be as surgical as possible. Asks
      * the model to keep architecture pristine, remove clutter, AND repaint
-     * the painted surfaces into the project's reference palette (walls,
-     * trim/border, ceiling, doors, windows) while preserving each surface's
-     * existing light and shade. Repainting also gives the mask generator a
+     * the painted surfaces into the project's reference palette (walls and
+     * trim/border) while preserving each surface's existing light and shade.
+     * Repainting also gives the mask generator a
      * uniform canvas to work with (no weathering, no stains, no peeling)
      * which makes "this pixel is painted wall" decisions easier. Generative
      * models still drift, but this constrains them as much as a text prompt
@@ -191,8 +191,6 @@ public class ImageCleanerService {
     private static final String EXT_BORDER = "#585858";    // mid grey trim
     private static final String INT_WALL = "#baad9c";      // soft sage
     private static final String INT_BORDER = "#432211";    // deep brown trim
-    private static final String INT_CEILING = "#ffffff";   // white
-    private static final String DOOR_WINDOW = "#3b2110";   // wood brown
 
     private static final String CLEAN_PROMPT_EXTERIOR =
             "Look at this photograph of a house. Edit the image so the house "
@@ -218,8 +216,6 @@ public class ImageCleanerService {
           + "- Door frames, window frames, balcony railings, fascia, parapet edges "
           + "and trim: repaint these the trim/border colour " + EXT_BORDER
           + " (a mid grey), evenly.\n"
-          + "- Door leaves/panels and window shutters/sashes: repaint these "
-          + DOOR_WINDOW + " (a deep wood brown).\n"
           + "- Preserve each surface's existing light and shade: keep the original "
           + "highlights, shadows and soft gradients so the new colour still looks "
           + "three-dimensional. Recolour the surfaces — do not flatten them into a "
@@ -260,7 +256,7 @@ public class ImageCleanerService {
           + "OUTPUT: The same photograph with the clutter removed, any unfinished "
           + "walls completed into smooth paintable plaster, and the painted surfaces "
           + "repainted in the reference colours above (walls " + EXT_WALL + ", trim "
-          + EXT_BORDER + ", doors & windows " + DOOR_WINDOW + "). The house must "
+          + EXT_BORDER + "). The house must "
           + "remain pixel-faithful to the original in shape, proportion and material; "
           + "only the colour of painted surfaces changes, and non-painted materials "
           + "are never altered.\n";
@@ -268,9 +264,9 @@ public class ImageCleanerService {
     /**
      * Interior-room variant. Clutter here is furniture mess, cables, boxes and stains;
      * the anchors to preserve are windows, doors, built-in cabinetry, fireplaces and
-     * fixtures. Same conservative rules, except paint: repaint walls/ceiling/trim/doors/
-     * windows into the interior reference palette, change nothing structural, and leave
-     * non-painted materials (floors, counters, cabinetry finish) alone.
+     * fixtures. Same conservative rules, except paint: repaint walls and trim into the
+     * interior reference palette, change nothing structural, and leave non-painted
+     * materials (floors, counters, cabinetry finish) alone.
      */
     private static final String CLEAN_PROMPT_INTERIOR =
             "Look at this photograph of an interior room. Edit the image so the room "
@@ -287,11 +283,8 @@ public class ImageCleanerService {
           + "REPAINT (apply these exact reference colours, evenly and freshly):\n"
           + "- Walls: repaint every painted wall a single even coat of " + INT_WALL
           + " (a soft sage). No stains, no patchiness.\n"
-          + "- Ceiling: repaint it " + INT_CEILING + " (clean white).\n"
           + "- Trim, skirting, door frames and window frames: repaint these the "
           + "trim/border colour " + INT_BORDER + " (a deep brown), even coat.\n"
-          + "- Door leaves/panels and window shutters/sashes: repaint these "
-          + DOOR_WINDOW + " (a deep wood brown).\n"
           + "- Preserve each surface's existing light and shade — keep the highlights, "
           + "shadows and soft gradients so the new colour still looks three-dimensional. "
           + "Recolour the surfaces, do not flatten them.\n"
@@ -306,9 +299,8 @@ public class ImageCleanerService {
           + "- Flooring material, lighting, shadows, time of day.\n"
           + "- Camera angle, perspective, framing, image dimensions, room proportions.\n\n"
           + "OUTPUT: the same room, decluttered, with walls repainted " + INT_WALL
-          + ", ceiling " + INT_CEILING + ", trim " + INT_BORDER + ", and doors & windows "
-          + DOOR_WINDOW + ". Pixel-faithful in structure and materials; change only the "
-          + "colour of painted surfaces and never restyle the room.\n";
+          + " and trim " + INT_BORDER + ". Pixel-faithful in structure and materials; "
+          + "change only the colour of painted surfaces and never restyle the room.\n";
 
     private String startPrediction(Map<String, Object> input) {
         try {

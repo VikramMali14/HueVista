@@ -243,35 +243,11 @@ public class SegmentationService {
                         defaultHexFor(RegionCategory.ACCENT_WALL, scene));
                 saved++;
             }
-            // Interior ceiling (yellow in the color-coded mask). Only marked for
-            // indoor scenes by the prompt, so this is naturally absent outdoors.
-            byte[] ceilingBytes = parts.get("ceiling");
-            if (ceilingBytes != null && safeForegroundCount(ceilingBytes) >= 2000) {
-                saveCategoryRegion(projectId, userId, safeClean(ceilingBytes),
-                        "Ceiling", RegionCategory.CEILING, displayOrder++,
-                        defaultHexFor(RegionCategory.CEILING, scene));
-                saved++;
-            }
             byte[] trimBytes = parts.get("trim");
             if (trimBytes != null && safeForegroundCount(trimBytes) >= 2000) {
                 saveCategoryRegion(projectId, userId, safeClean(trimBytes),
                         "Trim & Frames", RegionCategory.TRIM, displayOrder++,
                         defaultHexFor(RegionCategory.TRIM, scene));
-                saved++;
-            }
-            // Doors and windows are painted the same brown in both scenes.
-            byte[] doorBytes = parts.get("door");
-            if (doorBytes != null && safeForegroundCount(doorBytes) >= 2000) {
-                saveCategoryRegion(projectId, userId, safeClean(doorBytes),
-                        "Doors", RegionCategory.DOOR, displayOrder++,
-                        defaultHexFor(RegionCategory.DOOR, scene));
-                saved++;
-            }
-            byte[] windowBytes = parts.get("window");
-            if (windowBytes != null && safeForegroundCount(windowBytes) >= 2000) {
-                saveCategoryRegion(projectId, userId, safeClean(windowBytes),
-                        "Windows", RegionCategory.WINDOW, displayOrder++,
-                        defaultHexFor(RegionCategory.WINDOW, scene));
                 saved++;
             }
 
@@ -317,20 +293,17 @@ public class SegmentationService {
     /**
      * Default "colour on create" reference shade for an auto-detected category,
      * chosen by scene. Interiors and exteriors use distinct wall/accent/border
-     * palettes; doors and windows are always painted the same brown. Returns null
-     * for categories without a default (none currently — kept for safety).
+     * palettes. Returns null for categories without a default (MANUAL).
      */
     private static String defaultHexFor(RegionCategory category, ImageType scene) {
         // Interior palette only for a confirmed INDOOR scene — UNKNOWN takes the
-        // exterior palette, matching the color-coded prompt (which only requests a
-        // ceiling and forces an accent wall for INDOOR).
+        // exterior palette, matching the color-coded prompt (which forces an
+        // accent wall for INDOOR).
         boolean exterior = scene != ImageType.INDOOR;
         return switch (category) {
             case MAIN_WALL, OTHER_WALL -> exterior ? "#e2e2d9" : "#baad9c";
             case ACCENT_WALL -> exterior ? "#b6b7b0" : "#a77e60";
             case TRIM -> exterior ? "#585858" : "#432211";
-            case CEILING -> "#ffffff";
-            case DOOR, WINDOW -> "#3b2110";
             case MANUAL -> null;
         };
     }
