@@ -7,7 +7,7 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public enum Plan {
 
-    STARTER(49900, 20, "Starter"),
+    STARTER(1900, 20, "Starter"),
     PROFESSIONAL(99900, 60, "Professional"),
     BUSINESS(199900, 150, "Business"),
     ENTERPRISE(-1, Integer.MAX_VALUE, "Enterprise");
