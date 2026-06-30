@@ -293,19 +293,17 @@ public class SegmentationService {
     }
 
     /**
-     * Default "colour on create" reference shade for an auto-detected category,
-     * chosen by scene. Interiors and exteriors use distinct wall/accent/border
-     * palettes. Returns null for categories without a default (MANUAL).
+     * Default "colour on create" reference shade for an auto-detected category.
+     * Every paintable wall/accent/trim region opens white for both interiors and
+     * exteriors; doors and railings are not a recolourable category (they are
+     * kept dark brown by the clean step). Returns null for MANUAL.
+     *
+     * <p>{@code scene} is retained for call-site symmetry and so a per-scene
+     * palette can be reintroduced without touching callers.
      */
     private static String defaultHexFor(RegionCategory category, ImageType scene) {
-        // Interior palette only for a confirmed INDOOR scene — UNKNOWN takes the
-        // exterior palette, matching the color-coded prompt (which forces an
-        // accent wall for INDOOR).
-        boolean exterior = scene != ImageType.INDOOR;
         return switch (category) {
-            case MAIN_WALL, OTHER_WALL -> exterior ? "#ffffff" : "#baad9c";
-            case ACCENT_WALL -> exterior ? "#ffffff" : "#a77e60";
-            case TRIM -> exterior ? "#ffffff" : "#432211";
+            case MAIN_WALL, OTHER_WALL, ACCENT_WALL, TRIM -> "#ffffff";
             case MANUAL -> null;
         };
     }

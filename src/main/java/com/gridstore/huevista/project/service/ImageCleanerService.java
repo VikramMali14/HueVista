@@ -191,8 +191,8 @@ public class ImageCleanerService {
     // brown lives only here — it's the final colour those surfaces keep.
     private static final String EXT_WALL = "#ffffff";      // white
     private static final String EXT_BORDER = "#ffffff";    // white trim (same as walls)
-    private static final String INT_WALL = "#baad9c";      // soft sage
-    private static final String INT_BORDER = "#432211";    // deep brown trim
+    private static final String INT_WALL = "#ffffff";      // white
+    private static final String INT_BORDER = "#ffffff";    // white trim (same as walls)
     // Doors (wood/iron leaves) and metal/iron railings are KEPT as a fixed
     // dark-brown wood/metal feature: painted brown here, then deliberately
     // excluded from the recolour masks downstream (the segmenter marks them
@@ -294,9 +294,10 @@ public class ImageCleanerService {
           + "- People and pets\n\n"
           + "REPAINT (apply these exact reference colours, evenly and freshly):\n"
           + "- Walls: repaint every painted wall a single even coat of " + INT_WALL
-          + " (a soft sage). No stains, no patchiness.\n"
+          + " (a clean white). No stains, no patchiness.\n"
           + "- Trim, skirting, door frames and window frames: repaint these the "
-          + "trim/border colour " + INT_BORDER + " (a deep brown), even coat.\n"
+          + "trim/border colour " + INT_BORDER + " (white, the same clean white as "
+          + "the walls), even coat.\n"
           + "- Door leaves/panels and any metal/iron railings: repaint these a dark "
           + "brown " + DOOR_RAILING + ", keeping their natural wood/metal look.\n"
           + "- Preserve each surface's existing light and shade — keep the highlights, "
