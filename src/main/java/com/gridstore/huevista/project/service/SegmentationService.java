@@ -38,9 +38,11 @@ import java.util.Optional;
  *       are aligned to already looks freshly painted. Opt-in via
  *       REPLICATE_IMAGE_CLEANER_ENABLED.</li>
  *   <li>One Nano Banana call ({@link ReplicateNanoBananaSegmenter})
- *       returns a single color-coded mask: WHITE = main paintable wall,
- *       BLUE = accent / highlighter wall, GREEN = trim & frames, BLACK =
- *       everything else (sky, ground, stone, doors, windows, fixtures).</li>
+ *       returns a single color-coded mask: RED = main paintable wall,
+ *       GREEN = accent / highlighter wall, BLUE = trim & frames, BLACK =
+ *       everything else (sky, ground, stone, windows, fixtures, plus the
+ *       door panels and metal railings — kept as fixed dark-brown features,
+ *       so they are deliberately excluded from the recolourable masks).</li>
  *   <li>{@link MaskProcessor#splitColorCodedMask} splits the colored mask
  *       into per-category binary masks server-side.</li>
  *   <li>Each non-empty category is morph-cleaned, uploaded to S3 and
@@ -301,9 +303,9 @@ public class SegmentationService {
         // accent wall for INDOOR).
         boolean exterior = scene != ImageType.INDOOR;
         return switch (category) {
-            case MAIN_WALL, OTHER_WALL -> exterior ? "#e2e2d9" : "#baad9c";
-            case ACCENT_WALL -> exterior ? "#b6b7b0" : "#a77e60";
-            case TRIM -> exterior ? "#585858" : "#432211";
+            case MAIN_WALL, OTHER_WALL -> exterior ? "#ffffff" : "#baad9c";
+            case ACCENT_WALL -> exterior ? "#ffffff" : "#a77e60";
+            case TRIM -> exterior ? "#ffffff" : "#432211";
             case MANUAL -> null;
         };
     }
