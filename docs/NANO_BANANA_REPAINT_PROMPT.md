@@ -9,18 +9,19 @@ two different jobs:
 | 1. Clean + repaint | `ImageCleanerService` | Removes clutter and **repaints the actual photo** into the reference palette → this is the canvas shown to the user and fed to step 2. |
 | 2. Segmentation mask | `ReplicateNanoBananaSegmenter` | Produces a **flat colour-coded mask** (red/green/blue/black) that `MaskProcessor.splitColorCodedMask` splits into per-category recolourable regions. |
 
-The mask uses **distinct flat RGB hues** (not the realistic greige) precisely so
-the regions separate cleanly — `#e2e2d9` and `#b6b7b0` are too close to threshold
-apart, so the mask never uses them; it uses pure red/green/blue and maps back to
-the real colours via `SegmentationService.defaultHexFor`.
+The mask uses **distinct flat RGB hues** (not the real surface colours) precisely
+so the regions separate cleanly — the real wall/accent/trim colours can be
+near-identical (on exteriors they are all white), so the mask never uses them; it
+uses pure red/green/blue and maps back to the real colours via
+`SegmentationService.defaultHexFor`.
 
 ## Colour assignments
 
 | Surface | Mask hue (step 2) | Real colour (exterior) | Real colour (interior) | Recolourable by user? |
 | --- | --- | --- | --- | --- |
-| Main walls | Red `#FF0000` | `#e2e2d9` greige | `#baad9c` sage | Yes |
-| Accent / highlight wall | Green `#00FF00` | `#b6b7b0` | `#a77e60` | Yes |
-| Trim / border (window & door **frames**, fascia, parapet edges, ledges, banding) | Blue `#0000FF` | `#585858` mid grey | `#432211` deep brown | Yes |
+| Main walls | Red `#FF0000` | `#ffffff` white | `#baad9c` sage | Yes |
+| Accent / highlight wall | Green `#00FF00` | `#ffffff` white | `#a77e60` | Yes |
+| Trim / border (window & door **frames**, fascia, parapet edges, ledges, banding) | Blue `#0000FF` | `#ffffff` white | `#432211` deep brown | Yes |
 | **Doors + metal/iron railings** | **Black (excluded)** | **`#5c4033` dark brown** | **`#5c4033` dark brown** | **No — kept** |
 | Everything else (sky, ground, stone, brick, tile, glass, fixtures…) | Black | original | original | No |
 

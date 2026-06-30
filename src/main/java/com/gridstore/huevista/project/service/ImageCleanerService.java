@@ -189,8 +189,8 @@ public class ImageCleanerService {
     // the same colours. DOOR_RAILING is intentionally NOT in that set: doors and
     // railings get no recolourable region (the segmenter excludes them), so this
     // brown lives only here — it's the final colour those surfaces keep.
-    private static final String EXT_WALL = "#e2e2d9";      // light greige
-    private static final String EXT_BORDER = "#585858";    // mid grey trim
+    private static final String EXT_WALL = "#ffffff";      // white
+    private static final String EXT_BORDER = "#ffffff";    // white trim (same as walls)
     private static final String INT_WALL = "#baad9c";      // soft sage
     private static final String INT_BORDER = "#432211";    // deep brown trim
     // Doors (wood/iron leaves) and metal/iron railings are KEPT as a fixed
@@ -217,12 +217,12 @@ public class ImageCleanerService {
           + "- People and animals\n\n"
           + "REPAINT (apply these exact reference colours, evenly and freshly):\n"
           + "- Painted walls (plaster, painted concrete): repaint EVERY painted "
-          + "wall a single even coat of " + EXT_WALL + " (a soft light greige). "
+          + "wall a single even coat of " + EXT_WALL + " (a clean white). "
           + "No peeling, no water stains, no dust streaks, no faded patches, no "
           + "graffiti — one clean uniform colour across the whole wall.\n"
           + "- Door frames, window frames, fascia, parapet edges "
           + "and trim: repaint these the trim/border colour " + EXT_BORDER
-          + " (a mid grey), evenly.\n"
+          + " (white, the same clean white as the walls), evenly.\n"
           + "- Door leaves/panels (the wooden or iron doors themselves) and all "
           + "metal/iron railings — balcony railings, staircase railings, handrails: "
           + "repaint these a dark brown " + DOOR_RAILING + ", evenly, keeping their "

@@ -303,9 +303,9 @@ public class SegmentationService {
         // accent wall for INDOOR).
         boolean exterior = scene != ImageType.INDOOR;
         return switch (category) {
-            case MAIN_WALL, OTHER_WALL -> exterior ? "#e2e2d9" : "#baad9c";
-            case ACCENT_WALL -> exterior ? "#b6b7b0" : "#a77e60";
-            case TRIM -> exterior ? "#585858" : "#432211";
+            case MAIN_WALL, OTHER_WALL -> exterior ? "#ffffff" : "#baad9c";
+            case ACCENT_WALL -> exterior ? "#ffffff" : "#a77e60";
+            case TRIM -> exterior ? "#ffffff" : "#432211";
             case MANUAL -> null;
         };
     }
