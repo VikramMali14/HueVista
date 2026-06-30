@@ -38,9 +38,11 @@ import java.util.Optional;
  *       are aligned to already looks freshly painted. Opt-in via
  *       REPLICATE_IMAGE_CLEANER_ENABLED.</li>
  *   <li>One Nano Banana call ({@link ReplicateNanoBananaSegmenter})
- *       returns a single color-coded mask: WHITE = main paintable wall,
- *       BLUE = accent / highlighter wall, GREEN = trim & frames, BLACK =
- *       everything else (sky, ground, stone, doors, windows, fixtures).</li>
+ *       returns a single color-coded mask: RED = main paintable wall,
+ *       GREEN = accent / highlighter wall, BLUE = trim & frames, BLACK =
+ *       everything else (sky, ground, stone, windows, fixtures, plus the
+ *       door panels and metal railings — kept as fixed dark-brown features,
+ *       so they are deliberately excluded from the recolourable masks).</li>
  *   <li>{@link MaskProcessor#splitColorCodedMask} splits the colored mask
  *       into per-category binary masks server-side.</li>
  *   <li>Each non-empty category is morph-cleaned, uploaded to S3 and

@@ -1,90 +1,58 @@
-# Nano Banana Pro — House Exterior Repaint Prompt
+# Nano Banana — repaint + segmentation colour scheme
 
-This is the finalized prompt + colour mapping for the **clean repaint / declutter**
-pass that turns a raw house photo into a real-estate-style base render, from which
-the recolor masks are extracted.
+How the house-exterior (and interior) auto-paint pipeline assigns colours, and
+where each colour is defined in code. Two separate Nano Banana / Gemini calls do
+two different jobs:
 
-## Why flat RGB hues instead of the real greige colours
-
-Mask extraction reads the regions back **out of the generated image by colour**.
-The real target colours (`#e2e2d9` wall and `#b6b7b0` accent) are almost identical
-greige — they bleed together under thresholding, JPEG noise and the model's own
-colour drift. So the generation step paints each surface type a **maximally distinct
-flat hue**, and each hue is mapped to its real colour downstream.
-
-Each region keeps its **original light/shadow gradient** (recolour, do not flatten).
-Hue stays constant across light and shade, so masks still extract cleanly by hue while
-the 3-D form is preserved for the final recolor.
-
-## Colour mapping (generated hue → real colour)
-
-| Region | Generated colour | Maps to |
+| Step | Class | Job |
 | --- | --- | --- |
-| Main walls (plaster / painted concrete) | Red `#FF0000` | `#e2e2d9` (soft light greige) |
-| Accent / side / return walls | Green `#00FF00` | `#b6b7b0` (greige highlight) |
-| Trim / border (window & door frames, fascia, parapet edges, ledges, bands) | Blue `#0000FF` | `#585858` (mid grey) |
-| Metal/iron railings + wooden/iron doors ("keep") | Yellow `#FFFF00` | dark brown (not user-recolorable) |
+| 1. Clean + repaint | `ImageCleanerService` | Removes clutter and **repaints the actual photo** into the reference palette → this is the canvas shown to the user and fed to step 2. |
+| 2. Segmentation mask | `ReplicateNanoBananaSegmenter` | Produces a **flat colour-coded mask** (red/green/blue/black) that `MaskProcessor.splitColorCodedMask` splits into per-category recolourable regions. |
 
-> Railings + doors are **"keep"** elements: painted a distinct hue only so their mask
-> boundary is detectable; they are preserved as dark brown, not exposed for user recolor.
-> Yellow is used (instead of brown) because it is maximally distinct from the red walls,
-> giving the cleanest mask separation.
+The mask uses **distinct flat RGB hues** (not the realistic greige) precisely so
+the regions separate cleanly — `#e2e2d9` and `#b6b7b0` are too close to threshold
+apart, so the mask never uses them; it uses pure red/green/blue and maps back to
+the real colours via `SegmentationService.defaultHexFor`.
+
+## Colour assignments
+
+| Surface | Mask hue (step 2) | Real colour (exterior) | Real colour (interior) | Recolourable by user? |
+| --- | --- | --- | --- | --- |
+| Main walls | Red `#FF0000` | `#e2e2d9` greige | `#baad9c` sage | Yes |
+| Accent / highlight wall | Green `#00FF00` | `#b6b7b0` | `#a77e60` | Yes |
+| Trim / border (window & door **frames**, fascia, parapet edges, ledges, banding) | Blue `#0000FF` | `#585858` mid grey | `#432211` deep brown | Yes |
+| **Doors + metal/iron railings** | **Black (excluded)** | **`#5c4033` dark brown** | **`#5c4033` dark brown** | **No — kept** |
+| Everything else (sky, ground, stone, brick, tile, glass, fixtures…) | Black | original | original | No |
+
+## Doors & railings are "kept", not recoloured
+
+Per the requirement *"I don't want a recolour mask for doors/windows/railings —
+keep those"*, doors and metal/iron railings are **not** a recolourable region:
+
+- `ImageCleanerService` paints the door leaves/panels and all metal/iron railings
+  a fixed dark brown `#5c4033` (constant `DOOR_RAILING`). Window/door **frames**
+  stay trim grey; only the door panels and the railings go brown.
+- `ReplicateNanoBananaSegmenter` marks doors and railings **BLACK** in the mask,
+  exactly like stone or brick — so `splitColorCodedMask` never creates a region
+  for them and the user can't recolour them. They simply keep the brown from the
+  clean step.
+
+This keeps the segmentation at four flat colours (red/green/blue/black) and adds
+no new `RegionCategory` — consistent with the "main / accent / trim only"
+category set.
+
+## Where the colours live (keep in sync)
+
+- `ImageCleanerService` — `EXT_WALL`, `EXT_BORDER`, `INT_WALL`, `INT_BORDER`
+  (must match `defaultHexFor` + frontend `DEFAULT_HEX_FOR_KIND`), and
+  `DOOR_RAILING` (cleaner-only; no region uses it).
+- `SegmentationService.defaultHexFor` — the per-category real colours applied to
+  each recolourable region.
+- Frontend `DEFAULT_HEX_FOR_KIND` — the same wall/accent/trim hexes.
 
 ## Generation settings
 
-- **Model:** Nano Banana Pro (Gemini 3 Pro Image, `gemini-3-pro-image-preview`)
-- **Resolution:** 2K — same price as 1K ($0.134/image official) and sharper edges =
-  cleaner masks. Only go 4K ($0.24/image) if a specific case needs it.
-
-## Prompt
-
-```
-Look at this photograph of a house. Edit it so the house looks freshly painted and
-free of clutter — like a real-estate listing photo taken right after a clean repaint.
-Keep every architectural element pristine and preserve the EXACT perspective, layout,
-dimensions, materials, lighting and shadows. Only the COLOUR of painted surfaces changes.
-
-REMOVE (clutter): electrical/telephone wires, power lines, cables crossing the building;
-garbage, debris, construction material on the ground; parked cars, motorcycles, scooters,
-bicycles in front of the house; tree branches, leaves, bushes covering wall surfaces;
-hanging laundry and temporary banners (not permanent signage); scaffolding, ladders,
-wooden props and bracing; people and animals.
-
-REPAINT — use these EXACT flat colours, one even hue per surface type, but KEEP each
-surface's original highlights, shadows and soft gradients (recolour, do not flatten into
-a solid sticker):
-- Every painted wall (plaster, painted concrete): pure red #FF0000.
-- Accent / side / return walls (the secondary wall planes): pure green #00FF00.
-- Door frames, window frames, fascia, parapet edges, ledges, bands and trim: pure blue #0000FF.
-- Metal/iron railings and all wooden or iron doors: yellow #FFFF00.
-- No peeling, water stains, dust streaks, faded patches or graffiti — one clean uniform
-  hue per surface.
-
-FINISH unfinished walls: where a wall is bare cement, raw blockwork/brick, or patchy
-half-applied plaster, complete the plaster across the WHOLE wall into one smooth even
-paintable surface following the wall's existing plane, perspective and outline exactly —
-then paint that whole wall the same red #FF0000. Do NOT move or invent corners, windows,
-doors or edges. Do NOT plaster over intentional exposed-brick feature walls, natural
-stone, or decorative tile — those stay exactly as they are.
-
-KEEP UNCHANGED (shape & position): doors, windows, grilles, balconies, railings, columns,
-parapets, mouldings, ledges keep their exact shape and position — only paint colour
-changes. Keep roof, eaves, chimneys, wall-mounted AC units and drainpipes visible (they
-are part of the house, not clutter). Keep lighting, shadows, time of day, weather, sky,
-camera angle, perspective, framing and image dimensions. Do NOT widen, narrow or reshape
-the building. Finished/decorative stone, brick, tile, marble and wood stay in their
-original colour.
-
-OUTPUT: the same photograph, clutter removed, unfinished walls completed into smooth
-plaster, painted surfaces recoloured to the flat hues above (walls red, accent walls
-green, trim blue, railings+doors yellow), each keeping its original light and shade.
-Pixel-faithful to the original in shape, proportion and material.
-```
-
-## Notes
-
-- If the railing/door mask ever bleeds into another region, the yellow placeholder can be
-  swapped for any other unused primary (e.g. magenta `#FF00FF`) — just update the mapping
-  table; it still resolves to brown.
-- Extract masks by **hue**, not exact RGB, since the model will not output the literal hex
-  and applies its own lighting variation.
+- **Model:** Nano Banana Pro (`google/nano-banana-pro`, Gemini 3 Pro Image) for
+  the clean/repaint; the segmenter defaults to `google/nano-banana-2`.
+- **Resolution:** request **2K** — same price as 1K, sharper edges = cleaner
+  masks. 4K costs ~1.8× more. Set via `replicate.image-cleaner.resolution`.

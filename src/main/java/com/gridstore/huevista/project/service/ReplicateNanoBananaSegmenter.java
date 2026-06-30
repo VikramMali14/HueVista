@@ -125,7 +125,9 @@ public class ReplicateNanoBananaSegmenter {
     /**
      * Generates a SINGLE color-coded segmentation mask covering all three
      * paint categories at once. Red = main wall, Green = accent wall,
-     * Blue = trim, Black = everything else. The caller splits the image
+     * Blue = trim, Black = everything else (including the door panels and
+     * metal railings — those are kept as fixed dark-brown features, never
+     * recoloured, so they fall in Black). The caller splits the image
      * into per-category binary masks server-side via
      * {@link MaskProcessor#splitColorCodedMask}.
      *
@@ -221,15 +223,21 @@ public class ReplicateNanoBananaSegmenter {
 
     private static final String COLOR_CODED_TAIL =
             "- BLUE pixels (#0000FF) — TRIM, borders and frames: window frames, "
-          + "door frames, skirting/baseboards, balcony railings, fascia under the "
+          + "door frames, skirting/baseboards, fascia under the "
           + "roof, parapet edges, decorative banding. Narrow elements typically "
-          + "painted in a contrasting trim color.\n\n"
+          + "painted in a contrasting trim color. (NOT the door panels themselves "
+          + "and NOT metal railings — those are kept as fixed dark-brown features, "
+          + "so mark them BLACK, below.)\n\n"
           + "- BLACK pixels (#000000) — everything else: sky, clouds, ground, "
           + "dirt, road, sidewalk, vegetation, trees, vehicles, furniture, floor, "
-          + "the doors themselves, glass panes inside windows, stone cladding, exposed "
+          + "the door panels/leaves themselves, metal and iron railings (balcony "
+          + "railings, staircase railings, handrails, balustrades), glass panes "
+          + "inside windows, stone cladding, exposed "
           + "brick, ceramic tile, marble, wood, AC units, light fixtures, electrical "
           + "boxes, drainpipes, signage, mailboxes, decor, people — anything "
-          + "that is NOT a paintable wall or trim surface.\n\n"
+          + "that is NOT a paintable wall or trim surface. Doors and railings are "
+          + "kept as fixed dark-brown features, so they belong here — never in a "
+          + "recoloured category.\n\n"
           + "RULES:\n"
           + "- Use ONLY these four colors (pure red, green, blue, black). No other "
           + "colors at all. No grey, no gradients, no shading.\n"

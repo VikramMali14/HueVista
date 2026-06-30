@@ -183,14 +183,21 @@ public class ImageCleanerService {
      * can; the precise per-region colours are still enforced downstream by
      * the mask-based recolor, which uses the same hexes.
      */
-    // Reference repaint palette. MUST stay in sync with
+    // Reference repaint palette. The WALL/BORDER hexes MUST stay in sync with
     // SegmentationService#defaultHexFor and the frontend DEFAULT_HEX_FOR_KIND so
     // the generative repaint here and the downstream mask-based recolor agree on
-    // the same colours.
+    // the same colours. DOOR_RAILING is intentionally NOT in that set: doors and
+    // railings get no recolourable region (the segmenter excludes them), so this
+    // brown lives only here — it's the final colour those surfaces keep.
     private static final String EXT_WALL = "#e2e2d9";      // light greige
     private static final String EXT_BORDER = "#585858";    // mid grey trim
     private static final String INT_WALL = "#baad9c";      // soft sage
     private static final String INT_BORDER = "#432211";    // deep brown trim
+    // Doors (wood/iron leaves) and metal/iron railings are KEPT as a fixed
+    // dark-brown wood/metal feature: painted brown here, then deliberately
+    // excluded from the recolour masks downstream (the segmenter marks them
+    // BLACK), so the user never recolours them — they stay this brown.
+    private static final String DOOR_RAILING = "#5c4033";  // dark brown
 
     private static final String CLEAN_PROMPT_EXTERIOR =
             "Look at this photograph of a house. Edit the image so the house "
@@ -213,9 +220,14 @@ public class ImageCleanerService {
           + "wall a single even coat of " + EXT_WALL + " (a soft light greige). "
           + "No peeling, no water stains, no dust streaks, no faded patches, no "
           + "graffiti — one clean uniform colour across the whole wall.\n"
-          + "- Door frames, window frames, balcony railings, fascia, parapet edges "
+          + "- Door frames, window frames, fascia, parapet edges "
           + "and trim: repaint these the trim/border colour " + EXT_BORDER
           + " (a mid grey), evenly.\n"
+          + "- Door leaves/panels (the wooden or iron doors themselves) and all "
+          + "metal/iron railings — balcony railings, staircase railings, handrails: "
+          + "repaint these a dark brown " + DOOR_RAILING + ", evenly, keeping their "
+          + "natural wood/metal look. Do NOT paint doors or railings the wall or "
+          + "trim colour.\n"
           + "- Preserve each surface's existing light and shade: keep the original "
           + "highlights, shadows and soft gradients so the new colour still looks "
           + "three-dimensional. Recolour the surfaces — do not flatten them into a "
@@ -256,7 +268,7 @@ public class ImageCleanerService {
           + "OUTPUT: The same photograph with the clutter removed, any unfinished "
           + "walls completed into smooth paintable plaster, and the painted surfaces "
           + "repainted in the reference colours above (walls " + EXT_WALL + ", trim "
-          + EXT_BORDER + "). The house must "
+          + EXT_BORDER + ", doors and railings " + DOOR_RAILING + "). The house must "
           + "remain pixel-faithful to the original in shape, proportion and material; "
           + "only the colour of painted surfaces changes, and non-painted materials "
           + "are never altered.\n";
@@ -285,6 +297,8 @@ public class ImageCleanerService {
           + " (a soft sage). No stains, no patchiness.\n"
           + "- Trim, skirting, door frames and window frames: repaint these the "
           + "trim/border colour " + INT_BORDER + " (a deep brown), even coat.\n"
+          + "- Door leaves/panels and any metal/iron railings: repaint these a dark "
+          + "brown " + DOOR_RAILING + ", keeping their natural wood/metal look.\n"
           + "- Preserve each surface's existing light and shade — keep the highlights, "
           + "shadows and soft gradients so the new colour still looks three-dimensional. "
           + "Recolour the surfaces, do not flatten them.\n"
@@ -299,7 +313,8 @@ public class ImageCleanerService {
           + "- Flooring material, lighting, shadows, time of day.\n"
           + "- Camera angle, perspective, framing, image dimensions, room proportions.\n\n"
           + "OUTPUT: the same room, decluttered, with walls repainted " + INT_WALL
-          + " and trim " + INT_BORDER + ". Pixel-faithful in structure and materials; "
+          + ", trim " + INT_BORDER + " and doors/railings " + DOOR_RAILING
+          + ". Pixel-faithful in structure and materials; "
           + "change only the colour of painted surfaces and never restyle the room.\n";
 
     private String startPrediction(Map<String, Object> input) {
