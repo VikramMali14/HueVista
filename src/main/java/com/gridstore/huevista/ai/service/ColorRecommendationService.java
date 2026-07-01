@@ -68,7 +68,11 @@ public class ColorRecommendationService {
         Project project = projectRepository.findByIdAndUserId(projectId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
 
-        billingService.checkAndIncrementAiUsage(userId);
+        // Gate WITHOUT charging: throws 402 when there's no active subscription or the
+        // monthly limit is hit. The credit is only charged once Claude actually returns
+        // usable palettes (below), so a failed AI call never costs a preview — matching
+        // the segmentation path.
+        billingService.assertAiQuotaAvailable(userId);
 
         String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
         String imageType = project.getImage().getImageType() != null
@@ -104,6 +108,12 @@ public class ColorRecommendationService {
                             ? MatchedShade.from(trimShade, DeltaEMatcher.computeDeltaE(trimHex, trimShade.getHexCode()))
                             : null)
                     .build());
+        }
+
+        // Charge one preview now that the AI produced palettes; an empty result is
+        // treated as a failed generation and stays free.
+        if (!combos.isEmpty()) {
+            billingService.incrementAiUsage(userId);
         }
 
         log.info("Color recommendations generated: project={} combos={}", projectId, combos.size());

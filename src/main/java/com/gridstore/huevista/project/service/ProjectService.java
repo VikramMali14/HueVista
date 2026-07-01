@@ -162,6 +162,13 @@ public class ProjectService {
     public ProjectResponse requestSegmentation(String userId, String projectId) {
         Project project = findOwned(userId, projectId);
 
+        // Gate on the retailer's own AI quota WITHOUT charging yet: throws 402 when they
+        // have no active subscription or have hit their monthly limit. This mirrors the
+        // guest path (requestGuestSegmentation) — segmentation is the billable AI preview,
+        // and the credit is only charged once the run actually produces walls
+        // (SegmentationService bills on success), so a failed run stays free.
+        billingService.assertAiQuotaAvailable(userId);
+
         // Allow re-triggering if the previous run never finished (e.g. it
         // crashed, the worker JVM restarted, or an upstream API like Gemini
         // returned a quota / payment error and bubbled out before

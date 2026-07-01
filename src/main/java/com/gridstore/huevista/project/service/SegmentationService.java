@@ -162,9 +162,14 @@ public class SegmentationService {
             if (tryReplicateNanoBananaSegmentation(projectId, userId, maskImageUrl,
                     uploadedImage.getImageType())) {
                 markSegmented(projectId);
-                // Guest runs are billed to the issuing shop, but only now that walls
-                // were actually produced — a failed run never costs the shop a credit.
-                billGuestSegmentationIfNeeded(guestAccessCodeId);
+                // Charge one AI preview now that walls were actually produced — a failed
+                // run never costs a credit. Guest runs bill the issuing shop; a retailer's
+                // own run bills the retailer (gated upfront in requestSegmentation).
+                if (guestAccessCodeId != null) {
+                    billGuestSegmentationIfNeeded(guestAccessCodeId);
+                } else {
+                    billingService.incrementAiUsage(ownerUserId);
+                }
                 log.info("Segmentation complete: project={}", projectId);
                 return;
             }
