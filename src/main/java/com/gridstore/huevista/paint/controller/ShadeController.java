@@ -4,6 +4,7 @@ import com.gridstore.huevista.ai.util.DeltaEMatcher;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.paint.dto.AsianPaintsApiResponse;
 import com.gridstore.huevista.paint.dto.ShadeResponse;
+import com.gridstore.huevista.paint.dto.ShadeSummaryResponse;
 import com.gridstore.huevista.paint.model.Shade;
 import com.gridstore.huevista.paint.repository.ShadeRepository;
 import com.gridstore.huevista.paint.service.ShadeSeederService;
@@ -41,14 +42,17 @@ public class ShadeController {
                     - `tonality` — `light`, `medium`, or `dark`
                     - `search` — matches shade name (partial) or exact shade code
 
-                    Results are sorted by popularity ascending.
+                    Results are sorted by popularity ascending. This is a LIST projection
+                    (`ShadeSummaryResponse`) — the AI-enriched prose (description, style tags,
+                    mood descriptors) and other detail-only fields are served by
+                    `GET /api/shades/{brand}/{code}`.
                     """
     )
     @ApiResponse(responseCode = "200", description = "Shade list")
     @SecurityRequirements
     @Cacheable(value = "shades", key = "#brand + ':' + #family + ':' + #temperature + ':' + #tonality + ':' + #search")
     @GetMapping("/api/shades")
-    public List<ShadeResponse> getShades(
+    public List<ShadeSummaryResponse> getShades(
             @Parameter(description = "Brand slug, e.g. asian-paints") @RequestParam(required = false) String brand,
             @Parameter(description = "Shade family, e.g. off whites") @RequestParam(required = false) String family,
             @Parameter(description = "cool / warm / neutral") @RequestParam(required = false) String temperature,
@@ -58,21 +62,21 @@ public class ShadeController {
         return shadeRepository
                 .findWithFilters(brand, family, temperature, tonality, search)
                 .stream()
-                .map(ShadeResponse::from)
+                .map(ShadeSummaryResponse::from)
                 .toList();
     }
 
-    @Operation(summary = "List shades by brand", description = "Returns all shades for a brand slug ordered by popularity.")
+    @Operation(summary = "List shades by brand", description = "Returns all shades for a brand slug ordered by popularity (LIST projection; see the filtered list endpoint).")
     @ApiResponse(responseCode = "200", description = "Shade list for the brand")
     @SecurityRequirements
     @GetMapping("/api/shades/{brand}")
-    public ResponseEntity<List<ShadeResponse>> getShadesByBrand(
+    public ResponseEntity<List<ShadeSummaryResponse>> getShadesByBrand(
             @Parameter(description = "Brand slug, e.g. asian-paints") @PathVariable String brand
     ) {
-        List<ShadeResponse> shades = shadeRepository
+        List<ShadeSummaryResponse> shades = shadeRepository
                 .findByBrandSlugOrderByPopularityAsc(brand)
                 .stream()
-                .map(ShadeResponse::from)
+                .map(ShadeSummaryResponse::from)
                 .toList();
         return ResponseEntity.ok(shades);
     }

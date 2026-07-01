@@ -96,6 +96,51 @@ class ShadeControllerIntegrationTest {
     }
 
     @Test
+    void listShades_omitsHeavyDetailFields_butDetailKeepsThem() throws Exception {
+        // A fully AI-enriched shade — the prose fields below are what bloated the
+        // list response past Next.js's 2 MB cache ceiling when shipped for ~9.5k rows.
+        shadeRepository.save(Shade.builder()
+                .brand(asianPaints)
+                .shadeCode("7001")
+                .name("Enriched Sky")
+                .hexCode("#AEC6E8")
+                .shadeFamily("blues")
+                .colorTemperature("cool")
+                .tonality("light")
+                .popularity(5)
+                .lrv(new BigDecimal("62.30"))
+                .rgbR(174).rgbG(198).rgbB(232)
+                .styleTags(List.of("modern", "airy"))
+                .moodDescriptors(List.of("calm", "serene"))
+                .finishRecommendations(List.of("Matt", "Satin"))
+                .suitableRooms(List.of("bedroom"))
+                .pageUrl("https://example.com/shades/asian-paints/7001")
+                .aiDescription("A soft, airy blue that brings a serene calm to bedrooms.")
+                .build());
+
+        // LIST: keeps the lightweight fields the catalogue renders...
+        mockMvc.perform(get("/api/shades").param("search", "7001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].name").value("Enriched Sky"))
+                .andExpect(jsonPath("$[0].hexCode").value("#AEC6E8"))
+                .andExpect(jsonPath("$[0].finishRecommendations").isArray())
+                // ...but drops the heavy prose fields that caused the 4 MB payload.
+                .andExpect(jsonPath("$[0].aiDescription").doesNotExist())
+                .andExpect(jsonPath("$[0].styleTags").doesNotExist())
+                .andExpect(jsonPath("$[0].moodDescriptors").doesNotExist())
+                .andExpect(jsonPath("$[0].suitableRooms").doesNotExist())
+                .andExpect(jsonPath("$[0].pageUrl").doesNotExist());
+
+        // DETAIL: still serves the full AI-enriched record.
+        mockMvc.perform(get("/api/shades/asian-paints/7001"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.aiDescription").value("A soft, airy blue that brings a serene calm to bedrooms."))
+                .andExpect(jsonPath("$.styleTags").isArray())
+                .andExpect(jsonPath("$.suitableRooms").isArray());
+    }
+
+    @Test
     void listByBrand_returnsBrandShades() throws Exception {
         mockMvc.perform(get("/api/shades/asian-paints"))
                 .andExpect(status().isOk())
