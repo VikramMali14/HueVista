@@ -68,52 +68,58 @@ public class ColorRecommendationService {
         Project project = projectRepository.findByIdAndUserId(projectId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
 
-        // Gate WITHOUT charging: throws 402 when there's no active subscription or the
-        // monthly limit is hit. The credit is only charged once Claude actually returns
-        // usable palettes (below), so a failed AI call never costs a preview — matching
-        // the segmentation path.
-        billingService.assertAiQuotaAvailable(userId);
-
-        String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
         String imageType = project.getImage().getImageType() != null
                 ? project.getImage().getImageType().name()
                 : "UNKNOWN";
 
-        List<Map<String, Object>> rawCombos = callClaude(imageUrl);
-        List<Shade> catalog = shadeRepository.findAll();
+        // Reserve one preview up-front, atomically and limit-gated: throws 402 when there's
+        // no active subscription or the monthly limit is hit. Doing the check and the charge
+        // in one step stops concurrent requests from both spending the last credit. The
+        // reservation is refunded below if the AI call fails or returns nothing, so a failed
+        // run never costs a preview — matching the segmentation path.
+        billingService.reserveAiUsage(userId);
 
         List<ColorCombo> combos = new ArrayList<>();
-        for (Map<String, Object> raw : rawCombos) {
-            String primaryHex = normalize((String) raw.get("primaryHex"));
-            String accentHex = normalize((String) raw.get("accentHex"));
-            String trimHex = normalize((String) raw.get("trimHex"));
+        try {
+            String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
+            List<Map<String, Object>> rawCombos = callClaude(imageUrl);
+            List<Shade> catalog = shadeRepository.findAll();
 
-            Shade primaryShade = DeltaEMatcher.findNearest(primaryHex, catalog);
-            Shade accentShade = DeltaEMatcher.findNearest(accentHex, catalog);
-            Shade trimShade = DeltaEMatcher.findNearest(trimHex, catalog);
+            for (Map<String, Object> raw : rawCombos) {
+                String primaryHex = normalize((String) raw.get("primaryHex"));
+                String accentHex = normalize((String) raw.get("accentHex"));
+                String trimHex = normalize((String) raw.get("trimHex"));
 
-            combos.add(ColorCombo.builder()
-                    .name((String) raw.get("name"))
-                    .rationale((String) raw.get("rationale"))
-                    .primaryHex(primaryHex)
-                    .primaryShade(primaryShade != null
-                            ? MatchedShade.from(primaryShade, DeltaEMatcher.computeDeltaE(primaryHex, primaryShade.getHexCode()))
-                            : null)
-                    .accentHex(accentHex)
-                    .accentShade(accentShade != null
-                            ? MatchedShade.from(accentShade, DeltaEMatcher.computeDeltaE(accentHex, accentShade.getHexCode()))
-                            : null)
-                    .trimHex(trimHex)
-                    .trimShade(trimShade != null
-                            ? MatchedShade.from(trimShade, DeltaEMatcher.computeDeltaE(trimHex, trimShade.getHexCode()))
-                            : null)
-                    .build());
+                Shade primaryShade = DeltaEMatcher.findNearest(primaryHex, catalog);
+                Shade accentShade = DeltaEMatcher.findNearest(accentHex, catalog);
+                Shade trimShade = DeltaEMatcher.findNearest(trimHex, catalog);
+
+                combos.add(ColorCombo.builder()
+                        .name((String) raw.get("name"))
+                        .rationale((String) raw.get("rationale"))
+                        .primaryHex(primaryHex)
+                        .primaryShade(primaryShade != null
+                                ? MatchedShade.from(primaryShade, DeltaEMatcher.computeDeltaE(primaryHex, primaryShade.getHexCode()))
+                                : null)
+                        .accentHex(accentHex)
+                        .accentShade(accentShade != null
+                                ? MatchedShade.from(accentShade, DeltaEMatcher.computeDeltaE(accentHex, accentShade.getHexCode()))
+                                : null)
+                        .trimHex(trimHex)
+                        .trimShade(trimShade != null
+                                ? MatchedShade.from(trimShade, DeltaEMatcher.computeDeltaE(trimHex, trimShade.getHexCode()))
+                                : null)
+                        .build());
+            }
+        } catch (RuntimeException e) {
+            // Generation failed — hand the reserved credit back so the run stays free.
+            billingService.refundAiUsage(userId);
+            throw e;
         }
 
-        // Charge one preview now that the AI produced palettes; an empty result is
-        // treated as a failed generation and stays free.
-        if (!combos.isEmpty()) {
-            billingService.incrementAiUsage(userId);
+        // An empty result is treated as a failed generation and stays free.
+        if (combos.isEmpty()) {
+            billingService.refundAiUsage(userId);
         }
 
         log.info("Color recommendations generated: project={} combos={}", projectId, combos.size());
