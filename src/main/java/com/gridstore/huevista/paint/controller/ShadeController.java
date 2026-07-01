@@ -7,6 +7,7 @@ import com.gridstore.huevista.paint.dto.ShadeResponse;
 import com.gridstore.huevista.paint.dto.ShadeSummaryResponse;
 import com.gridstore.huevista.paint.model.Shade;
 import com.gridstore.huevista.paint.repository.ShadeRepository;
+import com.gridstore.huevista.paint.service.ShadeAdminService;
 import com.gridstore.huevista.paint.service.ShadeSeederService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -31,6 +32,7 @@ public class ShadeController {
 
     private final ShadeRepository shadeRepository;
     private final ShadeSeederService seederService;
+    private final ShadeAdminService shadeAdminService;
 
     @Operation(
             summary = "List shades with filters",
@@ -186,6 +188,31 @@ public class ShadeController {
                 "message", seeded > 0
                         ? "Successfully seeded " + seeded + " " + name + " shades"
                         : "No new shades to seed -- all already exist"
+        ));
+    }
+
+    @Operation(
+            summary = "Delete the entire shade catalog (admin)",
+            description = """
+                    Removes **every** shade across all brands and clears the applied-colour
+                    reference (shade code + hex) each project region holds, so nothing is left
+                    pointing at a deleted shade. The shade caches are evicted too.
+
+                    Destructive and irreversible — intended for wiping the catalog before a
+                    fresh re-seed via the admin seed/upload endpoints. Brands themselves are
+                    left intact.
+                    """
+    )
+    @ApiResponse(responseCode = "200", description = "Counts of deleted shades and cleared region references")
+    @PreAuthorize("hasRole('ADMIN')")
+    @DeleteMapping("/api/admin/paint/shades")
+    public ResponseEntity<Map<String, Object>> deleteAllShades() {
+        ShadeAdminService.DeleteResult result = shadeAdminService.deleteAllShades();
+        return ResponseEntity.ok(Map.of(
+                "deletedShades", result.deletedShades(),
+                "clearedRegionReferences", result.clearedRegions(),
+                "message", "Deleted " + result.deletedShades() + " shades and cleared "
+                        + result.clearedRegions() + " region colour reference(s)"
         ));
     }
 
