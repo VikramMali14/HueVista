@@ -108,9 +108,6 @@ public class SecurityConfig {
                 .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
                 // Shade catalog — public read-only
                 .requestMatchers(HttpMethod.GET, "/api/shades", "/api/shades/**").permitAll()
-                // Public shade bulk-upload page: list companies + submit a JSON array of shades
-                .requestMatchers(HttpMethod.GET, "/api/shade-upload/brands").permitAll()
-                .requestMatchers(HttpMethod.POST, "/api/shade-upload").permitAll()
                 // Shared project view — public, no auth
                 .requestMatchers(HttpMethod.GET, "/api/share/**").permitAll()
                 // Anonymous guest redemption of a shop access code — issues a guest token

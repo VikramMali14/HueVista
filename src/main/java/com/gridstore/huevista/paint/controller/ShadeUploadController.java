@@ -6,38 +6,38 @@ import com.gridstore.huevista.paint.dto.ShadeUploadResponse;
 import com.gridstore.huevista.paint.repository.BrandRepository;
 import com.gridstore.huevista.paint.service.ShadeUploadService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
 /**
- * Public bulk-upload of a company's shades from a JSON array (the /shade-upload page).
- * Kept deliberately simple: list companies for the dropdown, and accept an array of
- * shades for a chosen (or newly named) company. No AI enrichment runs here.
+ * Admin-only bulk import of a company's shades from a JSON array (the admin
+ * /admin/shades page). List companies for the dropdown, and accept an array of shades
+ * for a chosen (or newly named) company. No AI enrichment runs here. Gated to
+ * ROLE_ADMIN both by the {@code /api/admin/**} security rule and {@code @PreAuthorize}.
  */
 @RestController
-@RequestMapping("/api/shade-upload")
+@RequestMapping("/api/admin/paint")
 @RequiredArgsConstructor
-@Tag(name = "Shade upload", description = "Public bulk import of a company's shades")
+@PreAuthorize("hasRole('ADMIN')")
+@Tag(name = "Shade upload", description = "Admin bulk import of a company's shades")
 public class ShadeUploadController {
 
     private final ShadeUploadService uploadService;
     private final BrandRepository brandRepository;
 
     @Operation(summary = "List companies for the upload dropdown")
-    @SecurityRequirements
     @GetMapping("/brands")
     public List<BrandResponse> brands() {
         return brandRepository.findAllByOrderByNameAsc().stream().map(BrandResponse::from).toList();
     }
 
     @Operation(summary = "Bulk upload shades for a company (existing or new)")
-    @SecurityRequirements
-    @PostMapping
+    @PostMapping("/upload")
     public ResponseEntity<ShadeUploadResponse> upload(@RequestBody ShadeUploadRequest request) {
         return ResponseEntity.ok(
                 uploadService.upload(request.getBrandSlug(), request.getBrandName(), request.getShades()));
