@@ -18,4 +18,11 @@ public class ShadeUploadRequest {
     private String brandName;
 
     private List<ShadeUploadItem> shades;
+
+    /**
+     * Whether to enrich each new shade with Claude (style tags, mood, finishes,
+     * description). Defaults to true when omitted; set false to skip the AI step for a
+     * fast, no-cost import.
+     */
+    private Boolean enrich;
 }

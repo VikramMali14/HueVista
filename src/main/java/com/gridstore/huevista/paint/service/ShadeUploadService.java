@@ -23,10 +23,13 @@ import java.util.Set;
 /**
  * Bulk-imports a company's shades from a plain JSON array (the public upload page).
  *
- * <p>Unlike {@link ShadeSeederService}, this path does NO AI enrichment — it only
- * computes the pure-maths fields (RGB split + LRV) from the hex, so an upload is fast,
- * free and side-effect-light. Idempotent: shades already present for the company (by
- * shade code) are skipped, as are duplicate codes within the same file.
+ * <p>Always computes the pure-maths fields (RGB split + LRV) from the hex. When
+ * {@code enrich} is set, it also runs each new shade through Claude — the same
+ * {@link ShadeEnrichmentService} the seeder uses — to fill in style tags, mood
+ * descriptors, finish recommendations and a one-line description. Enrichment degrades
+ * gracefully: if Claude is unavailable those fields are just left empty. Idempotent:
+ * shades already present for the company (by shade code) are skipped, as are duplicate
+ * codes within the same file.
  */
 @Slf4j
 @Service
@@ -38,9 +41,11 @@ public class ShadeUploadService {
 
     private final BrandRepository brandRepository;
     private final ShadeRepository shadeRepository;
+    private final ShadeEnrichmentService enrichmentService;
 
     @Transactional
-    public ShadeUploadResponse upload(String brandSlug, String brandName, List<ShadeUploadItem> shades) {
+    public ShadeUploadResponse upload(String brandSlug, String brandName,
+                                      List<ShadeUploadItem> shades, boolean enrich) {
         if (shades == null || shades.isEmpty()) {
             throw new IllegalArgumentException("Upload a non-empty JSON array of shades.");
         }
@@ -105,11 +110,15 @@ public class ShadeUploadService {
                     .build());
         }
 
+        if (enrich && !toSave.isEmpty()) {
+            applyAiEnrichment(toSave);
+        }
+
         if (!toSave.isEmpty()) {
             shadeRepository.saveAll(toSave);
         }
-        log.info("Shade upload: brand='{}' total={} inserted={} skipped={}",
-                brand.getName(), total, toSave.size(), skipped);
+        log.info("Shade upload: brand='{}' total={} inserted={} skipped={} enriched={}",
+                brand.getName(), total, toSave.size(), skipped, enrich);
 
         return ShadeUploadResponse.builder()
                 .brand(brand.getName())
@@ -141,7 +150,40 @@ public class ShadeUploadService {
         });
     }
 
+    /**
+     * Runs the newly-inserted shades through Claude and copies the style tags, mood
+     * descriptors, finish recommendations and description back onto each shade (matched by
+     * position — {@link ShadeEnrichmentService#enrichBatch} returns one result per input in
+     * order). Best-effort: a failed batch just leaves those fields empty, so the upload
+     * still succeeds.
+     */
+    private void applyAiEnrichment(List<Shade> shades) {
+        List<ShadeEnrichmentService.ShadeInput> inputs = shades.stream()
+                .map(s -> new ShadeEnrichmentService.ShadeInput(
+                        s.getName(),
+                        s.getHexCode(),
+                        s.getShadeFamily(),
+                        s.getColorTemperature(),
+                        s.getTonality()))
+                .toList();
+
+        List<ShadeEnrichmentService.EnrichmentResult> results = enrichmentService.enrichBatch(inputs);
+
+        for (int i = 0; i < shades.size() && i < results.size(); i++) {
+            ShadeEnrichmentService.EnrichmentResult r = results.get(i);
+            Shade s = shades.get(i);
+            s.setStyleTags(emptyToNull(r.styleTags()));
+            s.setMoodDescriptors(emptyToNull(r.moodDescriptors()));
+            s.setFinishRecommendations(emptyToNull(r.finishRecommendations()));
+            s.setAiDescription(trimToNull(r.aiDescription()));
+        }
+    }
+
     // ── small helpers ────────────────────────────────────────────────────────
+
+    private static List<String> emptyToNull(List<String> in) {
+        return (in == null || in.isEmpty()) ? null : in;
+    }
 
     private static String nullToEmpty(String s) {
         return s == null ? "" : s;

@@ -39,7 +39,9 @@ public class ShadeUploadController {
     @Operation(summary = "Bulk upload shades for a company (existing or new)")
     @PostMapping("/upload")
     public ResponseEntity<ShadeUploadResponse> upload(@RequestBody ShadeUploadRequest request) {
-        return ResponseEntity.ok(
-                uploadService.upload(request.getBrandSlug(), request.getBrandName(), request.getShades()));
+        // Enrich with Claude by default; only skip if the caller explicitly opts out.
+        boolean enrich = request.getEnrich() == null || request.getEnrich();
+        return ResponseEntity.ok(uploadService.upload(
+                request.getBrandSlug(), request.getBrandName(), request.getShades(), enrich));
     }
 }
