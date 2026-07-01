@@ -4,6 +4,7 @@ import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.billing.dto.CreateSubscriptionRequest;
 import com.gridstore.huevista.billing.dto.SubscriptionResponse;
+import com.gridstore.huevista.billing.dto.VerifySubscriptionRequest;
 import com.gridstore.huevista.billing.model.Plan;
 import com.gridstore.huevista.billing.model.Subscription;
 import com.gridstore.huevista.billing.model.SubscriptionStatus;
@@ -23,7 +24,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 
 @Slf4j
 @Service
@@ -44,7 +44,11 @@ public class BillingService {
     @Value("${razorpay.plan.business:}")
     private String planIdBusiness;
 
-    private static final Map<Plan, String> RAZORPAY_PLAN_IDS_FIELD = Map.of();
+    @Value("${razorpay.key-id:}")
+    private String keyId;
+
+    @Value("${razorpay.key-secret:}")
+    private String keySecret;
 
     @Transactional
     public SubscriptionResponse createSubscription(String userId, CreateSubscriptionRequest request) {
@@ -90,12 +94,64 @@ public class BillingService {
 
             subscriptionRepository.save(sub);
             log.info("Subscription created: user={} plan={} rzpId={}", userId, request.getPlan(), rzpSubId);
-            return SubscriptionResponse.from(sub, paymentUrl);
+            // razorpayKeyId lets the browser open the in-app Checkout for this subscription;
+            // paymentUrl (hosted short_url) is kept as a fallback for clients that can't.
+            return SubscriptionResponse.from(sub, paymentUrl, keyId);
 
         } catch (RazorpayException e) {
             log.error("Razorpay subscription creation failed: {}", e.getMessage());
             throw new IllegalStateException("Payment gateway error: " + e.getMessage());
         }
+    }
+
+    /**
+     * Verify the Razorpay Checkout success payload and activate the subscription
+     * synchronously, so the retailer has an ACTIVE plan the moment they return from
+     * payment instead of waiting on the {@code subscription.activated} webhook (which
+     * may be delayed or, in a not-yet-configured environment, never arrive).
+     *
+     * The {@code subscription.charged}/{@code payment.captured} webhook remains the
+     * source of truth for renewals; this only fast-paths the first activation. Safe to
+     * call more than once — an already-active subscription is returned unchanged.
+     */
+    @Transactional
+    public SubscriptionResponse verifyAndActivateSubscription(String userId, VerifySubscriptionRequest request) {
+        // HMAC-SHA256 over "<payment_id>|<subscription_id>" must equal the signature
+        // Razorpay handed the browser. This proves the payment really came from Razorpay.
+        String payload = request.getPaymentId() + "|" + request.getSubscriptionId();
+        try {
+            if (!com.razorpay.Utils.verifySignature(payload, request.getSignature(), keySecret)) {
+                throw new SecurityException("Payment verification failed.");
+            }
+        } catch (RazorpayException e) {
+            log.error("Razorpay subscription signature verification error: {}", e.getMessage());
+            throw new SecurityException("Payment verification error.");
+        }
+
+        Subscription sub = subscriptionRepository.findByRazorpaySubscriptionId(request.getSubscriptionId())
+                .orElseThrow(() -> new ResourceNotFoundException("Subscription not found"));
+
+        // The signature only proves the payment is genuine — bind it to the caller so a
+        // payment for someone else's subscription can't activate this account.
+        if (!userId.equals(sub.getUser().getId())) {
+            log.warn("Subscription verify ownership mismatch: user={} subId={} owner={}",
+                    userId, request.getSubscriptionId(), sub.getUser().getId());
+            throw new SecurityException("Payment verification failed.");
+        }
+
+        if (sub.getStatus() != SubscriptionStatus.ACTIVE) {
+            LocalDateTime now = LocalDateTime.now();
+            sub.setStatus(SubscriptionStatus.ACTIVE);
+            sub.setTrial(false);
+            sub.setCurrentPeriodStart(now);
+            // Approximate the first monthly period; the renewal webhook corrects it later.
+            sub.setCurrentPeriodEnd(now.plusMonths(1));
+            subscriptionRepository.save(sub);
+            auditService.record(userId, "SUBSCRIPTION_ACTIVATE", "SUBSCRIPTION", sub.getId(),
+                    "plan=" + sub.getPlan() + " rzpId=" + request.getSubscriptionId());
+            log.info("Subscription activated via checkout verify: user={} subId={}", userId, sub.getId());
+        }
+        return SubscriptionResponse.from(sub);
     }
 
     /**

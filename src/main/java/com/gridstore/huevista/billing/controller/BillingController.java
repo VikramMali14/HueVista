@@ -2,6 +2,7 @@ package com.gridstore.huevista.billing.controller;
 
 import com.gridstore.huevista.billing.dto.CreateSubscriptionRequest;
 import com.gridstore.huevista.billing.dto.SubscriptionResponse;
+import com.gridstore.huevista.billing.dto.VerifySubscriptionRequest;
 import com.gridstore.huevista.billing.service.BillingService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -32,6 +33,16 @@ public class BillingController {
             @Valid @RequestBody CreateSubscriptionRequest request) {
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(billingService.createSubscription(userDetails.getUsername(), request));
+    }
+
+    @Operation(summary = "Verify subscription payment",
+            description = "Verifies the Razorpay Checkout signature and activates the subscription immediately.")
+    @PostMapping("/subscriptions/verify")
+    public ResponseEntity<SubscriptionResponse> verifySubscription(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Valid @RequestBody VerifySubscriptionRequest request) {
+        return ResponseEntity.ok(
+                billingService.verifyAndActivateSubscription(userDetails.getUsername(), request));
     }
 
     @Operation(summary = "Get current subscription", description = "Returns the current (or most recent) subscription with usage stats.")
