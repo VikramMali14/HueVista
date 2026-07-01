@@ -46,4 +46,18 @@ public interface RegionRepository extends JpaRepository<Region, Long> {
     @Query("UPDATE Region r SET r.appliedShadeCode = :shadeCode, r.appliedHexCode = :hexCode " +
             "WHERE r.id = :regionId AND r.project.id = :projectId")
     int updateAppliedColor(Long regionId, String projectId, String shadeCode, String hexCode);
+
+    /**
+     * Clears the applied colour (shade code + hex) on every region that still carries one.
+     * Regions reference a shade by plain code, not a foreign key, so when the shade
+     * catalogue is wiped these strings would otherwise dangle. Used by the admin
+     * "delete all shades" operation.
+     *
+     * @return the number of regions updated
+     */
+    @Modifying
+    @Transactional
+    @Query("UPDATE Region r SET r.appliedShadeCode = NULL, r.appliedHexCode = NULL " +
+            "WHERE r.appliedShadeCode IS NOT NULL OR r.appliedHexCode IS NOT NULL")
+    int clearAllAppliedColors();
 }
