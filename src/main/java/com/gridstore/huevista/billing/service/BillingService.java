@@ -50,13 +50,27 @@ public class BillingService {
     @Value("${razorpay.key-secret:}")
     private String keySecret;
 
+    // Number of monthly billing cycles Razorpay runs before it auto-completes the
+    // subscription. Defaults to 120 (10 years) so an ongoing monthly plan does not
+    // silently stop after a year; lower it only if you truly want a fixed-term plan.
+    @Value("${razorpay.subscription.total-count:120}")
+    private int subscriptionTotalCount;
+
+    // Grace window before the daily safety-net job hard-expires a PAID subscription whose
+    // period has lapsed. Renewals are driven by webhooks, which can be delayed; without a
+    // grace period a late webhook would cut off a customer who has actually paid.
+    private static final int RENEWAL_GRACE_DAYS = 3;
+
     @Transactional
     public SubscriptionResponse createSubscription(String userId, CreateSubscriptionRequest request) {
         if (request.getPlan() == Plan.ENTERPRISE) {
             throw new IllegalArgumentException("Enterprise plans require manual setup. Please contact sales.");
         }
 
-        if (subscriptionRepository.existsByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE)) {
+        // A PAID subscription blocks creating another; an active free trial does NOT — the
+        // trialing retailer is upgrading, and the trial is superseded once the plan activates
+        // (see verifyAndActivateSubscription / activateSubscription).
+        if (subscriptionRepository.existsByUserIdAndStatusAndTrialFalse(userId, SubscriptionStatus.ACTIVE)) {
             throw new IllegalStateException("You already have an active subscription. Cancel it first.");
         }
 
@@ -71,7 +85,7 @@ public class BillingService {
         try {
             JSONObject subRequest = new JSONObject();
             subRequest.put("plan_id", razorpayPlanId);
-            subRequest.put("total_count", 12); // 12 billing cycles (1 year)
+            subRequest.put("total_count", subscriptionTotalCount);
             subRequest.put("quantity", request.getQuantity());
             subRequest.put("customer_notify", 1);
 
@@ -89,7 +103,9 @@ public class BillingService {
                     .plan(request.getPlan())
                     .status(SubscriptionStatus.CREATED)
                     .razorpaySubscriptionId(rzpSubId)
-                    .aiGenerationsLimit(request.getPlan().getMonthlyAiLimit())
+                    // quantity multiplies the amount Razorpay bills, so scale the AI quota by it
+                    // too — otherwise a customer paying Nx would still get a single plan's limit.
+                    .aiGenerationsLimit(scaledAiLimit(request.getPlan(), request.getQuantity()))
                     .build();
 
             subscriptionRepository.save(sub);
@@ -147,6 +163,9 @@ public class BillingService {
             // Approximate the first monthly period; the renewal webhook corrects it later.
             sub.setCurrentPeriodEnd(now.plusMonths(1));
             subscriptionRepository.save(sub);
+            // The retailer just paid — end any still-active free trial so they aren't left
+            // with two active subscriptions.
+            supersedeActiveTrials(sub.getUser().getId(), sub.getId());
             auditService.record(userId, "SUBSCRIPTION_ACTIVATE", "SUBSCRIPTION", sub.getId(),
                     "plan=" + sub.getPlan() + " rzpId=" + request.getSubscriptionId());
             log.info("Subscription activated via checkout verify: user={} subId={}", userId, sub.getId());
@@ -207,6 +226,16 @@ public class BillingService {
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
                 .orElseThrow(() -> new ResourceNotFoundException("No active subscription found"));
 
+        // A free trial has no Razorpay subscription to cancel — calling the gateway with a
+        // null id would blow up. Just end the trial locally.
+        if (sub.isTrial() || sub.getRazorpaySubscriptionId() == null || sub.getRazorpaySubscriptionId().isBlank()) {
+            sub.setStatus(SubscriptionStatus.EXPIRED);
+            subscriptionRepository.save(sub);
+            auditService.record(userId, "SUBSCRIPTION_CANCEL", "SUBSCRIPTION", sub.getId(), "trial=true");
+            log.info("Trial ended by cancel: user={} subId={}", userId, sub.getId());
+            return SubscriptionResponse.from(sub);
+        }
+
         try {
             JSONObject cancelRequest = new JSONObject();
             cancelRequest.put("cancel_at_cycle_end", 1);
@@ -224,35 +253,10 @@ public class BillingService {
     }
 
     /**
-     * Called before any AI generation. Throws if the user has no active subscription or has hit their limit.
-     * Increments the usage counter atomically within the same transaction.
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void checkAndIncrementAiUsage(String userId) {
-        // REQUIRES_NEW so the usage increment commits independently of the caller's transaction.
-        // The AI recommendation flow runs in a read-only transaction; with the old default the
-        // increment joined that read-only tx and was never flushed — the quota never decremented
-        // and was effectively unlimited.
-        Subscription sub = subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
-                .orElseThrow(() -> new QuotaExceededException(
-                        "No active subscription. Subscribe to use AI features."));
-
-        if (sub.getAiGenerationsUsed() >= sub.getAiGenerationsLimit()) {
-            throw new QuotaExceededException(
-                    "Monthly AI generation limit reached (" + sub.getAiGenerationsLimit() + "). " +
-                    "Upgrade your plan or wait for next billing cycle.");
-        }
-
-        sub.setAiGenerationsUsed(sub.getAiGenerationsUsed() + 1);
-        subscriptionRepository.save(sub);
-    }
-
-    /**
      * Read-only quota gate: throws if {@code userId} has no active subscription or has
-     * hit their limit, but does NOT increment. Used when the actual charge should only
-     * land once the AI work succeeds (see {@link #incrementAiUsage}) — e.g. guest
-     * wall-detection billed to the shop, so a failed run never costs a credit.
+     * hit their limit, but does NOT increment. Used as a cheap fail-fast pre-flight before
+     * the actual charge lands once the AI work succeeds (see {@link #incrementAiUsage}) —
+     * e.g. guest wall-detection billed to the shop, so a failed run never costs a credit.
      */
     @Transactional(readOnly = true)
     public void assertAiQuotaAvailable(String userId) {
@@ -268,19 +272,50 @@ public class BillingService {
     }
 
     /**
+     * Atomically reserve one AI generation up-front and limit-gated. The check and the
+     * increment are a single conditional UPDATE, so two concurrent requests can never both
+     * consume the last remaining credit (the old read-then-write let a user with 1 credit
+     * left fire N parallel requests and get N generations). Throws when there is no active
+     * subscription or the monthly limit is already reached. Pair with {@link #refundAiUsage}
+     * so a run that later fails returns its credit and stays free.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void reserveAiUsage(String userId) {
+        Subscription sub = subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+                .orElseThrow(() -> new QuotaExceededException(
+                        "No active subscription. Subscribe to use AI features."));
+        int reserved = subscriptionRepository.incrementAiUsageIfWithinLimit(sub.getId());
+        if (reserved == 0) {
+            throw new QuotaExceededException(
+                    "Monthly AI generation limit reached (" + sub.getAiGenerationsLimit() + "). " +
+                    "Upgrade your plan or wait for next billing cycle.");
+        }
+    }
+
+    /**
+     * Return a previously reserved credit when the AI work failed, so a failed run stays
+     * free. Best-effort and floored at zero. Commits independently of the caller.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void refundAiUsage(String userId) {
+        subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+                .ifPresent(sub -> subscriptionRepository.decrementAiUsage(sub.getId()));
+    }
+
+    /**
      * Charges one AI generation to {@code userId} once the work has actually succeeded.
-     * Best-effort and idempotent-ish: a missing subscription is a no-op (we never charge
-     * an account that can't be billed), and the increment is not limit-gated because the
-     * generation already happened. Commits independently of the caller.
+     * Best-effort: a missing subscription is a no-op (we never charge an account that can't
+     * be billed), and the increment is not limit-gated because the generation already
+     * happened. The increment is a single atomic UPDATE — no read-modify-write — so
+     * concurrent charges can't lose each other. Commits independently of the caller.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void incrementAiUsage(String userId) {
         subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
-                .ifPresent(sub -> {
-                    sub.setAiGenerationsUsed(sub.getAiGenerationsUsed() + 1);
-                    subscriptionRepository.save(sub);
-                });
+                .ifPresent(sub -> subscriptionRepository.incrementAiUsage(sub.getId()));
     }
 
     /**
@@ -290,9 +325,12 @@ public class BillingService {
     public void activateSubscription(String razorpaySubscriptionId, long chargeAt, long currentEnd) {
         subscriptionRepository.findByRazorpaySubscriptionId(razorpaySubscriptionId).ifPresent(sub -> {
             sub.setStatus(SubscriptionStatus.ACTIVE);
+            sub.setTrial(false);
             sub.setCurrentPeriodStart(LocalDateTime.now());
-            sub.setCurrentPeriodEnd(epochToLocalDateTime(currentEnd));
+            sub.setCurrentPeriodEnd(resolvePeriodEnd(currentEnd));
             subscriptionRepository.save(sub);
+            // End any still-active free trial now that a paid plan is live.
+            supersedeActiveTrials(sub.getUser().getId(), sub.getId());
             log.info("Subscription activated: {}", razorpaySubscriptionId);
         });
     }
@@ -342,29 +380,61 @@ public class BillingService {
             sub.setStatus(SubscriptionStatus.ACTIVE);
             sub.setAiGenerationsUsed(0);
             sub.setCurrentPeriodStart(LocalDateTime.now());
-            sub.setCurrentPeriodEnd(epochToLocalDateTime(currentEnd));
+            LocalDateTime newEnd = resolvePeriodEnd(currentEnd);
+            // Never shrink an already-known period end. subscription.charged carries the real
+            // current_end while a bare payment.captured only approximates +30 days, and the
+            // two events can arrive in either order for the same renewal.
+            if (sub.getCurrentPeriodEnd() == null || newEnd.isAfter(sub.getCurrentPeriodEnd())) {
+                sub.setCurrentPeriodEnd(newEnd);
+            }
             subscriptionRepository.save(sub);
             log.info("Subscription renewed, AI usage reset: {}", razorpaySubscriptionId);
         });
     }
 
     /**
-     * Safety net: expire any subscriptions whose period has ended and weren't renewed.
-     * Runs daily at 01:00.
+     * Safety net: expire subscriptions whose period has ended and weren't renewed.
+     * Runs daily at 01:00. Queries only the already-lapsed rows instead of scanning the
+     * whole table. A free trial has no renewal so it expires the moment its window passes;
+     * a PAID plan is renewed by webhook, so it is only hard-expired after a grace period —
+     * otherwise a delayed renewal webhook would cut off a customer who has actually paid.
      */
     @Scheduled(cron = "0 0 1 * * *")
     @Transactional
     public void expireStaleSubscriptions() {
         LocalDateTime now = LocalDateTime.now();
-        subscriptionRepository.findAll().stream()
-                .filter(s -> s.getStatus() == SubscriptionStatus.ACTIVE
-                        && s.getCurrentPeriodEnd() != null
-                        && s.getCurrentPeriodEnd().isBefore(now))
+        LocalDateTime paidCutoff = now.minusDays(RENEWAL_GRACE_DAYS);
+        subscriptionRepository.findByStatusAndCurrentPeriodEndBefore(SubscriptionStatus.ACTIVE, now)
                 .forEach(s -> {
-                    s.setStatus(SubscriptionStatus.EXPIRED);
-                    subscriptionRepository.save(s);
-                    log.info("Subscription expired: {}", s.getId());
+                    boolean expire = s.isTrial() || s.getCurrentPeriodEnd().isBefore(paidCutoff);
+                    if (expire) {
+                        s.setStatus(SubscriptionStatus.EXPIRED);
+                        subscriptionRepository.save(s);
+                        log.info("Subscription expired: id={} trial={}", s.getId(), s.isTrial());
+                    }
                 });
+    }
+
+    /**
+     * End any of {@code userId}'s active free trials except {@code keepSubId}, called when a
+     * paid plan goes live so a retailer never holds two active subscriptions at once.
+     */
+    private void supersedeActiveTrials(String userId, String keepSubId) {
+        subscriptionRepository.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE)
+                .forEach(existing -> {
+                    if (existing.isTrial() && !existing.getId().equals(keepSubId)) {
+                        existing.setStatus(SubscriptionStatus.EXPIRED);
+                        subscriptionRepository.save(existing);
+                        log.info("Trial superseded by paid activation: user={} trialSubId={}",
+                                userId, existing.getId());
+                    }
+                });
+    }
+
+    /** Scale a plan's monthly AI quota by the billed quantity, clamped to avoid int overflow. */
+    private int scaledAiLimit(Plan plan, int quantity) {
+        long scaled = (long) plan.getMonthlyAiLimit() * Math.max(1, quantity);
+        return scaled > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) scaled;
     }
 
     private String resolveRazorpayPlanId(Plan plan) {
@@ -376,7 +446,12 @@ public class BillingService {
         };
     }
 
-    private LocalDateTime epochToLocalDateTime(long epochSeconds) {
+    /** Convert Razorpay's epoch-seconds period end to local time, falling back to +30 days
+     *  when the payload didn't carry a usable value (e.g. a bare payment.captured). */
+    private LocalDateTime resolvePeriodEnd(long epochSeconds) {
+        if (epochSeconds <= 0) {
+            return LocalDateTime.now().plusDays(30);
+        }
         return java.time.Instant.ofEpochSecond(epochSeconds)
                 .atZone(java.time.ZoneId.systemDefault())
                 .toLocalDateTime();

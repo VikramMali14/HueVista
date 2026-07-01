@@ -67,13 +67,20 @@ public class RazorpayWebhookService {
                 String subId = entity.getJSONObject("subscription").getJSONObject("entity").getString("id");
                 billingService.markHalted(subId);
             }
+            case "subscription.charged" -> {
+                // Authoritative renewal event: carries the real current_end so period dates
+                // stay accurate instead of drifting off a 30-day approximation.
+                JSONObject sub = entity.getJSONObject("subscription").getJSONObject("entity");
+                billingService.handlePaymentCaptured(sub.getString("id"), sub.optLong("current_end", 0));
+            }
             case "payment.captured" -> {
+                // Fallback for renewals if subscription.charged isn't delivered. Pass 0 so the
+                // service falls back to a +30-day approximation (and never shrinks a period end
+                // subscription.charged may have already set accurately).
                 JSONObject payment = entity.getJSONObject("payment").getJSONObject("entity");
                 String subId = payment.optString("subscription_id", "");
                 if (!subId.isBlank()) {
-                    // Approximate next period end as 30 days from now; Razorpay will send subscription.charged too
-                    long approxNextEnd = System.currentTimeMillis() / 1000 + 30L * 24 * 3600;
-                    billingService.handlePaymentCaptured(subId, approxNextEnd);
+                    billingService.handlePaymentCaptured(subId, 0);
                 }
             }
             default -> log.debug("Unhandled Razorpay event: {}", eventType);
