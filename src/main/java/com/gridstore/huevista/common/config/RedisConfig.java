@@ -40,6 +40,7 @@ public class RedisConfig {
                 .withCacheConfiguration("shades", defaultConfig.entryTtl(Duration.ofMinutes(shadeTtlMinutes)))
                 .withCacheConfiguration("shade-families", defaultConfig.entryTtl(Duration.ofHours(6)))
                 .withCacheConfiguration("shade-detail", defaultConfig.entryTtl(Duration.ofHours(6)))
+                .withCacheConfiguration("shade-brands", defaultConfig.entryTtl(Duration.ofHours(6)))
                 .build();
     }
 

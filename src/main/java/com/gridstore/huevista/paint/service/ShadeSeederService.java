@@ -8,13 +8,16 @@ import com.gridstore.huevista.paint.repository.ShadeRepository;
 import com.gridstore.huevista.paint.util.ColorMath;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Slf4j
 @Service
@@ -31,6 +34,7 @@ public class ShadeSeederService {
      * Returns the number of newly inserted shades.
      */
     @Transactional
+    @CacheEvict(cacheNames = {"shades", "shade-families", "shade-detail", "shade-brands"}, allEntries = true)
     public int seed(String brandName, String brandSlug, List<AsianPaintsShadeDto> dtos) {
         if (dtos == null || dtos.isEmpty()) {
             log.warn("No shades provided to seed for brand '{}'", brandName);
@@ -42,10 +46,11 @@ public class ShadeSeederService {
                         Brand.builder().name(brandName).slug(brandSlug).build()
                 ));
 
-        // Skip shades already in DB (safe to re-run)
+        // Skip shades already in DB (safe to re-run). One query for the brand's existing
+        // codes instead of an exists-check per row — 10k rows would mean 10k round-trips.
+        Set<String> existingCodes = new HashSet<>(shadeRepository.findShadeCodesByBrandId(brand.getId()));
         List<AsianPaintsShadeDto> toSeed = dtos.stream()
-                .filter(dto -> dto.getEntityCode() != null
-                        && !shadeRepository.existsByBrandIdAndShadeCode(brand.getId(), dto.getEntityCode()))
+                .filter(dto -> dto.getEntityCode() != null && !existingCodes.contains(dto.getEntityCode()))
                 .toList();
 
         if (toSeed.isEmpty()) {

@@ -110,8 +110,7 @@ class ShadeUploadServiceTest {
         Brand brand = Brand.builder().id(1L).name("Asian Paints").slug("asian-paints").build();
         when(brandRepo.findBySlug("asian-paints")).thenReturn(Optional.of(brand));
         // "7112" already exists in the catalogue; "9436" appears twice in the file.
-        when(shadeRepo.existsByBrandIdAndShadeCode(1L, "7112")).thenReturn(true);
-        when(shadeRepo.existsByBrandIdAndShadeCode(1L, "9436")).thenReturn(false);
+        when(shadeRepo.findShadeCodesByBrandId(1L)).thenReturn(List.of("7112"));
 
         ShadeUploadResponse res = service.upload("asian-paints", null,
                 List.of(item("9436", "Air Breeze", "#F3EDE8"),

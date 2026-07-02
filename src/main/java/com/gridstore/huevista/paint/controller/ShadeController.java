@@ -3,6 +3,8 @@ package com.gridstore.huevista.paint.controller;
 import com.gridstore.huevista.ai.util.DeltaEMatcher;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.paint.dto.AsianPaintsApiResponse;
+import com.gridstore.huevista.paint.dto.PagedShadesResponse;
+import com.gridstore.huevista.paint.dto.ShadeBrandSummaryResponse;
 import com.gridstore.huevista.paint.dto.ShadeResponse;
 import com.gridstore.huevista.paint.dto.ShadeSummaryResponse;
 import com.gridstore.huevista.paint.model.Shade;
@@ -16,6 +18,9 @@ import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -66,6 +71,56 @@ public class ShadeController {
                 .stream()
                 .map(ShadeSummaryResponse::from)
                 .toList();
+    }
+
+    @Operation(
+            summary = "List shades with filters, paged",
+            description = """
+                    Paged variant of `GET /api/shades` for large catalogues (10k+ shades):
+                    same filters, returns one slice at a time plus the total counts so
+                    clients can pull the catalogue incrementally. Sorted by popularity
+                    ascending with a stable id tiebreak. `size` is capped at 1000.
+                    """
+    )
+    @ApiResponse(responseCode = "200", description = "One page of shades with totals")
+    @SecurityRequirements
+    @Cacheable(value = "shades", key = "'paged:' + #brand + ':' + #family + ':' + #temperature + ':' + #tonality + ':' + #search + ':' + #page + ':' + #size")
+    @GetMapping("/api/shades/paged")
+    public PagedShadesResponse getShadesPaged(
+            @Parameter(description = "Brand slug, e.g. asian-paints") @RequestParam(required = false) String brand,
+            @Parameter(description = "Shade family, e.g. off whites") @RequestParam(required = false) String family,
+            @Parameter(description = "cool / warm / neutral") @RequestParam(required = false) String temperature,
+            @Parameter(description = "light / medium / dark") @RequestParam(required = false) String tonality,
+            @Parameter(description = "Name or exact shade code") @RequestParam(required = false) String search,
+            @Parameter(description = "Zero-based page index") @RequestParam(required = false, defaultValue = "0") int page,
+            @Parameter(description = "Page size (1-1000, default 500)") @RequestParam(required = false, defaultValue = "500") int size
+    ) {
+        int safePage = Math.max(0, page);
+        int safeSize = Math.max(1, Math.min(size, 1000));
+        Page<Shade> result = shadeRepository.findWithFilters(
+                brand, family, temperature, tonality, search,
+                PageRequest.of(safePage, safeSize,
+                        Sort.by(Sort.Order.asc("popularity").nullsLast(), Sort.Order.asc("id"))));
+        return PagedShadesResponse.builder()
+                .content(result.getContent().stream().map(ShadeSummaryResponse::from).toList())
+                .page(safePage)
+                .size(safeSize)
+                .totalElements(result.getTotalElements())
+                .totalPages(result.getTotalPages())
+                .build();
+    }
+
+    @Operation(
+            summary = "List companies in the shade catalogue",
+            description = "Returns every company that has at least one shade, with its shade count — "
+                    + "the frontend builds its brand pickers from this instead of a hardcoded list."
+    )
+    @ApiResponse(responseCode = "200", description = "Companies with shade counts")
+    @SecurityRequirements
+    @Cacheable(value = "shade-brands", key = "'all'")
+    @GetMapping("/api/shades/brands")
+    public List<ShadeBrandSummaryResponse> getShadeBrands() {
+        return shadeRepository.countShadesByBrand();
     }
 
     @Operation(summary = "List shades by brand", description = "Returns all shades for a brand slug ordered by popularity (LIST projection; see the filtered list endpoint).")
@@ -127,15 +182,25 @@ public class ShadeController {
         if (!normalized.matches("^#[0-9a-fA-F]{6}$")) {
             throw new IllegalArgumentException("hex must be a 6-digit color like #A47148");
         }
-        List<Shade> catalog = (brand != null && !brand.isBlank())
-                ? shadeRepository.findByBrandSlugOrderByPopularityAsc(brand)
-                : shadeRepository.findAll();
+        // Two-phase match so a 10k+ catalogue never loads every full row: scan an
+        // id+hex projection for the nearest colours, then fetch only the winners.
+        List<ShadeRepository.ShadeHex> catalog = (brand != null && !brand.isBlank())
+                ? shadeRepository.findProjectedByBrandSlug(brand)
+                : shadeRepository.findAllProjectedBy();
         int n = Math.max(1, Math.min(limit, 20));
-        List<ShadeResponse> matches = catalog.stream()
+        record Scored(Long id, double deltaE) {}
+        List<Long> topIds = catalog.stream()
                 .filter(s -> s.getHexCode() != null && s.getHexCode().matches("^#?[0-9a-fA-F]{6}$"))
-                .sorted(java.util.Comparator.comparingDouble(
-                        s -> DeltaEMatcher.computeDeltaE(normalized, s.getHexCode())))
+                .map(s -> new Scored(s.getId(), DeltaEMatcher.computeDeltaE(normalized, s.getHexCode())))
+                .sorted(java.util.Comparator.comparingDouble(Scored::deltaE))
                 .limit(n)
+                .map(Scored::id)
+                .toList();
+        Map<Long, Shade> byId = shadeRepository.findAllById(topIds).stream()
+                .collect(Collectors.toMap(Shade::getId, s -> s));
+        List<ShadeResponse> matches = topIds.stream()
+                .map(byId::get)
+                .filter(java.util.Objects::nonNull)
                 .map(ShadeResponse::from)
                 .toList();
         return ResponseEntity.ok(matches);

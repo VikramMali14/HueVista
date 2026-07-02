@@ -9,6 +9,7 @@ import com.gridstore.huevista.paint.repository.ShadeRepository;
 import com.gridstore.huevista.paint.util.ColorMath;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,6 +45,7 @@ public class ShadeUploadService {
     private final ShadeEnrichmentService enrichmentService;
 
     @Transactional
+    @CacheEvict(cacheNames = {"shades", "shade-families", "shade-detail", "shade-brands"}, allEntries = true)
     public ShadeUploadResponse upload(String brandSlug, String brandName,
                                       List<ShadeUploadItem> shades, boolean enrich) {
         if (shades == null || shades.isEmpty()) {
@@ -59,6 +61,9 @@ public class ShadeUploadService {
 
         int total = shades.size();
         int skipped = 0;
+        // One query for the brand's existing codes instead of an exists-check per row —
+        // a 10k-shade upload would otherwise fire 10k round-trips to the database.
+        Set<String> existingCodes = new HashSet<>(shadeRepository.findShadeCodesByBrandId(brand.getId()));
         Set<String> seenCodes = new HashSet<>();
         List<Shade> toSave = new ArrayList<>();
 
@@ -82,7 +87,7 @@ public class ShadeUploadService {
             }
 
             // Duplicate code inside the same file, or already in the catalogue for this brand.
-            if (!seenCodes.add(code) || shadeRepository.existsByBrandIdAndShadeCode(brand.getId(), code)) {
+            if (!seenCodes.add(code) || existingCodes.contains(code)) {
                 skipped++;
                 continue;
             }
