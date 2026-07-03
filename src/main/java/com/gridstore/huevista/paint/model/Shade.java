@@ -10,9 +10,17 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 @Entity
-@Table(name = "shades", uniqueConstraints = {
-        @UniqueConstraint(columnNames = {"brand_id", "shade_code"})
-})
+@Table(name = "shades",
+        uniqueConstraints = {
+                @UniqueConstraint(columnNames = {"brand_id", "shade_code"})
+        },
+        // Postgres does not index FK columns automatically; with a 10k+ catalogue the
+        // brand-scoped list/filter queries need these. Created by hbm2ddl (ddl-auto=update).
+        indexes = {
+                @Index(name = "idx_shades_brand_id", columnList = "brand_id"),
+                @Index(name = "idx_shades_popularity", columnList = "popularity"),
+                @Index(name = "idx_shades_shade_family", columnList = "shade_family")
+        })
 @Getter
 @Setter
 @NoArgsConstructor

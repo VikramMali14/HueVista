@@ -31,7 +31,7 @@ public class ShadeAdminService {
      * @return how many shades were deleted and how many region references were cleared
      */
     @Transactional
-    @CacheEvict(cacheNames = {"shades", "shade-families", "shade-detail"}, allEntries = true)
+    @CacheEvict(cacheNames = {"shades", "shade-families", "shade-detail", "shade-brands"}, allEntries = true)
     public DeleteResult deleteAllShades() {
         long deletedShades = shadeRepository.count();
         int clearedRegions = regionRepository.clearAllAppliedColors();
