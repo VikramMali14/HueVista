@@ -58,18 +58,25 @@ gitignored — never commit it).
 - If you need temporary verbosity in prod, prefer scoping it to a single package
   rather than raising the whole app to DEBUG.
 
-## 5. Database schema: switch to ddl-auto=validate
+## 5. Database schema: Flyway owns it
 
-- `spring.jpa.hibernate.ddl-auto` defaults to `update` (overridable via
-  `SPRING_JPA_DDL_AUTO`). `update` is what makes **first-run deploys** work out of
-  the box — Hibernate creates the schema from the JPA entities — so the default is
-  intentionally left as-is.
-- For **steady-state production**, set `SPRING_JPA_DDL_AUTO=validate` once the
-  schema exists. `update` in prod can silently alter tables on deploy and cannot
-  handle destructive changes (renames, drops) safely.
-- The recommended end-state is `validate` + Flyway migrations — see the
-  "Database migrations" section of the [README](../README.md) for the step-by-step
-  Flyway adoption guide.
+- The schema is managed by **Flyway** migrations in
+  `src/main/resources/db/migration`, applied automatically at startup.
+  `spring.jpa.hibernate.ddl-auto` defaults to `validate` — Hibernate only checks
+  that the schema matches the entities and never mutates it.
+- **Existing databases** (created by the old `ddl-auto=update`) are adopted
+  automatically: `spring.flyway.baseline-on-migrate=true` stamps a non-empty
+  schema as already at V1 (the baseline) and applies only V2+. Fresh, empty
+  databases get V1 and everything after it. No manual steps either way.
+- Heads-up for the first deploy of this version: **V2 clears the
+  `refresh_tokens` table** (old rows hold raw token values; the app now stores
+  only SHA-256 hashes). Every signed-in user is logged out once and simply signs
+  in again.
+- Every future schema change is a new versioned file (`V3__...`, `V4__...`);
+  never edit an applied migration, and don't set `SPRING_JPA_DDL_AUTO=update`
+  anywhere Flyway runs.
+- The dev profile (H2) and the test suite disable Flyway and keep Hibernate DDL
+  generation — migrations are written for PostgreSQL.
 
 ## 6. RATE_LIMIT_TRUST_FORWARDED — only behind a proxy
 
@@ -101,6 +108,7 @@ gitignored — never commit it).
 - [ ] `CORS_ALLOWED_ORIGINS` set to the real frontend origin(s), no wildcard
 - [ ] `SWAGGER_ENABLED=false`
 - [ ] `LOG_LEVEL_APP=INFO` (DEBUG logs emails and storage keys)
-- [ ] `SPRING_JPA_DDL_AUTO=validate` once the schema is established (default `update` is for first-run only)
+- [ ] Leave `SPRING_JPA_DDL_AUTO` unset (defaults to `validate`; Flyway applies the schema)
+- [ ] Point the load balancer / container healthcheck at `GET /actuator/health`
 - [ ] `RATE_LIMIT_TRUST_FORWARDED=true` only if behind a proxy; `false` if directly exposed
 - [ ] All third-party secrets (Razorpay, Replicate, Anthropic, SMTP, …) supplied via the environment — never committed

@@ -11,6 +11,9 @@ import org.springframework.test.context.TestPropertySource;
     "spring.datasource.username=sa",
     "spring.datasource.password=",
     "spring.jpa.database-platform=org.hibernate.dialect.H2Dialect",
+    // Migrations are PostgreSQL SQL; on H2 let Hibernate create the schema.
+    "spring.flyway.enabled=false",
+    "spring.jpa.hibernate.ddl-auto=create-drop",
     "spring.security.oauth2.client.registration.google.client-id=test-client-id",
     "spring.security.oauth2.client.registration.google.client-secret=test-client-secret",
     "app.jwt.secret=dGVzdC1zZWNyZXQta2V5LWZvci11bml0LXRlc3RzLW9ubHk=",

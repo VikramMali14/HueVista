@@ -11,15 +11,25 @@ import java.time.Instant;
 import java.util.Optional;
 
 public interface RefreshTokenRepository extends JpaRepository<RefreshToken, String> {
-    Optional<RefreshToken> findByToken(String token);
+
+    /** Lookup by the SHA-256 hex of the raw token (tokens are stored hashed). */
+    Optional<RefreshToken> findByToken(String tokenHash);
+
+    /**
+     * Atomically consume a live token for rotation, returning how many rows were
+     * updated (0 or 1). Exactly one of several racing refresh requests "wins"
+     * (count 1); the losers get 0 because the {@code usedAt is null} guard no
+     * longer matches. A bulk update (not an entity save) so a lost race can never
+     * trip Hibernate's optimistic "expected 1 row" check.
+     */
+    @Modifying
+    @Query("update RefreshToken rt set rt.usedAt = :now where rt.id = :id and rt.usedAt is null")
+    int markUsedReturningCount(@Param("id") String id, @Param("now") Instant now);
 
     /**
      * Atomically delete a single token by id, returning how many rows were
-     * actually removed (0 or 1). Used by token rotation to settle concurrent
-     * refresh races: only the caller that gets a count of 1 "won" and may issue
-     * a new pair. Unlike the entity delete ({@link #delete}), this bulk delete
-     * does not trip Hibernate's optimistic "expected 1 row, got 0" check when a
-     * racing request already removed the row.
+     * actually removed (0 or 1). Used to drop an expired token without racing
+     * a concurrent delete.
      */
     @Modifying
     @Query("delete from RefreshToken rt where rt.id = :id")
@@ -31,4 +41,12 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Stri
     /** Bulk-delete expired tokens (used by the nightly cleanup job). */
     @Modifying
     long deleteByExpiryDateBefore(Instant cutoff);
+
+    /**
+     * Bulk-delete tokens consumed by rotation before the cutoff (i.e. well past
+     * the reuse grace window) so the table doesn't accumulate dead rows between
+     * nightly runs of the expiry purge.
+     */
+    @Modifying
+    long deleteByUsedAtBefore(Instant cutoff);
 }

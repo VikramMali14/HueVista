@@ -2,7 +2,7 @@
 # Values come from a sibling `.env` (see .env.example); most defaults below let it
 # boot out of the box for local testing. JWT_SECRET is deliberately NOT defaulted —
 # generate one (`openssl rand -base64 32`) and put it in .env, so no deployment can
-# ever run on a publicly known signing key. Schema is auto-created (ddl-auto=update).
+# ever run on a publicly known signing key. Schema is applied by Flyway at startup.
 #
 #   docker compose up --build
 #
@@ -78,6 +78,14 @@ services:
       SMS_ENABLED: ${SMS_ENABLED:-false}
     ports:
       - "8080:8080"
+    healthcheck:
+      # Mirrors the image's own HEALTHCHECK; start_period covers JVM boot +
+      # Flyway migrations on first run.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
 
 volumes:
   pgdata:

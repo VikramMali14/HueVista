@@ -74,6 +74,28 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- Schema migrations (Flyway). Versioned SQL in src/main/resources/db/migration;
+             prod runs with ddl-auto=validate so Hibernate never mutates the schema.
+             Dev (H2) and tests disable Flyway and keep Hibernate DDL generation.
+             Spring Boot 4 ships auto-configuration per technology module, so the
+             spring-boot-flyway module is required (flyway-core alone is not wired up). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Actuator — /actuator/health for load balancers + container healthchecks.
+             Only the health endpoint is exposed (see application.properties). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
         <!-- Validation -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

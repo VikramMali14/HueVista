@@ -153,7 +153,7 @@ CORS_ALLOWED_ORIGINS=https://huevista.com
 ./mvnw spring-boot:run
 ```
 
-Schema is auto-created on first run (`spring.jpa.hibernate.ddl-auto=update`). For production, switch to `validate` and adopt Flyway (see "Operational notes" below).
+The schema is applied automatically at startup by Flyway (`src/main/resources/db/migration`); Hibernate runs with `ddl-auto=validate` and never mutates it. The `dev` profile (H2) skips Flyway and lets Hibernate generate the schema instead — see "Operational notes" below.
 
 ### 3. Seed the Asian Paints catalogue
 
@@ -197,15 +197,15 @@ Color application (browser-side WebGL) is unlimited at zero marginal cost. Only 
 ## Operational notes
 
 ### Database migrations
-Currently uses `spring.jpa.hibernate.ddl-auto=update` — Hibernate generates schema from JPA entities at startup. **Fine for dev, not production.** Before going to prod, add Flyway:
+The schema is owned by **Flyway** (`src/main/resources/db/migration`), applied automatically at startup; Hibernate runs with `ddl-auto=validate` and never mutates the schema.
 
-1. Add `flyway-core` + `flyway-database-postgresql` to `pom.xml`
-2. Set `spring.jpa.hibernate.ddl-auto=validate`
-3. Set `spring.flyway.baseline-on-migrate=true` (lets Flyway adopt the existing schema)
-4. Generate `V1__baseline.sql` by dumping current schema:
-   `pg_dump --schema-only --no-owner huevista > V1__baseline.sql`
-5. Place it under `src/main/resources/db/migration/`
-6. From there, every schema change is a new `V2__add_xxx.sql`, `V3__…`, etc.
+- `V1__baseline.sql` is the full schema as of Flyway adoption (generated from the JPA entities against PostgreSQL 16). Never edit it.
+- Databases that predate Flyway are adopted automatically: `baseline-on-migrate=true` stamps a non-empty schema as already at V1 and applies only V2+.
+- Every schema change from here on is a new versioned file: `V3__add_xxx.sql`, `V4__…`, etc. Change the entity **and** write the matching migration — `validate` at boot will catch any drift between them.
+- The `dev` profile (H2) and the test suite disable Flyway (migrations are PostgreSQL SQL) and keep Hibernate DDL generation.
+
+### Health checks
+`GET /actuator/health` is public and reports overall status only (`{"status":"UP"}`); liveness/readiness variants live at `/actuator/health/liveness` and `/actuator/health/readiness`. The Docker image and `docker-compose.yml` use it as their healthcheck. No other actuator endpoint is exposed.
 
 ### CI / CD
 GitHub Actions workflow at [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — runs `./mvnw verify` on every PR with H2 (in-memory) for tests. Production deploy is not wired up.
