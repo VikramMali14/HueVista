@@ -75,7 +75,13 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             @Value("${app.rate-limit.otp-confirm.window-seconds:900}") long otpConfirmWindow,
             // access-code redeem (incl. public guest redeem): 8-char code brute force / griefing.
             @Value("${app.rate-limit.code-redeem.max-attempts:12}") int redeemMax,
-            @Value("${app.rate-limit.code-redeem.window-seconds:900}") long redeemWindow) {
+            @Value("${app.rate-limit.code-redeem.window-seconds:900}") long redeemWindow,
+            // image upload: each authenticated upload triggers a paid Claude Vision
+            // classification (~₹0.30) with no quota charge, and a free CUSTOMER account
+            // takes seconds to create — cap the burn per IP. A busy counter uploads a
+            // handful of photos an hour; 30/h leaves generous headroom.
+            @Value("${app.rate-limit.image-upload.max-attempts:30}") int uploadMax,
+            @Value("${app.rate-limit.image-upload.window-seconds:3600}") long uploadWindow) {
         this.redis = redis;
         this.enabled = enabled;
         this.trustForwardedHeaders = trustForwardedHeaders;
@@ -86,6 +92,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
         Policy otpSend = new Policy("otpsend", otpSendMax, Duration.ofSeconds(otpSendWindow));
         Policy otpConfirm = new Policy("otpconfirm", otpConfirmMax, Duration.ofSeconds(otpConfirmWindow));
         Policy redeem = new Policy("redeem", redeemMax, Duration.ofSeconds(redeemWindow));
+        Policy upload = new Policy("upload", uploadMax, Duration.ofSeconds(uploadWindow));
 
         this.rules = List.of(
                 new Rule("POST", "/api/auth/login", login),
@@ -100,7 +107,10 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 new Rule("POST", "/api/auth/verify/email/confirm", otpConfirm),
                 new Rule("POST", "/api/auth/verify/phone/confirm", otpConfirm),
                 new Rule("POST", "/api/access-codes/redeem", redeem),
-                new Rule("POST", "/api/access-codes/redeem-guest", redeem)
+                new Rule("POST", "/api/access-codes/redeem-guest", redeem),
+                // Paid-classification / storage-write endpoints.
+                new Rule("POST", "/api/images/upload", upload),
+                new Rule("POST", "/api/guest/images/upload", upload)
         );
     }
 

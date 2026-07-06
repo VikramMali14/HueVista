@@ -586,14 +586,25 @@ public class ProjectService {
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
         List<Project> projects = projectRepository.findByAccessCodeIdOrderByUpdatedAtDesc(accessCodeId);
+        int claimed = 0;
         for (Project p : projects) {
             if (p.getUser() == null) {
                 p.setUser(user);          // claim ownership…
                 projectRepository.save(p); // …keeping accessCode so the shop still sees it.
+                claimed++;
             }
         }
-        log.info("Linked {} guest project(s) for code {} to user {}", projects.size(), accessCodeId, userId);
-        return projects.size();
+
+        // A CUSTOMER without an entitlement row is locked out of every project read
+        // ("Your access is not set up"), which would freeze the projects the moment
+        // they were claimed. Mirror the guest's access onto the new account: same
+        // shop, same code expiry, claimed projects counted against the allowance.
+        final int claimedCount = claimed;
+        accessCodeRepository.findById(accessCodeId).ifPresent(code ->
+                entitlementService.onGuestProjectsClaimed(user, code, claimedCount));
+
+        log.info("Linked {} guest project(s) for code {} to user {}", claimedCount, accessCodeId, userId);
+        return claimedCount;
     }
 
     /** Masked (public) projection — hides real shade codes from the guest. */

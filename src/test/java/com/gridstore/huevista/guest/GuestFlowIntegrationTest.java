@@ -196,9 +196,14 @@ class GuestFlowIntegrationTest {
         String imageId = guestUpload(guestToken);
         String projectId = guestCreateProject(guestToken, imageId);
 
+        // Public /join signup creates a CUSTOMER — the role whose every project read
+        // is gated on an entitlement row. Claiming must therefore establish one, or
+        // the projects would be locked ("Your access is not set up") the moment they
+        // were claimed. Regression test for exactly that bug.
         userRepository.save(User.builder().name("Walk In").email("walkin@example.com")
                 .password(passwordEncoder.encode("password123"))
-                .provider(AuthProvider.LOCAL).emailVerified(true).build());
+                .provider(AuthProvider.LOCAL).emailVerified(true)
+                .role(com.gridstore.huevista.auth.model.UserRole.CUSTOMER).build());
         String userToken = login("walkin@example.com", "password123");
 
         mockMvc.perform(post("/api/projects/claim-guest")
@@ -208,11 +213,19 @@ class GuestFlowIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.linked").value(1));
 
-        // The signed-up user now owns the project.
+        // The signed-up CUSTOMER now owns the project AND can actually read it.
         mockMvc.perform(get("/api/projects/" + projectId)
                         .header("Authorization", "Bearer " + userToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(projectId));
+
+        // The claim also established the entitlement mirroring the guest's access
+        // (the claimed project counts as the included one).
+        mockMvc.perform(get("/api/me/entitlement")
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.projectAllowance").value(1))
+                .andExpect(jsonPath("$.projectsCreated").value(1));
     }
 
     // --- helpers ---

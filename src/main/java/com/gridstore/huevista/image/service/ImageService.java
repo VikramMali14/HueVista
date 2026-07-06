@@ -96,11 +96,25 @@ public class ImageService {
      * which is an abuse vector for an unauthenticated endpoint. Guests draw their
      * own regions by hand anyway, so the image type isn't needed — stored as UNKNOWN.
      */
+    /** Uploads a guest may store per access code. One project only needs one photo;
+     *  the headroom covers re-shoots. Past this the code is being used as free storage. */
+    private static final int GUEST_UPLOAD_LIMIT = 10;
+
     public ImageResponse uploadForGuest(MultipartFile file, String accessCodeId) {
         String contentType = validateFile(file);
 
         CustomerAccessCode accessCode = accessCodeRepository.findById(accessCodeId)
                 .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + accessCodeId));
+        // The guest token can outlive the code's window by a beat — re-check expiry
+        // here so a dead code can't keep writing to storage.
+        if (accessCode.isExpired()) {
+            throw new com.gridstore.huevista.common.exception.AccessExpiredException(
+                    "Your access has ended. Ask the shop for a new code.");
+        }
+        if (imageRepository.countByAccessCodeId(accessCodeId) >= GUEST_UPLOAD_LIMIT) {
+            throw new com.gridstore.huevista.common.exception.QuotaExceededException(
+                    "Upload limit reached for this access code. Ask the shop for a new code if you need more.");
+        }
 
         String storageKey;
         try {

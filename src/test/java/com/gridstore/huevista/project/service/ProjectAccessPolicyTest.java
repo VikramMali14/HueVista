@@ -11,7 +11,6 @@ import com.gridstore.huevista.common.exception.VerificationRequiredException;
 import com.gridstore.huevista.project.repository.ProjectRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -26,7 +25,11 @@ class ProjectAccessPolicyTest {
 
     @Mock SubscriptionRepository subscriptionRepository;
     @Mock ProjectRepository projectRepository;
-    @InjectMocks ProjectAccessPolicy policy;
+
+    /** Full gate: both delivery channels configured (production shape). */
+    private ProjectAccessPolicy fullGate() {
+        return new ProjectAccessPolicy(subscriptionRepository, projectRepository, true, true);
+    }
 
     private User retailer(boolean emailVerified, boolean phoneVerified) {
         return User.builder()
@@ -53,25 +56,58 @@ class ProjectAccessPolicyTest {
     void customers_are_not_gated_here() {
         User customer = User.builder().id("c1").email("c@example.com").name("Cust")
                 .role(UserRole.CUSTOMER).emailVerified(false).phoneVerified(false).build();
-        assertThatCode(() -> policy.assertCanCreateProject(customer)).doesNotThrowAnyException();
+        assertThatCode(() -> fullGate().assertCanCreateProject(customer)).doesNotThrowAnyException();
     }
 
     @Test
     void retailer_without_email_verified_is_blocked() {
-        assertThatThrownBy(() -> policy.assertCanCreateProject(retailer(false, true)))
-                .isInstanceOf(VerificationRequiredException.class);
+        assertThatThrownBy(() -> fullGate().assertCanCreateProject(retailer(false, true)))
+                .isInstanceOf(VerificationRequiredException.class)
+                .hasMessageContaining("email");
     }
 
     @Test
     void retailer_without_phone_verified_is_blocked() {
-        assertThatThrownBy(() -> policy.assertCanCreateProject(retailer(true, false)))
-                .isInstanceOf(VerificationRequiredException.class);
+        assertThatThrownBy(() -> fullGate().assertCanCreateProject(retailer(true, false)))
+                .isInstanceOf(VerificationRequiredException.class)
+                .hasMessageContaining("mobile");
+    }
+
+    @Test
+    void phone_gate_is_skipped_when_sms_channel_is_not_configured() {
+        // sms disabled -> a phone OTP can never reach the retailer, so the gate must
+        // not demand it (previously this deadlocked every retailer at launch).
+        ProjectAccessPolicy policy =
+                new ProjectAccessPolicy(subscriptionRepository, projectRepository, true, false);
+        activeSub(sub(true));
+        when(projectRepository.countByUserId("u1")).thenReturn(0L);
+        assertThatCode(() -> policy.assertCanCreateProject(retailer(true, false)))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void email_gate_is_skipped_when_mail_channel_is_not_configured() {
+        ProjectAccessPolicy policy =
+                new ProjectAccessPolicy(subscriptionRepository, projectRepository, false, true);
+        activeSub(sub(true));
+        when(projectRepository.countByUserId("u1")).thenReturn(0L);
+        assertThatCode(() -> policy.assertCanCreateProject(retailer(false, true)))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void no_channels_configured_skips_verification_but_still_requires_subscription() {
+        ProjectAccessPolicy policy =
+                new ProjectAccessPolicy(subscriptionRepository, projectRepository, false, false);
+        activeSub(null);
+        assertThatThrownBy(() -> policy.assertCanCreateProject(retailer(false, false)))
+                .isInstanceOf(SubscriptionRequiredException.class);
     }
 
     @Test
     void verified_retailer_without_active_subscription_must_subscribe() {
         activeSub(null);
-        assertThatThrownBy(() -> policy.assertCanCreateProject(retailer(true, true)))
+        assertThatThrownBy(() -> fullGate().assertCanCreateProject(retailer(true, true)))
                 .isInstanceOf(SubscriptionRequiredException.class)
                 .hasMessageContaining("Subscribe");
     }
@@ -80,14 +116,14 @@ class ProjectAccessPolicyTest {
     void trial_retailer_can_create_first_project() {
         activeSub(sub(true));
         when(projectRepository.countByUserId("u1")).thenReturn(0L);
-        assertThatCode(() -> policy.assertCanCreateProject(retailer(true, true))).doesNotThrowAnyException();
+        assertThatCode(() -> fullGate().assertCanCreateProject(retailer(true, true))).doesNotThrowAnyException();
     }
 
     @Test
     void trial_retailer_blocked_after_one_project() {
         activeSub(sub(true));
         when(projectRepository.countByUserId("u1")).thenReturn(1L);
-        assertThatThrownBy(() -> policy.assertCanCreateProject(retailer(true, true)))
+        assertThatThrownBy(() -> fullGate().assertCanCreateProject(retailer(true, true)))
                 .isInstanceOf(SubscriptionRequiredException.class)
                 .hasMessageContaining("free trial includes one project");
     }
@@ -96,6 +132,6 @@ class ProjectAccessPolicyTest {
     void paid_retailer_is_not_limited_to_one_project() {
         activeSub(sub(false));
         // Paid path must not consult the project count at all.
-        assertThatCode(() -> policy.assertCanCreateProject(retailer(true, true))).doesNotThrowAnyException();
+        assertThatCode(() -> fullGate().assertCanCreateProject(retailer(true, true))).doesNotThrowAnyException();
     }
 }
