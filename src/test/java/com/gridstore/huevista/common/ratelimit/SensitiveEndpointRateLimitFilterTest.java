@@ -17,7 +17,8 @@ class SensitiveEndpointRateLimitFilterTest {
                 6, 900,    // otp send
                 12, 900,   // otp confirm
                 12, 900,   // code redeem
-                30, 3600); // image upload
+                30, 3600,  // image upload
+                5, 3600);  // shop lead
     }
 
     private MockHttpServletRequest req(String method, String path) {

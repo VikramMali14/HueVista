@@ -116,6 +116,8 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/share/**").permitAll()
                 // Anonymous guest redemption of a shop access code — issues a guest token
                 .requestMatchers(HttpMethod.POST, "/api/access-codes/redeem-guest").permitAll()
+                // Public "request a shop account" lead form — per-IP rate-limited
+                .requestMatchers(HttpMethod.POST, "/api/leads/shop").permitAll()
                 // Guest-scoped endpoints (image upload + project create/recolour) — guests only
                 .requestMatchers("/api/guest/**").hasRole("GUEST")
                 // Razorpay webhook — no user auth, signature-verified in service

@@ -81,7 +81,10 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             // takes seconds to create — cap the burn per IP. A busy counter uploads a
             // handful of photos an hour; 30/h leaves generous headroom.
             @Value("${app.rate-limit.image-upload.max-attempts:30}") int uploadMax,
-            @Value("${app.rate-limit.image-upload.window-seconds:3600}") long uploadWindow) {
+            @Value("${app.rate-limit.image-upload.window-seconds:3600}") long uploadWindow,
+            // shop-account lead form: public write endpoint — anti-spam.
+            @Value("${app.rate-limit.lead.max-attempts:5}") int leadMax,
+            @Value("${app.rate-limit.lead.window-seconds:3600}") long leadWindow) {
         this.redis = redis;
         this.enabled = enabled;
         this.trustForwardedHeaders = trustForwardedHeaders;
@@ -93,6 +96,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
         Policy otpConfirm = new Policy("otpconfirm", otpConfirmMax, Duration.ofSeconds(otpConfirmWindow));
         Policy redeem = new Policy("redeem", redeemMax, Duration.ofSeconds(redeemWindow));
         Policy upload = new Policy("upload", uploadMax, Duration.ofSeconds(uploadWindow));
+        Policy lead = new Policy("lead", leadMax, Duration.ofSeconds(leadWindow));
 
         this.rules = List.of(
                 new Rule("POST", "/api/auth/login", login),
@@ -110,7 +114,9 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 new Rule("POST", "/api/access-codes/redeem-guest", redeem),
                 // Paid-classification / storage-write endpoints.
                 new Rule("POST", "/api/images/upload", upload),
-                new Rule("POST", "/api/guest/images/upload", upload)
+                new Rule("POST", "/api/guest/images/upload", upload),
+                // Public shop-account request form.
+                new Rule("POST", "/api/leads/shop", lead)
         );
     }
 
