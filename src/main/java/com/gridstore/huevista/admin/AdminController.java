@@ -48,6 +48,7 @@ public class AdminController {
     private final SubscriptionRepository subscriptionRepository;
     private final ProjectRepository projectRepository;
     private final AuditService auditService;
+    private final com.gridstore.huevista.common.audit.AuditLogRepository auditLogRepository;
 
     /** Hard cap on admin page sizes — these tables are unbounded. */
     private static final int MAX_PAGE_SIZE = 500;
@@ -63,10 +64,52 @@ public class AdminController {
     @GetMapping("/users")
     public ResponseEntity<List<AdminUserResponse>> listUsers(
             @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0") int page,
-            @Parameter(description = "Page size, max 500") @RequestParam(defaultValue = "200") int size) {
-        return ResponseEntity.ok(
-                userRepository.findAll(pageOf(page, size)).getContent()
-                        .stream().map(AdminUserResponse::from).toList());
+            @Parameter(description = "Page size, max 500") @RequestParam(defaultValue = "200") int size,
+            @Parameter(description = "Case-insensitive substring match on name or email")
+            @RequestParam(required = false) String q) {
+        var pageable = pageOf(page, size);
+        var users = (q != null && !q.isBlank())
+                ? userRepository.searchByNameOrEmail(q.trim(), pageable)
+                : userRepository.findAll(pageable);
+        return ResponseEntity.ok(users.getContent().stream().map(AdminUserResponse::from).toList());
+    }
+
+    @Operation(summary = "Audit log",
+            description = "Every sensitive action recorded by AuditService (logins revoked, role changes, "
+                    + "deletions, subscription events…), newest first. Optional exact-match action filter. "
+                    + "Actor emails are resolved best-effort for display.")
+    @GetMapping("/audit")
+    public ResponseEntity<List<Map<String, Object>>> auditLog(
+            @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "Page size, max 500") @RequestParam(defaultValue = "100") int size,
+            @Parameter(description = "Exact action to filter by, e.g. PROJECT_DELETE")
+            @RequestParam(required = false) String action) {
+        // AuditLog rows carry their own createdAt ordering via the repository
+        // finders — an unsorted Pageable avoids fighting the method-name sort.
+        Pageable pageable = PageRequest.of(Math.max(0, page), Math.min(Math.max(1, size), MAX_PAGE_SIZE));
+        var logs = (action != null && !action.isBlank())
+                ? auditLogRepository.findByActionOrderByCreatedAtDesc(action.trim().toUpperCase(), pageable)
+                : auditLogRepository.findAllByOrderByCreatedAtDesc(pageable);
+        // Resolve actor ids to emails in one batch so the console shows people,
+        // not opaque UUIDs (deleted users fall back to their id).
+        var actorIds = logs.getContent().stream()
+                .map(com.gridstore.huevista.common.audit.AuditLog::getActorUserId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        Map<String, String> emails = userRepository.findAllById(actorIds).stream()
+                .collect(java.util.stream.Collectors.toMap(User::getId, User::getEmail));
+        List<Map<String, Object>> body = logs.getContent().stream().map(l -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", l.getId());
+            row.put("actorUserId", l.getActorUserId());
+            row.put("actorEmail", emails.get(l.getActorUserId()));
+            row.put("action", l.getAction());
+            row.put("targetType", l.getTargetType());
+            row.put("targetId", l.getTargetId());
+            row.put("detail", l.getDetail());
+            row.put("createdAt", l.getCreatedAt());
+            return row;
+        }).toList();
+        return ResponseEntity.ok(body);
     }
 
     @Operation(summary = "Get user by ID")
