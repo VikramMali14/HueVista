@@ -16,7 +16,9 @@ class SensitiveEndpointRateLimitFilterTest {
                 8, 900,    // password reset
                 6, 900,    // otp send
                 12, 900,   // otp confirm
-                12, 900);  // code redeem
+                12, 900,   // code redeem
+                30, 3600,  // image upload
+                5, 3600);  // shop lead
     }
 
     private MockHttpServletRequest req(String method, String path) {
@@ -38,6 +40,8 @@ class SensitiveEndpointRateLimitFilterTest {
         assertThat(f.shouldNotFilter(req("POST", "/api/auth/verify/phone/confirm"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/access-codes/redeem"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/access-codes/redeem-guest"))).isFalse();
+        assertThat(f.shouldNotFilter(req("POST", "/api/images/upload"))).isFalse();
+        assertThat(f.shouldNotFilter(req("POST", "/api/guest/images/upload"))).isFalse();
     }
 
     @Test

@@ -90,10 +90,19 @@
         </dependency>
 
         <!-- Actuator — /actuator/health for load balancers + container healthchecks.
-             Only the health endpoint is exposed (see application.properties). -->
+             Only the health endpoint is exposed by default (see application.properties). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Prometheus metrics registry — JVM, HTTP, Hikari and cache metrics for
+             Grafana/Prometheus. Inert until /actuator/prometheus is exposed via
+             ACTUATOR_EXPOSURE and opened via METRICS_PUBLIC (see application.properties). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
         </dependency>
 
         <!-- Validation -->

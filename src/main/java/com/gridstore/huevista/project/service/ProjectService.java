@@ -57,6 +57,7 @@ public class ProjectService {
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final OrgMembershipRepository orgMembershipRepository;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
+    private final com.gridstore.huevista.notification.EmailSender emailSender;
 
     @Autowired(required = false)
     private SegmentationJobQueue segmentationJobQueue;
@@ -82,7 +83,8 @@ public class ProjectService {
 
         String name = (request.getName() != null && !request.getName().isBlank())
                 ? request.getName()
-                : "Project " + (projectRepository.findByUserIdOrderByUpdatedAtDesc(userId).size() + 1);
+                // COUNT, not a full fetch — naming a project must not load every row the user owns.
+                : "Project " + (projectRepository.countByUserId(userId) + 1);
 
         Project project = projectRepository.save(Project.builder()
                 .user(user)
@@ -127,6 +129,33 @@ public class ProjectService {
         }
 
         return toResponse(projectRepository.findById(projectId).orElseThrow());
+    }
+
+    /**
+     * Rename / re-describe a project. PATCH semantics: only non-null fields are
+     * applied, so the frontend can send just the field being edited. A provided
+     * name must be non-blank — an unnamed project can't be found again on the
+     * dashboard.
+     */
+    @Transactional
+    public ProjectResponse updateProjectDetails(String userId, String projectId, UpdateProjectRequest request) {
+        Project project = findOwned(userId, projectId);
+        if (request.getName() != null) {
+            String name = request.getName().trim();
+            if (name.isEmpty()) {
+                throw new IllegalArgumentException("Project name cannot be empty.");
+            }
+            project.setName(name);
+        }
+        if (request.getRoomType() != null) {
+            project.setRoomType(blankToNull(request.getRoomType()));
+        }
+        if (request.getNotes() != null) {
+            project.setNotes(blankToNull(request.getNotes()));
+        }
+        projectRepository.save(project);
+        log.info("Project details updated: id={} user={}", projectId, userId);
+        return toResponse(project);
     }
 
     @Transactional
@@ -556,6 +585,49 @@ public class ProjectService {
     }
 
     /**
+     * Guest "I'm done — this is the one": stamps {@code sentToShopAt} (idempotent —
+     * re-sending doesn't move the time) and gives the shop owner a best-effort email
+     * heads-up. Closes the counter loop: previously the shop only learned a guest had
+     * finished by polling the portal.
+     */
+    @Transactional
+    public ProjectResponse sendGuestProjectToShop(String accessCodeId, String projectId) {
+        Project project = findGuestOwned(accessCodeId, projectId);
+        CustomerAccessCode code = accessCodeRepository.findById(accessCodeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found"));
+        if (code.isExpired()) {
+            throw new AccessExpiredException("Your access has ended. Ask the shop for a new code.");
+        }
+        if (project.getSentToShopAt() == null) {
+            project.setSentToShopAt(LocalDateTime.now());
+            projectRepository.save(project);
+            notifyShopOfSentProject(code, project);
+            log.info("Guest project sent to shop: project={} accessCode={}", projectId, accessCodeId);
+        }
+        return toPublicResponse(project);
+    }
+
+    /** Best-effort heads-up to the issuing shop's owner — a failure never blocks the send. */
+    private void notifyShopOfSentProject(CustomerAccessCode code, Project project) {
+        try {
+            String orgId = code.getOrganization().getId();
+            orgMembershipRepository.findUserIdsByOrganizationIdAndRole(orgId, OrgMemberRole.OWNER)
+                    .stream().findFirst()
+                    .flatMap(userRepository::findById)
+                    .ifPresent(owner -> emailSender.send(owner.getEmail(),
+                            "A customer sent you their room — code " + code.getCode(),
+                            "Hi,\n\n"
+                                    + "The customer using access code " + code.getCode()
+                                    + " just sent you their finished room (\"" + project.getName() + "\").\n\n"
+                                    + "Open your Customer portal to see the colours they chose — the exact "
+                                    + "shade codes are on the project.\n\n"
+                                    + "— HueVista"));
+        } catch (Exception e) {
+            log.warn("Shop notification for sent project {} failed: {}", project.getId(), e.getMessage());
+        }
+    }
+
+    /**
      * The issuing shop's view of a guest's project — FULL response WITH real shade
      * codes (the opposite of what the guest sees). Caller must have already verified
      * the requester owns/manages the code's organization. Null if the guest hasn't
@@ -586,14 +658,25 @@ public class ProjectService {
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
         List<Project> projects = projectRepository.findByAccessCodeIdOrderByUpdatedAtDesc(accessCodeId);
+        int claimed = 0;
         for (Project p : projects) {
             if (p.getUser() == null) {
                 p.setUser(user);          // claim ownership…
                 projectRepository.save(p); // …keeping accessCode so the shop still sees it.
+                claimed++;
             }
         }
-        log.info("Linked {} guest project(s) for code {} to user {}", projects.size(), accessCodeId, userId);
-        return projects.size();
+
+        // A CUSTOMER without an entitlement row is locked out of every project read
+        // ("Your access is not set up"), which would freeze the projects the moment
+        // they were claimed. Mirror the guest's access onto the new account: same
+        // shop, same code expiry, claimed projects counted against the allowance.
+        final int claimedCount = claimed;
+        accessCodeRepository.findById(accessCodeId).ifPresent(code ->
+                entitlementService.onGuestProjectsClaimed(user, code, claimedCount));
+
+        log.info("Linked {} guest project(s) for code {} to user {}", claimedCount, accessCodeId, userId);
+        return claimedCount;
     }
 
     /** Masked (public) projection — hides real shade codes from the guest. */

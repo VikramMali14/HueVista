@@ -82,6 +82,22 @@ public class ProjectController {
         return ResponseEntity.ok(projectService.updateRegionColors(userId(auth), id, updates));
     }
 
+    @Operation(summary = "Update project details",
+            description = "Partial update of name / room type / notes. Only provided fields change; a blank name is rejected.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Updated project"),
+            @ApiResponse(responseCode = "400", description = "Blank name or field too long"),
+            @ApiResponse(responseCode = "404", description = "Project not found or not owned by user")
+    })
+    @PatchMapping("/{id}")
+    public ResponseEntity<ProjectResponse> updateProject(
+            @PathVariable String id,
+            @Valid @RequestBody UpdateProjectRequest request,
+            Authentication auth
+    ) {
+        return ResponseEntity.ok(projectService.updateProjectDetails(userId(auth), id, request));
+    }
+
     @Operation(summary = "Delete a project", description = "Permanently deletes the project and all its regions.")
     @ApiResponse(responseCode = "204", description = "Deleted successfully")
     @DeleteMapping("/{id}")

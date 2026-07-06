@@ -190,7 +190,7 @@ To skip this bulk load (e.g. in a constrained environment), set `app.catalog.aut
 | Business | ₹1,999/mo | 150/mo | + White-label, painter portal beta |
 | Enterprise | Custom | Unlimited | + API access, dedicated onboarding |
 
-Color application (browser-side WebGL) is unlimited at zero marginal cost. Only generative AI calls (classification, image clean, segmentation, recommendations) count against the monthly quota — enforced in `BillingService.checkAndIncrementAiUsage()`.
+Color application (browser-side WebGL) is unlimited at zero marginal cost. Segmentation (which includes the image clean) and recommendations count against the monthly quota — reserved/charged atomically in `BillingService.reserveAiUsage()` / `incrementAiUsage()`, with failed runs refunded. Upload classification is not quota-charged but is per-IP rate-limited (`app.rate-limit.image-upload.*`) to bound its Claude cost.
 
 ---
 
@@ -226,6 +226,41 @@ GitHub Actions workflow at [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 | Color application | Browser WebGL | ₹0 |
 
 A Starter retailer's 20 monthly renders translates to roughly ₹100 in cloud spend — well within margin at ₹499/mo.
+
+---
+
+## Going to production — checklist
+
+Everything in [.env.example](.env.example) explains itself; these are the items that
+bite if skipped:
+
+1. **Email + SMS delivery** — set `MAIL_ENABLED=true` (+ SMTP creds) and
+   `SMS_ENABLED=true`, `SMS_PROVIDER=twilio` (+ Twilio creds). These flags also
+   drive the retailer verification gate: a channel is only required-verified
+   before project creation when it can actually deliver a code, so leaving them
+   off silently weakens onboarding verification.
+2. **Admin bootstrap** — set `ADMIN_EMAIL` / `ADMIN_PASSWORD` (shops are
+   admin-provisioned; shop-lead notifications go to this address). Change the
+   password after first sign-in.
+3. **Razorpay** — create the three plans in the dashboard, set the plan IDs, and
+   point a webhook at `POST {APP_BASE_URL}/api/billing/webhooks/razorpay` with
+   `RAZORPAY_WEBHOOK_SECRET`. Renewals depend on the webhook.
+4. **Network posture** — if the backend port is ever reachable except through
+   your own frontend/proxy, set `RATE_LIMIT_TRUST_FORWARDED=false` (otherwise
+   spoofed `X-Forwarded-For` bypasses every per-IP limit).
+5. **Timezone** — the schema stores zone-naive timestamps; the Docker image pins
+   `TZ=Asia/Kolkata`. Keep the JVM on IST on any other host too, or every
+   share/subscription/access-code expiry shifts by the host's offset.
+6. **Monitoring** — set `ACTUATOR_EXPOSURE=health,prometheus` and
+   `METRICS_PUBLIC=true` (private networks only) and scrape
+   `/actuator/prometheus` (JVM, HTTP latencies/status codes, Hikari pool,
+   cache). Alert on 5xx rate, p95 latency, pool exhaustion and heap. Log files
+   rotate at `logs/huevista.log` (10×10 MB) — ship them somewhere durable.
+7. **Backups** — schedule `pg_dump` (or your provider's automated snapshots)
+   for PostgreSQL and enable S3 bucket versioning; masks and cleaned images are
+   reproducible at cost, originals are not.
+8. **Swagger stays off** — `SWAGGER_ENABLED=false` in production; the spec and
+   UI are public when on.
 
 ---
 

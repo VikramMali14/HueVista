@@ -12,8 +12,6 @@ import java.util.Optional;
 
 public interface ProjectRepository extends JpaRepository<Project, String> {
 
-    List<Project> findByUserIdOrderByUpdatedAtDesc(String userId);
-
     /**
      * Fetch-joins the image because the project list response needs every
      * project's storage key — without the JOIN FETCH that's one lazy-load

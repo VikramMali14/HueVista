@@ -80,6 +80,11 @@ public class Project {
 
     private LocalDateTime shareExpiresAt;
 
+    // When the customer explicitly sent this project to the issuing shop
+    // ("I'm done — this is the one"). Null until they do; the portal shows a
+    // "sent by customer" badge and the shop owner gets a heads-up email.
+    private LocalDateTime sentToShopAt;
+
     @OneToMany(mappedBy = "project", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("displayOrder ASC")
     @Builder.Default

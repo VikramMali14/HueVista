@@ -28,6 +28,8 @@ public class ProjectResponse {
     private List<RegionResponse> regions;
     private boolean hasShareLink;
     private LocalDateTime shareExpiresAt;
+    // When the customer sent the project to the issuing shop; null until then.
+    private LocalDateTime sentToShopAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -48,6 +50,7 @@ public class ProjectResponse {
                 .regions(regions)
                 .hasShareLink(project.getShareToken() != null)
                 .shareExpiresAt(project.getShareExpiresAt())
+                .sentToShopAt(project.getSentToShopAt())
                 .createdAt(project.getCreatedAt())
                 .updatedAt(project.getUpdatedAt())
                 .build();
@@ -66,6 +69,8 @@ public class ProjectResponse {
                 .imageId(project.getImage().getId())
                 .imageUrl(imageUrl)
                 .regions(regions)
+                // The guest needs this to render "Sent ✓" after a reload.
+                .sentToShopAt(project.getSentToShopAt())
                 .build();
     }
 }

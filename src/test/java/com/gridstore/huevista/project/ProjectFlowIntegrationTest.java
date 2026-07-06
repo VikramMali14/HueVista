@@ -135,6 +135,21 @@ class ProjectFlowIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(projectId));
 
+        // Rename (PATCH semantics — only the provided field changes)
+        mockMvc.perform(patch("/api/projects/" + projectId)
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Bedroom Refresh\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Bedroom Refresh"));
+
+        // A blank name is rejected — the project must stay findable by name.
+        mockMvc.perform(patch("/api/projects/" + projectId)
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"   \"}"))
+                .andExpect(status().isBadRequest());
+
         // Delete
         mockMvc.perform(delete("/api/projects/" + projectId)
                         .header("Authorization", "Bearer " + userToken))

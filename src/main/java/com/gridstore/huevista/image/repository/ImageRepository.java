@@ -13,4 +13,5 @@ public interface ImageRepository extends JpaRepository<UploadedImage, String> {
 
     // Guest (anonymous, access-code-scoped) ownership.
     Optional<UploadedImage> findByIdAndAccessCodeId(String id, String accessCodeId);
+    long countByAccessCodeId(String accessCodeId);
 }

@@ -77,6 +77,16 @@ public class BillingService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
+        // Plans are retailer (shop) products. A CUSTOMER paying for one would get
+        // nothing — their project access is governed by the retailer-issued access
+        // code entitlement, which a subscription doesn't touch. Refuse the charge
+        // instead of taking money that unlocks nothing.
+        if (user.getRole() == com.gridstore.huevista.auth.model.UserRole.CUSTOMER) {
+            throw new SecurityException(
+                    "Subscription plans are for paint shops. If you're visualising your own room, "
+                    + "redeem an access code from your paint shop instead.");
+        }
+
         String razorpayPlanId = resolveRazorpayPlanId(request.getPlan());
         if (razorpayPlanId.isBlank()) {
             throw new IllegalStateException("Razorpay plan ID not configured for: " + request.getPlan());

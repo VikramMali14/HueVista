@@ -120,31 +120,48 @@ public class AccessCodeService {
      * consumed (usedAt set, usedByUser null, guestRedeemed=true) and returns a guest
      * token scoped to this code, valid until the code expires. The guest owns their
      * single image+project by this code; the issuing shop sees it via the code.
+     *
+     * RE-ENTRY: a code already redeemed BY A GUEST may be redeemed again while it is
+     * still valid, returning a fresh token for the SAME code (and therefore the same
+     * saved project). The guest's only credential is a browser cookie — a dead phone
+     * or a closed incognito window used to burn the code and strand the customer at
+     * the counter. The code stays scoped to one customer, per-IP redeem rate limits
+     * still apply, and the validity window is unchanged. A code consumed by an
+     * ACCOUNT remains strictly single-use.
      */
     @Transactional
     public GuestRedeemResponse redeemAsGuest(String code) {
         CustomerAccessCode accessCode = codeRepository.findByCode(code.toUpperCase())
                 .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + code));
 
-        if (accessCode.isUsed()) {
-            throw new IllegalStateException("This access code has already been used");
-        }
         if (accessCode.isExpired()) {
             throw new IllegalStateException("This access code has expired");
         }
-
-        // Same compare-and-set as redeemCode: only one concurrent redeemer can win.
-        LocalDateTime now = LocalDateTime.now();
-        if (codeRepository.consumeForGuest(accessCode.getId(), now) == 0) {
+        boolean reEntry = accessCode.isUsed();
+        if (reEntry && (!accessCode.isGuestRedeemed() || accessCode.getUsedByUser() != null)) {
             throw new IllegalStateException("This access code has already been used");
         }
-        accessCode.setUsedAt(now);
-        accessCode.setGuestRedeemed(true);
+
+        if (!reEntry) {
+            // Same compare-and-set as redeemCode: only one concurrent redeemer flips the
+            // row. Losing to another GUEST redeem of this code is just the re-entry
+            // case (proceed); losing to an ACCOUNT redeem must still reject — that
+            // path stays strictly single-use. The re-check is a scalar query so the
+            // answer comes from the database, not our stale managed entity.
+            LocalDateTime now = LocalDateTime.now();
+            if (codeRepository.consumeForGuest(accessCode.getId(), now) == 1) {
+                accessCode.setUsedAt(now);
+                accessCode.setGuestRedeemed(true);
+            } else if (!codeRepository.usedByAccountUserIds(accessCode.getId()).isEmpty()) {
+                throw new IllegalStateException("This access code has already been used");
+            }
+        }
 
         long ttlMs = java.time.Duration.between(LocalDateTime.now(), accessCode.getExpiresAt()).toMillis();
         String token = jwtService.generateGuestToken(accessCode.getId(), ttlMs);
 
-        log.info("Access code redeemed by guest: org={} code={}", accessCode.getOrganization().getId(), code);
+        log.info("Access code redeemed by guest{}: org={} code={}",
+                reEntry ? " (re-entry)" : "", accessCode.getOrganization().getId(), code);
         return GuestRedeemResponse.builder()
                 .guestToken(token)
                 .code(accessCode.getCode())

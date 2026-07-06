@@ -103,6 +103,25 @@ class BillingServiceLifecycleTest {
     }
 
     @Test
+    void customersCannotBuyRetailerPlans() {
+        // A CUSTOMER paying for a plan would get nothing (their access is governed by
+        // the retailer's access-code entitlement) — the charge must be refused.
+        when(subs.existsByUserIdAndStatusAndTrialFalse(USER, SubscriptionStatus.ACTIVE)).thenReturn(false);
+        User customer = new User();
+        customer.setId(USER);
+        customer.setRole(com.gridstore.huevista.auth.model.UserRole.CUSTOMER);
+        when(users.findById(USER)).thenReturn(Optional.of(customer));
+
+        CreateSubscriptionRequest req = new CreateSubscriptionRequest();
+        req.setPlan(Plan.STARTER);
+
+        assertThatThrownBy(() -> service().createSubscription(USER, req))
+                .isInstanceOf(SecurityException.class)
+                .hasMessageContaining("paint shops");
+        verify(subs, never()).save(any());
+    }
+
+    @Test
     void createSubscriptionBlockedByAnActivePaidPlan() {
         when(subs.existsByUserIdAndStatusAndTrialFalse(USER, SubscriptionStatus.ACTIVE)).thenReturn(true);
         CreateSubscriptionRequest req = new CreateSubscriptionRequest();

@@ -170,8 +170,15 @@ class GuestFlowIntegrationTest {
     }
 
     @Test
-    void code_is_single_use_for_guests() throws Exception {
+    void guest_reentry_ends_when_the_code_expires() throws Exception {
+        // Guest re-entry of a redeemed code is allowed only inside the validity
+        // window (see guest_can_reenter_the_same_code_and_get_their_project_back);
+        // once the code expires, re-entering it must be rejected.
         redeemAsGuest();
+        CustomerAccessCode code = codeRepository.findById(codeId).orElseThrow();
+        code.setExpiresAt(LocalDateTime.now().minusMinutes(1));
+        codeRepository.save(code);
+
         mockMvc.perform(post("/api/access-codes/redeem-guest")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"code\":\"" + CODE + "\"}"))
@@ -196,9 +203,14 @@ class GuestFlowIntegrationTest {
         String imageId = guestUpload(guestToken);
         String projectId = guestCreateProject(guestToken, imageId);
 
+        // Public /join signup creates a CUSTOMER — the role whose every project read
+        // is gated on an entitlement row. Claiming must therefore establish one, or
+        // the projects would be locked ("Your access is not set up") the moment they
+        // were claimed. Regression test for exactly that bug.
         userRepository.save(User.builder().name("Walk In").email("walkin@example.com")
                 .password(passwordEncoder.encode("password123"))
-                .provider(AuthProvider.LOCAL).emailVerified(true).build());
+                .provider(AuthProvider.LOCAL).emailVerified(true)
+                .role(com.gridstore.huevista.auth.model.UserRole.CUSTOMER).build());
         String userToken = login("walkin@example.com", "password123");
 
         mockMvc.perform(post("/api/projects/claim-guest")
@@ -208,11 +220,77 @@ class GuestFlowIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.linked").value(1));
 
-        // The signed-up user now owns the project.
+        // The signed-up CUSTOMER now owns the project AND can actually read it.
         mockMvc.perform(get("/api/projects/" + projectId)
                         .header("Authorization", "Bearer " + userToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(projectId));
+
+        // The claim also established the entitlement mirroring the guest's access
+        // (the claimed project counts as the included one).
+        mockMvc.perform(get("/api/me/entitlement")
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.projectAllowance").value(1))
+                .andExpect(jsonPath("$.projectsCreated").value(1));
+    }
+
+    @Test
+    void guest_can_reenter_the_same_code_and_get_their_project_back() throws Exception {
+        String firstToken = redeemAsGuest();
+        String imageId = guestUpload(firstToken);
+        String projectId = guestCreateProject(firstToken, imageId);
+
+        // The phone died / the incognito window closed: re-entering the SAME code
+        // while it's still valid mints a fresh token scoped to the same saved work
+        // (a burned cookie used to strand the customer at the counter).
+        String secondToken = redeemAsGuest();
+        mockMvc.perform(get("/api/guest/projects/" + projectId)
+                        .header("Authorization", "Bearer " + secondToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(projectId));
+    }
+
+    @Test
+    void account_consumed_codes_stay_single_use_for_guests() throws Exception {
+        // A signed-in user redeems the code onto their account…
+        userRepository.save(User.builder().name("Acct").email("acct@example.com")
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL).emailVerified(true).build());
+        String userToken = login("acct@example.com", "password123");
+        mockMvc.perform(post("/api/access-codes/redeem")
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + CODE + "\"}"))
+                .andExpect(status().isOk());
+
+        // …after which guest re-entry must NOT open it.
+        mockMvc.perform(post("/api/access-codes/redeem-guest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + CODE + "\"}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void guest_can_send_the_project_to_the_shop() throws Exception {
+        String guestToken = redeemAsGuest();
+        String imageId = guestUpload(guestToken);
+        String projectId = guestCreateProject(guestToken, imageId);
+
+        mockMvc.perform(post("/api/guest/projects/" + projectId + "/send-to-shop")
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sentToShopAt").isNotEmpty());
+
+        // Idempotent, and the shop's full view carries the flag.
+        mockMvc.perform(post("/api/guest/projects/" + projectId + "/send-to-shop")
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sentToShopAt").isNotEmpty());
+        mockMvc.perform(get("/api/access-codes/" + codeId + "/guest-project")
+                        .header("Authorization", "Bearer " + retailerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sentToShopAt").isNotEmpty());
     }
 
     // --- helpers ---

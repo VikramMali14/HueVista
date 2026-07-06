@@ -1,6 +1,7 @@
 package com.gridstore.huevista.account.service;
 
 import com.gridstore.huevista.account.dto.CustomerEntitlementResponse;
+import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.CustomerEntitlement;
 import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.model.Organization;
@@ -54,6 +55,50 @@ public class CustomerEntitlementService {
         entitlementRepository.save(ent);
         log.info("Entitlement set: customer={} retailer={} expires={}",
                 customer.getId(), retailerOrg.getId(), ent.getAccessExpiresAt());
+    }
+
+    /**
+     * Establish (or extend) the entitlement when a guest signs up and claims the
+     * projects they created under an access code. Without this, the freshly-created
+     * CUSTOMER account owns the claimed projects but has NO entitlement row, and
+     * every project read throws "Your access is not set up" — the exact opposite
+     * of the "create an account to keep your work" promise.
+     *
+     * - No existing entitlement: create one mirroring what the guest already had —
+     *   the code's retailer org, the code's own expiry (not a fresh window), the
+     *   default allowance, and the claimed projects counted as used.
+     * - Existing entitlement: only extend, never downgrade. Expiry becomes the later
+     *   of the two, and allowance + used both grow by the claimed count so the
+     *   customer's remaining slots are unchanged while the claimed work stays visible.
+     */
+    @Transactional
+    public void onGuestProjectsClaimed(User customer, CustomerAccessCode code, int projectsClaimed) {
+        LocalDateTime codeExpiry = code.getExpiresAt();
+        CustomerEntitlement ent = entitlementRepository.findByCustomerId(customer.getId()).orElse(null);
+        if (ent == null) {
+            ent = CustomerEntitlement.builder()
+                    .customer(customer)
+                    .retailerOrg(code.getOrganization())
+                    // Column is NOT NULL; a code with no expiry (shouldn't happen) yields
+                    // an already-expired entitlement rather than a constraint violation.
+                    .accessExpiresAt(codeExpiry != null ? codeExpiry : LocalDateTime.now())
+                    .projectAllowance(Math.max(DEFAULT_INCLUDED_PROJECTS, projectsClaimed))
+                    .projectsCreated(projectsClaimed)
+                    .build();
+        } else {
+            if (codeExpiry != null
+                    && (ent.getAccessExpiresAt() == null || codeExpiry.isAfter(ent.getAccessExpiresAt()))) {
+                ent.setAccessExpiresAt(codeExpiry);
+            }
+            if (ent.getRetailerOrg() == null) {
+                ent.setRetailerOrg(code.getOrganization());
+            }
+            ent.setProjectAllowance(ent.getProjectAllowance() + projectsClaimed);
+            ent.setProjectsCreated(ent.getProjectsCreated() + projectsClaimed);
+        }
+        entitlementRepository.save(ent);
+        log.info("Entitlement established from guest claim: customer={} retailer={} claimed={} expires={}",
+                customer.getId(), code.getOrganization().getId(), projectsClaimed, ent.getAccessExpiresAt());
     }
 
     /** Guard for ANY project access (view/manage). Enforces the full expiry lock. */
