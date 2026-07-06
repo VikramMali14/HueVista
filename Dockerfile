@@ -12,6 +12,10 @@ RUN ./mvnw -B -ntp -DskipTests package
 # ---- Runtime stage: slim JRE ----
 FROM eclipse-temurin:17-jre
 WORKDIR /app
+# curl is only for the container HEALTHCHECK below.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 # Run as a non-root user.
 RUN useradd -r -u 1001 huevista
 COPY --from=build /app/target/*.jar app.jar
@@ -22,4 +26,8 @@ RUN mkdir -p /app/logs && chown -R huevista:huevista /app/logs
 USER huevista
 EXPOSE 8080
 ENV JAVA_OPTS=""
+# Probe the actuator health endpoint (public, status-only). start-period covers
+# JVM boot + Flyway migrations on first run.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \
+    CMD curl -fsS http://localhost:8080/actuator/health || exit 1
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]

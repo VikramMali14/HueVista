@@ -10,9 +10,11 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 
 /**
- * Nightly purge of expired refresh tokens so the table doesn't accumulate dead
- * rows. (Tokens are also deleted on use/rotation, but abandoned sessions never
- * come back to be cleaned otherwise.) Scheduling is enabled on the application.
+ * Nightly purge of dead refresh-token rows: expired tokens (abandoned sessions)
+ * and tokens consumed by rotation. Consumed rows are kept briefly after use so
+ * parallel refreshes within the grace window can be honoured and later reuse can
+ * be flagged as theft — but past an hour they are pure dead weight.
+ * Scheduling is enabled on the application.
  */
 @Service
 @Slf4j
@@ -21,12 +23,17 @@ public class RefreshTokenCleanupService {
 
     private final RefreshTokenRepository refreshTokenRepository;
 
+    /** Comfortably longer than any sane app.refresh-token.reuse-grace-ms value. */
+    private static final java.time.Duration USED_RETENTION = java.time.Duration.ofHours(1);
+
     @Scheduled(cron = "0 0 3 * * *") // daily at 03:00 server time
     @Transactional
     public void purgeExpired() {
-        long removed = refreshTokenRepository.deleteByExpiryDateBefore(Instant.now());
+        Instant now = Instant.now();
+        long removed = refreshTokenRepository.deleteByExpiryDateBefore(now);
+        removed += refreshTokenRepository.deleteByUsedAtBefore(now.minus(USED_RETENTION));
         if (removed > 0) {
-            log.info("Purged {} expired refresh tokens", removed);
+            log.info("Purged {} expired/consumed refresh tokens", removed);
         }
     }
 }

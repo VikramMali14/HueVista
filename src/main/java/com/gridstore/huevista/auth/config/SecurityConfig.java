@@ -106,6 +106,10 @@ public class SecurityConfig {
                 .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
                 // Swagger UI / OpenAPI spec — public
                 .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
+                // Health probe for load balancers / container healthchecks. Only the
+                // status is exposed (show-details=never); no other actuator endpoint
+                // is web-exposed at all.
+                .requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/**").permitAll()
                 // Shade catalog — public read-only
                 .requestMatchers(HttpMethod.GET, "/api/shades", "/api/shades/**").permitAll()
                 // Shared project view — public, no auth

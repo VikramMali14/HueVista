@@ -58,6 +58,17 @@ public class AuthService {
     @Value("${app.refresh-token.expiration-ms}")
     private long refreshTokenExpirationMs;
 
+    /**
+     * How long after rotation a just-consumed refresh token is still honoured.
+     * When an access token expires, a browser with several tabs (or several
+     * parallel fetches) fires multiple /auth/refresh calls with the SAME token;
+     * without a grace window the losers would 401 and the client would clear the
+     * session — an intermittent, racy logout. Reuse AFTER this window is treated
+     * as theft and revokes every session for the user.
+     */
+    @Value("${app.refresh-token.reuse-grace-ms:60000}")
+    private long refreshReuseGraceMs;
+
     @Value("${app.cors.allowed-origins:http://localhost:3000}")
     private String allowedOrigins;
 
@@ -221,39 +232,63 @@ public class AuthService {
     public AuthResponse refreshToken(String rawToken) {
         // 401 (not 400) for refresh-token problems: an expired/invalid refresh token is
         // an auth failure, matching the endpoint's documented contract and the client's
-        // "session expired -> re-login" handling.
-        RefreshToken stored = refreshTokenRepository.findByToken(rawToken)
+        // "session expired -> re-login" handling. Tokens are stored hashed, so the
+        // lookup is by the SHA-256 of the presented value.
+        String tokenHash = com.gridstore.huevista.auth.util.TokenHasher.sha256Hex(rawToken);
+        RefreshToken stored = refreshTokenRepository.findByToken(tokenHash)
                 .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
                         org.springframework.http.HttpStatus.UNAUTHORIZED,
                         "Refresh token invalid — please log in again."));
 
-        // Capture the owner while the entity is still managed (lazy proxy resolves
-        // within this transaction) so we can build the response after the row is gone.
+        // Capture the owner while the entity is managed (lazy proxy resolves within
+        // this transaction) so we can build the response after the row is consumed.
         User user = stored.getUser();
-        boolean expired = stored.getExpiryDate().isBefore(Instant.now());
+        Instant now = Instant.now();
 
-        // Rotate atomically. When an access token expires, the client commonly fires
-        // several API calls at once and each retries through /auth/refresh with the SAME
-        // refresh token. With an entity delete, every racing request loads the row and
-        // calls delete(), so the loser commits a delete of an already-gone row and blows
-        // up with StaleObjectStateException -> 500. A bulk delete-by-id returns the row
-        // count instead: exactly one request removes the row and proceeds; the rest get 0.
-        int deleted = refreshTokenRepository.deleteByIdReturningCount(stored.getId());
-
-        if (expired) {
+        if (stored.getExpiryDate().isBefore(now)) {
+            refreshTokenRepository.deleteByIdReturningCount(stored.getId());
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.UNAUTHORIZED,
                     "Refresh token expired — please log in again.");
         }
-        if (deleted == 0) {
-            // Lost the rotation race: a concurrent request already consumed this token.
-            // Treat as an auth failure rather than minting a second pair for one rotation.
-            throw new org.springframework.web.server.ResponseStatusException(
-                    org.springframework.http.HttpStatus.UNAUTHORIZED,
-                    "Refresh token already used — please log in again.");
+
+        // Rotate atomically: exactly one racing request flips usedAt from null and
+        // "wins". Losers fall through to the grace-window check below instead of
+        // failing — when an access token expires, a browser fires several parallel
+        // requests that each retry through /auth/refresh with the SAME token, and
+        // hard-failing the losers used to clear the session cookies (random logout).
+        if (stored.getUsedAt() == null) {
+            int consumed = refreshTokenRepository.markUsedReturningCount(stored.getId(), now);
+            if (consumed == 1) {
+                return buildAuthResponse(user);
+            }
+            // Lost the race. The row was either just consumed by a parallel refresh
+            // (honour it — it happened milliseconds ago, well within grace) or deleted
+            // by a concurrent logout/revocation (then the session must NOT come back).
+            if (!refreshTokenRepository.existsById(stored.getId())) {
+                throw new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.UNAUTHORIZED,
+                        "Refresh token revoked — please log in again.");
+            }
+            return buildAuthResponse(user);
         }
 
-        return buildAuthResponse(user);
+        // Token already consumed by an earlier rotation.
+        if (stored.getUsedAt().isAfter(now.minusMillis(refreshReuseGraceMs))) {
+            // Within the grace window: a parallel tab/request replaying the same
+            // rotation. Mint a fresh pair instead of logging the user out.
+            return buildAuthResponse(user);
+        }
+
+        // Reuse long after rotation — the token was very likely captured/replayed.
+        // Standard rotation theft response: revoke every session for this user.
+        refreshTokenRepository.deleteByUser(user);
+        auditService.record(user.getId(), "REFRESH_TOKEN_REUSE", "USER", user.getId(),
+                "rotated refresh token replayed after grace window — all sessions revoked");
+        log.warn("Rotated refresh token replayed after grace window; sessions revoked for user {}", user.getId());
+        throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.UNAUTHORIZED,
+                "Refresh token already used — please log in again.");
     }
 
     @Transactional
@@ -336,9 +371,11 @@ public class AuthService {
     public AuthResponse buildAuthResponse(User user) {
         String accessToken = jwtService.generateToken(user.getId(), user.getEmail());
 
+        // Only the SHA-256 of the token is persisted; the raw value goes to the
+        // client once in the response and cannot be recovered from the database.
         String rawRefresh = UUID.randomUUID().toString();
         RefreshToken refreshToken = RefreshToken.builder()
-                .token(rawRefresh)
+                .token(com.gridstore.huevista.auth.util.TokenHasher.sha256Hex(rawRefresh))
                 .user(user)
                 .expiryDate(Instant.now().plusMillis(refreshTokenExpirationMs))
                 .build();
