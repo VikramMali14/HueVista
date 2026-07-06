@@ -25,6 +25,8 @@ public class AuthService {
 
     private final UserRepository userRepository;
     private final RefreshTokenRepository refreshTokenRepository;
+    private final com.gridstore.huevista.auth.repository.OAuthExchangeCodeRepository oauthExchangeCodeRepository;
+    private final com.gridstore.huevista.auth.repository.AdminLoginCodeRepository adminLoginCodeRepository;
     private final JwtService jwtService;
     private final PasswordEncoder passwordEncoder;
     private final AuthenticationManager authenticationManager;
@@ -37,6 +39,8 @@ public class AuthService {
 
     public AuthService(UserRepository userRepository,
                        RefreshTokenRepository refreshTokenRepository,
+                       com.gridstore.huevista.auth.repository.OAuthExchangeCodeRepository oauthExchangeCodeRepository,
+                       com.gridstore.huevista.auth.repository.AdminLoginCodeRepository adminLoginCodeRepository,
                        JwtService jwtService,
                        PasswordEncoder passwordEncoder,
                        @Lazy AuthenticationManager authenticationManager,
@@ -46,6 +50,8 @@ public class AuthService {
                        com.gridstore.huevista.notification.EmailSender emailSender) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
+        this.oauthExchangeCodeRepository = oauthExchangeCodeRepository;
+        this.adminLoginCodeRepository = adminLoginCodeRepository;
         this.jwtService = jwtService;
         this.passwordEncoder = passwordEncoder;
         this.authenticationManager = authenticationManager;
@@ -231,8 +237,85 @@ public class AuthService {
                 : userRepository.findByEmail(email)
                         .orElseThrow(() -> new IllegalStateException("User not found after authentication"));
 
+        // ADMIN accounts get an email second factor whenever mail can actually
+        // deliver — one phished admin password otherwise runs the whole platform
+        // (create retailers, wipe the catalog, read every lead). Falls back to a
+        // plain login when SMTP isn't configured, so a missing mail server can
+        // never lock the admin out; the production checklist calls this out.
+        if (authed.getRole() == com.gridstore.huevista.auth.model.UserRole.ADMIN
+                && emailSender.isDeliveryEnabled()) {
+            issueAdminLoginCode(authed);
+            log.info("Admin 2FA code sent: {}", authed.getEmail());
+            return AuthResponse.builder().twoFactorRequired(true).build();
+        }
+
         log.info("User logged in: {}", authed.getEmail());
         return buildAuthResponse(authed);
+    }
+
+    private static final java.security.SecureRandom OTP_RANDOM = new java.security.SecureRandom();
+    private static final int ADMIN_OTP_MAX_ATTEMPTS = 5;
+
+    /** Mints + emails the 6-digit admin second factor; supersedes any outstanding code. */
+    private void issueAdminLoginCode(User admin) {
+        adminLoginCodeRepository.deleteByUserId(admin.getId());
+        String code = String.format("%06d", OTP_RANDOM.nextInt(1_000_000));
+        adminLoginCodeRepository.save(com.gridstore.huevista.auth.model.AdminLoginCode.builder()
+                .userId(admin.getId())
+                .codeHash(passwordEncoder.encode(code))
+                .expiresAt(java.time.LocalDateTime.now().plusMinutes(10))
+                .build());
+        emailSender.send(admin.getEmail(),
+                "Your HueVista admin sign-in code",
+                "Hi,\n\nYour one-time admin sign-in code is: " + code
+                        + "\n\nIt expires in 10 minutes. If you didn't try to sign in, change your password immediately."
+                        + "\n\n— HueVista");
+    }
+
+    /**
+     * Second step of an admin login: password AND the emailed code, together.
+     * Requiring the password again means an intercepted code alone is useless.
+     * Wrong-code responses use IllegalArgumentException with noRollbackFor so the
+     * attempt counter SURVIVES the throw (same pattern as PasswordResetService).
+     */
+    @Transactional(noRollbackFor = IllegalArgumentException.class)
+    public AuthResponse loginWithOtp(String rawEmail, String password, String code) {
+        String email = com.gridstore.huevista.auth.util.Emails.normalize(rawEmail);
+        try {
+            authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(email, password));
+        } catch (Exception e) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.UNAUTHORIZED, "Incorrect email or password.");
+        }
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.UNAUTHORIZED, "Incorrect email or password."));
+
+        var stored = adminLoginCodeRepository
+                .findTopByUserIdAndConsumedFalseOrderByCreatedAtDesc(user.getId())
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No active code — sign in again to get a new one."));
+        if (stored.getExpiresAt().isBefore(java.time.LocalDateTime.now())) {
+            throw new IllegalArgumentException("That code has expired — sign in again to get a new one.");
+        }
+        if (stored.getAttempts() >= ADMIN_OTP_MAX_ATTEMPTS) {
+            stored.setConsumed(true);
+            adminLoginCodeRepository.save(stored);
+            throw new IllegalArgumentException("Too many incorrect attempts — sign in again to get a new one.");
+        }
+        if (!passwordEncoder.matches(code == null ? "" : code.trim(), stored.getCodeHash())) {
+            stored.setAttempts(stored.getAttempts() + 1);
+            adminLoginCodeRepository.save(stored);
+            int left = Math.max(0, ADMIN_OTP_MAX_ATTEMPTS - stored.getAttempts());
+            throw new IllegalArgumentException(
+                    "Incorrect code. " + left + " attempt" + (left == 1 ? "" : "s") + " left.");
+        }
+
+        stored.setConsumed(true);
+        adminLoginCodeRepository.save(stored);
+        log.info("Admin 2FA login completed: {}", user.getEmail());
+        return buildAuthResponse(user);
     }
 
     @Transactional
@@ -368,6 +451,51 @@ public class AuthService {
         refreshTokenRepository.deleteByUser(user);
         auditService.record(userId, "PASSWORD_CHANGE", "USER", userId, "all sessions revoked");
         log.info("Password changed, all sessions revoked: {}", user.getEmail());
+    }
+
+    /**
+     * Mints the one-time code the OAuth2 success handler redirects with, INSTEAD of
+     * the real tokens. A URL fragment never reaches a server, but it is readable by
+     * browser extensions and lingers in history — and the refresh token lives for
+     * days. This code is 256-bit random, stored SHA-256-hashed, single-use and dead
+     * in sixty seconds, so anything scraped from the URL later is worthless. Any
+     * previous codes for the user are dropped (only the newest hop can win).
+     */
+    @Transactional
+    public String createOAuthExchangeCode(User user) {
+        oauthExchangeCodeRepository.deleteByUserId(user.getId());
+        byte[] bytes = new byte[32];
+        new java.security.SecureRandom().nextBytes(bytes);
+        String raw = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        oauthExchangeCodeRepository.save(com.gridstore.huevista.auth.model.OAuthExchangeCode.builder()
+                .userId(user.getId())
+                .codeHash(com.gridstore.huevista.auth.util.TokenHasher.sha256Hex(raw))
+                .expiresAt(java.time.LocalDateTime.now().plusSeconds(60))
+                .build());
+        return raw;
+    }
+
+    /**
+     * Trades a one-time OAuth exchange code for the real token pair. Single-use and
+     * expiry are enforced in one atomic UPDATE, so a replayed (or raced) exchange
+     * matches zero rows and gets 401 — same contract as refresh-token problems.
+     */
+    @Transactional
+    public AuthResponse exchangeOAuthCode(String rawCode) {
+        String hash = com.gridstore.huevista.auth.util.TokenHasher.sha256Hex(
+                rawCode == null ? "" : rawCode.trim());
+        if (oauthExchangeCodeRepository.consume(hash, java.time.LocalDateTime.now()) == 0) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.UNAUTHORIZED,
+                    "This sign-in link is invalid or has expired — please sign in again.");
+        }
+        var code = oauthExchangeCodeRepository.findByCodeHash(hash)
+                .orElseThrow(() -> new IllegalStateException("Consumed OAuth code row vanished"));
+        User user = userRepository.findById(code.getUserId())
+                .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.UNAUTHORIZED,
+                        "This sign-in link is invalid or has expired — please sign in again."));
+        return buildAuthResponse(user);
     }
 
     /**

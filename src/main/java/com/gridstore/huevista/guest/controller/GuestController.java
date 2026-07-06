@@ -88,11 +88,13 @@ public class GuestController {
 
     @Operation(summary = "Apply colours to regions (guest)")
     @PutMapping("/projects/{id}/regions")
-    public ResponseEntity<ProjectResponse> recolor(
+    public ResponseEntity<Void> recolor(
             @PathVariable String id,
             @RequestBody List<RegionColorUpdate> updates,
             Authentication auth) {
-        return ResponseEntity.ok(projectService.updateGuestRegionColors(accessCodeId(auth), id, updates));
+        // 204 — same featherweight autosave contract as the signed-in path.
+        projectService.updateGuestRegionColors(accessCodeId(auth), id, updates);
+        return ResponseEntity.noContent().build();
     }
 
     @Operation(summary = "Delete a hand-drawn wall (guest)")

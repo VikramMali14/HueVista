@@ -48,6 +48,20 @@ public class AuthController {
         return ResponseEntity.ok(authService.login(request));
     }
 
+    @Operation(summary = "Complete an admin login with the emailed code",
+            description = "Second step when login returned twoFactorRequired: the same credentials plus the "
+                    + "one-time code emailed to the admin. 401 for bad credentials; 400 for a wrong/expired code.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Login successful"),
+            @ApiResponse(responseCode = "400", description = "Code wrong, expired or exhausted"),
+            @ApiResponse(responseCode = "401", description = "Invalid credentials")
+    })
+    @SecurityRequirements
+    @PostMapping("/login/otp")
+    public ResponseEntity<AuthResponse> loginWithOtp(@Valid @RequestBody OtpLoginRequest request) {
+        return ResponseEntity.ok(authService.loginWithOtp(request.getEmail(), request.getPassword(), request.getCode()));
+    }
+
     @Operation(summary = "Refresh access token", description = "Exchange a valid refresh token for a new access + refresh token pair (token rotation).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Tokens refreshed"),
@@ -57,6 +71,20 @@ public class AuthController {
     @PostMapping("/refresh")
     public ResponseEntity<AuthResponse> refresh(@Valid @RequestBody RefreshTokenRequest request) {
         return ResponseEntity.ok(authService.refreshToken(request.getRefreshToken()));
+    }
+
+    @Operation(summary = "Exchange a one-time OAuth code for tokens",
+            description = "The Google callback lands with a short-lived single-use code instead of tokens; "
+                    + "this trades it for the real access + refresh pair. 401 when the code is invalid, "
+                    + "expired or already used.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Tokens issued"),
+            @ApiResponse(responseCode = "401", description = "Code invalid, expired or already used")
+    })
+    @SecurityRequirements
+    @PostMapping("/oauth2/exchange")
+    public ResponseEntity<AuthResponse> exchangeOAuthCode(@Valid @RequestBody OAuthExchangeRequest request) {
+        return ResponseEntity.ok(authService.exchangeOAuthCode(request.getCode()));
     }
 
     @Operation(summary = "Request a password reset", description = "Emails a 6-digit reset code if the account exists. Always 200 (no account enumeration).")

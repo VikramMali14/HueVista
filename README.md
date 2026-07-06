@@ -241,7 +241,9 @@ bite if skipped:
    off silently weakens onboarding verification.
 2. **Admin bootstrap** — set `ADMIN_EMAIL` / `ADMIN_PASSWORD` (shops are
    admin-provisioned; shop-lead notifications go to this address). Change the
-   password after first sign-in.
+   password after first sign-in. With mail enabled, admin logins require a
+   6-digit emailed code (2FA) — another reason to configure SMTP before launch;
+   without mail the step-up is skipped so the admin can never be locked out.
 3. **Razorpay** — create the three plans in the dashboard, set the plan IDs, and
    point a webhook at `POST {APP_BASE_URL}/api/billing/webhooks/razorpay` with
    `RAZORPAY_WEBHOOK_SECRET`. Renewals depend on the webhook.

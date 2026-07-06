@@ -100,6 +100,8 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
 
         this.rules = List.of(
                 new Rule("POST", "/api/auth/login", login),
+                // Admin 2FA confirm: 6-digit code brute force defence.
+                new Rule("POST", "/api/auth/login/otp", otpConfirm),
                 new Rule("POST", "/api/auth/refresh", refresh),
                 new Rule("POST", "/api/auth/forgot-password", reset),
                 new Rule("POST", "/api/auth/reset-password", reset),

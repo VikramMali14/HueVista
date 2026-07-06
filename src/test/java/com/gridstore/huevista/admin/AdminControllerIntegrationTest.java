@@ -80,6 +80,53 @@ class AdminControllerIntegrationTest {
     }
 
     @Test
+    void admin_can_search_users_by_name_or_email() throws Exception {
+        userRepository.save(User.builder()
+                .name("Priya Mehta").email("priya@mehtapaints.in")
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL).emailVerified(true)
+                .role(UserRole.CUSTOMER).build());
+
+        mockMvc.perform(get("/api/admin/users").param("q", "mehta")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].email").value("priya@mehtapaints.in"));
+
+        mockMvc.perform(get("/api/admin/users").param("q", "no-such-person")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void admin_can_read_the_audit_log_with_actor_emails() throws Exception {
+        // A password change writes an audit row (PASSWORD_CHANGE) — use the admin's own.
+        mockMvc.perform(post("/api/auth/change-password")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"currentPassword\":\"admin-pass\",\"newPassword\":\"admin-pass-2a\"}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/admin/audit")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].action").value("PASSWORD_CHANGE"))
+                .andExpect(jsonPath("$[0].actorEmail").value("admin@huevista.com"));
+
+        // Action filter narrows; an unknown action returns an empty page.
+        mockMvc.perform(get("/api/admin/audit").param("action", "password_change")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].action").value("PASSWORD_CHANGE"));
+
+        mockMvc.perform(get("/api/admin/audit").param("action", "NO_SUCH_ACTION")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
     void admin_can_get_stats() throws Exception {
         mockMvc.perform(get("/api/admin/stats")
                         .header("Authorization", "Bearer " + adminToken))
