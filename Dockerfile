@@ -26,6 +26,11 @@ RUN mkdir -p /app/logs && chown -R huevista:huevista /app/logs
 USER huevista
 EXPOSE 8080
 ENV JAVA_OPTS=""
+# Pin the JVM to IST. Timestamps are stored zone-naive (LocalDateTime), so a
+# UTC host would silently shift every expiry (share links, subscriptions,
+# access codes) by 5.5 hours. The product is India-only; override TZ only if
+# you also migrate the schema to timestamptz/Instant.
+ENV TZ=Asia/Kolkata
 # Probe the actuator health endpoint (public, status-only). start-period covers
 # JVM boot + Flyway migrations on first run.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \

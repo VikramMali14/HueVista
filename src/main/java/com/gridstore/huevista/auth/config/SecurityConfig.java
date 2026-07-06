@@ -73,6 +73,15 @@ public class SecurityConfig {
     private final PasswordEncoder passwordEncoder;
     private final CorsConfigurationSource corsConfigurationSource;
 
+    /**
+     * When true, /actuator/prometheus is served anonymously (the endpoint must ALSO
+     * be exposed via ACTUATOR_EXPOSURE=health,prometheus). Scrapers can't do a JWT
+     * dance, so this boolean is the pragmatic gate — only enable it when the backend
+     * port is reachable solely from a private network.
+     */
+    @org.springframework.beans.factory.annotation.Value("${app.metrics.public:false}")
+    private boolean metricsPublic;
+
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
@@ -94,7 +103,14 @@ public class SecurityConfig {
             )
 
             // ── Route access rules ─────────────────────────────────────────
-            .authorizeHttpRequests(auth -> auth
+            .authorizeHttpRequests(auth -> {
+                // Prometheus scrape endpoint — anonymous ONLY when explicitly opened
+                // (private-network deployments); otherwise it stays authenticated
+                // even if ACTUATOR_EXPOSURE exposes it.
+                if (metricsPublic) {
+                    auth.requestMatchers(HttpMethod.GET, "/actuator/prometheus").permitAll();
+                }
+                auth
                 .requestMatchers(HttpMethod.POST,
                         "/api/auth/register",
                         "/api/auth/login",
@@ -127,8 +143,8 @@ public class SecurityConfig {
                 .requestMatchers("/api/support/webhooks/**").permitAll()
                 // Admin endpoints — ROLE_ADMIN only
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
-                .anyRequest().authenticated()
-            )
+                .anyRequest().authenticated();
+            })
 
             // ── Google OAuth2 login flow ───────────────────────────────────
             .oauth2Login(oauth2 -> oauth2
