@@ -119,16 +119,20 @@ public class ProjectService {
         return toResponse(project);
     }
 
+    /**
+     * Autosave path — fires on EVERY swatch click, so it must stay featherweight.
+     * Returns nothing: the full project response carries every region's base64
+     * mask, and echoing that back per colour change re-downloaded megabytes the
+     * client already has and never read.
+     */
     @Transactional
-    public ProjectResponse updateRegionColors(String userId, String projectId, List<RegionColorUpdate> updates) {
+    public void updateRegionColors(String userId, String projectId, List<RegionColorUpdate> updates) {
         findOwned(userId, projectId); // ownership check
 
         for (RegionColorUpdate update : updates) {
             regionRepository.updateAppliedColor(
                     update.getRegionId(), projectId, update.getShadeCode(), update.getHexCode());
         }
-
-        return toResponse(projectRepository.findById(projectId).orElseThrow());
     }
 
     /**
@@ -496,7 +500,8 @@ public class ProjectService {
     }
 
     @Transactional
-    public ProjectResponse updateGuestRegionColors(String accessCodeId, String projectId, List<RegionColorUpdate> updates) {
+    public void updateGuestRegionColors(String accessCodeId, String projectId, List<RegionColorUpdate> updates) {
+        // Same featherweight contract as the signed-in autosave: no response body.
         findGuestOwned(accessCodeId, projectId);
         for (RegionColorUpdate update : updates) {
             regionRepository.findByIdAndProjectId(update.getRegionId(), projectId).ifPresent(region -> {
@@ -505,7 +510,6 @@ public class ProjectService {
                 regionRepository.save(region);
             });
         }
-        return toPublicResponse(projectRepository.findById(projectId).orElseThrow());
     }
 
     @Transactional

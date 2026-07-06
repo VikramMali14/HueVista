@@ -74,12 +74,16 @@ public class ProjectController {
     )
     @ApiResponse(responseCode = "200", description = "Updated project with current region colors")
     @PutMapping("/{id}/regions")
-    public ResponseEntity<ProjectResponse> updateRegionColors(
+    public ResponseEntity<Void> updateRegionColors(
             @PathVariable String id,
             @RequestBody List<RegionColorUpdate> updates,
             Authentication auth
     ) {
-        return ResponseEntity.ok(projectService.updateRegionColors(userId(auth), id, updates));
+        projectService.updateRegionColors(userId(auth), id, updates);
+        // 204: this is the per-swatch-click autosave — echoing the full project
+        // (all regions + base64 masks) back on every colour change was the single
+        // heaviest repeated payload in the studio.
+        return ResponseEntity.noContent().build();
     }
 
     @Operation(summary = "Update project details",
