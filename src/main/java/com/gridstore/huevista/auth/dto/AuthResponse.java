@@ -21,6 +21,13 @@ public class AuthResponse {
 
     private UserInfo user;
 
+    /**
+     * True when the password was correct but a second factor is still required
+     * (ADMIN accounts with mail delivery configured). Tokens are null; the client
+     * must resubmit with the emailed code via POST /api/auth/login/otp.
+     */
+    private Boolean twoFactorRequired;
+
     @Data
     @Builder
     @AllArgsConstructor

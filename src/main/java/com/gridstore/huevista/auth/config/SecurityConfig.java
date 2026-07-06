@@ -114,6 +114,7 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST,
                         "/api/auth/register",
                         "/api/auth/login",
+                        "/api/auth/login/otp",
                         "/api/auth/refresh",
                         "/api/auth/forgot-password",
                         "/api/auth/forgot-password/phone",

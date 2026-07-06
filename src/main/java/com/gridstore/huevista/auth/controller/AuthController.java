@@ -48,6 +48,20 @@ public class AuthController {
         return ResponseEntity.ok(authService.login(request));
     }
 
+    @Operation(summary = "Complete an admin login with the emailed code",
+            description = "Second step when login returned twoFactorRequired: the same credentials plus the "
+                    + "one-time code emailed to the admin. 401 for bad credentials; 400 for a wrong/expired code.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Login successful"),
+            @ApiResponse(responseCode = "400", description = "Code wrong, expired or exhausted"),
+            @ApiResponse(responseCode = "401", description = "Invalid credentials")
+    })
+    @SecurityRequirements
+    @PostMapping("/login/otp")
+    public ResponseEntity<AuthResponse> loginWithOtp(@Valid @RequestBody OtpLoginRequest request) {
+        return ResponseEntity.ok(authService.loginWithOtp(request.getEmail(), request.getPassword(), request.getCode()));
+    }
+
     @Operation(summary = "Refresh access token", description = "Exchange a valid refresh token for a new access + refresh token pair (token rotation).")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Tokens refreshed"),

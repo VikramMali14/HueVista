@@ -30,6 +30,15 @@ public class EmailSender {
         this.mailSenderProvider = mailSenderProvider;
     }
 
+    /**
+     * True when a real message will actually leave the building (enabled AND SMTP
+     * configured). Gates features that must not silently degrade — e.g. admin login
+     * 2FA only applies when the code can genuinely reach the admin's inbox.
+     */
+    public boolean isDeliveryEnabled() {
+        return enabled && mailSenderProvider.getIfAvailable() != null;
+    }
+
     public void send(String to, String subject, String body) {
         JavaMailSender sender = mailSenderProvider.getIfAvailable();
         if (enabled && sender != null) {

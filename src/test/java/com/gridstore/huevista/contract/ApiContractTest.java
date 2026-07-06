@@ -121,7 +121,8 @@ class ApiContractTest {
     @Test
     void auth_response_matches_frontend_AuthResponse() {
         assertThat(propsOf("AuthResponse")).containsExactlyInAnyOrder(
-                "accessToken", "refreshToken", "tokenType", "expiresIn", "user");
+                "accessToken", "refreshToken", "tokenType", "expiresIn", "user",
+                "twoFactorRequired");
     }
 
     @Test
