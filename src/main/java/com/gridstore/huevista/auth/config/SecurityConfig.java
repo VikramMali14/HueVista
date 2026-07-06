@@ -118,7 +118,9 @@ public class SecurityConfig {
                         "/api/auth/forgot-password",
                         "/api/auth/forgot-password/phone",
                         "/api/auth/reset-password",
-                        "/api/auth/reset-password/phone").permitAll()
+                        "/api/auth/reset-password/phone",
+                        // One-time OAuth code -> tokens; the exchange IS the login.
+                        "/api/auth/oauth2/exchange").permitAll()
                 .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
                 // Swagger UI / OpenAPI spec — public
                 .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()

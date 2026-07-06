@@ -1,6 +1,5 @@
 package com.gridstore.huevista.auth.handler;
 
-import com.gridstore.huevista.auth.dto.AuthResponse;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.auth.service.AuthService;
@@ -22,12 +21,15 @@ import java.util.Map;
  * Called by Spring Security after the full OAuth2 code exchange completes and
  * CustomOAuth2UserService has upserted the user into our DB.
  *
- * Issues our own JWT + refresh token, then redirects the browser back to the
- * frontend callback with the tokens in the URL <em>fragment</em>:
- * {@code {frontend}/sign-in/callback#accessToken=...&refreshToken=...&expiresIn=...}.
- * The fragment is never sent to a server, so the tokens stay out of access logs and
- * proxies; the callback page reads them client-side and exchanges them for HttpOnly
- * session cookies (mirrors the email/password login path).
+ * Redirects the browser back to the frontend callback with a SHORT-LIVED,
+ * SINGLE-USE exchange code in the URL <em>fragment</em>:
+ * {@code {frontend}/sign-in/callback#code=...}. The fragment never reaches a
+ * server (stays out of access logs and proxies), and — unlike the tokens this
+ * handler used to put there — the code is worthless to anything that reads the
+ * URL later (extensions, synced history): it expires in a minute and dies on
+ * first use. The callback trades it for real tokens via
+ * {@code POST /api/auth/oauth2/exchange} and sets HttpOnly session cookies,
+ * mirroring the email/password login path.
  */
 @Component
 @Slf4j
@@ -58,13 +60,10 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new IllegalStateException("User not found after OAuth2 login: " + email));
 
-        AuthResponse auth = authService.buildAuthResponse(user);
+        String exchangeCode = authService.createOAuthExchangeCode(user);
         log.info("OAuth2 login successful for: {}", email);
 
-        String fragment = "accessToken=" + enc(auth.getAccessToken())
-                + "&refreshToken=" + enc(auth.getRefreshToken())
-                + "&expiresIn=" + auth.getExpiresIn();
-        String target = frontendUrl + "/sign-in/callback#" + fragment;
+        String target = frontendUrl + "/sign-in/callback#code=" + enc(exchangeCode);
 
         // Set the Location header directly so the '#' fragment is preserved verbatim
         // (servlet sendRedirect/encodeRedirectURL can mangle fragments).

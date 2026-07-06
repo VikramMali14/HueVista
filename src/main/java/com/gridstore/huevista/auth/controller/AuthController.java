@@ -59,6 +59,20 @@ public class AuthController {
         return ResponseEntity.ok(authService.refreshToken(request.getRefreshToken()));
     }
 
+    @Operation(summary = "Exchange a one-time OAuth code for tokens",
+            description = "The Google callback lands with a short-lived single-use code instead of tokens; "
+                    + "this trades it for the real access + refresh pair. 401 when the code is invalid, "
+                    + "expired or already used.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Tokens issued"),
+            @ApiResponse(responseCode = "401", description = "Code invalid, expired or already used")
+    })
+    @SecurityRequirements
+    @PostMapping("/oauth2/exchange")
+    public ResponseEntity<AuthResponse> exchangeOAuthCode(@Valid @RequestBody OAuthExchangeRequest request) {
+        return ResponseEntity.ok(authService.exchangeOAuthCode(request.getCode()));
+    }
+
     @Operation(summary = "Request a password reset", description = "Emails a 6-digit reset code if the account exists. Always 200 (no account enumeration).")
     @SecurityRequirements
     @PostMapping("/forgot-password")
