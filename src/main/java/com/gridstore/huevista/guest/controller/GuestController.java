@@ -105,6 +105,14 @@ public class GuestController {
         return ResponseEntity.noContent().build();
     }
 
+    @Operation(summary = "Send the project to the issuing shop",
+            description = "Marks the guest's project as sent (idempotent) so the counter knows the "
+                    + "customer is done; the shop owner gets a best-effort email heads-up.")
+    @PostMapping("/projects/{id}/send-to-shop")
+    public ResponseEntity<ProjectResponse> sendToShop(@PathVariable String id, Authentication auth) {
+        return ResponseEntity.ok(projectService.sendGuestProjectToShop(accessCodeId(auth), id));
+    }
+
     /** For a guest, the principal name is the access code id (set by GuestAuthFilter). */
     private String accessCodeId(Authentication auth) {
         return auth.getName();

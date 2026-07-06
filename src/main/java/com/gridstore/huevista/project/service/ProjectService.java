@@ -57,6 +57,7 @@ public class ProjectService {
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final OrgMembershipRepository orgMembershipRepository;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
+    private final com.gridstore.huevista.notification.EmailSender emailSender;
 
     @Autowired(required = false)
     private SegmentationJobQueue segmentationJobQueue;
@@ -554,6 +555,49 @@ public class ProjectService {
     private Project findGuestOwned(String accessCodeId, String projectId) {
         return projectRepository.findByIdAndAccessCodeId(projectId, accessCodeId)
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+    }
+
+    /**
+     * Guest "I'm done — this is the one": stamps {@code sentToShopAt} (idempotent —
+     * re-sending doesn't move the time) and gives the shop owner a best-effort email
+     * heads-up. Closes the counter loop: previously the shop only learned a guest had
+     * finished by polling the portal.
+     */
+    @Transactional
+    public ProjectResponse sendGuestProjectToShop(String accessCodeId, String projectId) {
+        Project project = findGuestOwned(accessCodeId, projectId);
+        CustomerAccessCode code = accessCodeRepository.findById(accessCodeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found"));
+        if (code.isExpired()) {
+            throw new AccessExpiredException("Your access has ended. Ask the shop for a new code.");
+        }
+        if (project.getSentToShopAt() == null) {
+            project.setSentToShopAt(LocalDateTime.now());
+            projectRepository.save(project);
+            notifyShopOfSentProject(code, project);
+            log.info("Guest project sent to shop: project={} accessCode={}", projectId, accessCodeId);
+        }
+        return toPublicResponse(project);
+    }
+
+    /** Best-effort heads-up to the issuing shop's owner — a failure never blocks the send. */
+    private void notifyShopOfSentProject(CustomerAccessCode code, Project project) {
+        try {
+            String orgId = code.getOrganization().getId();
+            orgMembershipRepository.findUserIdsByOrganizationIdAndRole(orgId, OrgMemberRole.OWNER)
+                    .stream().findFirst()
+                    .flatMap(userRepository::findById)
+                    .ifPresent(owner -> emailSender.send(owner.getEmail(),
+                            "A customer sent you their room — code " + code.getCode(),
+                            "Hi,\n\n"
+                                    + "The customer using access code " + code.getCode()
+                                    + " just sent you their finished room (\"" + project.getName() + "\").\n\n"
+                                    + "Open your Customer portal to see the colours they chose — the exact "
+                                    + "shade codes are on the project.\n\n"
+                                    + "— HueVista"));
+        } catch (Exception e) {
+            log.warn("Shop notification for sent project {} failed: {}", project.getId(), e.getMessage());
+        }
     }
 
     /**

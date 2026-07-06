@@ -45,4 +45,14 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
              WHERE c.id = :id AND c.usedByUser IS NULL AND c.usedAt IS NULL
             """)
     int consumeForGuest(@Param("id") String id, @Param("now") LocalDateTime now);
+
+    /**
+     * Who (if anyone) consumed the code for an ACCOUNT — as a scalar projection so
+     * the answer comes from the database, not the persistence context's possibly
+     * stale managed entity. Used after a lost guest-redeem CAS to tell "lost to
+     * another guest re-entry" (fine) apart from "lost to an account redeem" (reject).
+     * The inner join means an empty result = no account consumed it.
+     */
+    @Query("SELECT u.id FROM CustomerAccessCode c JOIN c.usedByUser u WHERE c.id = :id")
+    java.util.List<String> usedByAccountUserIds(@Param("id") String id);
 }
