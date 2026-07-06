@@ -293,6 +293,37 @@ class GuestFlowIntegrationTest {
                 .andExpect(jsonPath("$.sentToShopAt").isNotEmpty());
     }
 
+    @Test
+    void guest_and_issuing_shop_can_load_the_guest_image_file() throws Exception {
+        // Local-storage mode: image URLs are relative, auth-gated backend paths
+        // (S3 mode returns presigned URLs and never hits this endpoint).
+        String guestToken = redeemAsGuest();
+        MockMultipartFile file = new MockMultipartFile("file", "room.jpg", "image/jpeg", fakeJpegBytes());
+        MvcResult up = mockMvc.perform(multipart("/api/guest/images/upload").file(file)
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String imageUrl = objectMapper.readTree(up.getResponse().getContentAsString())
+                .get("imageUrl").asText();
+        org.assertj.core.api.Assertions.assertThat(imageUrl).startsWith("/api/images/files/");
+
+        // The guest can load their own photo (key prefix = their access-code id).
+        mockMvc.perform(get(imageUrl).header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isOk());
+
+        // The issuing shop can load it too — the portal's "view what the guest picked".
+        mockMvc.perform(get(imageUrl).header("Authorization", "Bearer " + retailerToken))
+                .andExpect(status().isOk());
+
+        // A different shop's owner cannot.
+        userRepository.save(User.builder().name("Other Shop").email("other-shop@example.com")
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL).emailVerified(true).build());
+        String otherToken = login("other-shop@example.com", "password123");
+        mockMvc.perform(get(imageUrl).header("Authorization", "Bearer " + otherToken))
+                .andExpect(status().isForbidden());
+    }
+
     // --- helpers ---
 
     private String redeemAsGuest() throws Exception {

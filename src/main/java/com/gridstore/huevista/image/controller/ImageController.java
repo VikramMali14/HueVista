@@ -28,6 +28,7 @@ public class ImageController {
 
     private final ImageService imageService;
     private final StorageService storageService;
+    private final com.gridstore.huevista.account.service.AccessCodeService accessCodeService;
 
     @Operation(
             summary = "Upload and classify an image",
@@ -91,7 +92,7 @@ public class ImageController {
         // another user's directory (or, with enough "../", outside the storage root
         // entirely). Reject any traversal / absolute / backslash / NUL payload, then
         // require the (now-clean) key to live under the caller's own prefix.
-        if (!isOwnedKey(storageKey, userId)) {
+        if (!isOwnedKey(storageKey, userId) && !isManagedGuestKey(storageKey, userId)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
@@ -119,6 +120,34 @@ public class ImageController {
             return false;
         }
         return storageKey.startsWith(userId + "/");
+    }
+
+    /**
+     * The issuing shop may load its guests' photos (the portal's "view what the
+     * guest picked" flow): guest uploads are keyed under the ACCESS-CODE id, so
+     * when the caller isn't the key's owner, allow the read iff the key is clean
+     * (same traversal guard as {@link #isOwnedKey}) and its prefix is an access
+     * code whose organization the caller owns or manages.
+     */
+    private boolean isManagedGuestKey(String storageKey, String userId) {
+        if (storageKey == null || storageKey.isBlank() || userId == null || userId.isBlank()) {
+            return false;
+        }
+        if (storageKey.contains("..")
+                || storageKey.contains("\\")
+                || storageKey.indexOf('\0') >= 0
+                || storageKey.startsWith("/")) {
+            return false;
+        }
+        int slash = storageKey.indexOf('/');
+        if (slash <= 0) return false;
+        String prefix = storageKey.substring(0, slash);
+        try {
+            accessCodeService.requireManagedCode(userId, prefix);
+            return true;
+        } catch (Exception denied) {
+            return false; // not an access-code prefix, or not this caller's shop
+        }
     }
 
     private String extractStorageKey(HttpServletRequest request) {
