@@ -131,6 +131,33 @@ public class ProjectService {
         return toResponse(projectRepository.findById(projectId).orElseThrow());
     }
 
+    /**
+     * Rename / re-describe a project. PATCH semantics: only non-null fields are
+     * applied, so the frontend can send just the field being edited. A provided
+     * name must be non-blank — an unnamed project can't be found again on the
+     * dashboard.
+     */
+    @Transactional
+    public ProjectResponse updateProjectDetails(String userId, String projectId, UpdateProjectRequest request) {
+        Project project = findOwned(userId, projectId);
+        if (request.getName() != null) {
+            String name = request.getName().trim();
+            if (name.isEmpty()) {
+                throw new IllegalArgumentException("Project name cannot be empty.");
+            }
+            project.setName(name);
+        }
+        if (request.getRoomType() != null) {
+            project.setRoomType(blankToNull(request.getRoomType()));
+        }
+        if (request.getNotes() != null) {
+            project.setNotes(blankToNull(request.getNotes()));
+        }
+        projectRepository.save(project);
+        log.info("Project details updated: id={} user={}", projectId, userId);
+        return toResponse(project);
+    }
+
     @Transactional
     public void deleteProject(String userId, String projectId) {
         Project project = findOwned(userId, projectId);
