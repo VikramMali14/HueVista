@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ---- Build stage: compile + package with the Maven wrapper (correct Maven version) ----
-FROM eclipse-temurin:17-jdk AS build
+FROM eclipse-temurin:25-jdk AS build
 WORKDIR /app
 # Cache dependencies first for faster rebuilds.
 COPY .mvn .mvn
@@ -10,7 +10,7 @@ COPY src src
 RUN ./mvnw -B -ntp -DskipTests package
 
 # ---- Runtime stage: slim JRE ----
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:25-jre
 WORKDIR /app
 # curl is only for the container HEALTHCHECK below.
 RUN apt-get update \
