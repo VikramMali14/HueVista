@@ -190,7 +190,7 @@ To skip this bulk load (e.g. in a constrained environment), set `app.catalog.aut
 | Business | ₹1,999/mo | 150/mo | + White-label, painter portal beta |
 | Enterprise | Custom | Unlimited | + API access, dedicated onboarding |
 
-Color application (browser-side WebGL) is unlimited at zero marginal cost. Only generative AI calls (classification, image clean, segmentation, recommendations) count against the monthly quota — enforced in `BillingService.checkAndIncrementAiUsage()`.
+Color application (browser-side WebGL) is unlimited at zero marginal cost. Segmentation (which includes the image clean) and recommendations count against the monthly quota — reserved/charged atomically in `BillingService.reserveAiUsage()` / `incrementAiUsage()`, with failed runs refunded. Upload classification is not quota-charged but is per-IP rate-limited (`app.rate-limit.image-upload.*`) to bound its Claude cost.
 
 ---
 

@@ -130,7 +130,13 @@ public class AuthService {
         return AdminUserResponse.from(user);
     }
 
-    /** Best-effort welcome email with the new shop's login — never fails creation. */
+    /**
+     * Best-effort welcome email with the new shop's login — never fails creation.
+     * Deliberately does NOT include the initial password: email is plaintext at
+     * rest with most providers, so the credential would outlive its purpose in an
+     * inbox forever. The admin hands the password over out-of-band (they set it),
+     * and the mail points at "Forgot password" for the owner to mint their own.
+     */
     private void sendShopWelcomeEmail(User user, CreateRetailerRequest request) {
         try {
             String url = firstFrontendOrigin();
@@ -139,9 +145,10 @@ public class AuthService {
                     "Hi " + request.getName() + ",\n\n"
                             + "Your HueVista shop account for \"" + request.getShopName() + "\" is ready.\n\n"
                             + "Sign in:  " + url + "/sign-in\n"
-                            + "Email:    " + user.getEmail() + "\n"
-                            + "Password: " + request.getPassword() + "\n\n"
-                            + "Please change your password after signing in (or use \"Forgot password\" to set your own).\n\n"
+                            + "Email:    " + user.getEmail() + "\n\n"
+                            + "Your initial password comes from the person who set up your account. "
+                            + "Prefer your own? Use \"Forgot password\" on the sign-in page to set one:\n"
+                            + url + "/sign-in/forgot\n\n"
                             + "— HueVista");
         } catch (Exception e) {
             log.warn("Welcome email to {} failed: {}", user.getEmail(), e.getMessage());

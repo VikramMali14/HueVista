@@ -82,7 +82,8 @@ public class ProjectService {
 
         String name = (request.getName() != null && !request.getName().isBlank())
                 ? request.getName()
-                : "Project " + (projectRepository.findByUserIdOrderByUpdatedAtDesc(userId).size() + 1);
+                // COUNT, not a full fetch — naming a project must not load every row the user owns.
+                : "Project " + (projectRepository.countByUserId(userId) + 1);
 
         Project project = projectRepository.save(Project.builder()
                 .user(user)
