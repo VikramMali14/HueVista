@@ -19,12 +19,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Per-IP, Redis-backed fixed-window rate limiter for the sensitive UNAUTHENTICATED
- * (and a few cheap-to-abuse authenticated) endpoints that aren't the signup route.
+ * Per-IP, Redis-backed fixed-window rate limiter for every sensitive
+ * UNAUTHENTICATED (and a few cheap-to-abuse authenticated) endpoint:
  *
- * Signup itself keeps its own dedicated {@link SignupRateLimitFilter}; this filter
- * covers the rest of the abuse surface that previously had NO throttle:
- *
+ *   - register             — bulk account creation
  *   - login                — credential stuffing / password spraying
  *   - refresh              — token grinding
  *   - forgot/reset-password— reset-email bombing + 6-digit OTP brute force
@@ -32,10 +30,10 @@ import java.util.Map;
  *   - OTP confirm          — 6-digit verification-code brute force
  *   - access-code redeem   — 8-char code brute force / griefing (burn a shop's code)
  *
- * Behaviour mirrors {@link SignupRateLimitFilter}: INCR+EXPIRE fixed window, real
- * client IP from the frontend-forwarded header, 429 + Retry-After when over the
- * limit, and FAIL-OPEN if Redis is unreachable (a limiter outage must never lock
- * legitimate users out of logging in). Disabled with {@code app.rate-limit.enabled=false}.
+ * INCR+EXPIRE fixed window, real client IP from the frontend-forwarded header,
+ * 429 + Retry-After when over the limit, and FAIL-OPEN if Redis is unreachable
+ * (a limiter outage must never lock legitimate users out of logging in).
+ * Disabled with {@code app.rate-limit.enabled=false}.
  */
 @Component
 @Slf4j
@@ -74,6 +72,10 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             StringRedisTemplate redis,
             @Value("${app.rate-limit.enabled:true}") boolean enabled,
             @Value("${app.rate-limit.trust-forwarded-headers:true}") boolean trustForwardedHeaders,
+            // signup: registration is unauthenticated and creates accounts — the prime
+            // target for bulk/abusive automation.
+            @Value("${app.rate-limit.signup.max-attempts:10}") int signupMax,
+            @Value("${app.rate-limit.signup.window-seconds:3600}") long signupWindow,
             // login: spray defence (per-account lockout already exists; this caps per IP).
             @Value("${app.rate-limit.login.max-attempts:15}") int loginMax,
             @Value("${app.rate-limit.login.window-seconds:300}") long loginWindow,
@@ -110,6 +112,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
         this.enabled = enabled;
         this.trustForwardedHeaders = trustForwardedHeaders;
 
+        Policy signup = new Policy("signup", signupMax, Duration.ofSeconds(signupWindow));
         Policy login = new Policy("login", loginMax, Duration.ofSeconds(loginWindow));
         Policy refresh = new Policy("refresh", refreshMax, Duration.ofSeconds(refreshWindow));
         Policy reset = new Policy("pwreset", resetMax, Duration.ofSeconds(resetWindow));
@@ -121,6 +124,9 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
         Policy storeOrder = new Policy("storeorder", storeOrderMax, Duration.ofSeconds(storeOrderWindow));
 
         this.rules = List.of(
+                // Same Redis key namespace ("ratelimit:signup:<ip>") the old dedicated
+                // signup filter used, so no window resets across a deploy.
+                new Rule("POST", "/api/auth/register", signup),
                 new Rule("POST", "/api/auth/login", login),
                 // Admin 2FA confirm: 6-digit code brute force defence.
                 new Rule("POST", "/api/auth/login/otp", otpConfirm),
@@ -175,7 +181,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             return;
         }
 
-        String ip = SignupRateLimitFilter.clientIp(request, trustForwardedHeaders);
+        String ip = ClientIps.clientIp(request, trustForwardedHeaders);
         String key = KEY_PREFIX + policy.name() + ":" + ip;
         try {
             Long count = redis.opsForValue().increment(key);

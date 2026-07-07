@@ -2,12 +2,11 @@ package com.gridstore.huevista.paint.service;
 
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
+import com.gridstore.huevista.common.ai.ClaudeService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 
 import java.util.*;
 
@@ -16,16 +15,12 @@ import java.util.*;
 @RequiredArgsConstructor
 public class ShadeEnrichmentService {
 
-    private final RestTemplate restTemplate;
+    private final ClaudeService claude;
     private final JsonMapper objectMapper;
-
-    @Value("${app.claude.api-key}")
-    private String apiKey;
 
     @Value("${app.claude.enrichment-model:claude-haiku-4-5-20251001}")
     private String model;
 
-    private static final String CLAUDE_API_URL = "https://api.anthropic.com/v1/messages";
     private static final int BATCH_SIZE = 5;
 
     public record ShadeInput(
@@ -97,30 +92,8 @@ public class ShadeEnrichmentService {
                 [{"index":0,"styleTags":[...],"moodDescriptors":[...],"finishRecommendations":[...],"aiDescription":"..."},...]
                 """;
 
-        Map<String, Object> requestBody = Map.of(
-                "model", model,
-                "max_tokens", 1024,
-                "messages", List.of(Map.of("role", "user", "content", prompt))
-        );
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.set("x-api-key", apiKey);
-        headers.set("anthropic-version", "2023-06-01");
-
-        ResponseEntity<Map> response = restTemplate.exchange(
-                CLAUDE_API_URL, HttpMethod.POST,
-                new HttpEntity<>(requestBody, headers),
-                Map.class
-        );
-
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> content = (List<Map<String, Object>>) response.getBody().get("content");
-        String rawJson = ((String) content.get(0).get("text")).trim();
-        // Strip markdown code fences if Claude wraps the response despite instructions
-        if (rawJson.startsWith("```")) {
-            rawJson = rawJson.replaceAll("^```[a-zA-Z]*\\n?", "").replaceAll("```$", "").trim();
-        }
+        String rawJson = ClaudeService.stripCodeFences(
+                claude.askUser(model, 1024, List.of(ClaudeService.textBlock(prompt))));
 
         List<Map<String, Object>> parsed = objectMapper.readValue(rawJson, new TypeReference<>() {});
         parsed.sort(Comparator.comparingInt(m -> (Integer) m.get("index")));
