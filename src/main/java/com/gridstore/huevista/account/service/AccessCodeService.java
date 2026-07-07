@@ -172,6 +172,27 @@ public class AccessCodeService {
                 .build();
     }
 
+    /**
+     * Issues a code on behalf of a retailer's public store kiosk — the caller is a
+     * verified PAYMENT, not a signed-in shop member, so there is no membership check
+     * here. Kiosk codes carry no brand restriction (the customer paid; they browse
+     * everything). The kiosk immediately guest-redeems the code; the shop later reads
+     * the real shade codes from it exactly like a counter-issued guest code.
+     */
+    @Transactional
+    public CustomerAccessCode issueForStore(Organization org, int validDays) {
+        String code = generateUniqueCode();
+        CustomerAccessCode accessCode = CustomerAccessCode.builder()
+                .organization(org)
+                .code(code)
+                .validDays(validDays)
+                .expiresAt(LocalDateTime.now().plusDays(validDays))
+                .build();
+        accessCode = codeRepository.save(accessCode);
+        log.info("Store kiosk code issued: org={} code={} validDays={}", org.getId(), code, validDays);
+        return accessCode;
+    }
+
     /** Loads a code, asserting the requester owns/manages its organization. For the
      *  shop's "view what the guest selected" lookup. */
     @Transactional(readOnly = true)

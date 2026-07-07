@@ -44,8 +44,24 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
     /** A throttle bucket: how many requests per window, and the Redis key namespace. */
     private record Policy(String name, int maxAttempts, Duration window) {}
 
-    /** A matched rule: METHOD + exact servlet path → Policy. */
-    private record Rule(String method, String path, Policy policy) {}
+    /**
+     * A matched rule: METHOD + servlet path → Policy. The path is usually exact;
+     * a single {@code *} matches exactly one path segment (for public endpoints
+     * with an id in the middle, e.g. {@code /api/store/*&#47;order}).
+     */
+    private record Rule(String method, String path, Policy policy) {
+        boolean matches(String requestMethod, String requestPath) {
+            if (!method.equalsIgnoreCase(requestMethod)) return false;
+            int star = path.indexOf('*');
+            if (star < 0) return path.equals(requestPath);
+            String head = path.substring(0, star);
+            String tail = path.substring(star + 1);
+            if (requestPath.length() < head.length() + tail.length() + 1) return false;
+            if (!requestPath.startsWith(head) || !requestPath.endsWith(tail)) return false;
+            // The wildcard covers ONE segment — no slashes inside it.
+            return requestPath.substring(head.length(), requestPath.length() - tail.length()).indexOf('/') < 0;
+        }
+    }
 
     private static final String KEY_PREFIX = "ratelimit:";
 
@@ -84,7 +100,12 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             @Value("${app.rate-limit.image-upload.window-seconds:3600}") long uploadWindow,
             // shop-account lead form: public write endpoint — anti-spam.
             @Value("${app.rate-limit.lead.max-attempts:5}") int leadMax,
-            @Value("${app.rate-limit.lead.window-seconds:3600}") long leadWindow) {
+            @Value("${app.rate-limit.lead.window-seconds:3600}") long leadWindow,
+            // public store kiosk order/verify: many legitimate customers can share one
+            // shop IP (the kiosk device), so the cap is generous — it only has to stop
+            // scripted Razorpay-order spam, not a queue of paying walk-ins.
+            @Value("${app.rate-limit.store-order.max-attempts:60}") int storeOrderMax,
+            @Value("${app.rate-limit.store-order.window-seconds:3600}") long storeOrderWindow) {
         this.redis = redis;
         this.enabled = enabled;
         this.trustForwardedHeaders = trustForwardedHeaders;
@@ -97,6 +118,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
         Policy redeem = new Policy("redeem", redeemMax, Duration.ofSeconds(redeemWindow));
         Policy upload = new Policy("upload", uploadMax, Duration.ofSeconds(uploadWindow));
         Policy lead = new Policy("lead", leadMax, Duration.ofSeconds(leadWindow));
+        Policy storeOrder = new Policy("storeorder", storeOrderMax, Duration.ofSeconds(storeOrderWindow));
 
         this.rules = List.of(
                 new Rule("POST", "/api/auth/login", login),
@@ -118,7 +140,10 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 new Rule("POST", "/api/images/upload", upload),
                 new Rule("POST", "/api/guest/images/upload", upload),
                 // Public shop-account request form.
-                new Rule("POST", "/api/leads/shop", lead)
+                new Rule("POST", "/api/leads/shop", lead),
+                // Public store kiosk payment endpoints (slug in the middle).
+                new Rule("POST", "/api/store/*/order", storeOrder),
+                new Rule("POST", "/api/store/*/verify", storeOrder)
         );
     }
 
@@ -127,7 +152,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
         String method = request.getMethod();
         String path = request.getServletPath();
         for (Rule r : rules) {
-            if (r.method().equalsIgnoreCase(method) && r.path().equals(path)) {
+            if (r.matches(method, path)) {
                 return r.policy();
             }
         }

@@ -18,7 +18,8 @@ class SensitiveEndpointRateLimitFilterTest {
                 12, 900,   // otp confirm
                 12, 900,   // code redeem
                 30, 3600,  // image upload
-                5, 3600);  // shop lead
+                5, 3600,   // shop lead
+                60, 3600); // store kiosk order/verify
     }
 
     private MockHttpServletRequest req(String method, String path) {
@@ -42,6 +43,9 @@ class SensitiveEndpointRateLimitFilterTest {
         assertThat(f.shouldNotFilter(req("POST", "/api/access-codes/redeem-guest"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/images/upload"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/guest/images/upload"))).isFalse();
+        // Store kiosk rules carry a one-segment wildcard for the slug.
+        assertThat(f.shouldNotFilter(req("POST", "/api/store/mehta-paints-x7k2p9/order"))).isFalse();
+        assertThat(f.shouldNotFilter(req("POST", "/api/store/mehta-paints-x7k2p9/verify"))).isFalse();
     }
 
     @Test
@@ -51,6 +55,9 @@ class SensitiveEndpointRateLimitFilterTest {
         assertThat(f.shouldNotFilter(req("POST", "/api/auth/register"))).isTrue();   // owned by SignupRateLimitFilter
         assertThat(f.shouldNotFilter(req("POST", "/api/projects"))).isTrue();        // not a sensitive path
         assertThat(f.shouldNotFilter(req("GET", "/api/shades"))).isTrue();
+        // The kiosk wildcard is one segment only — deeper paths don't match.
+        assertThat(f.shouldNotFilter(req("GET", "/api/store/some-slug"))).isTrue();
+        assertThat(f.shouldNotFilter(req("POST", "/api/store/a/b/order"))).isTrue();
     }
 
     @Test
