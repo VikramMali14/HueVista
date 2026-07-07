@@ -153,11 +153,13 @@ public class WalletService {
      * Admin decision on a PENDING request. Approving records that the admin has
      * (manually) paid the UPI id — the amount leaves the balance for good;
      * rejecting returns it. Either way the requester gets a best-effort email.
+     * The row is locked so two admins deciding simultaneously can't both
+     * "succeed" — the second sees the already-decided status.
      */
     @Transactional
     public WalletRedemptionResponse decideRedemption(String adminUserId, String redemptionId,
                                                      boolean approve, String note) {
-        WalletRedemption redemption = redemptionRepository.findById(redemptionId)
+        WalletRedemption redemption = redemptionRepository.findByIdForUpdate(redemptionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Redemption not found: " + redemptionId));
         if (redemption.getStatus() != WalletRedemptionStatus.PENDING) {
             throw new IllegalStateException("This redemption was already " + redemption.getStatus().name().toLowerCase() + ".");

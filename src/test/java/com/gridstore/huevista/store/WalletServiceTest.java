@@ -137,7 +137,7 @@ class WalletServiceTest {
         WalletRedemption pending = WalletRedemption.builder()
                 .id("red-1").organization(org).amountPaise(8_000)
                 .upiId("mehta@okhdfcbank").requestedByUserId(USER).build();
-        when(redemptions.findById("red-1")).thenReturn(Optional.of(pending));
+        when(redemptions.findByIdForUpdate("red-1")).thenReturn(Optional.of(pending));
         when(redemptions.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         WalletRedemptionResponse approved = svc.decideRedemption("admin-1", "red-1", true, "paid via UPI");
