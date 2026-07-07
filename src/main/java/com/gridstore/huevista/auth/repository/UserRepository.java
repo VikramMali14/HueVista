@@ -20,4 +20,15 @@ public interface UserRepository extends JpaRepository<User, String> {
 
     @Query("SELECT COUNT(u) FROM User u WHERE u.createdAt >= :since")
     long countByCreatedAtAfter(@Param("since") LocalDateTime since);
+
+    /** Admin console search — case-insensitive substring match on name or email.
+     *  Ordering comes from the caller's Pageable (no ORDER BY here, so the two
+     *  sorts can't conflict). */
+    @Query("""
+            SELECT u FROM User u
+             WHERE LOWER(u.name) LIKE LOWER(CONCAT('%', :q, '%'))
+                OR LOWER(u.email) LIKE LOWER(CONCAT('%', :q, '%'))
+            """)
+    org.springframework.data.domain.Page<User> searchByNameOrEmail(
+            @Param("q") String q, org.springframework.data.domain.Pageable pageable);
 }
