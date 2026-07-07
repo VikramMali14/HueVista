@@ -11,6 +11,7 @@ class SensitiveEndpointRateLimitFilterTest {
     private SensitiveEndpointRateLimitFilter filter(boolean enabled) {
         return new SensitiveEndpointRateLimitFilter(
                 null, enabled, true,
+                10, 3600,  // signup
                 15, 300,   // login
                 60, 300,   // refresh
                 8, 900,    // password reset
@@ -32,6 +33,7 @@ class SensitiveEndpointRateLimitFilterTest {
     void throttlesConfiguredSensitivePaths() {
         SensitiveEndpointRateLimitFilter f = filter(true);
         // shouldNotFilter == false means the limiter WILL act on this request.
+        assertThat(f.shouldNotFilter(req("POST", "/api/auth/register"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/auth/login"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/auth/refresh"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/auth/forgot-password"))).isFalse();
@@ -48,7 +50,7 @@ class SensitiveEndpointRateLimitFilterTest {
     void ignoresUnlistedPathsAndWrongMethods() {
         SensitiveEndpointRateLimitFilter f = filter(true);
         assertThat(f.shouldNotFilter(req("GET", "/api/auth/login"))).isTrue();       // wrong method
-        assertThat(f.shouldNotFilter(req("POST", "/api/auth/register"))).isTrue();   // owned by SignupRateLimitFilter
+        assertThat(f.shouldNotFilter(req("GET", "/api/auth/register"))).isTrue();    // wrong method
         assertThat(f.shouldNotFilter(req("POST", "/api/projects"))).isTrue();        // not a sensitive path
         assertThat(f.shouldNotFilter(req("GET", "/api/shades"))).isTrue();
     }
@@ -56,6 +58,7 @@ class SensitiveEndpointRateLimitFilterTest {
     @Test
     void masterSwitchDisablesAll() {
         SensitiveEndpointRateLimitFilter f = filter(false);
+        assertThat(f.shouldNotFilter(req("POST", "/api/auth/register"))).isTrue();
         assertThat(f.shouldNotFilter(req("POST", "/api/auth/login"))).isTrue();
         assertThat(f.shouldNotFilter(req("POST", "/api/auth/reset-password"))).isTrue();
     }

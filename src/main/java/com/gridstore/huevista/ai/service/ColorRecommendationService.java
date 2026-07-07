@@ -7,6 +7,7 @@ import com.gridstore.huevista.ai.dto.MatchedShade;
 import com.gridstore.huevista.ai.dto.RecommendationResponse;
 import com.gridstore.huevista.ai.util.DeltaEMatcher;
 import com.gridstore.huevista.billing.service.BillingService;
+import com.gridstore.huevista.common.ai.ClaudeService;
 import com.gridstore.huevista.common.exception.ExternalServiceException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.image.service.StorageService;
@@ -17,10 +18,8 @@ import com.gridstore.huevista.project.repository.ProjectRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.client.RestTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -35,16 +34,11 @@ public class ColorRecommendationService {
     private final ShadeRepository shadeRepository;
     private final StorageService storageService;
     private final BillingService billingService;
-    private final RestTemplate restTemplate;
+    private final ClaudeService claude;
     private final ObjectMapper objectMapper;
-
-    @Value("${app.claude.api-key}")
-    private String apiKey;
 
     @Value("${app.claude.recommendation-model:claude-sonnet-4-6}")
     private String recommendationModel;
-
-    private static final String CLAUDE_API_URL = "https://api.anthropic.com/v1/messages";
 
     private static final String PROMPT = """
             You are an expert Indian interior and exterior color consultant with deep knowledge of Asian Paints, Berger, and Nerolac shade ranges.
@@ -130,45 +124,13 @@ public class ColorRecommendationService {
                 .build();
     }
 
-    @SuppressWarnings("unchecked")
     private List<Map<String, Object>> callClaude(String imageUrl) {
-        Map<String, Object> imageBlock = Map.of(
-                "type", "image",
-                "source", Map.of(
-                        "type", "url",
-                        "url", imageUrl
-                )
-        );
-        Map<String, Object> textBlock = Map.of("type", "text", "text", PROMPT);
-
-        Map<String, Object> requestBody = Map.of(
-                "model", recommendationModel,
-                "max_tokens", 1024,
-                "messages", List.of(
-                        Map.of("role", "user", "content", List.of(imageBlock, textBlock))
-                )
-        );
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.set("x-api-key", apiKey);
-        headers.set("anthropic-version", "2023-06-01");
-
         try {
-            ResponseEntity<Map> response = restTemplate.exchange(
-                    CLAUDE_API_URL, HttpMethod.POST,
-                    new HttpEntity<>(requestBody, headers),
-                    Map.class
-            );
-
-            List<Map<String, Object>> content = (List<Map<String, Object>>) response.getBody().get("content");
-            String raw = ((String) content.get(0).get("text")).trim();
-
-            // Strip markdown code fences if present
-            if (raw.startsWith("```")) {
-                raw = raw.replaceAll("^```[a-z]*\\n?", "").replaceAll("\\n?```$", "").trim();
-            }
-
+            String raw = ClaudeService.stripCodeFences(
+                    claude.askUser(recommendationModel, 1024, List.of(
+                            ClaudeService.imageUrlBlock(imageUrl),
+                            ClaudeService.textBlock(PROMPT)
+                    )));
             return objectMapper.readValue(raw, new TypeReference<>() {});
         } catch (Exception e) {
             log.error("Claude recommendation API call failed: {}", e.getMessage());

@@ -3,7 +3,6 @@ package com.gridstore.huevista.auth.config;
 import com.gridstore.huevista.auth.filter.GuestAuthFilter;
 import com.gridstore.huevista.auth.filter.JwtAuthFilter;
 import com.gridstore.huevista.common.ratelimit.SensitiveEndpointRateLimitFilter;
-import com.gridstore.huevista.common.ratelimit.SignupRateLimitFilter;
 import com.gridstore.huevista.auth.handler.OAuth2AuthenticationFailureHandler;
 import com.gridstore.huevista.auth.handler.OAuth2AuthenticationSuccessHandler;
 import com.gridstore.huevista.auth.repository.UserRepository;
@@ -65,7 +64,6 @@ public class SecurityConfig {
     private final UserRepository userRepository;
     private final JwtAuthFilter jwtAuthFilter;
     private final GuestAuthFilter guestAuthFilter;
-    private final SignupRateLimitFilter signupRateLimitFilter;
     private final SensitiveEndpointRateLimitFilter sensitiveEndpointRateLimitFilter;
     private final CustomOAuth2UserService customOAuth2UserService;
     private final OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler;
@@ -180,11 +178,7 @@ public class SecurityConfig {
             .addFilterBefore(guestAuthFilter, UsernamePasswordAuthenticationFilter.class)
             // ── Insert JWT filter BEFORE UsernamePasswordAuthenticationFilter
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
-            // ── Per-IP signup throttle (only acts on POST /api/auth/register).
-            //    It and JwtAuthFilter never both act on one request, so their
-            //    relative order doesn't matter.
-            .addFilterBefore(signupRateLimitFilter, UsernamePasswordAuthenticationFilter.class)
-            // ── Per-IP throttle for the remaining sensitive endpoints (login, refresh,
+            // ── Per-IP throttle for the sensitive endpoints (register, login, refresh,
             //    password reset, OTP send/confirm, access-code redeem). Acts only on
             //    those exact paths; fail-open if Redis is down.
             .addFilterBefore(sensitiveEndpointRateLimitFilter, UsernamePasswordAuthenticationFilter.class);
