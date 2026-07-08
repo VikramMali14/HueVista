@@ -10,7 +10,7 @@ class SensitiveEndpointRateLimitFilterTest {
     /** Build a filter with the production default limits; redis is unused by shouldNotFilter(). */
     private SensitiveEndpointRateLimitFilter filter(boolean enabled) {
         return new SensitiveEndpointRateLimitFilter(
-                null, enabled, true,
+                null, enabled, true, 1,
                 10, 3600,  // signup
                 15, 300,   // login
                 60, 300,   // refresh

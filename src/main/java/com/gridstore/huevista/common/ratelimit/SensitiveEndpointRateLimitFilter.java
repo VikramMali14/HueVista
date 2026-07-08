@@ -66,12 +66,16 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
     private final StringRedisTemplate redis;
     private final boolean enabled;
     private final boolean trustForwardedHeaders;
+    private final int trustedProxyHops;
     private final List<Rule> rules;
 
     public SensitiveEndpointRateLimitFilter(
             StringRedisTemplate redis,
             @Value("${app.rate-limit.enabled:true}") boolean enabled,
             @Value("${app.rate-limit.trust-forwarded-headers:true}") boolean trustForwardedHeaders,
+            // How many proxies in front of this backend append to X-Forwarded-For
+            // (trust counts from the right; see ClientIps).
+            @Value("${app.rate-limit.trusted-proxy-hops:1}") int trustedProxyHops,
             // signup: registration is unauthenticated and creates accounts — the prime
             // target for bulk/abusive automation.
             @Value("${app.rate-limit.signup.max-attempts:10}") int signupMax,
@@ -111,6 +115,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
         this.redis = redis;
         this.enabled = enabled;
         this.trustForwardedHeaders = trustForwardedHeaders;
+        this.trustedProxyHops = trustedProxyHops;
 
         Policy signup = new Policy("signup", signupMax, Duration.ofSeconds(signupWindow));
         Policy login = new Policy("login", loginMax, Duration.ofSeconds(loginWindow));
@@ -181,7 +186,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             return;
         }
 
-        String ip = ClientIps.clientIp(request, trustForwardedHeaders);
+        String ip = ClientIps.clientIp(request, trustForwardedHeaders, trustedProxyHops);
         String key = KEY_PREFIX + policy.name() + ":" + ip;
         try {
             Long count = redis.opsForValue().increment(key);
