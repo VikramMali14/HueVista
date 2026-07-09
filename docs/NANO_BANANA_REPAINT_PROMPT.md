@@ -7,11 +7,19 @@ two different jobs:
 | Step | Class | Job |
 | --- | --- | --- |
 | 1. Clean + repaint | `ImageCleanerService` | Removes clutter and **repaints the actual photo** into the reference palette → this is the canvas shown to the user and fed to step 2. |
-| 2. Segmentation mask | `ReplicateNanoBananaSegmenter` | Produces a **flat colour-coded mask** (red/green/blue/black) that `MaskProcessor.splitColorCodedMask` splits into per-category recolourable regions. |
+| 2. Colour-block edit | `ReplicateNanoBananaSegmenter` | **Edits the cleaned photo**, flooding each surface with a flat category colour (red/green/blue/black) in place. `MaskProcessor.splitColorCodedMask` then splits the result by colour into per-category recolourable regions. |
 
-The mask uses **distinct flat RGB hues** (not the real surface colours) precisely
+Step 2 is deliberately framed as an **edit of the real photo**, not an abstract
+"generate a segmentation mask" task. Painting flat colour *onto* the existing
+surfaces tracks their true edges far better than drawing a mask from scratch
+(Nano Banana warns "pixel alignment isn't guaranteed" for generation), so the
+derived masks line up with the canvas. The fill is forced **flat and
+fully-saturated with the photo's own shadows ignored**, so colour-thresholding
+in `splitColorCodedMask` stays clean instead of losing shaded pixels.
+
+The blocks use **distinct flat RGB hues** (not the real surface colours) precisely
 so the regions separate cleanly — the real wall/accent/trim colours are
-identical (all white), so the mask can't rely on them; it uses pure
+identical (all white), so the split can't rely on them; it uses pure
 red/green/blue and maps back to the real colours via
 `SegmentationService.defaultHexFor`.
 

@@ -123,15 +123,23 @@ public class ReplicateNanoBananaSegmenter {
     }
 
     /**
-     * Generates a SINGLE color-coded segmentation mask covering all three
-     * paint categories at once. Red = main wall, Green = accent wall,
-     * Blue = trim, Black = everything else (including the door panels and
-     * metal railings — those are kept as fixed dark-brown features, never
-     * recoloured, so they fall in Black). The caller splits the image
-     * into per-category binary masks server-side via
-     * {@link MaskProcessor#splitColorCodedMask}.
+     * Produces a SINGLE flat colour-blocked image covering all three paint
+     * categories at once. Red = main wall, Green = accent wall, Blue = trim,
+     * Black = everything else (including the door panels and metal railings —
+     * those are kept as fixed dark-brown features, never recoloured, so they
+     * fall in Black). The caller splits the image into per-category binary
+     * masks server-side via {@link MaskProcessor#splitColorCodedMask}.
      *
-     * Big advantage over three separate single-category calls: 1 Replicate
+     * <p>This is framed as an <b>edit of the actual (cleaned) photo</b>, not as
+     * an abstract segmentation map: the model floods each real surface with a
+     * flat category colour in place. Editing the photo tracks its true edges far
+     * more faithfully than generating a mask from scratch (Nano Banana warns
+     * "pixel alignment isn't guaranteed" for generation), and the flat-fill
+     * instruction — deliberately ignoring the photo's own shadows — keeps the
+     * downstream colour-threshold split clean instead of punching holes wherever
+     * a wall was shaded.
+     *
+     * <p>Big advantage over three separate single-category calls: 1 Replicate
      * call instead of 3 (3× faster, 3× cheaper), Gemini sees all categories
      * at once so a pixel can only belong to ONE category — no inter-mask
      * overlap.
@@ -179,9 +187,10 @@ public class ReplicateNanoBananaSegmenter {
     }
 
     /**
-     * Single comprehensive prompt for the color-coded approach. Asks for ONE
-     * image with four specific colors marking the three paint categories
-     * plus a "nothing" background. Tested wording — be careful editing.
+     * Single comprehensive prompt for the colour-blocked approach. Asks the
+     * model to EDIT the photo, flooding each surface with one of four flat
+     * colours (three paint categories plus a black "nothing" background).
+     * Tested wording — be careful editing.
      *
      * The GREEN (accent) paragraph is the only part that varies by scene:
      * {@link #ACCENT_ALWAYS} (interiors) forces exactly one accent wall so the
@@ -195,40 +204,47 @@ public class ReplicateNanoBananaSegmenter {
     }
 
     private static final String COLOR_CODED_HEAD =
-            "Look at this room or building photograph. Generate a SINGLE color-coded "
-          + "segmentation mask image of the same exact dimensions as the input. "
-          + "Mark each surface using one of these four specific colors only:\n\n"
-          + "- RED pixels (#FF0000) — the MAIN painted wall surface. The "
-          + "dominant flat painted plaster/concrete/drywall that someone would repaint "
-          + "with a single color (the largest painted area). Mark every painted wall "
-          + "RED except the single accent wall described next.\n\n";
+            "You are EDITING this exact room or building photograph — not generating a "
+          + "new scene. Take the photo as given and repaint its surfaces into flat "
+          + "blocks of colour, keeping every edge, corner and outline precisely where "
+          + "it sits in the photo so the result lines up with the original "
+          + "pixel-for-pixel. Output an image of the same exact dimensions.\n\n"
+          + "Fill each surface with ONE flat, solid, fully-saturated colour — a single "
+          + "identical colour value across the whole surface, with NO shading, NO "
+          + "gradient, NO texture and NO lighting variation inside a surface. Ignore "
+          + "the photo's own shadows and highlights when filling: every pixel of one "
+          + "surface gets the exact same pure colour. Use only these four colours:\n\n"
+          + "- Paint the MAIN painted wall pure RED (#FF0000): the dominant flat "
+          + "painted plaster/concrete/drywall someone would repaint with a single "
+          + "colour (the largest painted area). Paint every painted wall RED except "
+          + "the single accent wall described next.\n\n";
 
-    /** Exterior/unknown: only mark an accent wall when one is genuinely a different colour. */
+    /** Exterior/unknown: only paint an accent wall when one is genuinely a different colour. */
     private static final String ACCENT_CONDITIONAL =
-            "- GREEN pixels (#00FF00) — an ACCENT or feature wall: a "
-          + "secondary painted wall surface clearly a DIFFERENT color from the "
+            "- Paint an ACCENT or feature wall pure GREEN (#00FF00): a "
+          + "secondary painted wall surface clearly a DIFFERENT colour from the "
           + "main wall — a feature wall, an accent strip, or a perpendicular "
-          + "wall painted differently. If there is no obviously different-colored "
-          + "secondary wall, DO NOT use green anywhere. Leave it out entirely.\n\n";
+          + "wall painted differently. If there is no obviously different-coloured "
+          + "secondary wall, do NOT use green anywhere. Leave it out entirely.\n\n";
 
     /** Interior: always designate exactly one wall as the accent (highlight) wall. */
     private static final String ACCENT_ALWAYS =
-            "- GREEN pixels (#00FF00) — exactly ONE ACCENT / feature wall, ALWAYS "
+            "- Paint exactly ONE ACCENT / feature wall pure GREEN (#00FF00), ALWAYS "
           + "chosen. Pick the single best wall to highlight: if one wall is already a "
-          + "different color, use that one; otherwise choose one prominent, mostly "
+          + "different colour, use that one; otherwise choose one prominent, mostly "
           + "unobstructed wall (typically the largest uninterrupted wall behind a "
-          + "bed/sofa or the wall facing the camera) and mark that ENTIRE wall green. "
-          + "Mark exactly ONE wall green and leave the remaining painted walls red. "
+          + "bed/sofa or the wall facing the camera) and paint that ENTIRE wall green. "
+          + "Paint exactly ONE wall green and leave the remaining painted walls red. "
           + "Always designate one accent wall — never leave green out.\n\n";
 
     private static final String COLOR_CODED_TAIL =
-            "- BLUE pixels (#0000FF) — TRIM, borders and frames: window frames, "
+            "- Paint TRIM, borders and frames pure BLUE (#0000FF): window frames, "
           + "door frames, skirting/baseboards, fascia under the "
-          + "roof, parapet edges, decorative banding. Narrow elements typically "
-          + "painted in a contrasting trim color. (NOT the door panels themselves "
+          + "roof, parapet edges, decorative banding — the narrow elements normally "
+          + "painted in a contrasting trim colour. (NOT the door panels themselves "
           + "and NOT metal railings — those are kept as fixed dark-brown features, "
-          + "so mark them BLACK, below.)\n\n"
-          + "- BLACK pixels (#000000) — everything else: sky, clouds, ground, "
+          + "so paint them BLACK, below.)\n\n"
+          + "- Paint EVERYTHING ELSE pure BLACK (#000000): sky, clouds, ground, "
           + "dirt, road, sidewalk, vegetation, trees, vehicles, furniture, floor, "
           + "the door panels/leaves themselves, metal and iron railings (balcony "
           + "railings, staircase railings, handrails, balustrades), glass panes "
@@ -239,14 +255,17 @@ public class ReplicateNanoBananaSegmenter {
           + "kept as fixed dark-brown features, so they belong here — never in a "
           + "recoloured category.\n\n"
           + "RULES:\n"
-          + "- Use ONLY these four colors (pure red, green, blue, black). No other "
-          + "colors at all. No grey, no gradients, no shading.\n"
-          + "- Each pixel belongs to exactly ONE category. Never two at once.\n"
-          + "- The mask must be PIXEL-ALIGNED with the input photo (same "
-          + "resolution).\n"
-          + "- Hard color boundaries only — no anti-aliasing, no soft edges.\n"
+          + "- Use ONLY these four exact colours: pure red (#FF0000), pure green "
+          + "(#00FF00), pure blue (#0000FF), pure black (#000000). No other colours, "
+          + "no in-between shades, no grey, no gradients, no shading.\n"
+          + "- Every pixel is exactly ONE of the four colours. Never blend two.\n"
+          + "- Keep every surface boundary exactly aligned with the photo (same "
+          + "resolution, same edges, same object positions) so the colour blocks "
+          + "trace the real surfaces precisely.\n"
+          + "- Hard colour boundaries only — no anti-aliasing, no soft or feathered "
+          + "edges.\n"
           + "- No text, watermarks, or annotations.\n"
-          + "- Output: just the color-coded mask image.\n";
+          + "- Output: only the flat colour-blocked image.\n";
 
     private String buildMaskPrompt(String surfaceDescription) {
         return ("Generate a black-and-white binary segmentation MASK image. The mask must be the "
