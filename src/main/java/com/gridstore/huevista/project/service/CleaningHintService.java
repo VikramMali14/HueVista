@@ -55,7 +55,14 @@ public class CleaningHintService {
                 "You are preparing edit instructions to CLEAN this " + sceneWord + " photo for a paint "
               + "visualizer (remove clutter, keep the structure identical). Look at THIS image and output "
               + "short bulleted lists, nothing else:\n"
-              + "REMOVE: the specific clutter, temporary objects, wires, or damage actually visible here.\n"
+              + "REMOVE: the specific clutter, temporary objects, and damage actually visible here. "
+              + (exterior
+                  ? "Be sure to call out — if present anywhere in the frame, including against the open "
+                  + "sky or off to the side — overhead wires and cables, electricity/utility/telephone "
+                  + "poles, street-light poles / lamp posts, and trees or overhanging tree branches "
+                  + "(even bare twigs silhouetted against the sky). "
+                  : "")
+              + "\n"
               + "PRESERVE: the specific architectural features actually visible here that must stay "
               + "identical (windows, doors, frames, fixtures, cabinetry, railings, etc.).\n"
               + finishList
