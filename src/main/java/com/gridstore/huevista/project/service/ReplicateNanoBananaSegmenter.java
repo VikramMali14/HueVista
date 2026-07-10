@@ -230,13 +230,26 @@ public class ReplicateNanoBananaSegmenter {
           + "colour (the largest painted area). Paint every painted wall RED except "
           + "the single accent wall described next.\n\n";
 
-    /** Exterior/unknown: only paint an accent wall when one is genuinely a different colour. */
+    /** Exterior/unknown: pick a feature wall by colour OR by architecture. A facade's
+     *  feature volume (a projecting stair/lift tower, a tall vertical block framing
+     *  the front) is usually painted the SAME colour as everything else in the photo,
+     *  yet it is exactly the wall a designer picks out in a contrast shade — so the
+     *  rule must not require an existing colour difference to mark it. */
     private static final String ACCENT_CONDITIONAL =
-            "- Paint an ACCENT or feature wall pure GREEN (#00FF00): a "
-          + "secondary painted wall surface clearly a DIFFERENT colour from the "
-          + "main wall — a feature wall, an accent strip, or a perpendicular "
-          + "wall painted differently. If there is no obviously different-coloured "
-          + "secondary wall, do NOT use green anywhere. Leave it out entirely.\n\n";
+            "- Paint ONE ACCENT / feature wall pure GREEN (#00FF00). Choose it by "
+          + "either of these, in order of preference:\n"
+          + "   (a) a secondary painted wall that is ALREADY clearly a different "
+          + "colour from the main wall — a feature wall, an accent strip, or a "
+          + "perpendicular wall painted differently; or\n"
+          + "   (b) a DISTINCT ARCHITECTURAL VOLUME that a designer would pick out "
+          + "as the facade's feature even though it is currently painted the same "
+          + "colour as the rest: a projecting or corner stair/lift tower, a tall "
+          + "vertical block rising past the roof line, a porch/entrance mass, or a "
+          + "prominent perpendicular wing. Paint that ENTIRE volume — all of its "
+          + "visible faces, top to bottom — green.\n"
+          + "Pick at most ONE feature (never two), and keep every remaining painted "
+          + "wall red. Only if the facade is a single plain mass with neither (a) "
+          + "nor (b) do you leave green out entirely.\n\n";
 
     /** Interior: always designate exactly one wall as the accent (highlight) wall. */
     private static final String ACCENT_ALWAYS =
@@ -267,8 +280,8 @@ public class ReplicateNanoBananaSegmenter {
           + "swallow them into the main wall just because they are the same colour in "
           + "the photo; a real painter would pick them out, so they must be their own "
           + "colour here. (NOT the door panels themselves "
-          + "and NOT metal railings — those are kept as fixed dark-brown features, "
-          + "so paint them BLACK, below.)\n\n"
+          + "and NOT metal railings — those are kept as fixed features (dark-brown "
+          + "doors, charcoal-grey metalwork), so paint them BLACK, below.)\n\n"
           + "- Paint EVERYTHING ELSE pure BLACK (#000000): sky, clouds, ground, "
           + "dirt, road, sidewalk, vegetation, trees, vehicles, furniture, floor, "
           + "the door panels/leaves themselves, metal and iron railings (balcony "
@@ -277,8 +290,8 @@ public class ReplicateNanoBananaSegmenter {
           + "brick, ceramic tile, marble, wood, AC units, light fixtures, electrical "
           + "boxes, drainpipes, signage, mailboxes, decor, people — anything "
           + "that is NOT a paintable wall or trim surface. Doors and railings are "
-          + "kept as fixed dark-brown features, so they belong here — never in a "
-          + "recoloured category.\n\n"
+          + "kept as fixed features (dark-brown doors, charcoal-grey metalwork), "
+          + "so they belong here — never in a recoloured category.\n\n"
           + "RULES:\n"
           + "- Use ONLY these four exact colours: pure red (#FF0000), pure green "
           + "(#00FF00), pure blue (#0000FF), pure black (#000000). No other colours, "

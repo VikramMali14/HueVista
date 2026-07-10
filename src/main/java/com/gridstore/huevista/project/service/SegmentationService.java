@@ -41,8 +41,9 @@ import java.util.Optional;
  *       edits the cleaned photo into a flat colour-blocked image: RED = main
  *       paintable wall, GREEN = accent / highlighter wall, BLUE = trim &
  *       frames, BLACK = everything else (sky, ground, stone, windows, fixtures,
- *       plus the door panels and metal railings — kept as fixed dark-brown
- *       features, so they are deliberately excluded from the recolourable
+ *       plus the door panels and metal railings — kept as fixed features:
+ *       dark-brown doors, charcoal-grey railings — so they are deliberately
+ *       excluded from the recolourable
  *       masks). Because it paints onto the real surfaces rather than drawing an
  *       abstract map, the colour blocks stay aligned to the canvas.</li>
  *   <li>{@link MaskProcessor#splitColorCodedMask} splits the colored mask
@@ -299,16 +300,34 @@ public class SegmentationService {
                 category, projectId, key, appliedHex);
     }
 
+    // Exterior "colour on create" reference palette. These are the swatches the
+    // project opens painted with (through the masks, on the cleaned white
+    // canvas) — the canvas itself stays white so the frontend's scene-light
+    // anchored shading can treat the cleaned photo as an illumination map.
+    // MUST stay in sync with the frontend's DEFAULT_HEX_FOR_KIND
+    // (visualizer.tsx).
+    private static final String EXT_MAIN_HEX = "#e8d5b0";   // Cashmere Beige (0342)
+    private static final String EXT_ACCENT_HEX = "#b0603e"; // Burnt Sienna (6118)
+    private static final String EXT_TRIM_HEX = "#4a362a";   // Dark Clove (8511)
+
     /**
      * Default "colour on create" reference shade for an auto-detected category.
-     * Every paintable wall/accent/trim region opens white for both interiors and
-     * exteriors; doors and railings are not a recolourable category (they are
-     * kept dark brown by the clean step). Returns null for MANUAL.
-     *
-     * <p>{@code scene} is retained for call-site symmetry and so a per-scene
-     * palette can be reintroduced without touching callers.
+     * Exteriors open in the reference combo — beige body, sienna feature wall,
+     * dark-clove trim — so the first render already reads like a designed
+     * colour scheme instead of a flat all-white house. Interiors still open
+     * white (a neutral base the user colours themselves). Doors and railings
+     * are not a recolourable category (the clean step keeps them as fixed
+     * features). Returns null for MANUAL.
      */
     private static String defaultHexFor(RegionCategory category, ImageType scene) {
+        if (scene != ImageType.INDOOR) {
+            return switch (category) {
+                case MAIN_WALL, OTHER_WALL -> EXT_MAIN_HEX;
+                case ACCENT_WALL -> EXT_ACCENT_HEX;
+                case TRIM -> EXT_TRIM_HEX;
+                case MANUAL -> null;
+            };
+        }
         return switch (category) {
             case MAIN_WALL, OTHER_WALL, ACCENT_WALL, TRIM -> "#ffffff";
             case MANUAL -> null;
