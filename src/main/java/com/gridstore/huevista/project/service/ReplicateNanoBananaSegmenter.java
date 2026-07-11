@@ -58,6 +58,23 @@ public class ReplicateNanoBananaSegmenter {
     @Value("${replicate.nano-banana.enabled:false}")
     private boolean enabled;
 
+    /**
+     * Output aspect ratio requested from the model. Gemini image models
+     * generate into fixed aspect buckets by default, so WITHOUT this the
+     * colour-coded mask can come back at a different aspect than the photo —
+     * and every region mask is then systematically stretched or shifted off
+     * the real surfaces. "match_input_image" pins the output to the photo's
+     * own aspect. Blank = omit the parameter.
+     */
+    @Value("${replicate.nano-banana.aspect-ratio:match_input_image}")
+    private String aspectRatio;
+
+    /** Output resolution (e.g. 1K/2K/4K) when the model supports it; higher
+     *  means finer mask edges. Blank (default) = omit and take the model's
+     *  native output size. */
+    @Value("${replicate.nano-banana.resolution:}")
+    private String resolution;
+
     private static final String REPLICATE_BASE = "https://api.replicate.com/v1";
     private static final int POLL_INTERVAL_MS = 2000;
     private static final int MAX_POLL_ATTEMPTS = 90; // image gen can take 60-90s
@@ -91,11 +108,7 @@ public class ReplicateNanoBananaSegmenter {
             //   prompt:       the text instruction
             //   image_input:  list of source image URLs (for editing context)
             //   output_format optional, "png" preferred for masks
-            Map<String, Object> input = Map.of(
-                    "prompt", prompt,
-                    "image_input", List.of(imageUrl),
-                    "output_format", "png"
-            );
+            Map<String, Object> input = buildImageEditInput(prompt, imageUrl);
 
             String predictionId = startPrediction(input);
             if (predictionId == null) return Optional.empty();
@@ -158,11 +171,7 @@ public class ReplicateNanoBananaSegmenter {
             log.info("Nano Banana (Replicate) [{}]: requesting COLOR-CODED mask (scene={}, forceAccent={})",
                     model, scene, forceAccent);
 
-            Map<String, Object> input = Map.of(
-                    "prompt", colorCodedPrompt(forceAccent),
-                    "image_input", List.of(imageUrl),
-                    "output_format", "png"
-            );
+            Map<String, Object> input = buildImageEditInput(colorCodedPrompt(forceAccent), imageUrl);
 
             String predictionId = startPrediction(input);
             if (predictionId == null) return Optional.empty();
@@ -230,13 +239,26 @@ public class ReplicateNanoBananaSegmenter {
           + "colour (the largest painted area). Paint every painted wall RED except "
           + "the single accent wall described next.\n\n";
 
-    /** Exterior/unknown: only paint an accent wall when one is genuinely a different colour. */
+    /** Exterior/unknown: pick a feature wall by colour OR by architecture. A facade's
+     *  feature volume (a projecting stair/lift tower, a tall vertical block framing
+     *  the front) is usually painted the SAME colour as everything else in the photo,
+     *  yet it is exactly the wall a designer picks out in a contrast shade — so the
+     *  rule must not require an existing colour difference to mark it. */
     private static final String ACCENT_CONDITIONAL =
-            "- Paint an ACCENT or feature wall pure GREEN (#00FF00): a "
-          + "secondary painted wall surface clearly a DIFFERENT colour from the "
-          + "main wall — a feature wall, an accent strip, or a perpendicular "
-          + "wall painted differently. If there is no obviously different-coloured "
-          + "secondary wall, do NOT use green anywhere. Leave it out entirely.\n\n";
+            "- Paint ONE ACCENT / feature wall pure GREEN (#00FF00). Choose it by "
+          + "either of these, in order of preference:\n"
+          + "   (a) a secondary painted wall that is ALREADY clearly a different "
+          + "colour from the main wall — a feature wall, an accent strip, or a "
+          + "perpendicular wall painted differently; or\n"
+          + "   (b) a DISTINCT ARCHITECTURAL VOLUME that a designer would pick out "
+          + "as the facade's feature even though it is currently painted the same "
+          + "colour as the rest: a projecting or corner stair/lift tower, a tall "
+          + "vertical block rising past the roof line, a porch/entrance mass, or a "
+          + "prominent perpendicular wing. Paint that ENTIRE volume — all of its "
+          + "visible faces, top to bottom — green.\n"
+          + "Pick at most ONE feature (never two), and keep every remaining painted "
+          + "wall red. Only if the facade is a single plain mass with neither (a) "
+          + "nor (b) do you leave green out entirely.\n\n";
 
     /** Interior: always designate exactly one wall as the accent (highlight) wall. */
     private static final String ACCENT_ALWAYS =
@@ -267,8 +289,8 @@ public class ReplicateNanoBananaSegmenter {
           + "swallow them into the main wall just because they are the same colour in "
           + "the photo; a real painter would pick them out, so they must be their own "
           + "colour here. (NOT the door panels themselves "
-          + "and NOT metal railings — those are kept as fixed dark-brown features, "
-          + "so paint them BLACK, below.)\n\n"
+          + "and NOT metal railings — those are kept as fixed features (dark-brown "
+          + "doors, charcoal-grey metalwork), so paint them BLACK, below.)\n\n"
           + "- Paint EVERYTHING ELSE pure BLACK (#000000): sky, clouds, ground, "
           + "dirt, road, sidewalk, vegetation, trees, vehicles, furniture, floor, "
           + "the door panels/leaves themselves, metal and iron railings (balcony "
@@ -277,8 +299,8 @@ public class ReplicateNanoBananaSegmenter {
           + "brick, ceramic tile, marble, wood, AC units, light fixtures, electrical "
           + "boxes, drainpipes, signage, mailboxes, decor, people — anything "
           + "that is NOT a paintable wall or trim surface. Doors and railings are "
-          + "kept as fixed dark-brown features, so they belong here — never in a "
-          + "recoloured category.\n\n"
+          + "kept as fixed features (dark-brown doors, charcoal-grey metalwork), "
+          + "so they belong here — never in a recoloured category.\n\n"
           + "RULES:\n"
           + "- Use ONLY these four exact colours: pure red (#FF0000), pure green "
           + "(#00FF00), pure blue (#0000FF), pure black (#000000). No other colours, "
@@ -306,32 +328,78 @@ public class ReplicateNanoBananaSegmenter {
                 + "- Output: the mask image only.\n");
     }
 
+    /**
+     * Base input for an image-edit prediction, plus the OPTIONAL aspect-ratio
+     * and resolution controls when configured. Both optional keys are safe to
+     * send to the Nano Banana family; if a model variant rejects them,
+     * {@link #startPrediction} retries once without them.
+     */
+    private Map<String, Object> buildImageEditInput(String prompt, String imageUrl) {
+        Map<String, Object> input = new java.util.HashMap<>();
+        input.put("prompt", prompt);
+        input.put("image_input", List.of(imageUrl));
+        input.put("output_format", "png");
+        if (aspectRatio != null && !aspectRatio.isBlank()) {
+            input.put("aspect_ratio", aspectRatio.trim());
+        }
+        if (resolution != null && !resolution.isBlank()) {
+            input.put("resolution", resolution.trim());
+        }
+        return input;
+    }
+
     private String startPrediction(Map<String, Object> input) {
         try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.set("Authorization", "Token " + replicateApiToken);
-
-            boolean hasPinnedVersion = modelVersion != null && !modelVersion.isBlank();
-            Map<String, Object> body = hasPinnedVersion
-                    ? Map.of("version", modelVersion, "input", input)
-                    : Map.of("input", input);
-            String endpoint = hasPinnedVersion
-                    ? REPLICATE_BASE + "/predictions"
-                    : REPLICATE_BASE + "/models/" + model + "/predictions";
-
-            ResponseEntity<Map> response = restTemplate.exchange(
-                    endpoint, HttpMethod.POST,
-                    new HttpEntity<>(body, headers),
-                    Map.class
-            );
-            String id = (String) response.getBody().get("id");
-            log.debug("Nano Banana prediction started: id={}", id);
-            return id;
+            return doStartPrediction(input);
+        } catch (org.springframework.web.client.HttpClientErrorException e) {
+            // 400/422 usually means an input the model version doesn't know.
+            // Drop the optional tuning keys and retry once — a mask at the
+            // model's default aspect/resolution beats no mask at all.
+            boolean hadOptional = input.containsKey("aspect_ratio") || input.containsKey("resolution");
+            if (hadOptional && (e.getStatusCode().value() == 400 || e.getStatusCode().value() == 422)) {
+                log.warn("Nano Banana rejected optional inputs ({}), retrying without " +
+                        "aspect_ratio/resolution: {}", e.getStatusCode(), e.getResponseBodyAsString());
+                Map<String, Object> slim = new java.util.HashMap<>(input);
+                slim.remove("aspect_ratio");
+                slim.remove("resolution");
+                try {
+                    return doStartPrediction(slim);
+                } catch (Exception retryError) {
+                    log.warn("Nano Banana retry without optional inputs also failed: {}",
+                            retryError.getMessage());
+                    return null;
+                }
+            }
+            log.warn("Failed to start Nano Banana prediction: {} {}",
+                    e.getStatusCode(), e.getResponseBodyAsString());
+            return null;
         } catch (Exception e) {
             log.warn("Failed to start Nano Banana prediction: {}", e.getMessage());
             return null;
         }
+    }
+
+    private String doStartPrediction(Map<String, Object> input) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Authorization", "Token " + replicateApiToken);
+
+        boolean hasPinnedVersion = modelVersion != null && !modelVersion.isBlank();
+        Map<String, Object> body = hasPinnedVersion
+                ? Map.of("version", modelVersion, "input", input)
+                : Map.of("input", input);
+        String endpoint = hasPinnedVersion
+                ? REPLICATE_BASE + "/predictions"
+                : REPLICATE_BASE + "/models/" + model + "/predictions";
+
+        ResponseEntity<Map> response = restTemplate.exchange(
+                endpoint, HttpMethod.POST,
+                new HttpEntity<>(body, headers),
+                Map.class
+        );
+        String id = (String) response.getBody().get("id");
+        log.debug("Nano Banana prediction started: id={}", id);
+        return id;
     }
 
     @SuppressWarnings("unchecked")

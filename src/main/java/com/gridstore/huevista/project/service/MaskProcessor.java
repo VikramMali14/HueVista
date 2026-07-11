@@ -655,6 +655,78 @@ final class MaskProcessor {
     }
 
     /**
+     * Resizes a binary mask to {@code w}×{@code h} with BILINEAR interpolation
+     * and re-thresholds the result. Interpolating the 0/255 edge and cutting it
+     * at 50% grey lands the new boundary between the source pixels
+     * (half-source-pixel accuracy), so a ~1K model mask upscaled to the canvas
+     * resolution gets a smooth, straight edge instead of the enlarged staircase
+     * blocks that nearest-neighbour scaling produces.
+     */
+    static byte[] resizeBinarySmooth(byte[] maskBytes, int w, int h) throws IOException {
+        BufferedImage src = decode(maskBytes);
+        if (src.getWidth() == w && src.getHeight() == h) return maskBytes;
+        BufferedImage gray = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
+        Graphics2D g = gray.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+        g.drawImage(src, 0, 0, w, h, null);
+        g.dispose();
+        return encodeBinaryPng(thresholdToBinary(gray, w, h), w, h);
+    }
+
+    /**
+     * Drops mask pixels whose colour on the CLEANED canvas cannot be freshly
+     * painted plaster. The clean step repaints every paintable wall and trim
+     * surface near-white, so a masked pixel that is dark or strongly coloured
+     * is mask bleed onto something else — a charcoal railing, a dark door
+     * leaf, window glass, vegetation, the dark grout of stone cladding — and
+     * is removed. This only ever REMOVES pixels: ragged mask borders snap
+     * inward to the real painted surface, never outward.
+     *
+     * A pixel counts as paint-like when its channel spread (max−min) is at
+     * most {@code maxChannelSpread} AND its luminance is at least
+     * {@code minLuma}. Both thresholds are forgiving on purpose: the repaint
+     * keeps the photo's shading, so a white wall at dusk reads warm (spread
+     * up to ~60) and a wall in shadow sits well below full brightness.
+     *
+     * <p>Safety valve: if the gate would remove more than
+     * {@code maxRemovedFraction} of the mask, the input is returned unchanged
+     * — the canvas is probably NOT the white repaint (cleaner disabled or
+     * failed), so the colour assumption doesn't hold.
+     */
+    static byte[] restrictToPaintable(byte[] maskBytes, BufferedImage canvas,
+                                      int maxChannelSpread, int minLuma,
+                                      double maxRemovedFraction) throws IOException {
+        int w = canvas.getWidth(), h = canvas.getHeight();
+        BufferedImage mask = decode(maskBytes);
+        if (mask.getWidth() != w || mask.getHeight() != h) {
+            mask = resizeNearest(mask, w, h);
+        }
+        boolean[] bin = thresholdToBinary(mask, w, h);
+        boolean[] out = new boolean[w * h];
+        long total = 0, kept = 0;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int idx = y * w + x;
+                if (!bin[idx]) continue;
+                total++;
+                int p = canvas.getRGB(x, y);
+                int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
+                int spread = Math.max(r, Math.max(g, b)) - Math.min(r, Math.min(g, b));
+                int luma = (2126 * r + 7152 * g + 722 * b) / 10000;
+                if (spread <= maxChannelSpread && luma >= minLuma) {
+                    out[idx] = true;
+                    kept++;
+                }
+            }
+        }
+        if (total == 0 || (double) (total - kept) / total > maxRemovedFraction) {
+            return maskBytes;
+        }
+        return encodeBinaryPng(out, w, h);
+    }
+
+    /**
      * Detects and corrects inverted masks where the segmented region is
      * black and the background is white. SAM 2 point mode on Replicate
      * sometimes returns masks in this inverted form. We detect inversion by

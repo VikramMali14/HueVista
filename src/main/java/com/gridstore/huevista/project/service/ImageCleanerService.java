@@ -73,6 +73,17 @@ public class ImageCleanerService {
     @Value("${replicate.image-cleaner.resolution:1K}")
     private String resolution;
 
+    /**
+     * Output aspect ratio requested from the model. Gemini image models
+     * generate into fixed aspect buckets by default, so WITHOUT this the
+     * cleaned canvas can come back at a different aspect than the photo —
+     * squeezing the house and misaligning everything drawn over it.
+     * "match_input_image" pins the output to the photo's own aspect.
+     * Blank = omit the parameter.
+     */
+    @Value("${replicate.image-cleaner.aspect-ratio:match_input_image}")
+    private String aspectRatio;
+
     /** Longest edge (px) to upscale the cleaned image to locally. 0 = no upscale. */
     @Value("${replicate.image-cleaner.upscale-longest-px:3840}")
     private int upscaleLongestPx;
@@ -146,6 +157,9 @@ public class ImageCleanerService {
             if (resolution != null && !resolution.isBlank()) {
                 input.put("resolution", resolution.trim());
             }
+            if (aspectRatio != null && !aspectRatio.isBlank()) {
+                input.put("aspect_ratio", aspectRatio.trim());
+            }
 
             String predictionId = startPrediction(input);
             if (predictionId == null) return Optional.empty();
@@ -183,21 +197,27 @@ public class ImageCleanerService {
      * can; the precise per-region colours are still enforced downstream by
      * the mask-based recolor, which uses the same hexes.
      */
-    // Reference repaint palette. The WALL/BORDER hexes MUST stay in sync with
-    // SegmentationService#defaultHexFor and the frontend DEFAULT_HEX_FOR_KIND so
-    // the generative repaint here and the downstream mask-based recolor agree on
-    // the same colours. DOOR_RAILING is intentionally NOT in that set: doors and
-    // railings get no recolourable region (the segmenter excludes them), so this
-    // brown lives only here — it's the final colour those surfaces keep.
+    // Reference repaint palette. The WALL/BORDER hexes are deliberately WHITE:
+    // the cleaned image is the frontend's recolour canvas, and with every
+    // paintable surface repainted fresh white the photo of those surfaces IS
+    // an illumination map (light level and colour cast). The frontend's
+    // scene-light anchored shading multiplies the user's swatch by that map,
+    // so a dusk photo painted Cashmere Beige still looks like dusk — the
+    // actual colours come from the region defaults in
+    // SegmentationService#defaultHexFor and the user's picks, never from the
+    // generative repaint. Do NOT change these to a coloured palette without
+    // also rethinking the anchored shading (REF_WHITE) in the frontend.
     private static final String EXT_WALL = "#ffffff";      // white
     private static final String EXT_BORDER = "#ffffff";    // white trim (same as walls)
     private static final String INT_WALL = "#ffffff";      // white
     private static final String INT_BORDER = "#ffffff";    // white trim (same as walls)
-    // Doors (wood/iron leaves) and metal/iron railings are KEPT as a fixed
-    // dark-brown wood/metal feature: painted brown here, then deliberately
-    // excluded from the recolour masks downstream (the segmenter marks them
-    // BLACK), so the user never recolours them — they stay this brown.
-    private static final String DOOR_RAILING = "#5c4033";  // dark brown
+    // Doors and railings get no recolourable region (the segmenter marks them
+    // BLACK), so the colours below are the final colours those surfaces keep.
+    // Door leaves stay a dark wood brown; metal/iron railings are finished a
+    // charcoal grey (reads as powder-coated metalwork, matching the reference
+    // combo's "Metalwork: Charcoal Grey").
+    private static final String DOOR_LEAF = "#5c4033";     // dark brown wood
+    private static final String RAILING = "#43464a";       // charcoal grey metal
 
     private static final String CLEAN_PROMPT_EXTERIOR =
             "Look at this photograph of a house. Edit the image so the house "
@@ -238,11 +258,13 @@ public class ImageCleanerService {
           + "- Door frames, window frames, fascia, parapet edges "
           + "and trim: repaint these the trim/border colour " + EXT_BORDER
           + " (white, the same clean white as the walls), evenly.\n"
-          + "- Door leaves/panels (the wooden or iron doors themselves) and all "
-          + "metal/iron railings — balcony railings, staircase railings, handrails: "
-          + "repaint these a dark brown " + DOOR_RAILING + ", evenly, keeping their "
-          + "natural wood/metal look. Do NOT paint doors or railings the wall or "
-          + "trim colour.\n"
+          + "- Door leaves/panels (the wooden or iron doors themselves): repaint "
+          + "these a dark brown " + DOOR_LEAF + ", evenly, keeping their natural "
+          + "wood look.\n"
+          + "- All metal/iron railings — balcony railings, staircase railings, "
+          + "handrails, balustrades, window grilles: finish these a charcoal grey "
+          + RAILING + ", evenly, like freshly powder-coated metalwork. Do NOT "
+          + "paint doors or railings the wall or trim colour.\n"
           + "- Preserve each surface's existing light and shade: keep the original "
           + "highlights, shadows and soft gradients so the new colour still looks "
           + "three-dimensional. Recolour the surfaces — do not flatten them into a "
@@ -283,10 +305,10 @@ public class ImageCleanerService {
           + "OUTPUT: The same photograph with the clutter removed, any unfinished "
           + "walls completed into smooth paintable plaster, and the painted surfaces "
           + "repainted in the reference colours above (walls " + EXT_WALL + ", trim "
-          + EXT_BORDER + ", doors and railings " + DOOR_RAILING + "). The house must "
-          + "remain pixel-faithful to the original in shape, proportion and material; "
-          + "only the colour of painted surfaces changes, and non-painted materials "
-          + "are never altered.\n";
+          + EXT_BORDER + ", doors " + DOOR_LEAF + ", railings " + RAILING + "). The "
+          + "house must remain pixel-faithful to the original in shape, proportion "
+          + "and material; only the colour of painted surfaces changes, and "
+          + "non-painted materials are never altered.\n";
 
     /**
      * Interior-room variant. Clutter here is furniture mess, cables, boxes and stains;
@@ -313,8 +335,10 @@ public class ImageCleanerService {
           + "- Trim, skirting, door frames and window frames: repaint these the "
           + "trim/border colour " + INT_BORDER + " (white, the same clean white as "
           + "the walls), even coat.\n"
-          + "- Door leaves/panels and any metal/iron railings: repaint these a dark "
-          + "brown " + DOOR_RAILING + ", keeping their natural wood/metal look.\n"
+          + "- Door leaves/panels: repaint these a dark brown " + DOOR_LEAF
+          + ", keeping their natural wood look.\n"
+          + "- Any metal/iron railings and grilles: finish these a charcoal grey "
+          + RAILING + ", like freshly powder-coated metalwork.\n"
           + "- Preserve each surface's existing light and shade — keep the highlights, "
           + "shadows and soft gradients so the new colour still looks three-dimensional. "
           + "Recolour the surfaces, do not flatten them.\n"
@@ -329,29 +353,55 @@ public class ImageCleanerService {
           + "- Flooring material, lighting, shadows, time of day.\n"
           + "- Camera angle, perspective, framing, image dimensions, room proportions.\n\n"
           + "OUTPUT: the same room, decluttered, with walls repainted " + INT_WALL
-          + ", trim " + INT_BORDER + " and doors/railings " + DOOR_RAILING
-          + ". Pixel-faithful in structure and materials; "
+          + ", trim " + INT_BORDER + ", doors " + DOOR_LEAF + " and railings "
+          + RAILING + ". Pixel-faithful in structure and materials; "
           + "change only the colour of painted surfaces and never restyle the room.\n";
 
     private String startPrediction(Map<String, Object> input) {
         try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.set("Authorization", "Token " + replicateApiToken);
-
-            Map<String, Object> body = Map.of("input", input);
-            String endpoint = REPLICATE_BASE + "/models/" + model + "/predictions";
-
-            ResponseEntity<Map> response = restTemplate.exchange(
-                    endpoint, HttpMethod.POST,
-                    new HttpEntity<>(body, headers),
-                    Map.class
-            );
-            return (String) response.getBody().get("id");
+            return doStartPrediction(input);
+        } catch (org.springframework.web.client.HttpClientErrorException e) {
+            // 400/422 usually means an input the model version doesn't know.
+            // Drop the optional tuning keys and retry once — a clean at the
+            // model's default aspect/resolution beats no clean at all.
+            boolean hadOptional = input.containsKey("resolution") || input.containsKey("aspect_ratio");
+            if (hadOptional && (e.getStatusCode().value() == 400 || e.getStatusCode().value() == 422)) {
+                log.warn("ImageCleaner model rejected optional inputs ({}), retrying without " +
+                        "resolution/aspect_ratio: {}", e.getStatusCode(), e.getResponseBodyAsString());
+                Map<String, Object> slim = new java.util.HashMap<>(input);
+                slim.remove("resolution");
+                slim.remove("aspect_ratio");
+                try {
+                    return doStartPrediction(slim);
+                } catch (Exception retryError) {
+                    log.warn("ImageCleaner retry without optional inputs also failed: {}",
+                            retryError.getMessage());
+                    return null;
+                }
+            }
+            log.warn("Failed to start ImageCleaner prediction: {} {}",
+                    e.getStatusCode(), e.getResponseBodyAsString());
+            return null;
         } catch (Exception e) {
             log.warn("Failed to start ImageCleaner prediction: {}", e.getMessage());
             return null;
         }
+    }
+
+    private String doStartPrediction(Map<String, Object> input) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Authorization", "Token " + replicateApiToken);
+
+        Map<String, Object> body = Map.of("input", input);
+        String endpoint = REPLICATE_BASE + "/models/" + model + "/predictions";
+
+        ResponseEntity<Map> response = restTemplate.exchange(
+                endpoint, HttpMethod.POST,
+                new HttpEntity<>(body, headers),
+                Map.class
+        );
+        return (String) response.getBody().get("id");
     }
 
     @SuppressWarnings("unchecked")
