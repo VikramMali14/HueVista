@@ -73,6 +73,17 @@ public class ImageCleanerService {
     @Value("${replicate.image-cleaner.resolution:1K}")
     private String resolution;
 
+    /**
+     * Output aspect ratio requested from the model. Gemini image models
+     * generate into fixed aspect buckets by default, so WITHOUT this the
+     * cleaned canvas can come back at a different aspect than the photo —
+     * squeezing the house and misaligning everything drawn over it.
+     * "match_input_image" pins the output to the photo's own aspect.
+     * Blank = omit the parameter.
+     */
+    @Value("${replicate.image-cleaner.aspect-ratio:match_input_image}")
+    private String aspectRatio;
+
     /** Longest edge (px) to upscale the cleaned image to locally. 0 = no upscale. */
     @Value("${replicate.image-cleaner.upscale-longest-px:3840}")
     private int upscaleLongestPx;
@@ -145,6 +156,9 @@ public class ImageCleanerService {
             input.put("output_format", "jpg");
             if (resolution != null && !resolution.isBlank()) {
                 input.put("resolution", resolution.trim());
+            }
+            if (aspectRatio != null && !aspectRatio.isBlank()) {
+                input.put("aspect_ratio", aspectRatio.trim());
             }
 
             String predictionId = startPrediction(input);
@@ -345,23 +359,49 @@ public class ImageCleanerService {
 
     private String startPrediction(Map<String, Object> input) {
         try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.set("Authorization", "Token " + replicateApiToken);
-
-            Map<String, Object> body = Map.of("input", input);
-            String endpoint = REPLICATE_BASE + "/models/" + model + "/predictions";
-
-            ResponseEntity<Map> response = restTemplate.exchange(
-                    endpoint, HttpMethod.POST,
-                    new HttpEntity<>(body, headers),
-                    Map.class
-            );
-            return (String) response.getBody().get("id");
+            return doStartPrediction(input);
+        } catch (org.springframework.web.client.HttpClientErrorException e) {
+            // 400/422 usually means an input the model version doesn't know.
+            // Drop the optional tuning keys and retry once — a clean at the
+            // model's default aspect/resolution beats no clean at all.
+            boolean hadOptional = input.containsKey("resolution") || input.containsKey("aspect_ratio");
+            if (hadOptional && (e.getStatusCode().value() == 400 || e.getStatusCode().value() == 422)) {
+                log.warn("ImageCleaner model rejected optional inputs ({}), retrying without " +
+                        "resolution/aspect_ratio: {}", e.getStatusCode(), e.getResponseBodyAsString());
+                Map<String, Object> slim = new java.util.HashMap<>(input);
+                slim.remove("resolution");
+                slim.remove("aspect_ratio");
+                try {
+                    return doStartPrediction(slim);
+                } catch (Exception retryError) {
+                    log.warn("ImageCleaner retry without optional inputs also failed: {}",
+                            retryError.getMessage());
+                    return null;
+                }
+            }
+            log.warn("Failed to start ImageCleaner prediction: {} {}",
+                    e.getStatusCode(), e.getResponseBodyAsString());
+            return null;
         } catch (Exception e) {
             log.warn("Failed to start ImageCleaner prediction: {}", e.getMessage());
             return null;
         }
+    }
+
+    private String doStartPrediction(Map<String, Object> input) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Authorization", "Token " + replicateApiToken);
+
+        Map<String, Object> body = Map.of("input", input);
+        String endpoint = REPLICATE_BASE + "/models/" + model + "/predictions";
+
+        ResponseEntity<Map> response = restTemplate.exchange(
+                endpoint, HttpMethod.POST,
+                new HttpEntity<>(body, headers),
+                Map.class
+        );
+        return (String) response.getBody().get("id");
     }
 
     @SuppressWarnings("unchecked")

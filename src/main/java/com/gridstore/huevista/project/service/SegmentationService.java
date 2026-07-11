@@ -48,8 +48,11 @@ import java.util.Optional;
  *       abstract map, the colour blocks stay aligned to the canvas.</li>
  *   <li>{@link MaskProcessor#splitColorCodedMask} splits the colored mask
  *       into per-category binary masks server-side.</li>
- *   <li>Each non-empty category is morph-cleaned, uploaded to S3 and
- *       persisted as a {@link Region} row.</li>
+ *   <li>Each non-empty category is post-processed (smooth-upscaled to the
+ *       canvas resolution, colour-gated against the cleaned canvas so bleed
+ *       onto railings/doors/glass/cladding is trimmed, morph-cleaned — see
+ *       {@link #postProcessMask}), uploaded to S3 and persisted as a
+ *       {@link Region} row.</li>
  * </ol>
  *
  * <h3>Manual flow (segmentPointAndSave)</h3>
@@ -142,12 +145,15 @@ public class SegmentationService {
             // Nano Banana Pro asking for clutter removed AND painted surfaces
             // repainted into the reference palette. When it succeeds the
             // cleaned image becomes the canvas the masks are aligned to;
-            // otherwise we mask the original directly.
+            // otherwise we mask the original directly. The cleaned bytes are
+            // also kept in memory: mask post-processing colour-gates each
+            // region against this canvas (see postProcessMask).
             String maskImageUrl = imageUrl;
+            byte[] cleanedBytes = null;
             try {
                 Optional<byte[]> cleanedOpt = imageCleaner.cleanImage(imageUrl, uploadedImage.getImageType());
                 if (cleanedOpt.isPresent()) {
-                    byte[] cleanedBytes = cleanedOpt.get();
+                    cleanedBytes = cleanedOpt.get();
                     String cleanedKey = storageService.store(
                             cleanedBytes, userId, "cleaned.jpg", "image/jpeg");
                     persistCleanedImageKey(projectId, cleanedKey);
@@ -163,7 +169,8 @@ public class SegmentationService {
             // Step 2: Nano Banana color-coded mask via Replicate. Scene drives the
             // accent-wall rule: interiors always get one accent wall to highlight.
             if (tryReplicateNanoBananaSegmentation(projectId, userId, maskImageUrl,
-                    uploadedImage.getImageType())) {
+                    uploadedImage.getImageType(), cleanedBytes,
+                    uploadedImage.getWidth(), uploadedImage.getHeight())) {
                 markSegmented(projectId);
                 // Charge one AI preview now that walls were actually produced — a failed
                 // run never costs a credit. Guest runs bill the issuing shop; a retailer's
@@ -202,7 +209,9 @@ public class SegmentationService {
 
     /**
      * One Nano Banana call returns a single color-coded image; we split
-     * it into per-category binary masks and persist each non-empty one
+     * it into per-category binary masks, post-process each one (smooth
+     * upscale to the canvas resolution + colour gate against the cleaned
+     * canvas, see {@link #postProcessMask}) and persist each non-empty one
      * as a Region row.
      *
      * Pixel size thresholds (5000 px for walls, 2000 px for trim) filter
@@ -211,7 +220,9 @@ public class SegmentationService {
      * wall). We skip saving them rather than persisting a tiny noise mask.
      */
     private boolean tryReplicateNanoBananaSegmentation(String projectId, String userId,
-                                                       String imageUrl, ImageType scene) {
+                                                       String imageUrl, ImageType scene,
+                                                       byte[] cleanedBytes,
+                                                       int imageWidth, int imageHeight) {
         try {
             if (!replicateNanoBanana.isConfigured()) {
                 log.warn("Nano Banana (Replicate) not configured — set " +
@@ -234,28 +245,45 @@ public class SegmentationService {
             }
             log.info("Nano Banana split [project={}]: {}", projectId, parts.keySet());
 
+            // Masks are stored at the CANVAS's aspect and resolution (capped at
+            // MAX_MASK_DIM), not at whatever size the model generated — the
+            // frontend stretches each mask over the canvas, so any aspect drift
+            // here shears every region off its surface.
+            BufferedImage canvasSmall = decodeCanvasForMasks(cleanedBytes);
+            int targetW, targetH;
+            if (canvasSmall != null) {
+                targetW = canvasSmall.getWidth();
+                targetH = canvasSmall.getHeight();
+            } else {
+                double scale = Math.min(1.0,
+                        (double) MAX_MASK_DIM / Math.max(imageWidth, imageHeight));
+                targetW = Math.max(1, (int) Math.round(imageWidth * scale));
+                targetH = Math.max(1, (int) Math.round(imageHeight * scale));
+            }
+            logAspectDriftIfAny(colorRaw.get(), targetW, targetH, projectId);
+
             int saved = 0;
             int displayOrder = 0;
             boolean mainSaved = false;
 
-            byte[] mainBytes = parts.get("main");
+            byte[] mainBytes = postProcessMask(parts.get("main"), canvasSmall, targetW, targetH);
             if (mainBytes != null && safeForegroundCount(mainBytes) >= 5000) {
-                saveCategoryRegion(projectId, userId, safeClean(mainBytes),
+                saveCategoryRegion(projectId, userId, mainBytes,
                         "Main Wall", RegionCategory.MAIN_WALL, displayOrder++,
                         defaultHexFor(RegionCategory.MAIN_WALL, scene));
                 saved++;
                 mainSaved = true;
             }
-            byte[] accentBytes = parts.get("accent");
+            byte[] accentBytes = postProcessMask(parts.get("accent"), canvasSmall, targetW, targetH);
             if (accentBytes != null && safeForegroundCount(accentBytes) >= 5000) {
-                saveCategoryRegion(projectId, userId, safeClean(accentBytes),
+                saveCategoryRegion(projectId, userId, accentBytes,
                         "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder++,
                         defaultHexFor(RegionCategory.ACCENT_WALL, scene));
                 saved++;
             }
-            byte[] trimBytes = parts.get("trim");
+            byte[] trimBytes = postProcessMask(parts.get("trim"), canvasSmall, targetW, targetH);
             if (trimBytes != null && safeForegroundCount(trimBytes) >= 2000) {
-                saveCategoryRegion(projectId, userId, safeClean(trimBytes),
+                saveCategoryRegion(projectId, userId, trimBytes,
                         "Trim & Frames", RegionCategory.TRIM, displayOrder++,
                         defaultHexFor(RegionCategory.TRIM, scene));
                 saved++;
@@ -332,6 +360,85 @@ public class SegmentationService {
             case MAIN_WALL, OTHER_WALL, ACCENT_WALL, TRIM -> "#ffffff";
             case MANUAL -> null;
         };
+    }
+
+    /** Longest side (px) for stored region masks. The cleaned canvas is
+     *  upscaled to ~3840px, but a 2048px mask scaled up by the renderer's
+     *  bilinear sampling is visually indistinguishable at that size and keeps
+     *  the PNGs (and the colour-gate pass) fast. */
+    private static final int MAX_MASK_DIM = 2048;
+
+    // Colour-gate thresholds (see MaskProcessor#restrictToPaintable): forgiving
+    // enough to keep dusk-warm (spread ≤ ~60) and shadowed white walls, strict
+    // enough to drop charcoal railings (luma ≈ 70), dark door leaves, window
+    // glass and saturated sky/vegetation the mask bled onto.
+    private static final int PAINTABLE_MAX_SPREAD = 70;
+    private static final int PAINTABLE_MIN_LUMA = 78;
+    private static final double PAINTABLE_MAX_REMOVED = 0.5;
+
+    /**
+     * Runs a raw split mask through the fidelity pipeline:
+     * <ol>
+     *   <li>smooth-upscale to the canvas aspect/resolution — the model outputs
+     *       ~1K and nearest scaling to a 4K canvas shows staircase blocks;</li>
+     *   <li>colour-gate against the cleaned canvas when available: drop pixels
+     *       that are clearly not freshly painted surface, so borders that bled
+     *       onto railings, doors, glass or cladding snap back to the wall;</li>
+     *   <li>morphological cleanup, as before.</li>
+     * </ol>
+     * Every step is best-effort: a failure falls back to the previous bytes,
+     * so post-processing can only ever improve on the raw mask or leave it be.
+     */
+    private byte[] postProcessMask(byte[] mask, BufferedImage canvas, int w, int h) {
+        if (mask == null) return null;
+        byte[] out = mask;
+        try {
+            out = MaskProcessor.resizeBinarySmooth(out, w, h);
+        } catch (Exception e) {
+            log.warn("Mask smooth-upscale to {}x{} failed, keeping model resolution: {}",
+                    w, h, e.getMessage());
+        }
+        if (canvas != null) {
+            try {
+                out = MaskProcessor.restrictToPaintable(out, canvas,
+                        PAINTABLE_MAX_SPREAD, PAINTABLE_MIN_LUMA, PAINTABLE_MAX_REMOVED);
+            } catch (Exception e) {
+                log.warn("Mask colour gate failed, keeping ungated mask: {}", e.getMessage());
+            }
+        }
+        return safeClean(out);
+    }
+
+    /** Decodes the cleaned canvas and downsamples it to the stored-mask
+     *  resolution. Null input or a decode failure returns null — the colour
+     *  gate is skipped and mask dimensions come from the original photo. */
+    private BufferedImage decodeCanvasForMasks(byte[] cleanedBytes) {
+        if (cleanedBytes == null) return null;
+        try {
+            return MaskProcessor.downsample(MaskProcessor.decode(cleanedBytes), MAX_MASK_DIM);
+        } catch (Exception e) {
+            log.warn("Could not decode cleaned canvas for mask post-processing: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** Logs (never fails) when the colour-coded mask's aspect drifts >5% from
+     *  the canvas — the tell-tale of an aspect-bucketed model output, which
+     *  shears every region off its real surface once stretched. */
+    private void logAspectDriftIfAny(byte[] colorMask, int targetW, int targetH, String projectId) {
+        try {
+            BufferedImage m = MaskProcessor.decode(colorMask);
+            double maskAr = (double) m.getWidth() / m.getHeight();
+            double canvasAr = (double) targetW / targetH;
+            if (Math.abs(maskAr / canvasAr - 1.0) > 0.05) {
+                log.warn("Color-coded mask {}x{} has a different aspect than canvas {}x{} " +
+                                "for project {} — regions may sit off their surfaces; check the " +
+                                "replicate.nano-banana.aspect-ratio input",
+                        m.getWidth(), m.getHeight(), targetW, targetH, projectId);
+            }
+        } catch (Exception ignored) {
+            // best-effort diagnostics only
+        }
     }
 
     /** Morph-cleans a mask, falling back to the input if cleaning fails. */

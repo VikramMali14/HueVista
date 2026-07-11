@@ -58,6 +58,23 @@ public class ReplicateNanoBananaSegmenter {
     @Value("${replicate.nano-banana.enabled:false}")
     private boolean enabled;
 
+    /**
+     * Output aspect ratio requested from the model. Gemini image models
+     * generate into fixed aspect buckets by default, so WITHOUT this the
+     * colour-coded mask can come back at a different aspect than the photo —
+     * and every region mask is then systematically stretched or shifted off
+     * the real surfaces. "match_input_image" pins the output to the photo's
+     * own aspect. Blank = omit the parameter.
+     */
+    @Value("${replicate.nano-banana.aspect-ratio:match_input_image}")
+    private String aspectRatio;
+
+    /** Output resolution (e.g. 1K/2K/4K) when the model supports it; higher
+     *  means finer mask edges. Blank (default) = omit and take the model's
+     *  native output size. */
+    @Value("${replicate.nano-banana.resolution:}")
+    private String resolution;
+
     private static final String REPLICATE_BASE = "https://api.replicate.com/v1";
     private static final int POLL_INTERVAL_MS = 2000;
     private static final int MAX_POLL_ATTEMPTS = 90; // image gen can take 60-90s
@@ -91,11 +108,7 @@ public class ReplicateNanoBananaSegmenter {
             //   prompt:       the text instruction
             //   image_input:  list of source image URLs (for editing context)
             //   output_format optional, "png" preferred for masks
-            Map<String, Object> input = Map.of(
-                    "prompt", prompt,
-                    "image_input", List.of(imageUrl),
-                    "output_format", "png"
-            );
+            Map<String, Object> input = buildImageEditInput(prompt, imageUrl);
 
             String predictionId = startPrediction(input);
             if (predictionId == null) return Optional.empty();
@@ -158,11 +171,7 @@ public class ReplicateNanoBananaSegmenter {
             log.info("Nano Banana (Replicate) [{}]: requesting COLOR-CODED mask (scene={}, forceAccent={})",
                     model, scene, forceAccent);
 
-            Map<String, Object> input = Map.of(
-                    "prompt", colorCodedPrompt(forceAccent),
-                    "image_input", List.of(imageUrl),
-                    "output_format", "png"
-            );
+            Map<String, Object> input = buildImageEditInput(colorCodedPrompt(forceAccent), imageUrl);
 
             String predictionId = startPrediction(input);
             if (predictionId == null) return Optional.empty();
@@ -319,32 +328,78 @@ public class ReplicateNanoBananaSegmenter {
                 + "- Output: the mask image only.\n");
     }
 
+    /**
+     * Base input for an image-edit prediction, plus the OPTIONAL aspect-ratio
+     * and resolution controls when configured. Both optional keys are safe to
+     * send to the Nano Banana family; if a model variant rejects them,
+     * {@link #startPrediction} retries once without them.
+     */
+    private Map<String, Object> buildImageEditInput(String prompt, String imageUrl) {
+        Map<String, Object> input = new java.util.HashMap<>();
+        input.put("prompt", prompt);
+        input.put("image_input", List.of(imageUrl));
+        input.put("output_format", "png");
+        if (aspectRatio != null && !aspectRatio.isBlank()) {
+            input.put("aspect_ratio", aspectRatio.trim());
+        }
+        if (resolution != null && !resolution.isBlank()) {
+            input.put("resolution", resolution.trim());
+        }
+        return input;
+    }
+
     private String startPrediction(Map<String, Object> input) {
         try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.set("Authorization", "Token " + replicateApiToken);
-
-            boolean hasPinnedVersion = modelVersion != null && !modelVersion.isBlank();
-            Map<String, Object> body = hasPinnedVersion
-                    ? Map.of("version", modelVersion, "input", input)
-                    : Map.of("input", input);
-            String endpoint = hasPinnedVersion
-                    ? REPLICATE_BASE + "/predictions"
-                    : REPLICATE_BASE + "/models/" + model + "/predictions";
-
-            ResponseEntity<Map> response = restTemplate.exchange(
-                    endpoint, HttpMethod.POST,
-                    new HttpEntity<>(body, headers),
-                    Map.class
-            );
-            String id = (String) response.getBody().get("id");
-            log.debug("Nano Banana prediction started: id={}", id);
-            return id;
+            return doStartPrediction(input);
+        } catch (org.springframework.web.client.HttpClientErrorException e) {
+            // 400/422 usually means an input the model version doesn't know.
+            // Drop the optional tuning keys and retry once — a mask at the
+            // model's default aspect/resolution beats no mask at all.
+            boolean hadOptional = input.containsKey("aspect_ratio") || input.containsKey("resolution");
+            if (hadOptional && (e.getStatusCode().value() == 400 || e.getStatusCode().value() == 422)) {
+                log.warn("Nano Banana rejected optional inputs ({}), retrying without " +
+                        "aspect_ratio/resolution: {}", e.getStatusCode(), e.getResponseBodyAsString());
+                Map<String, Object> slim = new java.util.HashMap<>(input);
+                slim.remove("aspect_ratio");
+                slim.remove("resolution");
+                try {
+                    return doStartPrediction(slim);
+                } catch (Exception retryError) {
+                    log.warn("Nano Banana retry without optional inputs also failed: {}",
+                            retryError.getMessage());
+                    return null;
+                }
+            }
+            log.warn("Failed to start Nano Banana prediction: {} {}",
+                    e.getStatusCode(), e.getResponseBodyAsString());
+            return null;
         } catch (Exception e) {
             log.warn("Failed to start Nano Banana prediction: {}", e.getMessage());
             return null;
         }
+    }
+
+    private String doStartPrediction(Map<String, Object> input) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Authorization", "Token " + replicateApiToken);
+
+        boolean hasPinnedVersion = modelVersion != null && !modelVersion.isBlank();
+        Map<String, Object> body = hasPinnedVersion
+                ? Map.of("version", modelVersion, "input", input)
+                : Map.of("input", input);
+        String endpoint = hasPinnedVersion
+                ? REPLICATE_BASE + "/predictions"
+                : REPLICATE_BASE + "/models/" + model + "/predictions";
+
+        ResponseEntity<Map> response = restTemplate.exchange(
+                endpoint, HttpMethod.POST,
+                new HttpEntity<>(body, headers),
+                Map.class
+        );
+        String id = (String) response.getBody().get("id");
+        log.debug("Nano Banana prediction started: id={}", id);
+        return id;
     }
 
     @SuppressWarnings("unchecked")
