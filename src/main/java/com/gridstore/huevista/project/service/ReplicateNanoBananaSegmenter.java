@@ -172,11 +172,11 @@ public class ReplicateNanoBananaSegmenter {
             return Optional.empty();
         }
         try {
-            boolean indoor = scene == ImageType.INDOOR;
-            log.info("Nano Banana (Replicate) [{}]: requesting COLOR-CODED mask (scene={}, indoor={})",
-                    model, scene, indoor);
+            boolean forceAccent = scene == ImageType.INDOOR;
+            log.info("Nano Banana (Replicate) [{}]: requesting COLOR-CODED mask (scene={}, forceAccent={})",
+                    model, scene, forceAccent);
 
-            Map<String, Object> input = buildImageEditInput(colorCodedPrompt(indoor), imageUrl);
+            Map<String, Object> input = buildImageEditInput(colorCodedPrompt(forceAccent), imageUrl);
 
             String predictionId = startPrediction(input);
             if (predictionId == null) return Optional.empty();
@@ -218,17 +218,17 @@ public class ReplicateNanoBananaSegmenter {
      *   it, deleting it from the render. Railings must survive as BLACK
      *   silhouettes in place.</li>
      *   <li><b>Accent by architectural merit.</b> The GREEN paragraph is the
-     *   only part that varies by scene: {@link #ACCENT_INTERIOR} always
-     *   highlights exactly one room wall (a full wall bounded by real corners
-     *   always exists indoors); {@link #ACCENT_EXTERIOR} features at most one
-     *   distinct wall/volume and allows ZERO when the facade is a single
-     *   plain mass — an accent patch carved out of a flat wall stops mid-wall
-     *   and reads as a painting mistake.</li>
+     *   only part that varies by scene: {@link #ACCENT_ALWAYS} (interiors)
+     *   always highlights exactly one room wall (a full wall bounded by real
+     *   corners always exists indoors); {@link #ACCENT_CONDITIONAL}
+     *   (exteriors) features at most one distinct wall/volume and allows ZERO
+     *   when the facade is a single plain mass — an accent patch carved out
+     *   of a flat wall stops mid-wall and reads as a painting mistake.</li>
      * </ul>
      */
-    static String colorCodedPrompt(boolean indoor) {
+    static String colorCodedPrompt(boolean forceAccent) {
         return COLOR_CODED_HEAD
-             + (indoor ? ACCENT_INTERIOR : ACCENT_EXTERIOR)
+             + (forceAccent ? ACCENT_ALWAYS : ACCENT_CONDITIONAL)
              + COLOR_CODED_TAIL;
     }
 
@@ -281,7 +281,7 @@ public class ReplicateNanoBananaSegmenter {
      *  facade dies mid-wall and reads as a painting mistake, so a plain
      *  facade legitimately yields no green at all. When unsure, a plane is
      *  NOT the accent (red) — never two or more greens. */
-    private static final String ACCENT_EXTERIOR =
+    private static final String ACCENT_CONDITIONAL =
             "2. ACCENT / HIGHLIGHTER WALL → GREEN (#00FF00) — ZERO OR ONE, "
           + "DECIDED BY ARCHITECTURAL MERIT\n\n"
           + "Architect's rule: an accent colour is only correct when it can start "
@@ -317,7 +317,7 @@ public class ReplicateNanoBananaSegmenter {
     /** Interior: exactly one accent wall — a full wall bounded by real corners
      *  and the ceiling always exists indoors, so the merit test always passes
      *  and the product's three-region experience (main/accent/trim) holds. */
-    private static final String ACCENT_INTERIOR =
+    private static final String ACCENT_ALWAYS =
             "2. ACCENT / HIGHLIGHTER WALL → GREEN (#00FF00) — EXACTLY ONE\n\n"
           + "A room always offers a genuine accent candidate: a full wall bounded "
           + "by real corners, floor and ceiling. Pick the single best wall to "
