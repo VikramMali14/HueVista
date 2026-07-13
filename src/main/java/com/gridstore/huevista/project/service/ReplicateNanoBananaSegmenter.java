@@ -157,10 +157,14 @@ public class ReplicateNanoBananaSegmenter {
      * at once so a pixel can only belong to ONE category — no inter-mask
      * overlap.
      *
-     * @param scene drives HOW the single mandatory accent wall is chosen —
-     *              interiors highlight one prominent wall (typically behind the
-     *              bed/sofa), exteriors pick the facade's feature volume. Every
-     *              scene gets exactly one accent wall; none may omit it.
+     * @param scene drives HOW the accent wall is chosen — interiors always
+     *              highlight exactly one prominent wall (typically behind the
+     *              bed/sofa); exteriors feature at most ONE architecturally
+     *              distinct wall/volume and may legitimately produce zero when
+     *              the facade is a single plain mass (an accent carved out of
+     *              a flat wall reads as a painting mistake, so we don't force
+     *              one). {@link SegmentationService} tolerates a missing
+     *              accent region — only "main" is required.
      */
     public Optional<byte[]> generateColorCodedMask(String imageUrl, ImageType scene) {
         if (!isConfigured()) {
@@ -200,14 +204,27 @@ public class ReplicateNanoBananaSegmenter {
      * Single comprehensive prompt for the colour-blocked approach. Asks the
      * model to EDIT the photo, flooding each surface with one of four flat
      * colours (three paint categories plus a black "nothing" background).
-     * Tested wording — be careful editing.
+     * Structured as ROLE → OUTPUT CONTRACT → CLASSIFY → FLOOD FILL →
+     * SELF-CHECK so the hard invariants (four colours only, nothing removed)
+     * are read before the per-category detail. Tested wording — be careful
+     * editing.
      *
-     * The GREEN (accent) paragraph is the only part that varies by scene, and
-     * BOTH variants make the accent mandatory — every photo must yield the
-     * minimum three regions (main, highlight, border). {@link #ACCENT_INTERIOR}
-     * highlights one prominent room wall; {@link #ACCENT_EXTERIOR} picks the
-     * facade's feature volume, falling back to the most prominent wall plane
-     * when the facade is a single plain mass.
+     * <p>Two invariants matter most:
+     * <ul>
+     *   <li><b>Nothing may be removed.</b> The model is editing the photo, so
+     *   without an explicit rule it happily "cleans up" railings and grilles
+     *   by flooding wall colour straight over them — the railing then lands
+     *   inside the red main-wall mask and the downstream repaint paints over
+     *   it, deleting it from the render. Railings must survive as BLACK
+     *   silhouettes in place.</li>
+     *   <li><b>Accent by architectural merit.</b> The GREEN paragraph is the
+     *   only part that varies by scene: {@link #ACCENT_INTERIOR} always
+     *   highlights exactly one room wall (a full wall bounded by real corners
+     *   always exists indoors); {@link #ACCENT_EXTERIOR} features at most one
+     *   distinct wall/volume and allows ZERO when the facade is a single
+     *   plain mass — an accent patch carved out of a flat wall stops mid-wall
+     *   and reads as a painting mistake.</li>
+     * </ul>
      */
     static String colorCodedPrompt(boolean indoor) {
         return COLOR_CODED_HEAD
@@ -216,116 +233,174 @@ public class ReplicateNanoBananaSegmenter {
     }
 
     private static final String COLOR_CODED_HEAD =
-            "You are EDITING this exact room or building photograph — not generating a "
-          + "new scene. Take the photo as given and repaint its surfaces into flat "
-          + "blocks of colour, keeping every edge, corner and outline precisely where "
-          + "it sits in the photo so the result lines up with the original "
-          + "pixel-for-pixel. Output an image of the same exact dimensions.\n\n"
-          + "Work in two steps. FIRST, mentally group the surfaces by their ROLE and "
-          + "shape: which is the big main wall, which (if any) is a separate "
-          + "accent/feature wall, and which are the trim pieces — the window and door "
-          + "frames AND the projecting sunshade slabs above openings, the parapet "
-          + "coping along the roof line, and the horizontal bands and ledges across "
-          + "the facade. Actively look for those projecting slabs, copings and bands: "
-          + "they are trim, not part of the main wall, even when they are the same "
-          + "colour as it. Decide each group purely by what the surface IS — never by how light or "
-          + "dark it happens to look. Lighting, sun and shadow must NOT change which "
-          + "group a surface belongs to (a wall half in shadow is still that same one "
-          + "wall). THEN flood each whole group with its single flat colour.\n\n"
-          + "Fill each surface with ONE flat, solid, fully-saturated colour — a single "
-          + "identical colour value across the whole surface, with NO shading, NO "
-          + "gradient, NO texture and NO lighting variation inside a surface. Ignore "
-          + "the photo's own shadows and highlights when filling: every pixel of one "
-          + "surface gets the exact same pure colour. Use only these four colours:\n\n"
-          + "- Paint the MAIN painted wall pure RED (#FF0000): the dominant flat "
-          + "painted plaster/concrete/drywall someone would repaint with a single "
-          + "colour (the largest painted area). Paint every painted wall RED except "
-          + "the single accent wall described next.\n\n";
+            "ROLE\n\n"
+          + "You are performing IMAGE EDITING on this exact photograph of a room or "
+          + "building — you are NOT generating a new scene. Keep the camera angle, "
+          + "geometry, resolution and every edge exactly as in the input photo. Act "
+          + "as an architect-trained colour consultant preparing a paint mask: "
+          + "RED = main body walls, GREEN = accent/highlighter wall, BLUE = "
+          + "borders/trim, BLACK = everything else.\n\n"
+          + "OUTPUT CONTRACT (highest priority — read first)\n\n"
+          + "- Output ONE image only: same width, same height, same aspect ratio as "
+          + "the input, with every surface boundary pixel-aligned to the photo.\n"
+          + "- Every pixel must be EXACTLY one of these four values — no other "
+          + "colour may appear anywhere:\n"
+          + "  RED #FF0000 (255, 0, 0)\n"
+          + "  GREEN #00FF00 (0, 255, 0)\n"
+          + "  BLUE #0000FF (0, 0, 255)\n"
+          + "  BLACK #000000 (0, 0, 0)\n"
+          + "- WHITE IS FORBIDDEN. Grey is forbidden. A wall that is white in the "
+          + "photo is still recoloured into its category (accent wall → green, "
+          + "other walls → red, trim → blue).\n"
+          + "- NOTHING MAY BE REMOVED, ADDED OR MOVED. Every object in the photo "
+          + "keeps its exact place, shape and size — especially RAILINGS, grilles, "
+          + "gates, doors, pipes, wires and AC units. You are recolouring surfaces, "
+          + "NEVER erasing objects: anything standing in front of a wall is traced "
+          + "around in black, not painted over, not deleted, not simplified away.\n"
+          + "- No gradients, no shading, no texture, no lighting, no transparency, "
+          + "no blending. Hard colour boundaries only — no anti-aliasing or "
+          + "feathered edges.\n"
+          + "- No text, labels, legends, watermarks or annotations. Output only the "
+          + "flat colour-blocked image.\n\n"
+          + "STEP 1 — CLASSIFY EVERY SURFACE BY ITS ROLE\n\n"
+          + "Decide what each surface IS, never how it currently looks. Current "
+          + "paint colour, sunlight and shadow are irrelevant: a wall half in "
+          + "shadow is still ONE wall and gets ONE colour; trim painted the same "
+          + "colour as the wall is still trim.\n\n"
+          + "1. MAIN WALLS → RED (#FF0000)\n\n"
+          + "All flat painted plaster/concrete/drywall wall planes — the surfaces a "
+          + "painter would roll in the main body colour (the largest painted area). "
+          + "This includes painted columns and porch pillars, solid masonry balcony "
+          + "parapet fronts, and painted compound/boundary walls and gate pillars. "
+          + "Every painted wall is RED unless it qualifies as the single accent "
+          + "wall described next.\n\n";
 
-    /** Exterior/unknown: ALWAYS designate exactly one feature wall — never zero.
-     *  A facade's feature volume (a projecting stair/lift tower, a tall vertical
-     *  block framing the front) is usually painted the SAME colour as everything
-     *  else in the photo, yet it is exactly the wall a designer picks out in a
-     *  contrast shade — so the rule requires no existing colour difference, and
-     *  a plain single-mass facade still gets its most prominent wall plane. */
+    /** Exterior/unknown: ZERO OR ONE accent, decided by architectural merit.
+     *  An accent colour is only correct when it starts and stops on real
+     *  architectural edges; a green patch carved out of a flat single-mass
+     *  facade dies mid-wall and reads as a painting mistake, so a plain
+     *  facade legitimately yields no green at all. When unsure, a plane is
+     *  NOT the accent (red) — never two or more greens. */
     private static final String ACCENT_EXTERIOR =
-            "- Paint exactly ONE ACCENT / feature wall pure GREEN (#00FF00), ALWAYS "
-          + "chosen — never leave green out. Pick it by this order of preference:\n"
-          + "   (a) a secondary painted wall that is ALREADY clearly a different "
-          + "colour from the main wall — a feature wall, an accent strip, or a "
-          + "perpendicular wall painted differently; or\n"
-          + "   (b) a DISTINCT ARCHITECTURAL VOLUME that a designer would pick out "
-          + "as the facade's feature even though it is currently painted the same "
-          + "colour as the rest: a projecting or corner stair/lift tower, a tall "
-          + "vertical block rising past the roof line, a porch/entrance mass, or a "
-          + "prominent perpendicular wing. Paint that ENTIRE volume — all of its "
-          + "visible faces, top to bottom — green; or\n"
-          + "   (c) if the facade is a single plain mass with neither (a) nor (b), "
-          + "still choose one: the most prominent wall plane — typically the front "
-          + "wall around the main entrance, or the largest wall facing the camera — "
-          + "and paint that ENTIRE plane green.\n"
-          + "Pick exactly ONE feature (never two, never zero) and keep every "
-          + "remaining painted wall red. Every photo must contain a green accent "
-          + "wall.\n\n";
+            "2. ACCENT / HIGHLIGHTER WALL → GREEN (#00FF00) — ZERO OR ONE, "
+          + "DECIDED BY ARCHITECTURAL MERIT\n\n"
+          + "Architect's rule: an accent colour is only correct when it can start "
+          + "and stop on real architectural edges — outside corners, inside "
+          + "corners, a projection, a recess, a change of plane. A colour break "
+          + "that dies in the middle of a flat wall reads as a painting mistake. "
+          + "Therefore:\n\n"
+          + "PAINT ONE WALL GREEN only if the building offers a genuine candidate, "
+          + "in this priority order:\n"
+          + "(a) a wall ALREADY clearly painted a different colour from the main "
+          + "body — an existing feature wall, accent strip, or differently painted "
+          + "perpendicular wall → that is the accent; keep it; else\n"
+          + "(b) a DISTINCT ARCHITECTURAL VOLUME a designer would naturally "
+          + "feature even though it is currently the same colour as the rest: a "
+          + "projecting or corner stair/lift tower, a tall vertical block rising "
+          + "past the roofline, a porch or entrance mass, a clearly projected or "
+          + "recessed entrance bay, or a prominent perpendicular wing. Paint that "
+          + "ENTIRE volume — all of its visible faces, top to bottom — green. "
+          + "Windows, chajjas, railings and doors sitting on the green volume "
+          + "still follow their own categories (blue/black); green covers only "
+          + "its wall skin.\n\n"
+          + "If several candidates exist, feature exactly ONE, preferring: "
+          + "existing feature wall > the volume holding or framing the main "
+          + "entrance > tallest vertical volume > largest projecting wing.\n\n"
+          + "PAINT ZERO GREEN — all walls red — when the facade is one continuous "
+          + "plain mass with no differently painted wall and no projection, "
+          + "recess, tower, bay or perpendicular wing. Do NOT invent an accent by "
+          + "carving an arbitrary patch out of a flat wall.\n\n"
+          + "Tie-breaker: if unsure whether a plane is distinct enough to feature "
+          + "→ it is NOT the accent; paint it RED. Never output two or more "
+          + "greens.\n\n";
 
-    /** Interior: always designate exactly one wall as the accent (highlight) wall. */
+    /** Interior: exactly one accent wall — a full wall bounded by real corners
+     *  and the ceiling always exists indoors, so the merit test always passes
+     *  and the product's three-region experience (main/accent/trim) holds. */
     private static final String ACCENT_INTERIOR =
-            "- Paint exactly ONE ACCENT / feature wall pure GREEN (#00FF00), ALWAYS "
-          + "chosen. Pick the single best wall to highlight: if one wall is already a "
-          + "different colour, use that one; otherwise choose one prominent, mostly "
-          + "unobstructed wall (typically the largest uninterrupted wall behind a "
-          + "bed/sofa or the wall facing the camera) and paint that ENTIRE wall green. "
-          + "Paint exactly ONE wall green and leave the remaining painted walls red. "
-          + "Always designate one accent wall — never leave green out.\n\n";
+            "2. ACCENT / HIGHLIGHTER WALL → GREEN (#00FF00) — EXACTLY ONE\n\n"
+          + "A room always offers a genuine accent candidate: a full wall bounded "
+          + "by real corners, floor and ceiling. Pick the single best wall to "
+          + "highlight: if one wall is ALREADY painted a different colour from "
+          + "the rest, that is the accent — keep it. Otherwise choose the room's "
+          + "natural feature wall — typically the largest, least obstructed wall "
+          + "behind the bed or sofa, or the main wall facing the camera — and "
+          + "paint that ENTIRE wall green, corner to corner, floor to ceiling. "
+          + "Furniture, frames, curtains and fixtures in front of it keep their "
+          + "own category (black); green covers only the wall skin behind them. "
+          + "Paint exactly ONE wall green — never two — and every remaining "
+          + "painted wall red.\n\n";
 
     private static final String COLOR_CODED_TAIL =
-            "- Paint TRIM, borders and frames pure BLUE (#0000FF): the narrow or "
-          + "projecting elements a painter picks out in a contrasting trim colour. "
-          + "You must find ALL of these and not miss them:\n"
-          + "   * the flat sunshade / weather-shade slabs (chajja) that project "
-          + "horizontally ABOVE windows and doors;\n"
-          + "   * the parapet coping or cap running along the very top roof line, "
-          + "and the top band of the parapet wall;\n"
-          + "   * horizontal string-course bands, lintel bands and any decorative "
-          + "banding running across the facade;\n"
-          + "   * window sills, ledges, and the raised surrounds/borders framing "
-          + "windows and doors;\n"
-          + "   * window frames, door frames, skirting/baseboards and fascia under "
-          + "the roof.\n"
-          + "These projecting slabs, copings and bands are SEPARATE trim pieces even "
-          + "though they are attached to the wall — mark them BLUE, NEVER red. Do not "
-          + "swallow them into the main wall just because they are the same colour in "
-          + "the photo; a real painter would pick them out, so they must be their own "
-          + "colour here. (NOT the door panels themselves "
-          + "and NOT metal railings — those are kept as fixed features (dark-brown "
-          + "doors, charcoal-grey metalwork), so paint them BLACK, below.)\n\n"
-          + "- Paint EVERYTHING ELSE pure BLACK (#000000): sky, clouds, ground, "
-          + "dirt, road, sidewalk, vegetation, trees, vehicles, furniture, floor, "
-          + "the door panels/leaves themselves, metal and iron railings (balcony "
-          + "railings, staircase railings, handrails, balustrades), glass panes "
-          + "inside windows, stone cladding, exposed "
-          + "brick, ceramic tile, marble, wood, AC units, light fixtures, electrical "
-          + "boxes, drainpipes, signage, mailboxes, decor, people — anything "
-          + "that is NOT a paintable wall or trim surface. Doors and railings are "
-          + "kept as fixed features (dark-brown doors, charcoal-grey metalwork), "
-          + "so they belong here — never in a recoloured category.\n\n"
-          + "RULES:\n"
-          + "- Use ONLY these four exact colours: pure red (#FF0000), pure green "
-          + "(#00FF00), pure blue (#0000FF), pure black (#000000). No other colours, "
-          + "no in-between shades, no grey, no gradients, no shading.\n"
-          + "- NEVER use WHITE (#FFFFFF) anywhere in the output. White is NOT one of "
-          + "the four colours. A wall that is white in the photo is still recoloured "
-          + "into its category colour: the accent/feature wall becomes pure green, "
-          + "other painted walls pure red, trim pure blue. Do not leave any surface "
-          + "white or photo-coloured.\n"
-          + "- Every pixel is exactly ONE of the four colours. Never blend two.\n"
-          + "- Keep every surface boundary exactly aligned with the photo (same "
-          + "resolution, same edges, same object positions) so the colour blocks "
-          + "trace the real surfaces precisely.\n"
-          + "- Hard colour boundaries only — no anti-aliasing, no soft or feathered "
+            "3. TRIM / BORDERS → BLUE (#0000FF) — find ALL of these, miss none\n\n"
+          + "- Chajjas: the flat sunshade/weather-shade slabs projecting "
+          + "horizontally above windows and doors (their top, front edge AND "
+          + "visible underside);\n"
+          + "- the parapet coping/cap running along the very top roofline, and "
+          + "the top band of the parapet wall;\n"
+          + "- horizontal string-course bands, lintel bands, plinth bands, and "
+          + "any decorative banding running across the facade;\n"
+          + "- window sills, ledges, and the raised plaster surrounds/borders "
+          + "framing windows and doors;\n"
+          + "- window frames, door FRAMES (the surround only — not the door "
+          + "leaf), skirting/baseboards, cornices/crown moulding, fascia under "
+          + "the roof, and caps on compound-wall pillars.\n\n"
+          + "These projecting slabs, copings and bands are SEPARATE trim pieces "
+          + "even though they are attached to the wall and may be the same colour "
+          + "in the photo. A real painter picks them out in a contrast colour, so "
+          + "they are BLUE — never swallowed into the red wall. Tie-breaker: if "
+          + "you are unsure whether a narrow band, ledge or projecting slab is "
+          + "wall or trim, it is TRIM (blue). But metalwork is NEVER trim: a "
+          + "railing or grille mounted on a parapet, balcony or staircase is NOT "
+          + "blue — only the masonry band or coping beneath it is; the railing "
+          + "itself is BLACK, below.\n\n"
+          + "4. EVERYTHING ELSE → BLACK (#000000)\n\n"
+          + "Sky, clouds, ground, soil, road, sidewalk, vegetation, trees, "
+          + "vehicles, people, furniture, floors, ceilings; the door LEAVES/"
+          + "panels themselves and gates; all metalwork; glass panes inside "
+          + "windows; stone cladding, exposed brick, ceramic tile, marble, wood; "
+          + "AC units, drainpipes, wires, light fixtures, electrical boxes, "
+          + "meters, water tanks, signage, mailboxes, decor. Doors and railings "
+          + "are kept as fixed features in the real scheme (dark-brown doors, "
+          + "charcoal-grey metalwork), so here they belong in BLACK — never in "
+          + "red, green or blue.\n\n"
+          + "RAILINGS ARE PROTECTED — this rule overrides everything else: every "
+          + "balcony railing, terrace/parapet railing, staircase railing, "
+          + "handrail, balustrade, window grille and safety grille in the photo "
+          + "MUST still be present in the output, in its exact position and "
+          + "shape, as a BLACK silhouette. Never delete a railing, never thin "
+          + "it, never merge it into the wall behind it, and never colour it "
+          + "red, green or blue. Where wall, sky or trim is visible between or "
+          + "behind the bars, that background keeps its own colour and the bars "
+          + "stay black on top of it. If the bars are too fine to trace "
+          + "individually, keep the whole railing band black rather than losing "
+          + "it.\n\n"
+          + "STEP 2 — FLOOD FILL\n\n"
+          + "Fill each group with its ONE flat, solid, fully saturated colour: a "
+          + "single identical colour value across every pixel of that surface. "
+          + "Completely ignore the photo's own shadows, highlights and colour "
+          + "variation while filling. Flood only the surface itself: where a "
+          + "railing, grille, pipe, cable or any other object crosses in front "
+          + "of a surface, the object stays BLACK on top and the surface colour "
+          + "appears only around and between it — flooding must never wipe an "
+          + "object out.\n\n"
+          + "FINAL SELF-CHECK — verify before returning the image\n\n"
+          + "- Compare against the photo: every railing, grille and gate is "
+          + "still there, black, in its exact place — none missing, none "
+          + "absorbed into a red, green or blue area.\n"
+          + "- GREEN follows the accent rule above — never two or more greens; "
+          + "when a green is present, the whole plane/volume is filled across "
+          + "every visible face and its edges land on true corners, recesses or "
+          + "plane changes — never mid-wall.\n"
+          + "- Every chajja, parapet coping, band, sill, frame and border is "
+          + "traced in BLUE — none left red.\n"
+          + "- Door panels, railings, glass, sky, ground and vegetation are all "
+          + "BLACK.\n"
+          + "- Zero white, grey or off-palette pixels. Zero gradients, zero soft "
           + "edges.\n"
-          + "- No text, watermarks, or annotations.\n"
-          + "- Output: only the flat colour-blocked image.\n";
+          + "- Output has the same dimensions as the input, with every edge "
+          + "aligned pixel-for-pixel.\n\n"
+          + "Return only the finished flat colour-block image.\n";
 
     private String buildMaskPrompt(String surfaceDescription) {
         return ("Generate a black-and-white binary segmentation MASK image. The mask must be the "
