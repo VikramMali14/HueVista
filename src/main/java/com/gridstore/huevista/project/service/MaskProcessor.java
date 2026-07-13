@@ -501,7 +501,17 @@ final class MaskProcessor {
      *   - RED-dominant   (R ≥ G+40 AND R ≥ B+40 AND R ≥ 100)          → "main"
      *   - GREEN-dominant (G ≥ R+40 AND G ≥ B+40 AND G ≥ 100)          → "accent"
      *   - BLUE-dominant  (B ≥ R+40 AND B ≥ G+40 AND B ≥ 100)          → "trim"
+     *   - near-WHITE     (all channels ≥ 170, spread ≤ 50)            → salvage bucket
      *   - everything else (black, ambiguous, anti-aliased edges)      → unassigned
+     *
+     * WHITE salvage: the model sometimes disobeys the four-colour instruction
+     * and leaves the accent / feature volume WHITE (typically because that
+     * surface is already white in the cleaned photo, so it "paints" it white
+     * again). Those pixels used to be dropped, collapsing the output to just
+     * main + trim — two masks where the user expects three (main, highlight,
+     * border). When no usable GREEN accent exists, a large near-white area is
+     * therefore adopted as the accent mask instead of being thrown away. A
+     * genuine green accent always wins; the white bucket is only the fallback.
      *
      * Returns a map keyed by "main", "accent", "trim". Categories with fewer
      * than {@code minPixels} foreground pixels are omitted from the map so
@@ -516,7 +526,8 @@ final class MaskProcessor {
         boolean[] mainBin = new boolean[w * h];
         boolean[] trimBin = new boolean[w * h];
         boolean[] accentBin = new boolean[w * h];
-        int mainCount = 0, trimCount = 0, accentCount = 0;
+        boolean[] whiteBin = new boolean[w * h];
+        int mainCount = 0, trimCount = 0, accentCount = 0, whiteCount = 0;
 
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
@@ -543,9 +554,26 @@ final class MaskProcessor {
                 if (b >= r + 40 && b >= g + 40 && b >= 100) {
                     trimBin[idx] = true;
                     trimCount++;
+                    continue;
+                }
+                // Near-white (bright + low chroma): an off-spec colour the model
+                // used for a surface it should have painted green. Collected
+                // separately as the accent fallback below.
+                int min = Math.min(r, Math.min(g, b));
+                int max = Math.max(r, Math.max(g, b));
+                if (min >= 170 && max - min <= 50) {
+                    whiteBin[idx] = true;
+                    whiteCount++;
                 }
                 // else: black or ambiguous — leave unassigned.
             }
+        }
+
+        // Prefer the green accent; adopt the white bucket only when green is
+        // missing or too small to be a real wall.
+        if (accentCount < minPixels && whiteCount >= minPixels) {
+            accentBin = whiteBin;
+            accentCount = whiteCount;
         }
 
         java.util.Map<String, byte[]> out = new java.util.HashMap<>();
