@@ -157,9 +157,10 @@ public class ReplicateNanoBananaSegmenter {
      * at once so a pixel can only belong to ONE category — no inter-mask
      * overlap.
      *
-     * @param scene INDOOR rooms always get one designated accent wall (so the user
-     *              has a wall to paint a highlight shade); exteriors keep the accent
-     *              conditional on an actually-different-coloured secondary wall.
+     * @param scene drives HOW the single mandatory accent wall is chosen —
+     *              interiors highlight one prominent wall (typically behind the
+     *              bed/sofa), exteriors pick the facade's feature volume. Every
+     *              scene gets exactly one accent wall; none may omit it.
      */
     public Optional<byte[]> generateColorCodedMask(String imageUrl, ImageType scene) {
         if (!isConfigured()) {
@@ -167,11 +168,11 @@ public class ReplicateNanoBananaSegmenter {
             return Optional.empty();
         }
         try {
-            boolean forceAccent = scene == ImageType.INDOOR;
-            log.info("Nano Banana (Replicate) [{}]: requesting COLOR-CODED mask (scene={}, forceAccent={})",
-                    model, scene, forceAccent);
+            boolean indoor = scene == ImageType.INDOOR;
+            log.info("Nano Banana (Replicate) [{}]: requesting COLOR-CODED mask (scene={}, indoor={})",
+                    model, scene, indoor);
 
-            Map<String, Object> input = buildImageEditInput(colorCodedPrompt(forceAccent), imageUrl);
+            Map<String, Object> input = buildImageEditInput(colorCodedPrompt(indoor), imageUrl);
 
             String predictionId = startPrediction(input);
             if (predictionId == null) return Optional.empty();
@@ -201,14 +202,16 @@ public class ReplicateNanoBananaSegmenter {
      * colours (three paint categories plus a black "nothing" background).
      * Tested wording — be careful editing.
      *
-     * The GREEN (accent) paragraph is the only part that varies by scene:
-     * {@link #ACCENT_ALWAYS} (interiors) forces exactly one accent wall so the
-     * user can paint a highlight shade; {@link #ACCENT_CONDITIONAL} (exteriors)
-     * only marks an accent when a visibly different-coloured wall exists.
+     * The GREEN (accent) paragraph is the only part that varies by scene, and
+     * BOTH variants make the accent mandatory — every photo must yield the
+     * minimum three regions (main, highlight, border). {@link #ACCENT_INTERIOR}
+     * highlights one prominent room wall; {@link #ACCENT_EXTERIOR} picks the
+     * facade's feature volume, falling back to the most prominent wall plane
+     * when the facade is a single plain mass.
      */
-    static String colorCodedPrompt(boolean forceAccent) {
+    static String colorCodedPrompt(boolean indoor) {
         return COLOR_CODED_HEAD
-             + (forceAccent ? ACCENT_ALWAYS : ACCENT_CONDITIONAL)
+             + (indoor ? ACCENT_INTERIOR : ACCENT_EXTERIOR)
              + COLOR_CODED_TAIL;
     }
 
@@ -239,14 +242,15 @@ public class ReplicateNanoBananaSegmenter {
           + "colour (the largest painted area). Paint every painted wall RED except "
           + "the single accent wall described next.\n\n";
 
-    /** Exterior/unknown: pick a feature wall by colour OR by architecture. A facade's
-     *  feature volume (a projecting stair/lift tower, a tall vertical block framing
-     *  the front) is usually painted the SAME colour as everything else in the photo,
-     *  yet it is exactly the wall a designer picks out in a contrast shade — so the
-     *  rule must not require an existing colour difference to mark it. */
-    private static final String ACCENT_CONDITIONAL =
-            "- Paint ONE ACCENT / feature wall pure GREEN (#00FF00). Choose it by "
-          + "either of these, in order of preference:\n"
+    /** Exterior/unknown: ALWAYS designate exactly one feature wall — never zero.
+     *  A facade's feature volume (a projecting stair/lift tower, a tall vertical
+     *  block framing the front) is usually painted the SAME colour as everything
+     *  else in the photo, yet it is exactly the wall a designer picks out in a
+     *  contrast shade — so the rule requires no existing colour difference, and
+     *  a plain single-mass facade still gets its most prominent wall plane. */
+    private static final String ACCENT_EXTERIOR =
+            "- Paint exactly ONE ACCENT / feature wall pure GREEN (#00FF00), ALWAYS "
+          + "chosen — never leave green out. Pick it by this order of preference:\n"
           + "   (a) a secondary painted wall that is ALREADY clearly a different "
           + "colour from the main wall — a feature wall, an accent strip, or a "
           + "perpendicular wall painted differently; or\n"
@@ -255,13 +259,17 @@ public class ReplicateNanoBananaSegmenter {
           + "colour as the rest: a projecting or corner stair/lift tower, a tall "
           + "vertical block rising past the roof line, a porch/entrance mass, or a "
           + "prominent perpendicular wing. Paint that ENTIRE volume — all of its "
-          + "visible faces, top to bottom — green.\n"
-          + "Pick at most ONE feature (never two), and keep every remaining painted "
-          + "wall red. Only if the facade is a single plain mass with neither (a) "
-          + "nor (b) do you leave green out entirely.\n\n";
+          + "visible faces, top to bottom — green; or\n"
+          + "   (c) if the facade is a single plain mass with neither (a) nor (b), "
+          + "still choose one: the most prominent wall plane — typically the front "
+          + "wall around the main entrance, or the largest wall facing the camera — "
+          + "and paint that ENTIRE plane green.\n"
+          + "Pick exactly ONE feature (never two, never zero) and keep every "
+          + "remaining painted wall red. Every photo must contain a green accent "
+          + "wall.\n\n";
 
     /** Interior: always designate exactly one wall as the accent (highlight) wall. */
-    private static final String ACCENT_ALWAYS =
+    private static final String ACCENT_INTERIOR =
             "- Paint exactly ONE ACCENT / feature wall pure GREEN (#00FF00), ALWAYS "
           + "chosen. Pick the single best wall to highlight: if one wall is already a "
           + "different colour, use that one; otherwise choose one prominent, mostly "

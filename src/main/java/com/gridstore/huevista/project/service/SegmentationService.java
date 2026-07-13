@@ -166,8 +166,9 @@ public class SegmentationService {
                         projectId, e.getMessage());
             }
 
-            // Step 2: Nano Banana color-coded mask via Replicate. Scene drives the
-            // accent-wall rule: interiors always get one accent wall to highlight.
+            // Step 2: Nano Banana color-coded mask via Replicate. Every scene gets
+            // exactly one accent wall; the scene only drives HOW it is chosen
+            // (interior highlight wall vs exterior feature volume).
             if (tryReplicateNanoBananaSegmentation(projectId, userId, maskImageUrl,
                     uploadedImage.getImageType(), cleanedBytes,
                     uploadedImage.getWidth(), uploadedImage.getHeight())) {
