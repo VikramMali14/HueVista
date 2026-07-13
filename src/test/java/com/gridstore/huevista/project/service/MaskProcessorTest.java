@@ -73,6 +73,42 @@ class MaskProcessorTest {
         assertThat(parts).containsOnlyKeys("main");
     }
 
+    @Test
+    void salvagesWhiteAsAccentWhenGreenIsMissing() throws Exception {
+        // The model disobeyed the palette and left the feature wall WHITE
+        // (no green anywhere). The white area must become the accent mask
+        // instead of being dropped — the user expects three regions.
+        byte[] coded = strip(Color.RED, Color.WHITE, Color.BLUE, Color.BLACK);
+
+        Map<String, byte[]> parts = MaskProcessor.splitColorCodedMask(coded, MIN_PIXELS);
+
+        assertThat(parts).containsOnlyKeys("main", "accent", "trim");
+        assertThat(bandIsForeground(parts.get("accent"), 1)).isTrue();   // white band
+        assertThat(bandIsForeground(parts.get("accent"), 0)).isFalse();  // not the red band
+        assertThat(bandIsForeground(parts.get("main"), 1)).isFalse();    // white isn't main
+    }
+
+    @Test
+    void salvagesNearWhiteOffSpecPixels() throws Exception {
+        // Slightly warm off-white (JPEG drift / model shading) still counts.
+        byte[] coded = strip(Color.RED, new Color(238, 230, 214), Color.BLACK);
+        Map<String, byte[]> parts = MaskProcessor.splitColorCodedMask(coded, MIN_PIXELS);
+        assertThat(parts).containsKey("accent");
+        assertThat(bandIsForeground(parts.get("accent"), 1)).isTrue();
+    }
+
+    @Test
+    void prefersGreenAccentOverWhite() throws Exception {
+        // Both a proper green accent AND a white patch exist: green is the
+        // accent; the off-spec white stays unassigned (never unioned in).
+        byte[] coded = strip(Color.RED, Color.GREEN, Color.WHITE, Color.BLACK);
+
+        Map<String, byte[]> parts = MaskProcessor.splitColorCodedMask(coded, MIN_PIXELS);
+
+        assertThat(bandIsForeground(parts.get("accent"), 1)).isTrue();   // green band
+        assertThat(bandIsForeground(parts.get("accent"), 2)).isFalse();  // white ignored
+    }
+
     // ---------------------------------------------------------------------
     // resizeBinarySmooth
     // ---------------------------------------------------------------------
