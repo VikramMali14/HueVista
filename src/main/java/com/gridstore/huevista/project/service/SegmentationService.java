@@ -365,8 +365,9 @@ public class SegmentationService {
     /** Longest side (px) for stored region masks. The cleaned canvas is
      *  upscaled to ~3840px, but a 2048px mask scaled up by the renderer's
      *  bilinear sampling is visually indistinguishable at that size and keeps
-     *  the PNGs (and the colour-gate pass) fast. */
-    private static final int MAX_MASK_DIM = 2048;
+     *  the PNGs (and the colour-gate pass) fast. Package-visible: the mask
+     *  maintenance re-snap decodes canvases at the same size. */
+    static final int MAX_MASK_DIM = 2048;
 
     // Colour-gate thresholds (see MaskProcessor#restrictToPaintable): forgiving
     // enough to keep dusk-warm (spread ≤ ~60) and shadowed white walls, strict
@@ -553,6 +554,21 @@ public class SegmentationService {
             throw new ExternalServiceException("No mask URL in SAM 2 point segmentation output");
         }
 
+        // SAM's raw output used to be persisted as-is: a Replicate delivery URL
+        // (which expires) pointing at an unprocessed mask (sometimes inverted,
+        // speckled, and a pixel or two off the real surface). Pull it through
+        // the same fidelity steps as auto masks — fix inversion, morph-clean,
+        // edge-snap to the canvas — and store the bytes in OUR storage so the
+        // reference stays live. Best-effort: any failure falls back to the raw
+        // URL, which is exactly the old behaviour.
+        String maskRef = maskUrl;
+        try {
+            maskRef = persistProcessedPointMask(projectId, maskUrl);
+        } catch (Exception e) {
+            log.warn("Point mask post-processing failed for project {}, storing the raw SAM URL: {}",
+                    projectId, e.getMessage());
+        }
+
         int displayOrder = regionRepository.countByProjectId(projectId);
         String resolvedLabel = (label != null && !label.isBlank())
                 ? label
@@ -562,12 +578,72 @@ public class SegmentationService {
                 .project(projectRepository.getReferenceById(projectId))
                 .label(resolvedLabel)
                 .category(RegionCategory.MANUAL)
-                .maskUrl(maskUrl)
-                .maskData(maskUrl)
+                .maskUrl(maskRef)
+                .maskData(maskRef)
                 .displayOrder(displayOrder)
                 .build();
 
         return regionRepository.save(region);
+    }
+
+    /**
+     * Downloads a SAM point mask, runs it through the fidelity steps the auto
+     * masks get (white-foreground fix, morphological cleanup, edge snap to the
+     * canvas when available), stores the PNG under the project owner's scope
+     * and returns the storage KEY (presigned fresh on every read, like auto
+     * masks — a stored Replicate URL dies within the hour).
+     */
+    private String persistProcessedPointMask(String projectId, String samMaskUrl)
+            throws java.io.IOException {
+        byte[] raw = restTemplate.getForObject(samMaskUrl, byte[].class);
+        if (raw == null || raw.length == 0) {
+            throw new java.io.IOException("Empty SAM mask download");
+        }
+        byte[] out = MaskProcessor.ensureWhiteForeground(raw);
+        out = safeClean(out);
+        if (edgeSnapEnabled) {
+            BufferedImage canvas = loadSnapCanvas(projectId);
+            if (canvas != null) {
+                try {
+                    out = MaskRefiner.snapToCanvas(out, canvas);
+                } catch (Exception e) {
+                    log.warn("Point mask edge snap failed for project {}, keeping unsnapped mask: {}",
+                            projectId, e.getMessage());
+                }
+            }
+        }
+        String ownerUserId = projectRepository.findUserIdById(projectId).orElse(null);
+        String storageScope = ownerUserId != null ? ownerUserId
+                : projectRepository.findAccessCodeIdById(projectId).orElse(null);
+        if (storageScope == null) {
+            throw new java.io.IOException("Project owner not found for mask storage");
+        }
+        return storageService.store(out, storageScope, "manual.png", "image/png");
+    }
+
+    /**
+     * Loads the image a point mask should be snapped against: the cleaned
+     * canvas when present (it's what the frontend renders on), otherwise the
+     * original upload. Null when neither is readable — the snap is skipped.
+     */
+    private BufferedImage loadSnapCanvas(String projectId) {
+        try {
+            byte[] bytes = null;
+            String cleanedKey = projectRepository.findCleanedImageKeyById(projectId).orElse(null);
+            if (cleanedKey != null && !cleanedKey.isBlank()) {
+                bytes = storageService.load(cleanedKey);
+            } else {
+                String imageId = projectRepository.findImageIdById(projectId).orElse(null);
+                UploadedImage image = imageId == null ? null
+                        : imageRepository.findById(imageId).orElse(null);
+                if (image != null) bytes = storageService.load(image.getStorageKey());
+            }
+            if (bytes == null) return null;
+            return MaskProcessor.downsample(MaskProcessor.decode(bytes), MAX_MASK_DIM);
+        } catch (Exception e) {
+            log.warn("Could not load snap canvas for project {}: {}", projectId, e.getMessage());
+            return null;
+        }
     }
 
     // ========================================================================
