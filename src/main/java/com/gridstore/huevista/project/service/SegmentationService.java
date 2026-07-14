@@ -376,6 +376,11 @@ public class SegmentationService {
     private static final int PAINTABLE_MIN_LUMA = 78;
     private static final double PAINTABLE_MAX_REMOVED = 0.5;
 
+    /** Kill switch for the server-side mask edge snap ({@link MaskRefiner}).
+     *  Pure local compute (no external calls), so it defaults ON. */
+    @Value("${huevista.segmentation.edge-snap.enabled:true}")
+    private boolean edgeSnapEnabled;
+
     /**
      * Runs a raw split mask through the fidelity pipeline:
      * <ol>
@@ -384,7 +389,11 @@ public class SegmentationService {
      *   <li>colour-gate against the cleaned canvas when available: drop pixels
      *       that are clearly not freshly painted surface, so borders that bled
      *       onto railings, doors, glass or cladding snap back to the wall;</li>
-     *   <li>morphological cleanup, as before.</li>
+     *   <li>morphological cleanup, as before;</li>
+     *   <li>edge snap against the cleaned canvas when available (and enabled):
+     *       {@link MaskRefiner} re-attaches the mask boundary to the canvas's
+     *       real edges within a few pixels, fixing the model's small
+     *       misregistrations once, server-side, for every consumer.</li>
      * </ol>
      * Every step is best-effort: a failure falls back to the previous bytes,
      * so post-processing can only ever improve on the raw mask or leave it be.
@@ -406,7 +415,15 @@ public class SegmentationService {
                 log.warn("Mask colour gate failed, keeping ungated mask: {}", e.getMessage());
             }
         }
-        return safeClean(out);
+        out = safeClean(out);
+        if (canvas != null && edgeSnapEnabled) {
+            try {
+                out = MaskRefiner.snapToCanvas(out, canvas);
+            } catch (Exception e) {
+                log.warn("Mask edge snap failed, keeping unsnapped mask: {}", e.getMessage());
+            }
+        }
+        return out;
     }
 
     /** Decodes the cleaned canvas and downsamples it to the stored-mask
