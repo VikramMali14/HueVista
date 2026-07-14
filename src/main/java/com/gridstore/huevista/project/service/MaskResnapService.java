@@ -1,0 +1,134 @@
+package com.gridstore.huevista.project.service;
+
+import com.gridstore.huevista.image.service.StorageService;
+import com.gridstore.huevista.project.model.Region;
+import com.gridstore.huevista.project.repository.ProjectRepository;
+import com.gridstore.huevista.project.repository.RegionRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.stereotype.Service;
+
+import java.awt.image.BufferedImage;
+import java.util.List;
+
+/**
+ * Maintenance re-snap of ALREADY STORED region masks: applies the
+ * {@link MaskRefiner} edge snap — which new segmentations get inside the
+ * pipeline — retroactively, to projects segmented before the snap existed.
+ *
+ * <p>Scope and safety:
+ * <ul>
+ *   <li>Only AUTO regions (main/accent/trim) are touched; MANUAL regions —
+ *       click-segmented or hand-drawn — are the user's own edits and are
+ *       left alone.</li>
+ *   <li>Only projects with a stored cleaned canvas are processed: that canvas
+ *       is the image the masks must align to, exactly as in the pipeline.</li>
+ *   <li>Each snapped mask is stored under a NEW key and the region row is
+ *       repointed; the old object is left in place (an orphan is cheaper than
+ *       breaking a presigned URL a client is holding right now).</li>
+ *   <li>Everything is best-effort per region: one bad mask counts as a
+ *       failure and the pass moves on. Re-running the pass is safe — snapping
+ *       an already-snapped mask is a no-op in practice.</li>
+ * </ul>
+ *
+ * Triggered from the admin API (POST /api/admin/maintenance/resnap-masks).
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class MaskResnapService {
+
+    private final ProjectRepository projectRepository;
+    private final RegionRepository regionRepository;
+    private final StorageService storageService;
+
+    /** Upper bound on projects per maintenance call — the admin endpoint runs
+     *  synchronously, and each project costs a canvas download plus a guided
+     *  filter per region. Walk a large backlog with repeated capped calls. */
+    static final int MAX_PROJECTS_PER_RUN = 200;
+
+    /** Outcome counts for one maintenance pass (also the admin response body). */
+    public record ResnapSummary(int projectsExamined, int regionsResnapped,
+                                int regionsSkipped, int failures) {
+        ResnapSummary plus(ResnapSummary o) {
+            return new ResnapSummary(
+                    projectsExamined + o.projectsExamined,
+                    regionsResnapped + o.regionsResnapped,
+                    regionsSkipped + o.regionsSkipped,
+                    failures + o.failures);
+        }
+    }
+
+    /**
+     * Re-snaps stored masks for up to {@code limit} projects that have a
+     * cleaned canvas, oldest first.
+     */
+    public ResnapSummary resnapProjects(int limit) {
+        int capped = Math.min(Math.max(1, limit), MAX_PROJECTS_PER_RUN);
+        List<String> projectIds = projectRepository.findIdsWithCleanedImage(PageRequest.of(0, capped));
+        ResnapSummary total = new ResnapSummary(0, 0, 0, 0);
+        for (String projectId : projectIds) {
+            total = total.plus(resnapProject(projectId));
+        }
+        log.info("Mask re-snap pass finished: {}", total);
+        return total;
+    }
+
+    /** Re-snaps one project's stored auto masks against its cleaned canvas. */
+    public ResnapSummary resnapProject(String projectId) {
+        List<Region> regions = regionRepository.findAutoRegionsByProjectId(projectId);
+        if (regions.isEmpty()) return new ResnapSummary(1, 0, 0, 0);
+
+        BufferedImage canvas = loadCanvas(projectId);
+        if (canvas == null) {
+            // No readable cleaned canvas — nothing to align against.
+            return new ResnapSummary(1, 0, regions.size(), 0);
+        }
+
+        int resnapped = 0, skipped = 0, failures = 0;
+        for (Region region : regions) {
+            String stored = region.getMaskUrl();
+            if (stored == null || stored.isBlank() || stored.startsWith("http://")
+                    || stored.startsWith("https://")) {
+                // Foreign/legacy URL, not a key in our storage — leave it be.
+                skipped++;
+                continue;
+            }
+            try {
+                byte[] mask = storageService.load(stored);
+                byte[] snapped = MaskRefiner.snapToCanvas(mask, canvas);
+                // Stored keys are "<ownerScope>/<uuid>.<ext>"; keep the same scope.
+                int slash = stored.indexOf('/');
+                String ownerScope = slash > 0 ? stored.substring(0, slash) : stored;
+                String newKey = storageService.store(snapped, ownerScope,
+                        (region.getCategory() != null
+                                ? region.getCategory().name().toLowerCase() : "mask") + ".png",
+                        "image/png");
+                region.setMaskUrl(newKey);
+                region.setMaskData(newKey);
+                regionRepository.save(region);
+                resnapped++;
+            } catch (Exception e) {
+                log.warn("Re-snap failed for region {} of project {}: {}",
+                        region.getId(), projectId, e.getMessage());
+                failures++;
+            }
+        }
+        return new ResnapSummary(1, resnapped, skipped, failures);
+    }
+
+    /** Loads and downsamples the project's cleaned canvas; null when absent
+     *  or unreadable (the project is then skipped). */
+    private BufferedImage loadCanvas(String projectId) {
+        try {
+            String cleanedKey = projectRepository.findCleanedImageKeyById(projectId).orElse(null);
+            if (cleanedKey == null || cleanedKey.isBlank()) return null;
+            byte[] bytes = storageService.load(cleanedKey);
+            return MaskProcessor.downsample(MaskProcessor.decode(bytes), SegmentationService.MAX_MASK_DIM);
+        } catch (Exception e) {
+            log.warn("Could not load cleaned canvas for project {}: {}", projectId, e.getMessage());
+            return null;
+        }
+    }
+}

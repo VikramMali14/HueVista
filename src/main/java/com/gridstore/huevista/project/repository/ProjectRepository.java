@@ -74,4 +74,20 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
      */
     @Query("SELECT p.image.id FROM Project p WHERE p.id = :projectId")
     Optional<String> findImageIdById(@Param("projectId") String projectId);
+
+    /**
+     * Reads the cleaned canvas's storage key without pulling the full entity —
+     * used by the mask maintenance/point-segment paths to fetch the image the
+     * region masks must align to.
+     */
+    @Query("SELECT p.cleanedImageStorageKey FROM Project p WHERE p.id = :projectId")
+    Optional<String> findCleanedImageKeyById(@Param("projectId") String projectId);
+
+    /**
+     * Ids of projects that have a cleaned canvas stored (the image their masks
+     * align to), oldest first so a capped maintenance pass walks the backlog
+     * deterministically across repeated runs.
+     */
+    @Query("SELECT p.id FROM Project p WHERE p.cleanedImageStorageKey IS NOT NULL ORDER BY p.createdAt ASC, p.id ASC")
+    List<String> findIdsWithCleanedImage(org.springframework.data.domain.Pageable pageable);
 }
