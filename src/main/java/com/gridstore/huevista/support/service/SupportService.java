@@ -14,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -31,6 +32,7 @@ public class SupportService {
     private final SupportMessageRepository messageRepo;
     private final UserRepository userRepository;
     private final ClaudeService claude;
+    private final com.gridstore.huevista.support.channel.WhatsAppService whatsAppService;
 
     @Transactional
     public ConversationResponse start(String userId, String message, String subject) {
@@ -161,7 +163,20 @@ public class SupportService {
         Conversation c = conversationRepo.findById(conversationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation not found"));
         userRepository.findById(agentUserId).ifPresent(c::setAssignee);
+        // A human replying takes (or keeps) the conversation: without NEEDS_HUMAN the
+        // customer's next message would get an AI answer mid-human-thread, and a reply
+        // to an already-resolved conversation would be invisible in the staff inbox.
+        c.setStatus(ConversationStatus.NEEDS_HUMAN);
         addMessage(c, MessageSender.AGENT, body);
+        // An external contact never opens the in-app inbox — the reply must travel back
+        // over their channel or the agent is typing into the void. Best-effort: the
+        // message is stored either way, and a failed dispatch is visible in the logs.
+        if (c.getChannel() == SupportChannel.WHATSAPP && c.getContactChannelId() != null) {
+            boolean delivered = whatsAppService.sendText(c.getContactChannelId(), body);
+            if (!delivered) {
+                log.warn("Agent reply stored but WhatsApp dispatch failed: conversation={}", conversationId);
+            }
+        }
         return toResponse(c);
     }
 
@@ -233,7 +248,7 @@ public class SupportService {
      *  consecutive same-role messages and dropping system notices). */
     private List<ClaudeService.Turn> buildTurns(String conversationId) {
         List<ClaudeService.Turn> turns = new ArrayList<>();
-        for (SupportMessage m : messageRepo.findByConversationIdOrderByCreatedAtAsc(conversationId)) {
+        for (SupportMessage m : messageRepo.findByConversationIdOrderByCreatedAtAscIdAsc(conversationId)) {
             String role = switch (m.getSender()) {
                 case USER -> "user";
                 case AI, AGENT -> "assistant";
@@ -262,16 +277,22 @@ public class SupportService {
 
     private void addMessage(Conversation c, MessageSender sender, String body) {
         messageRepo.save(SupportMessage.builder().conversation(c).sender(sender).body(body).build());
+        // Touch the conversation so updatedAt reflects the latest MESSAGE, not the last
+        // status change. The staff inbox and the user's list sort by updatedAt, and the
+        // WhatsApp inbound lookup picks "most recently updated" — without this a
+        // NEEDS_HUMAN conversation receiving new user messages never moves up.
+        c.setUpdatedAt(LocalDateTime.now());
+        conversationRepo.save(c);
     }
 
     private String lastMessageText(String conversationId) {
-        return messageRepo.findTopByConversationIdOrderByCreatedAtDesc(conversationId)
+        return messageRepo.findTopByConversationIdOrderByCreatedAtDescIdDesc(conversationId)
                 .map(SupportMessage::getBody)
                 .orElse("");
     }
 
     private ConversationResponse toResponse(Conversation c) {
-        return ConversationResponse.from(c, messageRepo.findByConversationIdOrderByCreatedAtAsc(c.getId()));
+        return ConversationResponse.from(c, messageRepo.findByConversationIdOrderByCreatedAtAscIdAsc(c.getId()));
     }
 
     private String deriveSubject(String message) {

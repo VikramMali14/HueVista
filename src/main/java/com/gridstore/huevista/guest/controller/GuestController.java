@@ -1,5 +1,7 @@
 package com.gridstore.huevista.guest.controller;
 
+import com.gridstore.huevista.billing.dto.PdfAllowanceResponse;
+import com.gridstore.huevista.billing.service.PdfQuotaService;
 import com.gridstore.huevista.image.dto.ImageResponse;
 import com.gridstore.huevista.image.service.ImageService;
 import com.gridstore.huevista.project.dto.CreateProjectRequest;
@@ -36,6 +38,7 @@ public class GuestController {
 
     private final ImageService imageService;
     private final ProjectService projectService;
+    private final PdfQuotaService pdfQuotaService;
 
     @Operation(summary = "Upload a room photo (guest)")
     @PostMapping(value = "/images/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -113,6 +116,20 @@ public class GuestController {
     @PostMapping("/projects/{id}/send-to-shop")
     public ResponseEntity<ProjectResponse> sendToShop(@PathVariable String id, Authentication auth) {
         return ResponseEntity.ok(projectService.sendGuestProjectToShop(accessCodeId(auth), id));
+    }
+
+    @Operation(summary = "Get the colour-board PDF allowance (guest) — the issuing shop's quota")
+    @GetMapping("/pdf-allowance")
+    public ResponseEntity<PdfAllowanceResponse> pdfAllowance(Authentication auth) {
+        return ResponseEntity.ok(pdfQuotaService.allowanceForGuest(accessCodeId(auth)));
+    }
+
+    @Operation(summary = "Charge one colour-board PDF download (guest) — billed to the issuing shop",
+            description = "Atomically reserves one PDF download against the issuing shop's plan. "
+                    + "402 when the shop's monthly PDF limit is spent.")
+    @PostMapping("/pdf-downloads")
+    public ResponseEntity<PdfAllowanceResponse> chargePdfDownload(Authentication auth) {
+        return ResponseEntity.ok(pdfQuotaService.reserveForGuest(accessCodeId(auth)));
     }
 
     /** For a guest, the principal name is the access code id (set by GuestAuthFilter). */

@@ -34,6 +34,7 @@ public class BillingService {
     private final UserRepository userRepository;
     private final RazorpayClient razorpayClient;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
+    private final BillingEmailService billingEmailService;
 
     @Value("${razorpay.plan.starter:}")
     private String planIdStarter;
@@ -115,7 +116,11 @@ public class BillingService {
                     .razorpaySubscriptionId(rzpSubId)
                     // quantity multiplies the amount Razorpay bills, so scale the AI quota by it
                     // too — otherwise a customer paying Nx would still get a single plan's limit.
-                    .aiGenerationsLimit(scaledAiLimit(request.getPlan(), request.getQuantity()))
+                    .aiGenerationsLimit(scaledLimit(request.getPlan().getMonthlyAiLimit(), request.getQuantity()))
+                    // PDF downloads scale with quantity like the AI quota; images-per-PDF is a
+                    // per-document property of the tier, so it does NOT scale.
+                    .pdfDownloadsLimit(scaledLimit(request.getPlan().getMonthlyPdfLimit(), request.getQuantity()))
+                    .pdfImageLimit(request.getPlan().getPdfImageLimit())
                     .build();
 
             subscriptionRepository.save(sub);
@@ -179,6 +184,7 @@ public class BillingService {
             auditService.record(userId, "SUBSCRIPTION_ACTIVATE", "SUBSCRIPTION", sub.getId(),
                     "plan=" + sub.getPlan() + " rzpId=" + request.getSubscriptionId());
             log.info("Subscription activated via checkout verify: user={} subId={}", userId, sub.getId());
+            billingEmailService.sendSubscriptionActivated(sub);
         }
         return SubscriptionResponse.from(sub);
     }
@@ -207,6 +213,8 @@ public class BillingService {
                 .currentPeriodEnd(now.plusDays(trialDays))
                 .aiGenerationsUsed(0)
                 .aiGenerationsLimit(p.getMonthlyAiLimit())
+                .pdfDownloadsLimit(p.getMonthlyPdfLimit())
+                .pdfImageLimit(p.getPdfImageLimit())
                 .build();
         subscriptionRepository.save(sub);
         log.info("Trial granted: user={} plan={} days={}", userId, p, trialDays);
@@ -254,6 +262,7 @@ public class BillingService {
             subscriptionRepository.save(sub);
             auditService.record(userId, "SUBSCRIPTION_CANCEL", "SUBSCRIPTION", sub.getId(), "plan=" + sub.getPlan());
             log.info("Subscription cancel-at-period-end set: user={} subId={}", userId, sub.getId());
+            billingEmailService.sendCancellationScheduled(sub);
         } catch (RazorpayException e) {
             log.error("Razorpay cancel failed: {}", e.getMessage());
             throw new IllegalStateException("Payment gateway error: " + e.getMessage());
@@ -334,6 +343,9 @@ public class BillingService {
     @Transactional
     public void activateSubscription(String razorpaySubscriptionId, long chargeAt, long currentEnd) {
         subscriptionRepository.findByRazorpaySubscriptionId(razorpaySubscriptionId).ifPresent(sub -> {
+            // The checkout-verify fast path usually activates first; only the genuine
+            // transition sends the confirmation email (no duplicate on the webhook echo).
+            boolean wasActive = sub.getStatus() == SubscriptionStatus.ACTIVE;
             sub.setStatus(SubscriptionStatus.ACTIVE);
             sub.setTrial(false);
             sub.setCurrentPeriodStart(LocalDateTime.now());
@@ -342,6 +354,9 @@ public class BillingService {
             // End any still-active free trial now that a paid plan is live.
             supersedeActiveTrials(sub.getUser().getId(), sub.getId());
             log.info("Subscription activated: {}", razorpaySubscriptionId);
+            if (!wasActive) {
+                billingEmailService.sendSubscriptionActivated(sub);
+            }
         });
     }
 
@@ -351,9 +366,13 @@ public class BillingService {
     @Transactional
     public void markCancelled(String razorpaySubscriptionId) {
         subscriptionRepository.findByRazorpaySubscriptionId(razorpaySubscriptionId).ifPresent(sub -> {
+            boolean wasCancelled = sub.getStatus() == SubscriptionStatus.CANCELLED;
             sub.setStatus(SubscriptionStatus.CANCELLED);
             subscriptionRepository.save(sub);
             log.info("Subscription cancelled: {}", razorpaySubscriptionId);
+            if (!wasCancelled) {
+                billingEmailService.sendSubscriptionEnded(sub);
+            }
         });
     }
 
@@ -375,9 +394,13 @@ public class BillingService {
     @Transactional
     public void markHalted(String razorpaySubscriptionId) {
         subscriptionRepository.findByRazorpaySubscriptionId(razorpaySubscriptionId).ifPresent(sub -> {
+            boolean wasHalted = sub.getStatus() == SubscriptionStatus.HALTED;
             sub.setStatus(SubscriptionStatus.HALTED);
             subscriptionRepository.save(sub);
             log.warn("Subscription halted due to payment failure: {}", razorpaySubscriptionId);
+            if (!wasHalted) {
+                billingEmailService.sendPaymentFailed(sub);
+            }
         });
     }
 
@@ -387,8 +410,26 @@ public class BillingService {
     @Transactional
     public void handlePaymentCaptured(String razorpaySubscriptionId, long currentEnd) {
         subscriptionRepository.findByRazorpaySubscriptionId(razorpaySubscriptionId).ifPresent(sub -> {
+            // Classify BEFORE mutating: the very first charge arrives right after checkout
+            // (activation already emailed a receipt), while a real renewal lands roughly a
+            // month into an ACTIVE period. HALTED→captured is a recovery — quota refreshed,
+            // so it reads as a renewal too.
+            SubscriptionStatus previousStatus = sub.getStatus();
+            LocalDateTime previousStart = sub.getCurrentPeriodStart();
+            boolean firstCharge = previousStatus == SubscriptionStatus.CREATED || previousStart == null;
+            boolean renewal = !firstCharge
+                    && (previousStatus == SubscriptionStatus.HALTED
+                        || previousStart.isBefore(LocalDateTime.now().minusDays(7)));
+
             sub.setStatus(SubscriptionStatus.ACTIVE);
             sub.setAiGenerationsUsed(0);
+            sub.setPdfDownloadsUsed(0);
+            // Older rows (pre-PDF-quota) were backfilled with base allowances; refreshing
+            // from the plan on every renewal also picks up any plan-limit changes.
+            sub.setPdfImageLimit(sub.getPlan().getPdfImageLimit());
+            if (sub.getPdfDownloadsLimit() < sub.getPlan().getMonthlyPdfLimit()) {
+                sub.setPdfDownloadsLimit(sub.getPlan().getMonthlyPdfLimit());
+            }
             sub.setCurrentPeriodStart(LocalDateTime.now());
             LocalDateTime newEnd = resolvePeriodEnd(currentEnd);
             // Never shrink an already-known period end. subscription.charged carries the real
@@ -399,6 +440,12 @@ public class BillingService {
             }
             subscriptionRepository.save(sub);
             log.info("Subscription renewed, AI usage reset: {}", razorpaySubscriptionId);
+            if (firstCharge) {
+                billingEmailService.sendSubscriptionActivated(sub);
+            } else if (renewal) {
+                billingEmailService.sendSubscriptionRenewed(sub);
+            }
+            // else: the charge webhook echoing a just-verified activation — already emailed.
         });
     }
 
@@ -441,9 +488,9 @@ public class BillingService {
                 });
     }
 
-    /** Scale a plan's monthly AI quota by the billed quantity, clamped to avoid int overflow. */
-    private int scaledAiLimit(Plan plan, int quantity) {
-        long scaled = (long) plan.getMonthlyAiLimit() * Math.max(1, quantity);
+    /** Scale a plan's monthly quota by the billed quantity, clamped to avoid int overflow. */
+    private int scaledLimit(int baseLimit, int quantity) {
+        long scaled = (long) baseLimit * Math.max(1, quantity);
         return scaled > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) scaled;
     }
 

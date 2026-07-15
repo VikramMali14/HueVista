@@ -57,6 +57,17 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
            "WHERE s.id = :id AND s.aiGenerationsUsed > 0")
     int decrementAiUsage(@Param("id") String id);
 
+    /**
+     * Atomically charge one colour-board PDF download while usage is below the limit —
+     * same conditional-UPDATE pattern as {@link #incrementAiUsageIfWithinLimit} so
+     * parallel downloads can't both take the last one. Returns 1 when charged, 0 when
+     * the monthly allowance is spent.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE Subscription s SET s.pdfDownloadsUsed = s.pdfDownloadsUsed + 1 " +
+           "WHERE s.id = :id AND s.pdfDownloadsUsed < s.pdfDownloadsLimit")
+    int incrementPdfUsageIfWithinLimit(@Param("id") String id);
+
     @Query("SELECT s.plan, COUNT(s) FROM Subscription s WHERE s.status = :status GROUP BY s.plan")
     List<Object[]> countByPlanAndStatus(@Param("status") SubscriptionStatus status);
 

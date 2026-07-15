@@ -94,6 +94,17 @@ public class AccessCodeService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
+        // Redeeming flips the account to CUSTOMER — for a shop, distributor, painter
+        // or admin account that would silently destroy their real role (and with it
+        // org ownership checks, subscriptions, the admin console…). Public signups
+        // are CUSTOMER already, so only customers ever legitimately redeem here.
+        if (user.getRole() != null && user.getRole() != UserRole.CUSTOMER) {
+            throw new IllegalStateException(
+                    "This account is a " + user.getRole().name().toLowerCase()
+                    + " account — access codes are for walk-in customers. "
+                    + "Ask your customer to redeem it, or open it in a private window.");
+        }
+
         // Compare-and-set consumption: if a concurrent request redeemed this code
         // between our isUsed() check and here, the guarded UPDATE matches 0 rows.
         LocalDateTime now = LocalDateTime.now();

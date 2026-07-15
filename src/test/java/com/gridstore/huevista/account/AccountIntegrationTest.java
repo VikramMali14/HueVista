@@ -44,8 +44,11 @@ class AccountIntegrationTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        retailerOwnerToken = registerAndLogin("retailer-owner@example.com", "Retailer Owner");
-        customerToken = registerAndLogin("customer-walkin@example.com", "Walk-in Customer");
+        retailerOwnerToken = registerAndLogin("retailer-owner@example.com", "Retailer Owner",
+                com.gridstore.huevista.auth.model.UserRole.RETAILER);
+        // Walk-ins are CUSTOMER (the only role allowed to redeem an access code).
+        customerToken = registerAndLogin("customer-walkin@example.com", "Walk-in Customer",
+                com.gridstore.huevista.auth.model.UserRole.CUSTOMER);
     }
 
     @Test
@@ -161,13 +164,15 @@ class AccountIntegrationTest {
         return objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asText();
     }
 
-    private String registerAndLogin(String email, String name) throws Exception {
+    private String registerAndLogin(String email, String name,
+                                    com.gridstore.huevista.auth.model.UserRole role) throws Exception {
         userRepository.save(User.builder()
                 .name(name)
                 .email(email)
                 .password(passwordEncoder.encode("password123"))
                 .provider(AuthProvider.LOCAL)
                 .emailVerified(false)
+                .role(role)
                 .build());
         MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)

@@ -40,18 +40,28 @@ public class EmailSender {
     }
 
     public void send(String to, String subject, String body) {
+        send(from, to, subject, body);
+    }
+
+    /**
+     * Send from a specific address (e.g. the billing sender for payment receipts).
+     * The SMTP account must be allowed to send as {@code fromAddress}, or providers
+     * will rewrite/reject it — keep all senders on the same authenticated domain.
+     */
+    public void send(String fromAddress, String to, String subject, String body) {
         JavaMailSender sender = mailSenderProvider.getIfAvailable();
+        String effectiveFrom = (fromAddress == null || fromAddress.isBlank()) ? from : fromAddress;
         if (enabled && sender != null) {
             SimpleMailMessage message = new SimpleMailMessage();
-            message.setFrom(from);
+            message.setFrom(effectiveFrom);
             message.setTo(to);
             message.setSubject(subject);
             message.setText(body);
             sender.send(message);
-            log.info("Verification email sent to {}", to);
+            log.info("Email sent to {} (from {})", to, effectiveFrom);
         } else {
             // DEV / unconfigured: surface the message so the code is testable.
-            log.warn("[DEV EMAIL] to={} | subject=\"{}\" | {}", to, subject, body);
+            log.warn("[DEV EMAIL] from={} to={} | subject=\"{}\" | {}", effectiveFrom, to, subject, body);
         }
     }
 }

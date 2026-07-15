@@ -30,6 +30,7 @@ public class ProjectCreditService {
     private final RazorpayClient razorpayClient;
     private final CustomerEntitlementService entitlementService;
     private final ProjectCreditPaymentRepository paymentRepository;
+    private final BillingEmailService billingEmailService;
 
     @Value("${razorpay.key-id:}")
     private String keyId;
@@ -131,6 +132,7 @@ public class ProjectCreditService {
 
         log.info("Project-credit payment verified: user={} order={} payment={}",
                 userId, req.getOrderId(), req.getPaymentId());
+        billingEmailService.sendProjectCreditPurchased(userId, amountPaise);
         return entitlementService.creditPurchasedProject(userId);
     }
 }
