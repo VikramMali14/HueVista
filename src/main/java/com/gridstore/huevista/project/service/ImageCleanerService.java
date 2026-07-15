@@ -29,7 +29,7 @@ import java.util.Optional;
  *
  * The cleaned image is then used:
  *   1. As the canvas for the painted preview shown to the user
- *   2. As the input image for {@link ReplicateNanoBananaSegmenter} so
+ *   2. As the input image for {@link ReplicateMaskSegmenter} so
  *      masks are aligned to the cleaned house, not the cluttered original
  *
  * Honest caveats: image-editing models still hallucinate. Expect the

@@ -37,8 +37,8 @@ import java.util.Optional;
  *       painted surfaces into the reference palette, so the canvas the masks
  *       are aligned to already looks freshly painted. Opt-in via
  *       REPLICATE_IMAGE_CLEANER_ENABLED.</li>
- *   <li>One Nano Banana call ({@link ReplicateNanoBananaSegmenter})
- *       edits the cleaned photo into a flat colour-blocked image: RED = main
+ *   <li>One image-edit call ({@link ReplicateMaskSegmenter}, FLUX.2 [max]
+ *       by default) edits the cleaned photo into a flat colour-blocked image: RED = main
  *       paintable wall, GREEN = accent / highlighter wall, BLUE = trim &
  *       frames, BLACK = everything else (sky, ground, stone, windows, fixtures,
  *       plus the door panels and metal railings — kept as fixed features:
@@ -70,7 +70,7 @@ public class SegmentationService {
     private final RegionRepository regionRepository;
     private final StorageService storageService;
     private final RestTemplate restTemplate;
-    private final ReplicateNanoBananaSegmenter replicateNanoBanana;
+    private final ReplicateMaskSegmenter maskSegmenter;
     private final ImageCleanerService imageCleaner;
     private final ImageRepository imageRepository;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
@@ -166,9 +166,10 @@ public class SegmentationService {
                         projectId, e.getMessage());
             }
 
-            // Step 2: Nano Banana color-coded mask via Replicate. Scene drives the
-            // accent-wall rule: interiors always get one accent wall to highlight.
-            if (tryReplicateNanoBananaSegmentation(projectId, userId, maskImageUrl,
+            // Step 2: color-coded mask via Replicate (FLUX.2 [max] by default).
+            // Scene drives the accent-wall rule: interiors always get one
+            // accent wall to highlight.
+            if (tryColorCodedSegmentation(projectId, userId, maskImageUrl,
                     uploadedImage.getImageType(), cleanedBytes,
                     uploadedImage.getWidth(), uploadedImage.getHeight())) {
                 markSegmented(projectId);
@@ -187,7 +188,7 @@ public class SegmentationService {
             // Nothing worked — surface a clear failure so the UI can prompt
             // the user to click-segment manually.
             markFailed(projectId,
-                    "Auto-segmentation failed — Nano Banana didn't produce usable masks. " +
+                    "Auto-segmentation failed — the mask model didn't produce usable masks. " +
                     "Use click-to-segment to mark walls manually.");
 
         } catch (Exception e) {
@@ -208,31 +209,31 @@ public class SegmentationService {
     }
 
     /**
-     * One Nano Banana call returns a single color-coded image; we split
-     * it into per-category binary masks, post-process each one (smooth
-     * upscale to the canvas resolution + colour gate against the cleaned
-     * canvas, see {@link #postProcessMask}) and persist each non-empty one
-     * as a Region row.
+     * One mask-model call ({@link ReplicateMaskSegmenter}) returns a single
+     * color-coded image; we split it into per-category binary masks,
+     * post-process each one (smooth upscale to the canvas resolution +
+     * colour gate against the cleaned canvas, see {@link #postProcessMask})
+     * and persist each non-empty one as a Region row.
      *
      * Pixel size thresholds (5000 px for walls, 2000 px for trim) filter
-     * categories Nano Banana barely produced — usually a sign the model
+     * categories the model barely produced — usually a sign the model
      * couldn't find that surface in the photo (e.g. no distinct accent
      * wall). We skip saving them rather than persisting a tiny noise mask.
      */
-    private boolean tryReplicateNanoBananaSegmentation(String projectId, String userId,
-                                                       String imageUrl, ImageType scene,
-                                                       byte[] cleanedBytes,
-                                                       int imageWidth, int imageHeight) {
+    private boolean tryColorCodedSegmentation(String projectId, String userId,
+                                              String imageUrl, ImageType scene,
+                                              byte[] cleanedBytes,
+                                              int imageWidth, int imageHeight) {
         try {
-            if (!replicateNanoBanana.isConfigured()) {
-                log.warn("Nano Banana (Replicate) not configured — set " +
+            if (!maskSegmenter.isConfigured()) {
+                log.warn("Mask segmenter not configured — set " +
                         "REPLICATE_NANO_BANANA_ENABLED=true");
                 return false;
             }
 
-            Optional<byte[]> colorRaw = replicateNanoBanana.generateColorCodedMask(imageUrl, scene);
+            Optional<byte[]> colorRaw = maskSegmenter.generateColorCodedMask(imageUrl, scene);
             if (colorRaw.isEmpty()) {
-                log.info("Nano Banana returned no color-coded mask for project {}", projectId);
+                log.info("Mask segmenter returned no color-coded mask for project {}", projectId);
                 return false;
             }
 
@@ -243,7 +244,7 @@ public class SegmentationService {
                 log.warn("splitColorCodedMask failed for project {}: {}", projectId, e.getMessage());
                 return false;
             }
-            log.info("Nano Banana split [project={}]: {}", projectId, parts.keySet());
+            log.info("Mask split [project={}]: {}", projectId, parts.keySet());
 
             // Masks are stored at the CANVAS's aspect and resolution (capped at
             // MAX_MASK_DIM), not at whatever size the model generated — the
@@ -290,13 +291,13 @@ public class SegmentationService {
             }
 
             if (!mainSaved) {
-                log.info("Nano Banana didn't produce a usable main wall for project {}", projectId);
+                log.info("Mask model didn't produce a usable main wall for project {}", projectId);
                 return false;
             }
-            log.info("Nano Banana saved {} regions for project {}", saved, projectId);
+            log.info("Mask segmenter saved {} regions for project {}", saved, projectId);
             return true;
         } catch (Exception e) {
-            log.warn("Nano Banana path failed for project {}: {}", projectId, e.getMessage(), e);
+            log.warn("Mask segmentation path failed for project {}: {}", projectId, e.getMessage(), e);
             return false;
         }
     }
