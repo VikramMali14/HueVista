@@ -14,42 +14,46 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Calls Google's Nano Banana (Gemini Image) family via the Replicate
- * platform — same models as the direct Google API, but reuses the
- * existing REPLICATE_API_TOKEN so the user doesn't need to manage a
- * separate Google Cloud / AI Studio key.
+ * Generates the colour-coded wall mask by asking an image-EDITING model on
+ * Replicate to flood each paintable surface with a flat category colour.
+ * Model-agnostic: the configured model decides which request schema is sent.
  *
- * Models on Replicate as of 2026:
- *   google/nano-banana-2      — Gemini 3.1 Flash Image (recommended default)
- *   google/nano-banana-pro    — Gemini 3 Pro Image (highest quality, ~3x cost)
- *   google/nano-banana        — Gemini 2.5 Flash Image (cheapest, older)
+ * Supported model families (same REPLICATE_API_TOKEN for both):
+ *   black-forest-labs/flux-2-max — FLUX.2 [max] (DEFAULT — highest editing
+ *                                  consistency in the FLUX.2 lineup; inputs:
+ *                                  input_images + aspect_ratio, both support
+ *                                  "match_input_image" so the mask keeps the
+ *                                  photo's exact aspect)
+ *   black-forest-labs/flux-2-*   — other FLUX.2 tiers (pro/flex), same schema
+ *   google/nano-banana-pro / -2  — Gemini Image family (previous default;
+ *                                  inputs: image_input + aspect_ratio +
+ *                                  1K/2K/4K resolution)
  *
- * Honest caveat: this is image GENERATION, not pixel extraction.
- * Pixel alignment isn't guaranteed. Recent versions are
- * substantially better than older diffusion models but it's still worth
- * comparing this path's masks against the ADE20K and SAM paths on your
- * photo distribution.
+ * Honest caveat: this is generative image EDITING, not pixel extraction.
+ * Pixel alignment isn't guaranteed. The downstream post-processing
+ * (colour gate, morph clean, edge snap — see SegmentationService) exists
+ * precisely to absorb the model's small misregistrations.
  *
- * Configuration:
+ * Configuration (key names kept from the Nano Banana era so existing
+ * REPLICATE_NANO_BANANA_* deployment env vars keep working):
  *   replicate.nano-banana.enabled       — kill switch (default false)
- *   replicate.nano-banana.model         — owner/name (default google/nano-banana-pro)
+ *   replicate.nano-banana.model         — owner/name (default black-forest-labs/flux-2-max)
  *   replicate.nano-banana.model-version — pin a version hash for production
  *
- * Cost: ~$0.03-0.10 per mask depending on which Nano Banana variant.
- * One call per category = up to ~$0.30/upload on Pro, ~$0.10/upload
- * on Flash. User explicitly asked for quality over cost.
+ * Cost: ~$0.03-0.12 per mask depending on the model. One colour-coded
+ * call per upload. User explicitly asked for quality over cost.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class ReplicateNanoBananaSegmenter {
+public class ReplicateMaskSegmenter {
 
     private final RestTemplate restTemplate;
 
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
 
-    @Value("${replicate.nano-banana.model:google/nano-banana-pro}")
+    @Value("${replicate.nano-banana.model:black-forest-labs/flux-2-max}")
     private String model;
 
     @Value("${replicate.nano-banana.model-version:}")
@@ -59,19 +63,23 @@ public class ReplicateNanoBananaSegmenter {
     private boolean enabled;
 
     /**
-     * Output aspect ratio requested from the model. Gemini image models
-     * generate into fixed aspect buckets by default, so WITHOUT this the
-     * colour-coded mask can come back at a different aspect than the photo —
-     * and every region mask is then systematically stretched or shifted off
-     * the real surfaces. "match_input_image" pins the output to the photo's
-     * own aspect. Blank = omit the parameter.
+     * Output aspect ratio requested from the model. Image models generate
+     * into fixed aspect buckets by default, so WITHOUT this the colour-coded
+     * mask can come back at a different aspect than the photo — and every
+     * region mask is then systematically stretched or shifted off the real
+     * surfaces. "match_input_image" pins the output to the photo's own
+     * aspect and is supported by BOTH the FLUX.2 and Nano Banana families.
+     * Blank = omit the parameter.
      */
     @Value("${replicate.nano-banana.aspect-ratio:match_input_image}")
     private String aspectRatio;
 
-    /** Output resolution (e.g. 1K/2K/4K) when the model supports it; higher
-     *  means finer mask edges. Blank (default) = omit and take the model's
-     *  native output size. */
+    /** Output resolution when the model supports it; higher means finer mask
+     *  edges. Configured in Nano Banana units (1K/2K/4K) — for FLUX models
+     *  the value is translated to megapixels ("1 MP"/"2 MP"/"4 MP", see
+     *  {@link #resolutionForModel}); FLUX also accepts "match_input_image"
+     *  directly. Blank (default) = omit and take the model's native output
+     *  size. */
     @Value("${replicate.nano-banana.resolution:}")
     private String resolution;
 
@@ -96,18 +104,17 @@ public class ReplicateNanoBananaSegmenter {
      */
     public Optional<byte[]> generateMask(String imageUrl, String surfaceDescription) {
         if (!isConfigured()) {
-            log.debug("Nano Banana (Replicate) not configured — skipping");
+            log.debug("Mask segmenter not configured — skipping");
             return Optional.empty();
         }
         try {
-            log.info("Nano Banana (Replicate) [{}]: requesting mask for '{}'", model, surfaceDescription);
+            log.info("Mask segmenter [{}]: requesting mask for '{}'", model, surfaceDescription);
 
             String prompt = buildMaskPrompt(surfaceDescription);
 
-            // Nano Banana on Replicate expects:
-            //   prompt:       the text instruction
-            //   image_input:  list of source image URLs (for editing context)
-            //   output_format optional, "png" preferred for masks
+            // buildImageEditInput picks the request schema for the configured
+            // model family (FLUX: input_images / Nano Banana: image_input);
+            // output_format "png" preferred for masks either way.
             Map<String, Object> input = buildImageEditInput(prompt, imageUrl);
 
             String predictionId = startPrediction(input);
@@ -115,22 +122,22 @@ public class ReplicateNanoBananaSegmenter {
 
             Map<String, Object> result = pollUntilDone(predictionId);
             if (result == null) {
-                log.warn("Nano Banana (Replicate) prediction timed out or failed");
+                log.warn("Mask segmenter prediction timed out or failed");
                 return Optional.empty();
             }
 
             String maskUrl = extractOutputUrl(result.get("output"));
             if (maskUrl == null) {
-                log.warn("Nano Banana (Replicate) returned no output URL");
+                log.warn("Mask segmenter returned no output URL");
                 return Optional.empty();
             }
 
             byte[] bytes = downloadBytes(maskUrl);
-            log.info("Nano Banana (Replicate) generated mask for '{}': {} bytes", surfaceDescription, bytes.length);
+            log.info("Mask segmenter generated mask for '{}': {} bytes", surfaceDescription, bytes.length);
             return Optional.of(bytes);
 
         } catch (Exception e) {
-            log.warn("Nano Banana (Replicate) failed for '{}': {}", surfaceDescription, e.getMessage());
+            log.warn("Mask segmenter failed for '{}': {}", surfaceDescription, e.getMessage());
             return Optional.empty();
         }
     }
@@ -146,14 +153,14 @@ public class ReplicateNanoBananaSegmenter {
      * <p>This is framed as an <b>edit of the actual (cleaned) photo</b>, not as
      * an abstract segmentation map: the model floods each real surface with a
      * flat category colour in place. Editing the photo tracks its true edges far
-     * more faithfully than generating a mask from scratch (Nano Banana warns
-     * "pixel alignment isn't guaranteed" for generation), and the flat-fill
+     * more faithfully than generating a mask from scratch (image-editing
+     * models don't guarantee pixel alignment when generating), and the flat-fill
      * instruction — deliberately ignoring the photo's own shadows — keeps the
      * downstream colour-threshold split clean instead of punching holes wherever
      * a wall was shaded.
      *
      * <p>Big advantage over three separate single-category calls: 1 Replicate
-     * call instead of 3 (3× faster, 3× cheaper), Gemini sees all categories
+     * call instead of 3 (3× faster, 3× cheaper), the model sees all categories
      * at once so a pixel can only belong to ONE category — no inter-mask
      * overlap.
      *
@@ -168,12 +175,12 @@ public class ReplicateNanoBananaSegmenter {
      */
     public Optional<byte[]> generateColorCodedMask(String imageUrl, ImageType scene) {
         if (!isConfigured()) {
-            log.debug("Nano Banana (Replicate) not configured — skipping");
+            log.debug("Mask segmenter not configured — skipping");
             return Optional.empty();
         }
         try {
             boolean forceAccent = scene == ImageType.INDOOR;
-            log.info("Nano Banana (Replicate) [{}]: requesting COLOR-CODED mask (scene={}, forceAccent={})",
+            log.info("Mask segmenter [{}]: requesting COLOR-CODED mask (scene={}, forceAccent={})",
                     model, scene, forceAccent);
 
             Map<String, Object> input = buildImageEditInput(colorCodedPrompt(forceAccent), imageUrl);
@@ -183,19 +190,19 @@ public class ReplicateNanoBananaSegmenter {
 
             Map<String, Object> result = pollUntilDone(predictionId);
             if (result == null) {
-                log.warn("Nano Banana color-coded prediction timed out");
+                log.warn("Mask segmenter color-coded prediction timed out");
                 return Optional.empty();
             }
             String maskUrl = extractOutputUrl(result.get("output"));
             if (maskUrl == null) {
-                log.warn("Nano Banana color-coded prediction had no output URL");
+                log.warn("Mask segmenter color-coded prediction had no output URL");
                 return Optional.empty();
             }
             byte[] bytes = downloadBytes(maskUrl);
-            log.info("Nano Banana color-coded mask: {} bytes", bytes.length);
+            log.info("Mask segmenter color-coded mask: {} bytes", bytes.length);
             return Optional.of(bytes);
         } catch (Exception e) {
-            log.warn("Nano Banana color-coded mask failed: {}", e.getMessage());
+            log.warn("Mask segmenter color-coded mask failed: {}", e.getMessage());
             return Optional.empty();
         }
     }
@@ -418,22 +425,57 @@ public class ReplicateNanoBananaSegmenter {
 
     /**
      * Base input for an image-edit prediction, plus the OPTIONAL aspect-ratio
-     * and resolution controls when configured. Both optional keys are safe to
-     * send to the Nano Banana family; if a model variant rejects them,
-     * {@link #startPrediction} retries once without them.
+     * and resolution controls when configured. The source-image key differs
+     * per family: FLUX.2 takes {@code input_images}, Nano Banana takes
+     * {@code image_input}. Both families accept {@code aspect_ratio} with
+     * "match_input_image", which is what keeps the mask pinned to the photo's
+     * exact aspect. If a model variant rejects an optional key,
+     * {@link #startPrediction} retries once without the optional keys.
      */
     private Map<String, Object> buildImageEditInput(String prompt, String imageUrl) {
         Map<String, Object> input = new java.util.HashMap<>();
         input.put("prompt", prompt);
-        input.put("image_input", List.of(imageUrl));
+        input.put(isFluxModel() ? "input_images" : "image_input", List.of(imageUrl));
         input.put("output_format", "png");
         if (aspectRatio != null && !aspectRatio.isBlank()) {
             input.put("aspect_ratio", aspectRatio.trim());
         }
-        if (resolution != null && !resolution.isBlank()) {
-            input.put("resolution", resolution.trim());
+        String res = resolutionForModel();
+        if (res != null) {
+            input.put("resolution", res);
         }
         return input;
+    }
+
+    /** FLUX family speaks a different input schema (input_images, megapixel
+     *  resolutions) than the Gemini/Nano Banana family. Matches any
+     *  black-forest-labs model so flux-2-pro/flex work too. */
+    private boolean isFluxModel() {
+        return model != null && model.startsWith("black-forest-labs/");
+    }
+
+    /**
+     * Resolution value in the configured model's own units, or null to omit
+     * the key. The config is written in Nano Banana units (1K/2K/4K); FLUX
+     * models size in megapixels instead, so those values are translated
+     * (1K→"1 MP", 2K→"2 MP", 4K→"4 MP" — FLUX caps at 4 MP / 2048px longest
+     * side, which matches MAX_MASK_DIM downstream). Anything else — e.g.
+     * FLUX's own "match_input_image" or an explicit "2 MP" — passes through
+     * untouched, and {@link #startPrediction}'s retry-without-optionals
+     * covers a value the model rejects.
+     */
+    private String resolutionForModel() {
+        if (resolution == null || resolution.isBlank()) return null;
+        String value = resolution.trim();
+        if (isFluxModel()) {
+            return switch (value.toUpperCase()) {
+                case "1K" -> "1 MP";
+                case "2K" -> "2 MP";
+                case "4K" -> "4 MP";
+                default -> value;
+            };
+        }
+        return value;
     }
 
     private String startPrediction(Map<String, Object> input) {
@@ -445,7 +487,7 @@ public class ReplicateNanoBananaSegmenter {
             // model's default aspect/resolution beats no mask at all.
             boolean hadOptional = input.containsKey("aspect_ratio") || input.containsKey("resolution");
             if (hadOptional && (e.getStatusCode().value() == 400 || e.getStatusCode().value() == 422)) {
-                log.warn("Nano Banana rejected optional inputs ({}), retrying without " +
+                log.warn("Mask model rejected optional inputs ({}), retrying without " +
                         "aspect_ratio/resolution: {}", e.getStatusCode(), e.getResponseBodyAsString());
                 Map<String, Object> slim = new java.util.HashMap<>(input);
                 slim.remove("aspect_ratio");
@@ -453,16 +495,16 @@ public class ReplicateNanoBananaSegmenter {
                 try {
                     return doStartPrediction(slim);
                 } catch (Exception retryError) {
-                    log.warn("Nano Banana retry without optional inputs also failed: {}",
+                    log.warn("Mask model retry without optional inputs also failed: {}",
                             retryError.getMessage());
                     return null;
                 }
             }
-            log.warn("Failed to start Nano Banana prediction: {} {}",
+            log.warn("Failed to start mask prediction: {} {}",
                     e.getStatusCode(), e.getResponseBodyAsString());
             return null;
         } catch (Exception e) {
-            log.warn("Failed to start Nano Banana prediction: {}", e.getMessage());
+            log.warn("Failed to start mask prediction: {}", e.getMessage());
             return null;
         }
     }
@@ -486,7 +528,7 @@ public class ReplicateNanoBananaSegmenter {
                 Map.class
         );
         String id = (String) response.getBody().get("id");
-        log.debug("Nano Banana prediction started: id={}", id);
+        log.debug("Mask prediction started: id={}", id);
         return id;
     }
 
@@ -506,7 +548,7 @@ public class ReplicateNanoBananaSegmenter {
             String status = (String) body.get("status");
             if ("succeeded".equals(status)) return body;
             if ("failed".equals(status) || "canceled".equals(status)) {
-                log.warn("Nano Banana prediction terminal status: {} error: {}",
+                log.warn("Mask prediction terminal status: {} error: {}",
                         status, body.get("error"));
                 return null;
             }
@@ -515,8 +557,9 @@ public class ReplicateNanoBananaSegmenter {
     }
 
     /**
-     * Nano Banana output on Replicate can be a single URL string, a list
-     * of URLs, or a dict — depends on the model variant. Handle all three.
+     * Model output on Replicate can be a single URL string (FLUX.2), a list
+     * of URLs (Nano Banana), or a dict — depends on the model. Handle all
+     * three.
      */
     @SuppressWarnings("unchecked")
     private String extractOutputUrl(Object output) {

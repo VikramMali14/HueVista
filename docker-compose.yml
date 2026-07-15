@@ -66,9 +66,10 @@ services:
       # Optional integrations — pass through if set in .env.
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-}
       REPLICATE_API_TOKEN: ${REPLICATE_API_TOKEN:-}
-      # Nano Banana (Gemini Image) auto wall-segmentation — opt-in, default off.
+      # Auto wall-segmentation mask model — opt-in, default off. Env var names
+      # kept from the Nano Banana era; FLUX.2 [max] is the default model now.
       REPLICATE_NANO_BANANA_ENABLED: ${REPLICATE_NANO_BANANA_ENABLED:-false}
-      REPLICATE_NANO_BANANA_MODEL: ${REPLICATE_NANO_BANANA_MODEL:-google/nano-banana-2}
+      REPLICATE_NANO_BANANA_MODEL: ${REPLICATE_NANO_BANANA_MODEL:-black-forest-labs/flux-2-max}
       # Image cleaner (declutter + refresh paint before masking) — opt-in, default off.
       # Defaults to Gemini 3 Pro Image (google/nano-banana-pro); ~$0.10 per clean on Replicate.
       REPLICATE_IMAGE_CLEANER_ENABLED: ${REPLICATE_IMAGE_CLEANER_ENABLED:-false}

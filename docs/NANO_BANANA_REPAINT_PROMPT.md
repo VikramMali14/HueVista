@@ -1,19 +1,22 @@
-# Nano Banana — repaint + segmentation colour scheme
+# Repaint + segmentation colour scheme
 
 How the house-exterior (and interior) auto-paint pipeline assigns colours, and
-where each colour is defined in code. Two separate Nano Banana / Gemini calls do
+where each colour is defined in code. Two separate image-editing model calls do
 two different jobs:
 
-| Step | Class | Job |
-| --- | --- | --- |
-| 1. Clean + repaint | `ImageCleanerService` | Removes clutter and **repaints the actual photo** into the reference palette → this is the canvas shown to the user and fed to step 2. |
-| 2. Colour-block edit | `ReplicateNanoBananaSegmenter` | **Edits the cleaned photo**, flooding each surface with a flat category colour (red/green/blue/black) in place. `MaskProcessor.splitColorCodedMask` then splits the result by colour into per-category recolourable regions. |
+| Step | Class | Model | Job |
+| --- | --- | --- | --- |
+| 1. Clean + repaint | `ImageCleanerService` | Nano Banana Pro (Gemini) | Removes clutter and **repaints the actual photo** into the reference palette → this is the canvas shown to the user and fed to step 2. |
+| 2. Colour-block edit | `ReplicateMaskSegmenter` | FLUX.2 [max] (default) | **Edits the cleaned photo**, flooding each surface with a flat category colour (red/green/blue/black) in place. `MaskProcessor.splitColorCodedMask` then splits the result by colour into per-category recolourable regions. |
 
 Step 2 is deliberately framed as an **edit of the real photo**, not an abstract
 "generate a segmentation mask" task. Painting flat colour *onto* the existing
 surfaces tracks their true edges far better than drawing a mask from scratch
-(Nano Banana warns "pixel alignment isn't guaranteed" for generation), so the
-derived masks line up with the canvas. The fill is forced **flat and
+(image-editing models don't guarantee pixel alignment when generating), so the
+derived masks line up with the canvas. The mask model is configurable
+(`REPLICATE_NANO_BANANA_MODEL` — env var name kept for compatibility) and
+requests `aspect_ratio: match_input_image`, so the colour-block image comes
+back at the photo's own aspect ratio. The fill is forced **flat and
 fully-saturated with the photo's own shadows ignored**, so colour-thresholding
 in `splitColorCodedMask` stays clean instead of losing shaded pixels.
 
