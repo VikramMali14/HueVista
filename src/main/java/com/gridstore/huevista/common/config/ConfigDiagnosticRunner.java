@@ -60,6 +60,26 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
     @Value("${replicate.sam2.model-version:NOT SET}")
     private String sam2Version;
 
+    // Auto mask generation (ReplicateMaskSegmenter). The model line is the
+    // fastest way to confirm which model will actually run — a deployment
+    // env var (REPLICATE_NANO_BANANA_MODEL) silently overrides the
+    // application.properties default, and this prints the resolved winner.
+    @Value("${replicate.nano-banana.enabled:false}")
+    private String maskSegmenterEnabled;
+
+    @Value("${replicate.nano-banana.model:NOT SET}")
+    private String maskSegmenterModel;
+
+    @Value("${replicate.nano-banana.resolution:NOT SET}")
+    private String maskSegmenterResolution;
+
+    // Image cleaner (pre-mask declutter + repaint)
+    @Value("${replicate.image-cleaner.enabled:false}")
+    private String imageCleanerEnabled;
+
+    @Value("${replicate.image-cleaner.model:NOT SET}")
+    private String imageCleanerModel;
+
     // --- Storage ---
     @Value("${app.upload.storage-path:NOT SET}")
     private String localStoragePath;
@@ -107,6 +127,12 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
             "\n── REPLICATE / SAM 2 ────────────────────────────────────────\n" +
             "  API Token    : {}\n" +
             "  SAM2 Version : {}\n" +
+            "\n── AUTO SEGMENTATION (mask + cleaner) ───────────────────────\n" +
+            "  Mask Enabled    : {}\n" +
+            "  Mask Model      : {}\n" +
+            "  Mask Resolution : {}\n" +
+            "  Cleaner Enabled : {}\n" +
+            "  Cleaner Model   : {}\n" +
             "\n── GOOGLE OAUTH2 ─────────────────────────────────────────────\n" +
             "  Client ID    : {}\n" +
             "  Secret       : {}\n" +
@@ -128,6 +154,9 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
             localStoragePath,
             // Replicate
             mask(replicateToken), sam2Version,
+            // Auto segmentation — plain values, nothing secret here
+            maskSegmenterEnabled, maskSegmenterModel, maskSegmenterResolution,
+            imageCleanerEnabled, imageCleanerModel,
             // Google
             mask(googleClientId), isSet(googleClientSecret),
             // App
