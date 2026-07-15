@@ -32,7 +32,7 @@ import java.util.Optional;
  *
  * Configuration:
  *   replicate.nano-banana.enabled       — kill switch (default false)
- *   replicate.nano-banana.model         — owner/name (default google/nano-banana-2)
+ *   replicate.nano-banana.model         — owner/name (default google/nano-banana-pro)
  *   replicate.nano-banana.model-version — pin a version hash for production
  *
  * Cost: ~$0.03-0.10 per mask depending on which Nano Banana variant.
@@ -49,7 +49,7 @@ public class ReplicateNanoBananaSegmenter {
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
 
-    @Value("${replicate.nano-banana.model:google/nano-banana-2}")
+    @Value("${replicate.nano-banana.model:google/nano-banana-pro}")
     private String model;
 
     @Value("${replicate.nano-banana.model-version:}")
