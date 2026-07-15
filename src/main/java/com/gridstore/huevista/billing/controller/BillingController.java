@@ -1,9 +1,11 @@
 package com.gridstore.huevista.billing.controller;
 
 import com.gridstore.huevista.billing.dto.CreateSubscriptionRequest;
+import com.gridstore.huevista.billing.dto.PdfAllowanceResponse;
 import com.gridstore.huevista.billing.dto.SubscriptionResponse;
 import com.gridstore.huevista.billing.dto.VerifySubscriptionRequest;
 import com.gridstore.huevista.billing.service.BillingService;
+import com.gridstore.huevista.billing.service.PdfQuotaService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -24,6 +26,7 @@ import java.util.Map;
 public class BillingController {
 
     private final BillingService billingService;
+    private final PdfQuotaService pdfQuotaService;
 
     @Operation(summary = "Create subscription",
             description = "Creates a Razorpay subscription and returns a payment URL for checkout.")
@@ -67,7 +70,7 @@ public class BillingController {
         return ResponseEntity.ok(billingService.cancelSubscription(userDetails.getUsername()));
     }
 
-    @Operation(summary = "Get available plans", description = "Returns all plan options with pricing and AI generation limits.")
+    @Operation(summary = "Get available plans", description = "Returns all plan options with pricing, AI generation and PDF limits.")
     @GetMapping("/plans")
     public ResponseEntity<List<Map<String, Object>>> getPlans() {
         var plans = List.of(
@@ -77,8 +80,28 @@ public class BillingController {
             "displayName", p.getDisplayName(),
             "priceInPaise", p.getPriceInPaise(),
             "priceInRupees", p.priceInRupees(),
-            "monthlyAiLimit", p.getMonthlyAiLimit() == Integer.MAX_VALUE ? "unlimited" : p.getMonthlyAiLimit()
+            "monthlyAiLimit", p.getMonthlyAiLimit() == Integer.MAX_VALUE ? "unlimited" : p.getMonthlyAiLimit(),
+            "pdfImageLimit", p.getPdfImageLimit(),
+            "monthlyPdfLimit", p.getMonthlyPdfLimit() == Integer.MAX_VALUE ? "unlimited" : p.getMonthlyPdfLimit()
         )).toList();
         return ResponseEntity.ok(plans);
+    }
+
+    @Operation(summary = "Get my colour-board PDF allowance",
+            description = "Images-per-PDF and monthly download quota, resolved against whichever plan pays "
+                    + "for the caller (a retailer's own; the issuing shop's for customers).")
+    @GetMapping("/pdf-allowance")
+    public ResponseEntity<PdfAllowanceResponse> getPdfAllowance(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.ok(pdfQuotaService.allowanceForUser(userDetails.getUsername()));
+    }
+
+    @Operation(summary = "Charge one colour-board PDF download",
+            description = "Atomically reserves one PDF download against the caller's allowance and returns "
+                    + "the remaining quota. 402 when the monthly limit is spent.")
+    @PostMapping("/pdf-downloads")
+    public ResponseEntity<PdfAllowanceResponse> chargePdfDownload(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.ok(pdfQuotaService.reserveForUser(userDetails.getUsername()));
     }
 }

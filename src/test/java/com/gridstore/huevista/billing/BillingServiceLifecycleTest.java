@@ -45,9 +45,11 @@ class BillingServiceLifecycleTest {
     private final UserRepository users = mock(UserRepository.class);
     private final RazorpayClient razorpay = mock(RazorpayClient.class);
     private final AuditService audit = mock(AuditService.class);
+    private final com.gridstore.huevista.billing.service.BillingEmailService emails =
+            mock(com.gridstore.huevista.billing.service.BillingEmailService.class);
 
     private BillingService service() {
-        BillingService svc = new BillingService(subs, users, razorpay, audit);
+        BillingService svc = new BillingService(subs, users, razorpay, audit, emails);
         ReflectionTestUtils.setField(svc, "keyId", "rzp_key");
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
         ReflectionTestUtils.setField(svc, "planIdStarter", "plan_starter");

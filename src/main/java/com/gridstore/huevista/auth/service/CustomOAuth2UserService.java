@@ -76,6 +76,10 @@ public class CustomOAuth2UserService extends DefaultOAuth2UserService {
                 .provider(AuthProvider.GOOGLE)
                 .providerId(providerId)
                 .emailVerified(true)
+                // Public signup ALWAYS creates a CUSTOMER (same rule as AuthService.register);
+                // without this the entity's RETAILER field default silently made every
+                // Google signup a shop account. Retailers are provisioned by an admin.
+                .role(com.gridstore.huevista.auth.model.UserRole.CUSTOMER)
                 .build();
         return userRepository.save(user);
     }

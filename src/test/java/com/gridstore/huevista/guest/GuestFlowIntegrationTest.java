@@ -256,7 +256,8 @@ class GuestFlowIntegrationTest {
         // A signed-in user redeems the code onto their account…
         userRepository.save(User.builder().name("Acct").email("acct@example.com")
                 .password(passwordEncoder.encode("password123"))
-                .provider(AuthProvider.LOCAL).emailVerified(true).build());
+                .provider(AuthProvider.LOCAL).emailVerified(true)
+                .role(com.gridstore.huevista.auth.model.UserRole.CUSTOMER).build());
         String userToken = login("acct@example.com", "password123");
         mockMvc.perform(post("/api/access-codes/redeem")
                         .header("Authorization", "Bearer " + userToken)

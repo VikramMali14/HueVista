@@ -26,6 +26,10 @@ public class SubscriptionResponse {
     private int aiGenerationsUsed;
     private int aiGenerationsLimit;
     private int aiGenerationsRemaining;
+    private int pdfDownloadsUsed;
+    private int pdfDownloadsLimit;
+    private int pdfDownloadsRemaining;
+    private int pdfImageLimit;
     private boolean cancelAtPeriodEnd;
     private boolean trial;
     private LocalDateTime createdAt;
@@ -42,6 +46,9 @@ public class SubscriptionResponse {
         int remaining = sub.getAiGenerationsLimit() == Integer.MAX_VALUE
                 ? Integer.MAX_VALUE
                 : Math.max(0, sub.getAiGenerationsLimit() - sub.getAiGenerationsUsed());
+        int pdfRemaining = sub.getPdfDownloadsLimit() == Integer.MAX_VALUE
+                ? Integer.MAX_VALUE
+                : Math.max(0, sub.getPdfDownloadsLimit() - sub.getPdfDownloadsUsed());
 
         return SubscriptionResponse.builder()
                 .id(sub.getId())
@@ -56,6 +63,10 @@ public class SubscriptionResponse {
                 .aiGenerationsUsed(sub.getAiGenerationsUsed())
                 .aiGenerationsLimit(sub.getAiGenerationsLimit())
                 .aiGenerationsRemaining(remaining)
+                .pdfDownloadsUsed(sub.getPdfDownloadsUsed())
+                .pdfDownloadsLimit(sub.getPdfDownloadsLimit())
+                .pdfDownloadsRemaining(pdfRemaining)
+                .pdfImageLimit(sub.getPdfImageLimit())
                 .cancelAtPeriodEnd(sub.isCancelAtPeriodEnd())
                 .trial(sub.isTrial())
                 .createdAt(sub.getCreatedAt())

@@ -53,7 +53,8 @@ class ProjectCreditServiceTest {
     private static ProjectCreditService service(RazorpayClient razorpay,
                                                 CustomerEntitlementService entitlements,
                                                 ProjectCreditPaymentRepository payments) {
-        ProjectCreditService svc = new ProjectCreditService(razorpay, entitlements, payments);
+        ProjectCreditService svc = new ProjectCreditService(razorpay, entitlements, payments,
+                mock(com.gridstore.huevista.billing.service.BillingEmailService.class));
         ReflectionTestUtils.setField(svc, "amountPaise", AMOUNT_PAISE);
         return svc;
     }

@@ -49,6 +49,21 @@ public class Subscription {
     @Column(nullable = false)
     private int aiGenerationsLimit;
 
+    /** Colour-board PDF downloads this billing cycle — reset on renewal like AI usage. */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int pdfDownloadsUsed = 0;
+
+    /** Downloads allowed per cycle (scaled by billed quantity; MAX_VALUE = unlimited). */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int pdfDownloadsLimit = 0;
+
+    /** Most coloured snapshots one PDF board may contain (per-document, not scaled). */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int pdfImageLimit = 0;
+
     @Builder.Default
     private boolean cancelAtPeriodEnd = false;
 
