@@ -13,10 +13,18 @@ import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.StorageService;
 import com.gridstore.huevista.project.dto.CreateProjectRequest;
+import com.gridstore.huevista.project.model.Region;
+import com.gridstore.huevista.project.model.RegionCategory;
 import com.gridstore.huevista.project.repository.ProjectRepository;
+import com.gridstore.huevista.project.repository.RegionRepository;
 import com.razorpay.RazorpayClient;
 
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.time.LocalDateTime;
+import java.util.Base64;
+import java.util.Map;
+import javax.imageio.ImageIO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,6 +58,7 @@ class ProjectFlowIntegrationTest {
     @Autowired ImageRepository imageRepository;
     @Autowired StorageService storageService;
     @Autowired ProjectRepository projectRepository;
+    @Autowired RegionRepository regionRepository;
     @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired PasswordEncoder passwordEncoder;
 
@@ -275,5 +284,107 @@ class ProjectFlowIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.IMAGE_PNG))
                 .andExpect(content().bytes(bytes));
+    }
+
+    // ── Refining an AI mask after segmentation ──
+
+    @Test
+    void user_can_replace_an_ai_detected_regions_mask() throws Exception {
+        String projectId = createProject();
+
+        // Seed an AI-detected region (manual = false) with an initial stored mask,
+        // as segmentation would leave it.
+        byte[] originalMask = onePixelPng(0xFFFFFFFF);
+        String originalKey = storageService.store(originalMask, userId, "main_wall.png", "image/png");
+        Region region = regionRepository.save(Region.builder()
+                .project(projectRepository.getReferenceById(projectId))
+                .label("Main wall")
+                .category(RegionCategory.MAIN_WALL)
+                .maskUrl(originalKey)
+                .maskData(originalKey)
+                .displayOrder(0)
+                .manual(false)
+                .build());
+
+        // Refine it: the user sends a corrected mask for the SAME region.
+        byte[] refinedMask = onePixelPng(0xFF000000);
+        String body = objectMapper.writeValueAsString(Map.of(
+                "maskBase64", "data:image/png;base64," + Base64.getEncoder().encodeToString(refinedMask)));
+
+        mockMvc.perform(put("/api/projects/{id}/regions/{rid}/mask", projectId, region.getId())
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(region.getId()))
+                // Category and label are untouched — only the mask changed.
+                .andExpect(jsonPath("$.category").value("MAIN_WALL"))
+                .andExpect(jsonPath("$.label").value("Main wall"));
+
+        // The region now points at a NEW mask carrying the refined bytes, and it is
+        // still an AI region (not flipped to hand-drawn), so segmentation semantics hold.
+        Region updated = regionRepository.findById(region.getId()).orElseThrow();
+        assertThat(updated.getMaskUrl()).isNotEqualTo(originalKey);
+        assertThat(updated.isManual()).isFalse();
+        assertThat(storageService.load(updated.getMaskUrl())).isEqualTo(refinedMask);
+    }
+
+    @Test
+    void replacing_the_mask_of_a_missing_region_is_404() throws Exception {
+        String projectId = createProject();
+        String body = objectMapper.writeValueAsString(Map.of(
+                "maskBase64", "data:image/png;base64," + Base64.getEncoder().encodeToString(onePixelPng(0xFFFFFFFF))));
+
+        mockMvc.perform(put("/api/projects/{id}/regions/{rid}/mask", projectId, 999_999)
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void replacing_a_region_mask_with_a_non_png_is_rejected() throws Exception {
+        String projectId = createProject();
+        Region region = regionRepository.save(Region.builder()
+                .project(projectRepository.getReferenceById(projectId))
+                .label("Trim")
+                .category(RegionCategory.TRIM)
+                .displayOrder(0)
+                .manual(false)
+                .build());
+
+        String body = objectMapper.writeValueAsString(Map.of(
+                "maskBase64", Base64.getEncoder().encodeToString("not a png".getBytes())));
+
+        mockMvc.perform(put("/api/projects/{id}/regions/{rid}/mask", projectId, region.getId())
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+    }
+
+    // ── helpers ──
+
+    private String createProject() throws Exception {
+        CreateProjectRequest req = new CreateProjectRequest();
+        req.setImageId(imageId);
+        req.setName("Room");
+        MvcResult result = mockMvc.perform(post("/api/projects")
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asText();
+    }
+
+    /** A valid 1×1 PNG of the given ARGB colour — written by ImageIO so it always
+     *  decodes back (a hand-crafted base64 blob risks silently failing the decode). */
+    private static byte[] onePixelPng(int argb) throws Exception {
+        BufferedImage img = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
+        img.setRGB(0, 0, argb);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ImageIO.write(img, "png", out);
+        return out.toByteArray();
     }
 }

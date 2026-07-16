@@ -370,6 +370,20 @@ public class ProjectService {
         return persistCustomMask(userId, projectId, request);
     }
 
+    /**
+     * Replaces an EXISTING region's mask with a hand-refined one. Unlike delete,
+     * this is allowed for AI-detected regions too: it's how the user fixes a mask
+     * the AI got wrong (half a pillar, an edge that overshoots) after
+     * segmentation, without spending an AI call or creating a duplicate region.
+     * Only the mask bytes change — the region's category, label and applied
+     * colour are untouched.
+     */
+    @Transactional
+    public RegionResponse updateRegionMask(String userId, String projectId, Long regionId, CustomMaskRequest request) {
+        findOwned(userId, projectId);
+        return replaceRegionMask(userId, projectId, regionId, request);
+    }
+
     /** Delete a hand-drawn wall. Only {@code manual} regions may be removed —
      *  AI-detected surfaces are protected (400). Best-effort cleanup of the
      *  stored mask; the row delete is what matters. */
@@ -438,6 +452,56 @@ public class ProjectService {
 
         log.info("Custom mask region saved: project={} region={} category={}",
                 projectId, region.getId(), category);
+        RegionResponse response = RegionResponse.from(region);
+        refreshMaskUrls(response);
+        return response;
+    }
+
+    /** Shared body for replacing an existing region's mask (signed-in and guest).
+     *  Validates + stores the new PNG, repoints the region at it, and best-effort
+     *  deletes the old stored mask. Works for any region the caller owns —
+     *  AI-detected or hand-drawn — since refining an AI mask is the whole point. */
+    private RegionResponse replaceRegionMask(String storageScope, String projectId, Long regionId, CustomMaskRequest request) {
+        Region region = regionRepository.findByIdAndProjectId(regionId, projectId)
+                .orElseThrow(() -> new ResourceNotFoundException("Region not found: " + regionId));
+
+        byte[] png = decodeMask(request.getMaskBase64());
+        try {
+            BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(png));
+            if (decoded == null) {
+                throw new IllegalArgumentException("Mask is not a valid image.");
+            }
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Mask is not a valid image.");
+        }
+
+        String oldMask = region.getMaskUrl();
+        String key;
+        try {
+            key = storageService.store(
+                    png, storageScope, region.getCategory().name().toLowerCase() + "-edited.png", "image/png");
+        } catch (IOException e) {
+            throw new StorageException("Failed to store edited mask", e);
+        }
+
+        // Repoint at the fresh key (stored as a KEY, presigned per read — see resolveMaskUrl).
+        region.setMaskUrl(key);
+        region.setMaskData(key);
+        regionRepository.save(region);
+
+        // Best-effort cleanup of the mask we just replaced (skip foreign URLs and
+        // the new key). A failure here is harmless — the row already points at the
+        // new mask.
+        if (oldMask != null && !oldMask.isBlank() && !oldMask.equals(key)) {
+            try {
+                storageService.delete(extractStorageKey(oldMask));
+            } catch (RuntimeException e) {
+                log.warn("Could not delete old mask for region {}: {}", regionId, e.getMessage());
+            }
+        }
+
+        log.info("Region mask replaced: project={} region={} category={}",
+                projectId, regionId, region.getCategory());
         RegionResponse response = RegionResponse.from(region);
         refreshMaskUrls(response);
         return response;
@@ -516,6 +580,12 @@ public class ProjectService {
     public RegionResponse createGuestCustomMaskRegion(String accessCodeId, String projectId, CustomMaskRequest request) {
         findGuestOwned(accessCodeId, projectId);
         return persistCustomMask(accessCodeId, projectId, request);
+    }
+
+    @Transactional
+    public RegionResponse updateGuestRegionMask(String accessCodeId, String projectId, Long regionId, CustomMaskRequest request) {
+        findGuestOwned(accessCodeId, projectId);
+        return replaceRegionMask(accessCodeId, projectId, regionId, request);
     }
 
     @Transactional

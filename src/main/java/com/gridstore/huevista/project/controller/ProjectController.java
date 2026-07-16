@@ -185,6 +185,31 @@ public class ProjectController {
     }
 
     @Operation(
+            summary = "Replace a region's mask with a hand-refined one",
+            description = """
+                    Overwrites an existing region's mask with one the user refined in
+                    the browser. Works for AI-detected regions too — this is how a mask
+                    the AI got wrong (half a pillar, an overshooting edge) is fixed after
+                    segmentation. No AI / Replicate call; only the mask changes, the
+                    region's category, label and applied colour are kept.
+                    """
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Region mask replaced"),
+            @ApiResponse(responseCode = "400", description = "Mask is missing or not a valid image"),
+            @ApiResponse(responseCode = "404", description = "Project or region not found / not owned")
+    })
+    @PutMapping("/{id}/regions/{regionId}/mask")
+    public ResponseEntity<RegionResponse> updateRegionMask(
+            @PathVariable String id,
+            @PathVariable Long regionId,
+            @Valid @RequestBody CustomMaskRequest request,
+            Authentication auth
+    ) {
+        return ResponseEntity.ok(projectService.updateRegionMask(userId(auth), id, regionId, request));
+    }
+
+    @Operation(
             summary = "Delete a hand-drawn wall",
             description = """
                     Removes a region the user created by hand (manual = true). AI-detected
