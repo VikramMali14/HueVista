@@ -420,7 +420,7 @@ final class MaskProcessor {
         return encodeBinaryPng(cleaned, width, height);
     }
 
-    private static boolean[] thresholdToBinary(BufferedImage img, int w, int h) {
+    static boolean[] thresholdToBinary(BufferedImage img, int w, int h) {
         boolean[] bin = new boolean[w * h];
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
@@ -480,7 +480,7 @@ final class MaskProcessor {
         return out;
     }
 
-    private static byte[] encodeBinaryPng(boolean[] bin, int w, int h) throws IOException {
+    static byte[] encodeBinaryPng(boolean[] bin, int w, int h) throws IOException {
         BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
         byte[] data = ((DataBufferByte) out.getRaster().getDataBuffer()).getData();
         for (int i = 0; i < bin.length; i++) {
