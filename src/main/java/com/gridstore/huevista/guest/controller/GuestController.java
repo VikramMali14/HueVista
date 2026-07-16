@@ -89,6 +89,18 @@ public class GuestController {
                 .body(projectService.createGuestCustomMaskRegion(accessCodeId(auth), id, request));
     }
 
+    @Operation(summary = "Replace a region's mask with a hand-refined one (guest)",
+            description = "Overwrites an existing region's mask — including an AI-detected one — "
+                    + "with a version the guest refined by hand. No AI call; only the mask changes.")
+    @PutMapping("/projects/{id}/regions/{regionId}/mask")
+    public ResponseEntity<RegionResponse> updateRegionMask(
+            @PathVariable String id,
+            @PathVariable Long regionId,
+            @Valid @RequestBody CustomMaskRequest request,
+            Authentication auth) {
+        return ResponseEntity.ok(projectService.updateGuestRegionMask(accessCodeId(auth), id, regionId, request));
+    }
+
     @Operation(summary = "Apply colours to regions (guest)")
     @PutMapping("/projects/{id}/regions")
     public ResponseEntity<Void> recolor(
