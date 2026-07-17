@@ -513,11 +513,32 @@ final class MaskProcessor {
      * therefore adopted as the accent mask instead of being thrown away. A
      * genuine green accent always wins; the white bucket is only the fallback.
      *
+     * <p>Before adoption the white bucket is run through
+     * {@link #filterWhiteSalvage}: an accent wall is ONE surface, but the
+     * bucket is a colour threshold over the whole frame and also catches
+     * clouds, an overcast sky, bright vehicles and reflections. Only the
+     * largest connected blob survives, and (when {@code skyFilter} is set —
+     * exterior scenes) blobs touching the very top of the frame are rejected
+     * outright, so an off-spec washed-out sky can never become the paintable
+     * "accent wall".
+     *
      * Returns a map keyed by "main", "accent", "trim". Categories with fewer
      * than {@code minPixels} foreground pixels are omitted from the map so
      * callers can skip saving empty regions.
      */
     static java.util.Map<String, byte[]> splitColorCodedMask(byte[] colorMaskBytes, int minPixels)
+            throws IOException {
+        return splitColorCodedMask(colorMaskBytes, minPixels, true);
+    }
+
+    /**
+     * @param skyFilter when true (exterior/unknown scenes), white-salvage blobs
+     *                  touching the top edge of the frame are rejected as sky;
+     *                  interiors pass false — a full-bleed wall in a photo
+     *                  cropped above the ceiling legitimately touches the top.
+     */
+    static java.util.Map<String, byte[]> splitColorCodedMask(byte[] colorMaskBytes, int minPixels,
+                                                             boolean skyFilter)
             throws IOException {
         BufferedImage img = decode(colorMaskBytes);
         int w = img.getWidth();
@@ -570,16 +591,83 @@ final class MaskProcessor {
         }
 
         // Prefer the green accent; adopt the white bucket only when green is
-        // missing or too small to be a real wall.
+        // missing or too small to be a real wall — and even then only its
+        // single plausible-wall blob (largest component, sky rejected).
         if (accentCount < minPixels && whiteCount >= minPixels) {
-            accentBin = whiteBin;
-            accentCount = whiteCount;
+            boolean[] salvaged = filterWhiteSalvage(whiteBin, w, h, skyFilter);
+            int salvagedCount = 0;
+            for (boolean b : salvaged) if (b) salvagedCount++;
+            if (salvagedCount >= minPixels) {
+                accentBin = salvaged;
+                accentCount = salvagedCount;
+            }
         }
 
         java.util.Map<String, byte[]> out = new java.util.HashMap<>();
         if (mainCount >= minPixels) out.put("main", encodeBinaryPng(mainBin, w, h));
         if (trimCount >= minPixels) out.put("trim", encodeBinaryPng(trimBin, w, h));
         if (accentCount >= minPixels) out.put("accent", encodeBinaryPng(accentBin, w, h));
+        return out;
+    }
+
+    /**
+     * Reduces a white-salvage bucket to the one blob that can plausibly be THE
+     * accent wall. Keeps only the largest 8-connected component; when
+     * {@code excludeTopTouching} is set, components reaching the top edge band
+     * of the frame (sky always does on an exterior photo — a wall below the
+     * roofline never does) are discarded before choosing. Returns an all-false
+     * array when nothing qualifies — the caller then simply skips the salvage,
+     * which beats shipping a paintable "accent wall" that is actually the sky.
+     */
+    static boolean[] filterWhiteSalvage(boolean[] bin, int w, int h, boolean excludeTopTouching) {
+        int topBand = Math.max(1, h / 100);
+        int[] labels = new int[w * h];
+        int bestLabel = 0;
+        int bestArea = 0;
+        int nextLabel = 1;
+
+        int[] dx = {-1, 0, 1, -1, 1, -1, 0, 1};
+        int[] dy = {-1, -1, -1, 0, 0, 1, 1, 1};
+        Deque<int[]> queue = new ArrayDeque<>();
+
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int idx = y * w + x;
+                if (!bin[idx] || labels[idx] != 0) continue;
+
+                int label = nextLabel++;
+                int area = 0;
+                boolean touchesTop = false;
+                labels[idx] = label;
+                queue.add(new int[]{x, y});
+                while (!queue.isEmpty()) {
+                    int[] p = queue.poll();
+                    area++;
+                    if (p[1] < topBand) touchesTop = true;
+                    for (int d = 0; d < 8; d++) {
+                        int nx = p[0] + dx[d];
+                        int ny = p[1] + dy[d];
+                        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                        int nIdx = ny * w + nx;
+                        if (bin[nIdx] && labels[nIdx] == 0) {
+                            labels[nIdx] = label;
+                            queue.add(new int[]{nx, ny});
+                        }
+                    }
+                }
+
+                if (excludeTopTouching && touchesTop) continue;
+                if (area > bestArea) {
+                    bestArea = area;
+                    bestLabel = label;
+                }
+            }
+        }
+
+        boolean[] out = new boolean[w * h];
+        if (bestLabel != 0) {
+            for (int i = 0; i < out.length; i++) out[i] = labels[i] == bestLabel;
+        }
         return out;
     }
 

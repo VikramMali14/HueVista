@@ -20,13 +20,17 @@ class MaskProcessorTest {
 
     private static final int BAND = 10;          // px per colour band
     private static final int HEIGHT = 8;
-    private static final int MIN_PIXELS = 20;    // each band has BAND*HEIGHT = 80 px
+    /** Black rows above the bands: the white-salvage sky filter rejects blobs
+     *  touching the top of the frame, so band content starts below it. */
+    private static final int TOP_MARGIN = 2;
+    private static final int MIN_PIXELS = 20;    // each band has BAND*(HEIGHT-TOP_MARGIN) = 60 px
 
-    /** Builds a horizontal strip of solid-colour bands, one per supplied colour. */
+    /** Builds a horizontal strip of solid-colour bands (below a black top
+     *  margin), one per supplied colour. */
     private static byte[] strip(Color... bands) throws Exception {
         BufferedImage img = new BufferedImage(BAND * bands.length, HEIGHT, BufferedImage.TYPE_INT_RGB);
         for (int i = 0; i < bands.length; i++) {
-            for (int y = 0; y < HEIGHT; y++) {
+            for (int y = TOP_MARGIN; y < HEIGHT; y++) {
                 for (int x = 0; x < BAND; x++) {
                     img.setRGB(i * BAND + x, y, bands[i].getRGB());
                 }
@@ -95,6 +99,86 @@ class MaskProcessorTest {
         Map<String, byte[]> parts = MaskProcessor.splitColorCodedMask(coded, MIN_PIXELS);
         assertThat(parts).containsKey("accent");
         assertThat(bandIsForeground(parts.get("accent"), 1)).isTrue();
+    }
+
+    // ---------------------------------------------------------------------
+    // white-salvage filtering (largest blob only, sky rejected)
+    // ---------------------------------------------------------------------
+
+    /** Blank (black) canvas the salvage tests paint rectangles onto. */
+    private static BufferedImage blank(int w, int h) {
+        return new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+    }
+
+    private static void fill(BufferedImage img, Color c, int x0, int y0, int w, int h) {
+        for (int y = y0; y < y0 + h; y++) {
+            for (int x = x0; x < x0 + w; x++) {
+                img.setRGB(x, y, c.getRGB());
+            }
+        }
+    }
+
+    private static byte[] png(BufferedImage img) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ImageIO.write(img, "png", out);
+        return out.toByteArray();
+    }
+
+    @Test
+    void whiteSalvageRejectsSkyAndAdoptsTheWallBlob() throws Exception {
+        // Off-spec output: the model left BOTH the overcast sky and the accent
+        // volume white. The sky strip touches the top of the frame (and is the
+        // larger blob); the wall blob sits lower. Salvage must adopt the wall,
+        // never the sky — otherwise the user gets a paintable "accent wall"
+        // that recolours the sky.
+        BufferedImage img = blank(100, 50);
+        fill(img, Color.WHITE, 0, 0, 100, 10);    // sky: full width, touches top
+        fill(img, Color.RED, 0, 20, 50, 30);      // main wall
+        fill(img, Color.WHITE, 60, 25, 30, 20);   // accent volume left white
+        Map<String, byte[]> parts = MaskProcessor.splitColorCodedMask(png(img), MIN_PIXELS);
+
+        assertThat(parts).containsKey("accent");
+        assertThat(whiteAt(parts.get("accent"), 75, 35)).isTrue();   // wall blob
+        assertThat(whiteAt(parts.get("accent"), 50, 5)).isFalse();   // sky excluded
+    }
+
+    @Test
+    void whiteSalvageOmitsAccentWhenSkyIsTheOnlyCandidate() throws Exception {
+        BufferedImage img = blank(100, 50);
+        fill(img, Color.WHITE, 0, 0, 100, 10);    // only white blob = sky
+        fill(img, Color.RED, 0, 20, 100, 30);
+        Map<String, byte[]> parts = MaskProcessor.splitColorCodedMask(png(img), MIN_PIXELS);
+
+        assertThat(parts).containsOnlyKeys("main");
+    }
+
+    @Test
+    void whiteSalvageKeepsOnlyTheLargestBlob() throws Exception {
+        // An accent wall is ONE surface: scattered white noise (clouds, a
+        // bright car, reflections) must not be unioned into the salvage.
+        BufferedImage img = blank(100, 50);
+        fill(img, Color.RED, 0, 20, 40, 30);
+        fill(img, Color.WHITE, 50, 20, 30, 25);   // the wall (750 px)
+        fill(img, Color.WHITE, 88, 40, 6, 6);     // noise blob (36 px ≥ MIN_PIXELS)
+        Map<String, byte[]> parts = MaskProcessor.splitColorCodedMask(png(img), MIN_PIXELS);
+
+        assertThat(parts).containsKey("accent");
+        assertThat(whiteAt(parts.get("accent"), 65, 30)).isTrue();   // wall kept
+        assertThat(whiteAt(parts.get("accent"), 91, 43)).isFalse();  // noise dropped
+    }
+
+    @Test
+    void interiorWhiteSalvageKeepsAWallTouchingTheTop() throws Exception {
+        // Indoors there is no sky, and a photo cropped above the ceiling can
+        // legitimately show a wall reaching the top edge — the sky filter is
+        // off (skyFilter=false) so that wall is still salvaged.
+        BufferedImage img = blank(100, 50);
+        fill(img, Color.WHITE, 10, 0, 30, 30);    // wall touching the top
+        fill(img, Color.RED, 50, 10, 50, 40);
+        Map<String, byte[]> parts = MaskProcessor.splitColorCodedMask(png(img), MIN_PIXELS, false);
+
+        assertThat(parts).containsKey("accent");
+        assertThat(whiteAt(parts.get("accent"), 25, 15)).isTrue();
     }
 
     @Test

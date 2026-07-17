@@ -216,36 +216,30 @@ public class SegmentationService {
      * colour gate against the cleaned canvas, see {@link #postProcessMask})
      * and persist each non-empty one as a Region row.
      *
+     * <p>Generative segmentation occasionally produces a dud (no red main
+     * wall at all, an off-palette image the split can't use). One dud used
+     * to fail the whole project; now the model round-trip is retried up to
+     * {@code huevista.segmentation.auto-mask-attempts} times (fresh
+     * generation each time — the models are non-deterministic, so a second
+     * roll usually lands). Nothing is persisted until an attempt yields a
+     * usable MAIN wall, so a failed attempt can never leave orphan
+     * accent/trim rows behind on a FAILED project.
+     *
      * Pixel size thresholds (5000 px for walls, 2000 px for trim) filter
      * categories the model barely produced — usually a sign the model
      * couldn't find that surface in the photo (e.g. no distinct accent
      * wall). We skip saving them rather than persisting a tiny noise mask.
      */
-    private boolean tryColorCodedSegmentation(String projectId, String userId,
-                                              String imageUrl, ImageType scene,
-                                              byte[] cleanedBytes,
-                                              int imageWidth, int imageHeight) {
+    boolean tryColorCodedSegmentation(String projectId, String userId,
+                                      String imageUrl, ImageType scene,
+                                      byte[] cleanedBytes,
+                                      int imageWidth, int imageHeight) {
         try {
             if (!maskSegmenter.isConfigured()) {
                 log.warn("Mask segmenter not configured — set " +
                         "REPLICATE_NANO_BANANA_ENABLED=true");
                 return false;
             }
-
-            Optional<byte[]> colorRaw = maskSegmenter.generateColorCodedMask(imageUrl, scene);
-            if (colorRaw.isEmpty()) {
-                log.info("Mask segmenter returned no color-coded mask for project {}", projectId);
-                return false;
-            }
-
-            Map<String, byte[]> parts;
-            try {
-                parts = MaskProcessor.splitColorCodedMask(colorRaw.get(), 2000);
-            } catch (Exception e) {
-                log.warn("splitColorCodedMask failed for project {}: {}", projectId, e.getMessage());
-                return false;
-            }
-            log.info("Mask split [project={}]: {}", projectId, parts.keySet());
 
             // Masks are stored at the CANVAS's aspect and resolution (capped at
             // MAX_MASK_DIM), not at whatever size the model generated — the
@@ -262,38 +256,40 @@ public class SegmentationService {
                 targetW = Math.max(1, (int) Math.round(imageWidth * scale));
                 targetH = Math.max(1, (int) Math.round(imageHeight * scale));
             }
-            logAspectDriftIfAny(colorRaw.get(), targetW, targetH, projectId);
+
+            int attempts = Math.max(1, autoMaskAttempts);
+            ProcessedMasks masks = null;
+            for (int attempt = 1; attempt <= attempts && masks == null; attempt++) {
+                if (attempt > 1) {
+                    log.info("Auto-mask retry {}/{} for project {} — previous generation " +
+                            "produced no usable main wall", attempt, attempts, projectId);
+                }
+                masks = generateAndProcessMasks(projectId, imageUrl, scene,
+                        canvasSmall, targetW, targetH);
+            }
+            if (masks == null) {
+                log.info("Mask model didn't produce a usable main wall for project {} " +
+                        "after {} attempt(s)", projectId, attempts);
+                return false;
+            }
 
             int saved = 0;
             int displayOrder = 0;
-            boolean mainSaved = false;
-
-            byte[] mainBytes = postProcessMask(parts.get("main"), canvasSmall, targetW, targetH);
-            if (mainBytes != null && safeForegroundCount(mainBytes) >= 5000) {
-                saveCategoryRegion(projectId, userId, mainBytes,
-                        "Main Wall", RegionCategory.MAIN_WALL, displayOrder++,
-                        defaultHexFor(RegionCategory.MAIN_WALL, scene));
-                saved++;
-                mainSaved = true;
-            }
-            byte[] accentBytes = postProcessMask(parts.get("accent"), canvasSmall, targetW, targetH);
-            if (accentBytes != null && safeForegroundCount(accentBytes) >= 5000) {
-                saveCategoryRegion(projectId, userId, accentBytes,
+            saveCategoryRegion(projectId, userId, masks.main(),
+                    "Main Wall", RegionCategory.MAIN_WALL, displayOrder++,
+                    defaultHexFor(RegionCategory.MAIN_WALL, scene));
+            saved++;
+            if (masks.accent() != null) {
+                saveCategoryRegion(projectId, userId, masks.accent(),
                         "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder++,
                         defaultHexFor(RegionCategory.ACCENT_WALL, scene));
                 saved++;
             }
-            byte[] trimBytes = postProcessMask(parts.get("trim"), canvasSmall, targetW, targetH);
-            if (trimBytes != null && safeForegroundCount(trimBytes) >= 2000) {
-                saveCategoryRegion(projectId, userId, trimBytes,
+            if (masks.trim() != null) {
+                saveCategoryRegion(projectId, userId, masks.trim(),
                         "Trim & Frames", RegionCategory.TRIM, displayOrder++,
                         defaultHexFor(RegionCategory.TRIM, scene));
                 saved++;
-            }
-
-            if (!mainSaved) {
-                log.info("Mask model didn't produce a usable main wall for project {}", projectId);
-                return false;
             }
             log.info("Mask segmenter saved {} regions for project {}", saved, projectId);
             return true;
@@ -301,6 +297,55 @@ public class SegmentationService {
             log.warn("Mask segmentation path failed for project {}: {}", projectId, e.getMessage(), e);
             return false;
         }
+    }
+
+    /** Post-processed per-category masks of one usable generation: main is
+     *  always present; accent/trim are null when the model produced none
+     *  (or only noise) for that category. */
+    private record ProcessedMasks(byte[] main, byte[] accent, byte[] trim) {}
+
+    /**
+     * One model round-trip: generate the colour-coded image, split it and run
+     * every category through the fidelity pipeline. Returns null when the
+     * round produced no usable MAIN wall (empty output, off-palette image,
+     * main below the noise threshold) — nothing has been persisted at that
+     * point, so the caller is free to retry with a fresh generation.
+     */
+    private ProcessedMasks generateAndProcessMasks(String projectId, String imageUrl,
+                                                   ImageType scene, BufferedImage canvasSmall,
+                                                   int targetW, int targetH) {
+        Optional<byte[]> colorRaw = maskSegmenter.generateColorCodedMask(imageUrl, scene);
+        if (colorRaw.isEmpty()) {
+            log.info("Mask segmenter returned no color-coded mask for project {}", projectId);
+            return null;
+        }
+
+        Map<String, byte[]> parts;
+        try {
+            // Sky filter applies to exterior/unknown scenes only: indoors there
+            // is no sky, and a full-bleed wall may legitimately touch the top.
+            parts = MaskProcessor.splitColorCodedMask(colorRaw.get(), 2000,
+                    scene != ImageType.INDOOR);
+        } catch (Exception e) {
+            log.warn("splitColorCodedMask failed for project {}: {}", projectId, e.getMessage());
+            return null;
+        }
+        log.info("Mask split [project={}]: {}", projectId, parts.keySet());
+        logAspectDriftIfAny(colorRaw.get(), targetW, targetH, projectId);
+
+        byte[] mainBytes = postProcessMask(parts.get("main"), canvasSmall, targetW, targetH);
+        if (mainBytes == null || safeForegroundCount(mainBytes) < 5000) {
+            return null;
+        }
+        byte[] accentBytes = postProcessMask(parts.get("accent"), canvasSmall, targetW, targetH);
+        if (accentBytes != null && safeForegroundCount(accentBytes) < 5000) {
+            accentBytes = null;
+        }
+        byte[] trimBytes = postProcessMask(parts.get("trim"), canvasSmall, targetW, targetH);
+        if (trimBytes != null && safeForegroundCount(trimBytes) < 2000) {
+            trimBytes = null;
+        }
+        return new ProcessedMasks(mainBytes, accentBytes, trimBytes);
     }
 
     private void saveCategoryRegion(String projectId, String userId, byte[] maskBytes,
@@ -388,6 +433,14 @@ public class SegmentationService {
      *  Pure local compute (no external calls), so it defaults ON. */
     @Value("${huevista.segmentation.straighten.enabled:true}")
     private boolean straightenEnabled;
+
+    /** How many colour-coded generations to try before declaring auto
+     *  segmentation failed. Generative models are non-deterministic, so a
+     *  second roll after a dud (no usable main wall) usually lands; each
+     *  extra attempt costs one more Replicate call, and only runs on failure.
+     *  1 = the old single-shot behaviour. */
+    @Value("${huevista.segmentation.auto-mask-attempts:2}")
+    private int autoMaskAttempts;
 
     /**
      * Runs a raw split mask through the fidelity pipeline:
@@ -561,11 +614,16 @@ public class SegmentationService {
                 "input_labels", inputLabels
         );
 
-        String predictionId = startSam2Prediction(input);
-        if (predictionId == null) {
+        Map<String, Object> created = startSam2Prediction(input);
+        if (created == null) {
             throw new ExternalServiceException("Failed to create Replicate prediction for point segmentation");
         }
-        Map<String, Object> result = pollUntilDone(predictionId);
+        // Prefer: wait usually returns the finished prediction in the create
+        // response itself — only fall back to polling when it didn't finish
+        // within the wait window.
+        Map<String, Object> result = "succeeded".equals(created.get("status"))
+                ? created
+                : pollUntilDone((String) created.get("id"));
         if (result == null) {
             throw new ExternalServiceException("Point segmentation timed out or failed");
         }
@@ -670,10 +728,24 @@ public class SegmentationService {
     // SHARED HELPERS
     // ========================================================================
 
-    private String startSam2Prediction(Map<String, Object> input) {
+    /**
+     * Creates the SAM 2 prediction and returns the full response body (never
+     * just the id): with the {@code Prefer: wait} header Replicate holds the
+     * request open until the prediction finishes (up to the wait window), so
+     * for a fast model like SAM 2 the create response usually already carries
+     * status "succeeded" + output. That removes the poll loop's mandatory 2s
+     * first sleep from every click-to-segment — the user sees their wall about
+     * two seconds sooner — and frees the capped request thread earlier. If the
+     * window elapses first, Replicate returns the in-progress prediction and
+     * the caller falls back to polling exactly as before.
+     */
+    private Map<String, Object> startSam2Prediction(Map<String, Object> input) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set("Authorization", "Token " + replicateApiToken);
+        // 30s wait: comfortably above SAM 2's typical 1-5s runtime, safely
+        // below the shared RestTemplate's 120s read timeout.
+        headers.set("Prefer", "wait=30");
 
         boolean hasPinnedVersion = sam2ModelVersion != null && !sam2ModelVersion.isBlank();
         Map<String, Object> body = hasPinnedVersion
@@ -689,7 +761,13 @@ public class SegmentationService {
                     new HttpEntity<>(body, headers),
                     Map.class
             );
-            return (String) response.getBody().get("id");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> created = response.getBody();
+            if (created == null || created.get("id") == null) {
+                log.error("SAM 2 prediction create returned no body/id");
+                return null;
+            }
+            return created;
         } catch (org.springframework.web.client.HttpClientErrorException e) {
             // 401/403 = bad token (config problem, will never recover by retrying);
             // 429 = rate limited (transient). Log them distinctly so ops can tell.
