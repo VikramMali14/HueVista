@@ -79,7 +79,7 @@ class ApiContractTest {
     void project_response_matches_frontend_ProjectDetail() {
         assertThat(propsOf("ProjectResponse")).containsExactlyInAnyOrder(
                 "id", "name", "roomType", "notes", "status", "imageId", "imageUrl",
-                "cleanedImageUrl", "failureReason", "regions", "hasShareLink",
+                "cleanedImageUrl", "rawMaskUrl", "failureReason", "regions", "hasShareLink",
                 "shareExpiresAt", "sentToShopAt", "createdAt", "updatedAt");
     }
 

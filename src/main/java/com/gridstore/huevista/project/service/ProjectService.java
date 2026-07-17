@@ -186,6 +186,14 @@ public class ProjectService {
                 log.warn("Failed to delete cleaned image {}: {}", cleanedKey, e.getMessage());
             }
         }
+        String rawMaskKey = project.getRawMaskStorageKey();
+        if (rawMaskKey != null && !rawMaskKey.isBlank()) {
+            try {
+                storageService.delete(rawMaskKey);
+            } catch (Exception e) {
+                log.warn("Failed to delete raw mask {}: {}", rawMaskKey, e.getMessage());
+            }
+        }
         projectRepository.delete(project);
         auditService.record(userId, "PROJECT_DELETE", "PROJECT", projectId, "name=" + project.getName());
         log.info("Project deleted: id={} user={}", projectId, userId);
@@ -856,6 +864,9 @@ public class ProjectService {
                 ? storageService.getPublicUrl(project.getCleanedImageStorageKey()) : null;
         ProjectResponse r = ProjectResponse.from(project, originalUrl);
         r.setCleanedImageUrl(cleanedUrl);
+        if (project.getRawMaskStorageKey() != null) {
+            r.setRawMaskUrl(storageService.getPublicUrl(project.getRawMaskStorageKey()));
+        }
         refreshMaskUrls(r);
         return r;
     }

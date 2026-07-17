@@ -163,9 +163,11 @@ class SegmentationServiceTest {
                 "p1", "u1", "http://img", ImageType.OUTDOOR, null, png(original), W, H);
 
         assertThat(ok).isTrue();
+        // Three blobs stored: the raw colour-coded mask first (diagnostics for
+        // the admin mask viewer), then the processed main + trim region masks.
         ArgumentCaptor<byte[]> maskBytes = ArgumentCaptor.forClass(byte[].class);
-        verify(storage, times(2)).store(maskBytes.capture(), anyString(), anyString(), anyString());
-        BufferedImage storedMain = ImageIO.read(new ByteArrayInputStream(maskBytes.getAllValues().get(0)));
+        verify(storage, times(3)).store(maskBytes.capture(), anyString(), anyString(), anyString());
+        BufferedImage storedMain = ImageIO.read(new ByteArrayInputStream(maskBytes.getAllValues().get(1)));
         assertThat(storedMain.getWidth()).isEqualTo(300);
         assertThat(storedMain.getHeight()).isEqualTo(150);
     }
