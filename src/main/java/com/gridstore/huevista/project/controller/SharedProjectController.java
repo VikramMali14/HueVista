@@ -52,6 +52,22 @@ public class SharedProjectController {
         return stream(projectService.getSharedImage(token, true));
     }
 
+    @Operation(summary = "Shared project region mask",
+            description = "Public — streams a region's mask PNG by share token, so the share page can "
+                    + "composite (and repaint) the room. 404 for an unknown region or a region without a mask.")
+    @SecurityRequirements
+    @GetMapping("/{token}/regions/{regionId}/mask")
+    public ResponseEntity<byte[]> getSharedRegionMask(
+            @PathVariable String token,
+            @PathVariable Long regionId) {
+        byte[] bytes = projectService.loadSharedRegionMaskBytes(token, regionId);
+        return ResponseEntity.ok()
+                .contentType(MediaType.IMAGE_PNG)
+                .header("X-Content-Type-Options", "nosniff")
+                .cacheControl(CacheControl.maxAge(Duration.ofMinutes(10)).cachePublic())
+                .body(bytes);
+    }
+
     private ResponseEntity<byte[]> stream(ProjectService.SharedImage image) {
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(image.contentType()))

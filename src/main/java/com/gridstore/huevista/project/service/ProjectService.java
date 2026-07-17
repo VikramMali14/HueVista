@@ -250,7 +250,8 @@ public class ProjectService {
     }
 
     @Transactional
-    public ShareResponse generateShareLink(String userId, String projectId, int validDays) {
+    public ShareResponse generateShareLink(String userId, String projectId, int validDays,
+                                           java.util.List<String> brands) {
         Project project = findOwned(userId, projectId);
 
         String token = UUID.randomUUID().toString().replace("-", "");
@@ -258,6 +259,8 @@ public class ProjectService {
 
         project.setShareToken(token);
         project.setShareExpiresAt(expiresAt);
+        // Which paint companies the share viewer may repaint with (empty = all).
+        project.setShareBrandList(brands);
         projectRepository.save(project);
 
         String shareUrl = baseUrl + "/api/share/" + token;
@@ -290,7 +293,43 @@ public class ProjectService {
         ProjectResponse r = ProjectResponse.fromPublic(project, originalUrl);
         r.setCleanedImageUrl(cleanedUrl);
         refreshMaskUrls(r);
+        // Masks too: local-storage mode leaves them as relative, owner-authenticated
+        // paths an anonymous share viewer can't fetch — point those at the public,
+        // token-scoped share mask endpoint (S3 presigned URLs pass through).
+        if (r.getRegions() != null) {
+            r.getRegions().forEach(region -> {
+                String url = region.getMaskUrl();
+                if (url != null && !url.isBlank()
+                        && !url.startsWith("http://") && !url.startsWith("https://")) {
+                    region.setMaskUrl("/api/share/" + shareToken + "/regions/" + region.getId() + "/mask");
+                }
+            });
+        }
         return r;
+    }
+
+    /**
+     * Streams a shared project's region mask by share token — public, the token is
+     * the capability. Lets the share page composite (and repaint) the room in
+     * local-storage mode, where the normal mask endpoint is owner-authenticated.
+     */
+    @Transactional(readOnly = true)
+    public byte[] loadSharedRegionMaskBytes(String shareToken, Long regionId) {
+        Project project = projectRepository.findByShareToken(shareToken)
+                .filter(p -> p.getShareExpiresAt() == null
+                        || p.getShareExpiresAt().isAfter(LocalDateTime.now()))
+                .orElseThrow(() -> new ResourceNotFoundException("Share link not found or expired."));
+        Region region = regionRepository.findByIdAndProjectId(regionId, project.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Region not found: " + regionId));
+        String maskUrl = region.getMaskUrl();
+        if (maskUrl == null || maskUrl.isBlank()) {
+            throw new ResourceNotFoundException("Region has no mask: " + regionId);
+        }
+        try {
+            return storageService.load(extractStorageKey(maskUrl));
+        } catch (IOException e) {
+            throw new StorageException("Failed to load mask for region " + regionId, e);
+        }
     }
 
     /** A shared project's image bytes + content type, fetched by share token. */

@@ -80,7 +80,7 @@ class ApiContractTest {
         assertThat(propsOf("ProjectResponse")).containsExactlyInAnyOrder(
                 "id", "name", "roomType", "notes", "status", "imageId", "imageUrl",
                 "cleanedImageUrl", "rawMaskUrl", "failureReason", "regions", "hasShareLink",
-                "shareExpiresAt", "sentToShopAt", "createdAt", "updatedAt");
+                "shareExpiresAt", "sharedBrands", "sentToShopAt", "createdAt", "updatedAt");
     }
 
     @Test

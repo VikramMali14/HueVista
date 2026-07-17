@@ -8,6 +8,8 @@ import com.gridstore.huevista.auth.dto.CreateRetailerRequest;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.auth.service.AuthService;
+import com.gridstore.huevista.billing.dto.AdminAdjustSubscriptionRequest;
+import com.gridstore.huevista.billing.dto.AdminGrantSubscriptionRequest;
 import com.gridstore.huevista.billing.dto.SubscriptionResponse;
 import com.gridstore.huevista.billing.model.Plan;
 import com.gridstore.huevista.billing.model.SubscriptionStatus;
@@ -47,6 +49,7 @@ public class AdminController {
     private final UserRepository userRepository;
     private final OrganizationRepository orgRepository;
     private final SubscriptionRepository subscriptionRepository;
+    private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final ProjectRepository projectRepository;
     private final AuditService auditService;
     private final com.gridstore.huevista.common.audit.AuditLogRepository auditLogRepository;
@@ -158,6 +161,39 @@ public class AdminController {
         return ResponseEntity.ok(
                 orgRepository.findAll(pageOf(page, size)).getContent()
                         .stream().map(OrgResponse::from).toList());
+    }
+
+    @Operation(summary = "Get a user's current subscription",
+            description = "The user's active (or most recent) subscription with usage stats. 404 when they have none.")
+    @GetMapping("/users/{userId}/subscription")
+    public ResponseEntity<SubscriptionResponse> getUserSubscription(@PathVariable String userId) {
+        return ResponseEntity.ok(billingService.getCurrentSubscription(userId));
+    }
+
+    @Operation(summary = "Grant a subscription to a user",
+            description = "Activates a plan for the user immediately, without a payment — any currently "
+                    + "active subscription is superseded. Optionally overrides the plan's AI generation limit.")
+    @PostMapping("/users/{userId}/subscription")
+    public ResponseEntity<SubscriptionResponse> grantSubscription(
+            @PathVariable String userId,
+            @Valid @RequestBody AdminGrantSubscriptionRequest request,
+            Authentication auth) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(
+                billingService.adminGrantSubscription(auth.getName(), userId,
+                        request.getPlan(), request.getDays(), request.getAiGenerationsLimit()));
+    }
+
+    @Operation(summary = "Adjust a user's subscription",
+            description = "Adds AI image-generation credits (raises the monthly limit) and/or extends the "
+                    + "period end. Extending a lapsed subscription reactivates it.")
+    @PatchMapping("/users/{userId}/subscription")
+    public ResponseEntity<SubscriptionResponse> adjustSubscription(
+            @PathVariable String userId,
+            @Valid @RequestBody AdminAdjustSubscriptionRequest request,
+            Authentication auth) {
+        return ResponseEntity.ok(
+                billingService.adminAdjustSubscription(auth.getName(), userId,
+                        request.getAddAiGenerations(), request.getExtendDays()));
     }
 
     @Operation(summary = "List all subscriptions")
