@@ -270,6 +270,29 @@ final class MaskProcessor {
                 if (min >= 170 && max - min <= 50) {
                     whiteBin[idx] = true;
                     whiteCount++;
+                    continue;
+                }
+                // Anti-aliased / JPEG-softened pixels along a border BETWEEN two
+                // colour blocks read as a mix (magenta on a red|blue border,
+                // yellow on red|green): bright and clearly chromatic, but
+                // failing every dominance test above. Dropping them (the old
+                // behaviour) left an unassigned ribbon along every category
+                // border, which rendered as an unpainted white seam between
+                // regions. Adopt them into the strongest channel's category
+                // instead. Near-black stays unassigned (the model's
+                // "everything else"), and greys (railing silver, ambiguous
+                // noise) keep failing the chroma requirement.
+                if (max >= 100 && max - min >= 40) {
+                    if (r >= g && r >= b) {
+                        mainBin[idx] = true;
+                        mainCount++;
+                    } else if (g >= b) {
+                        accentBin[idx] = true;
+                        accentCount++;
+                    } else {
+                        trimBin[idx] = true;
+                        trimCount++;
+                    }
                 }
                 // else: black or ambiguous — leave unassigned.
             }
@@ -354,6 +377,124 @@ final class MaskProcessor {
             for (int i = 0; i < out.length; i++) out[i] = labels[i] == bestLabel;
         }
         return out;
+    }
+
+    /**
+     * Closes the unpaintable seams BETWEEN adjacent region masks.
+     *
+     * <p>The per-category masks are post-processed independently (colour gate,
+     * morph clean, straighten, edge snap), so two regions that abut in the
+     * colour-coded source drift apart by a few pixels — and every pixel in the
+     * gap belongs to no region, rendering as an unpainted ribbon of bare canvas
+     * between the painted surfaces. This pass assigns those gap pixels to the
+     * nearest region.
+     *
+     * <p>Only pixels within {@code maxDistPx} (chessboard distance) of TWO OR
+     * MORE different masks are filled — a true seam always has a region on
+     * both sides. Background bordered by a single region (window panes, sky,
+     * railing gaps, door leaves) is never touched, so this cannot bleed paint
+     * onto non-paintable surfaces; it can only re-join surfaces that were
+     * connected in the source segmentation.
+     *
+     * @param maskPngs binary mask PNGs, all at identical dimensions
+     * @return masks in the same order with seam pixels filled; the input list
+     *         itself when nothing changed
+     * @throws IOException when a mask can't be decoded or dimensions differ —
+     *                     callers keep the unsealed masks
+     */
+    static java.util.List<byte[]> closeSeams(java.util.List<byte[]> maskPngs, int maxDistPx)
+            throws IOException {
+        int k = maskPngs.size();
+        if (k < 2 || maxDistPx <= 0) return maskPngs;
+
+        boolean[][] bins = new boolean[k][];
+        int w = -1, h = -1;
+        for (int m = 0; m < k; m++) {
+            BufferedImage img = decode(maskPngs.get(m));
+            if (w < 0) {
+                w = img.getWidth();
+                h = img.getHeight();
+            } else if (img.getWidth() != w || img.getHeight() != h) {
+                throw new IOException("Mask dimensions differ (" + img.getWidth() + "x"
+                        + img.getHeight() + " vs " + w + "x" + h + ") — cannot close seams");
+            }
+            bins[m] = thresholdToBinary(img, w, h);
+        }
+
+        int[][] dist = new int[k][];
+        for (int m = 0; m < k; m++) {
+            dist[m] = chessboardDistance(bins[m], w, h);
+        }
+
+        boolean changed = false;
+        for (int i = 0; i < w * h; i++) {
+            int best = -1, bestD = Integer.MAX_VALUE, within = 0;
+            boolean foreground = false;
+            for (int m = 0; m < k; m++) {
+                int d = dist[m][i];
+                if (d == 0) {
+                    foreground = true;
+                    break;
+                }
+                if (d <= maxDistPx) {
+                    within++;
+                    if (d < bestD) {
+                        bestD = d;
+                        best = m;
+                    }
+                }
+            }
+            if (foreground || within < 2) continue;
+            bins[best][i] = true;
+            changed = true;
+        }
+        if (!changed) return maskPngs;
+
+        java.util.List<byte[]> out = new java.util.ArrayList<>(k);
+        for (int m = 0; m < k; m++) {
+            out.add(encodeBinaryPng(bins[m], w, h));
+        }
+        return out;
+    }
+
+    /**
+     * Exact chessboard (L∞) distance to the nearest foreground pixel, via the
+     * classic two-pass raster scan (forward with the already-visited 8-half,
+     * backward with the other). Foreground pixels are 0.
+     */
+    static int[] chessboardDistance(boolean[] fg, int w, int h) {
+        final int inf = Integer.MAX_VALUE / 4;
+        int[] d = new int[w * h];
+        for (int i = 0; i < d.length; i++) d[i] = fg[i] ? 0 : inf;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int i = y * w + x;
+                if (d[i] == 0) continue;
+                int best = d[i];
+                if (x > 0) best = Math.min(best, d[i - 1] + 1);
+                if (y > 0) {
+                    best = Math.min(best, d[i - w] + 1);
+                    if (x > 0) best = Math.min(best, d[i - w - 1] + 1);
+                    if (x < w - 1) best = Math.min(best, d[i - w + 1] + 1);
+                }
+                d[i] = best;
+            }
+        }
+        for (int y = h - 1; y >= 0; y--) {
+            for (int x = w - 1; x >= 0; x--) {
+                int i = y * w + x;
+                if (d[i] == 0) continue;
+                int best = d[i];
+                if (x < w - 1) best = Math.min(best, d[i + 1] + 1);
+                if (y < h - 1) {
+                    best = Math.min(best, d[i + w] + 1);
+                    if (x < w - 1) best = Math.min(best, d[i + w + 1] + 1);
+                    if (x > 0) best = Math.min(best, d[i + w - 1] + 1);
+                }
+                d[i] = best;
+            }
+        }
+        return d;
     }
 
     /**

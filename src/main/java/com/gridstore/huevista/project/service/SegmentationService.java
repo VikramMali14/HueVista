@@ -369,7 +369,38 @@ public class SegmentationService {
         if (trimBytes != null && safeForegroundCount(trimBytes) < 2000) {
             trimBytes = null;
         }
-        return new ProcessedMasks(mainBytes, accentBytes, trimBytes);
+        return sealSeams(new ProcessedMasks(mainBytes, accentBytes, trimBytes), projectId);
+    }
+
+    /**
+     * Closes the unpainted ribbons between adjacent category masks. Each mask
+     * is post-processed independently, so boundaries that coincided in the
+     * colour-coded source end up a few pixels apart — and the gap belongs to
+     * no region, rendering as a bare-canvas seam around every trim band and
+     * along the main/accent border. {@link MaskProcessor#closeSeams} fills
+     * only gap pixels near TWO different regions, so windows, sky and
+     * railings (bordered by one region at most) are never painted over.
+     * Best-effort: any failure keeps the unsealed masks.
+     */
+    private ProcessedMasks sealSeams(ProcessedMasks masks, String projectId) {
+        if (seamClosePx <= 0) return masks;
+        List<byte[]> in = new ArrayList<>();
+        in.add(masks.main());
+        if (masks.accent() != null) in.add(masks.accent());
+        if (masks.trim() != null) in.add(masks.trim());
+        if (in.size() < 2) return masks;
+        try {
+            List<byte[]> out = MaskProcessor.closeSeams(in, seamClosePx);
+            int i = 0;
+            byte[] main = out.get(i++);
+            byte[] accent = masks.accent() != null ? out.get(i++) : null;
+            byte[] trim = masks.trim() != null ? out.get(i) : null;
+            return new ProcessedMasks(main, accent, trim);
+        } catch (Exception e) {
+            log.warn("Seam closure failed for project {}, keeping unsealed masks: {}",
+                    projectId, e.getMessage());
+            return masks;
+        }
     }
 
     private void saveCategoryRegion(String projectId, String userId, byte[] maskBytes,
@@ -465,6 +496,15 @@ public class SegmentationService {
      *  1 = the old single-shot behaviour. */
     @Value("${huevista.segmentation.auto-mask-attempts:2}")
     private int autoMaskAttempts;
+
+    /** Max distance (px at the stored-mask resolution) each side of an
+     *  unpainted seam between two adjacent region masks may be from its region
+     *  for the seam to be closed ({@link MaskProcessor#closeSeams}). The gate,
+     *  straighten and snap steps move each category's boundary independently,
+     *  leaving a few-px no-man's-land between abutting regions that renders as
+     *  a bare-canvas halo around every trim band. 0 disables. */
+    @Value("${huevista.segmentation.seam-close-px:8}")
+    private int seamClosePx;
 
     /**
      * Runs a raw split mask through the fidelity pipeline:

@@ -14,8 +14,9 @@ import java.util.List;
 
 /**
  * Maintenance re-snap of ALREADY STORED region masks: applies the
- * {@link MaskStraightener} boundary straightening and the {@link MaskRefiner}
- * edge snap — which new segmentations get inside the pipeline —
+ * {@link MaskStraightener} boundary straightening, the {@link MaskRefiner}
+ * edge snap and the {@link MaskProcessor#closeSeams inter-region seam
+ * closure} — which new segmentations get inside the pipeline —
  * retroactively, to projects segmented before those steps existed.
  *
  * <p>Scope and safety:
@@ -48,6 +49,12 @@ public class MaskResnapService {
      *  applies exactly the treatment new segmentations get. */
     @org.springframework.beans.factory.annotation.Value("${huevista.segmentation.straighten.enabled:true}")
     private boolean straightenEnabled;
+
+    /** Mirrors the pipeline's seam-closure reach (0 disables), so the
+     *  maintenance pass closes the same inter-region seams new
+     *  segmentations get closed. */
+    @org.springframework.beans.factory.annotation.Value("${huevista.segmentation.seam-close-px:8}")
+    private int seamClosePx;
 
     /** Upper bound on projects per maintenance call — the admin endpoint runs
      *  synchronously, and each project costs a canvas download plus a guided
@@ -92,7 +99,12 @@ public class MaskResnapService {
             return new ResnapSummary(1, 0, regions.size(), 0);
         }
 
-        int resnapped = 0, skipped = 0, failures = 0;
+        // Pass 1: straighten + snap each mask in memory. Storing waits until
+        // after the cross-region seam closure below, which needs all of a
+        // project's masks together.
+        record Processed(Region region, String ownerScope, byte[] mask) {}
+        List<Processed> processed = new java.util.ArrayList<>();
+        int skipped = 0, failures = 0;
         for (Region region : regions) {
             String stored = region.getMaskUrl();
             if (stored == null || stored.isBlank() || stored.startsWith("http://")
@@ -115,17 +127,47 @@ public class MaskResnapService {
                 // Stored keys are "<ownerScope>/<uuid>.<ext>"; keep the same scope.
                 int slash = stored.indexOf('/');
                 String ownerScope = slash > 0 ? stored.substring(0, slash) : stored;
-                String newKey = storageService.store(snapped, ownerScope,
-                        (region.getCategory() != null
-                                ? region.getCategory().name().toLowerCase() : "mask") + ".png",
-                        "image/png");
-                region.setMaskUrl(newKey);
-                region.setMaskData(newKey);
-                regionRepository.save(region);
-                resnapped++;
+                processed.add(new Processed(region, ownerScope, snapped));
             } catch (Exception e) {
                 log.warn("Re-snap failed for region {} of project {}: {}",
                         region.getId(), projectId, e.getMessage());
+                failures++;
+            }
+        }
+
+        // Pass 2: close the unpainted seams BETWEEN this project's regions,
+        // exactly as the pipeline does for new segmentations. Best-effort —
+        // a failure (e.g. legacy masks at differing resolutions) keeps the
+        // individually snapped masks.
+        if (processed.size() >= 2 && seamClosePx > 0) {
+            try {
+                List<byte[]> sealed = MaskProcessor.closeSeams(
+                        processed.stream().map(Processed::mask).toList(), seamClosePx);
+                for (int i = 0; i < processed.size(); i++) {
+                    Processed p = processed.get(i);
+                    processed.set(i, new Processed(p.region(), p.ownerScope(), sealed.get(i)));
+                }
+            } catch (Exception e) {
+                log.warn("Seam closure failed for project {}, storing unsealed masks: {}",
+                        projectId, e.getMessage());
+            }
+        }
+
+        // Pass 3: store and repoint.
+        int resnapped = 0;
+        for (Processed p : processed) {
+            try {
+                String newKey = storageService.store(p.mask(), p.ownerScope(),
+                        (p.region().getCategory() != null
+                                ? p.region().getCategory().name().toLowerCase() : "mask") + ".png",
+                        "image/png");
+                p.region().setMaskUrl(newKey);
+                p.region().setMaskData(newKey);
+                regionRepository.save(p.region());
+                resnapped++;
+            } catch (Exception e) {
+                log.warn("Storing re-snapped mask failed for region {} of project {}: {}",
+                        p.region().getId(), projectId, e.getMessage());
                 failures++;
             }
         }
