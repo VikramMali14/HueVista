@@ -194,6 +194,97 @@ class MaskProcessorTest {
     }
 
     // ---------------------------------------------------------------------
+    // boundary-mix adoption (no unassigned seam between colour blocks)
+    // ---------------------------------------------------------------------
+
+    @Test
+    void assignsAntiAliasedBorderPixelsToTheStrongestChannel() throws Exception {
+        // A red block and a blue block with a mixed (anti-aliased / JPEG-soft)
+        // ribbon between them: those pixels fail every dominance test but are
+        // clearly chromatic — they must join a category, not fall into an
+        // unassigned seam that renders as bare canvas between the regions.
+        BufferedImage img = blank(40, HEIGHT);
+        fill(img, Color.RED, 0, TOP_MARGIN, 18, HEIGHT - TOP_MARGIN);
+        fill(img, new Color(140, 30, 120), 18, TOP_MARGIN, 2, HEIGHT - TOP_MARGIN);  // red-leaning mix
+        fill(img, new Color(120, 30, 140), 20, TOP_MARGIN, 2, HEIGHT - TOP_MARGIN);  // blue-leaning mix
+        fill(img, Color.BLUE, 22, TOP_MARGIN, 18, HEIGHT - TOP_MARGIN);
+        Map<String, byte[]> parts = MaskProcessor.splitColorCodedMask(png(img), MIN_PIXELS);
+
+        assertThat(whiteAt(parts.get("main"), 18, HEIGHT / 2)).isTrue();   // mix joins red
+        assertThat(whiteAt(parts.get("trim"), 21, HEIGHT / 2)).isTrue();   // mix joins blue
+        // Every border column is claimed by exactly one of the two.
+        for (int x = 17; x <= 22; x++) {
+            boolean inMain = whiteAt(parts.get("main"), x, HEIGHT / 2);
+            boolean inTrim = whiteAt(parts.get("trim"), x, HEIGHT / 2);
+            assertThat(inMain ^ inTrim)
+                    .as("column %d assigned to exactly one category", x)
+                    .isTrue();
+        }
+    }
+
+    @Test
+    void leavesGreyAndNearBlackPixelsUnassigned() throws Exception {
+        // Grey (railing silver) has no chroma; dark mixes are the model's
+        // BLACK. Neither may be adopted into a paintable category.
+        BufferedImage img = blank(40, HEIGHT);
+        fill(img, Color.RED, 0, TOP_MARGIN, 20, HEIGHT - TOP_MARGIN);
+        fill(img, new Color(140, 140, 135), 20, TOP_MARGIN, 10, HEIGHT - TOP_MARGIN); // grey
+        fill(img, new Color(90, 20, 80), 30, TOP_MARGIN, 10, HEIGHT - TOP_MARGIN);    // dark mix
+        Map<String, byte[]> parts = MaskProcessor.splitColorCodedMask(png(img), MIN_PIXELS);
+
+        assertThat(parts).containsOnlyKeys("main");
+        assertThat(whiteAt(parts.get("main"), 25, HEIGHT / 2)).isFalse();
+        assertThat(whiteAt(parts.get("main"), 35, HEIGHT / 2)).isFalse();
+    }
+
+    // ---------------------------------------------------------------------
+    // closeSeams
+    // ---------------------------------------------------------------------
+
+    @Test
+    void closeSeamsFillsTheGapBetweenTwoRegions() throws Exception {
+        // Region A covers x<18, region B covers x≥22: post-processing left a
+        // 4px unpainted seam. Closure must split it between the two nearest
+        // regions with no pixel left unassigned and no overlap.
+        byte[] a = binaryPng(40, 20, (x, y) -> x < 18);
+        byte[] b = binaryPng(40, 20, (x, y) -> x >= 22);
+        java.util.List<byte[]> sealed = MaskProcessor.closeSeams(java.util.List.of(a, b), 8);
+
+        for (int x = 16; x <= 23; x++) {
+            boolean inA = whiteAt(sealed.get(0), x, 10);
+            boolean inB = whiteAt(sealed.get(1), x, 10);
+            assertThat(inA ^ inB)
+                    .as("seam column %d covered by exactly one region", x)
+                    .isTrue();
+        }
+    }
+
+    @Test
+    void closeSeamsLeavesBackgroundNearOnlyOneRegionAlone() throws Exception {
+        // A 6px hole INSIDE region A (a railing gap, a window) borders only A;
+        // region B is far away. The hole must stay unpainted — filling it
+        // would bleed paint onto a non-paintable surface.
+        byte[] a = binaryPng(60, 20, (x, y) -> x < 20 || (x >= 26 && x < 34));
+        byte[] b = binaryPng(60, 20, (x, y) -> x >= 54);
+        java.util.List<byte[]> sealed = MaskProcessor.closeSeams(java.util.List.of(a, b), 8);
+
+        assertThat(whiteAt(sealed.get(0), 23, 10)).isFalse(); // hole in A stays
+        assertThat(whiteAt(sealed.get(1), 23, 10)).isFalse();
+        // Wide gap between A and B (x 34..53, 20px > 2×8) also stays.
+        assertThat(whiteAt(sealed.get(0), 44, 10)).isFalse();
+        assertThat(whiteAt(sealed.get(1), 44, 10)).isFalse();
+    }
+
+    @Test
+    void closeSeamsRejectsMismatchedDimensions() throws Exception {
+        byte[] a = binaryPng(40, 20, (x, y) -> x < 18);
+        byte[] b = binaryPng(30, 20, (x, y) -> x >= 22);
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> MaskProcessor.closeSeams(java.util.List.of(a, b), 8))
+                .isInstanceOf(java.io.IOException.class);
+    }
+
+    // ---------------------------------------------------------------------
     // resizeBinarySmooth
     // ---------------------------------------------------------------------
 
