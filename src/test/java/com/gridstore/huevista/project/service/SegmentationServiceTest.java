@@ -19,6 +19,7 @@ import org.springframework.web.client.RestTemplate;
 import javax.imageio.ImageIO;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.util.Optional;
 
@@ -96,7 +97,7 @@ class SegmentationServiceTest {
         when(projects.getReferenceById("p1")).thenReturn(mock(Project.class));
 
         boolean ok = service.tryColorCodedSegmentation(
-                "p1", "u1", "http://img", ImageType.OUTDOOR, null, W, H);
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, null, W, H);
 
         assertThat(ok).isTrue();
         verify(segmenter, times(2)).generateColorCodedMask(anyString(), any());
@@ -118,7 +119,7 @@ class SegmentationServiceTest {
                 .thenReturn(Optional.of(dudCodedPng()));
 
         boolean ok = service.tryColorCodedSegmentation(
-                "p1", "u1", "http://img", ImageType.OUTDOOR, null, W, H);
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, null, W, H);
 
         assertThat(ok).isFalse();
         verify(segmenter, times(2)).generateColorCodedMask(anyString(), any());
@@ -134,10 +135,39 @@ class SegmentationServiceTest {
                 .thenReturn(Optional.of(dudCodedPng()));
 
         boolean ok = service.tryColorCodedSegmentation(
-                "p1", "u1", "http://img", ImageType.OUTDOOR, null, W, H);
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, null, W, H);
 
         assertThat(ok).isFalse();
         verify(segmenter, times(1)).generateColorCodedMask(anyString(), any());
+    }
+
+    @Test
+    void originalPhotoBecomesTheSnapCanvasWhenNoCleanedCanvasExists() throws Exception {
+        // Cleaner disabled/failed: the ORIGINAL photo is adopted as the snap
+        // canvas, so post-processing runs (edge snap included) and the stored
+        // masks take the canvas's resolution — previously the whole snap step
+        // was silently skipped and masks shipped with raw model borders.
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
+        ReflectionTestUtils.setField(service, "edgeSnapEnabled", true);
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.generateColorCodedMask(anyString(), any()))
+                .thenReturn(Optional.of(goodCodedPng()));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("masks/key.png");
+        when(projects.getReferenceById("p1")).thenReturn(mock(Project.class));
+
+        BufferedImage original = new BufferedImage(300, 150, BufferedImage.TYPE_INT_RGB);
+        fill(original, Color.WHITE, 0, 0, 300, 150);
+
+        boolean ok = service.tryColorCodedSegmentation(
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, png(original), W, H);
+
+        assertThat(ok).isTrue();
+        ArgumentCaptor<byte[]> maskBytes = ArgumentCaptor.forClass(byte[].class);
+        verify(storage, times(2)).store(maskBytes.capture(), anyString(), anyString(), anyString());
+        BufferedImage storedMain = ImageIO.read(new ByteArrayInputStream(maskBytes.getAllValues().get(0)));
+        assertThat(storedMain.getWidth()).isEqualTo(300);
+        assertThat(storedMain.getHeight()).isEqualTo(150);
     }
 
     /** Coded image where the model left the accent wall WHITE and that white
@@ -162,7 +192,7 @@ class SegmentationServiceTest {
         when(projects.getReferenceById("p1")).thenReturn(mock(Project.class));
 
         boolean ok = service.tryColorCodedSegmentation(
-                "p1", "u1", "http://img", ImageType.INDOOR, null, W, H);
+                "p1", "u1", "http://img", ImageType.INDOOR, null, null, W, H);
 
         assertThat(ok).isTrue();
         ArgumentCaptor<Region> saved = ArgumentCaptor.forClass(Region.class);
@@ -185,7 +215,7 @@ class SegmentationServiceTest {
         when(projects.getReferenceById("p1")).thenReturn(mock(Project.class));
 
         boolean ok = service.tryColorCodedSegmentation(
-                "p1", "u1", "http://img", ImageType.OUTDOOR, null, W, H);
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, null, W, H);
 
         assertThat(ok).isTrue();
         ArgumentCaptor<Region> saved = ArgumentCaptor.forClass(Region.class);

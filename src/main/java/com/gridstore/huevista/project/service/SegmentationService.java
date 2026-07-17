@@ -167,11 +167,27 @@ public class SegmentationService {
                         projectId, e.getMessage());
             }
 
+            // Fidelity fallback: without a cleaned canvas (cleaner disabled or
+            // failed) post-processing used to skip the edge snap entirely, so
+            // auto masks shipped with the model's raw, slightly misregistered
+            // borders — trim sitting on railings, halos along the roofline.
+            // Load the ORIGINAL photo as the snap canvas instead; the manual
+            // point-click path has always done this (see loadSnapCanvas).
+            byte[] snapFallbackBytes = null;
+            if (cleanedBytes == null) {
+                try {
+                    snapFallbackBytes = storageService.load(uploadedImage.getStorageKey());
+                } catch (Exception e) {
+                    log.warn("Could not load original photo as snap canvas for project {}: {}",
+                            projectId, e.getMessage());
+                }
+            }
+
             // Step 2: color-coded mask via Replicate (FLUX.2 [max] by default).
             // Scene drives the accent-wall rule: interiors always get one
             // accent wall to highlight.
             if (tryColorCodedSegmentation(projectId, userId, maskImageUrl,
-                    uploadedImage.getImageType(), cleanedBytes,
+                    uploadedImage.getImageType(), cleanedBytes, snapFallbackBytes,
                     uploadedImage.getWidth(), uploadedImage.getHeight())) {
                 markSegmented(projectId);
                 // Charge one AI preview now that walls were actually produced — a failed
@@ -232,7 +248,7 @@ public class SegmentationService {
      */
     boolean tryColorCodedSegmentation(String projectId, String userId,
                                       String imageUrl, ImageType scene,
-                                      byte[] cleanedBytes,
+                                      byte[] cleanedBytes, byte[] originalBytes,
                                       int imageWidth, int imageHeight) {
         try {
             if (!maskSegmenter.isConfigured()) {
@@ -241,15 +257,22 @@ public class SegmentationService {
                 return false;
             }
 
+            // Two canvas roles: the colour GATE needs the cleaned repaint (its
+            // "freshly painted white" assumption doesn't hold on an arbitrary
+            // photo), while the edge SNAP only needs real edges — any faithful
+            // canvas will do, so it falls back to the original photo.
+            BufferedImage gateCanvas = decodeCanvasForMasks(cleanedBytes);
+            BufferedImage snapCanvas = gateCanvas != null
+                    ? gateCanvas : decodeCanvasForMasks(originalBytes);
+
             // Masks are stored at the CANVAS's aspect and resolution (capped at
             // MAX_MASK_DIM), not at whatever size the model generated — the
             // frontend stretches each mask over the canvas, so any aspect drift
             // here shears every region off its surface.
-            BufferedImage canvasSmall = decodeCanvasForMasks(cleanedBytes);
             int targetW, targetH;
-            if (canvasSmall != null) {
-                targetW = canvasSmall.getWidth();
-                targetH = canvasSmall.getHeight();
+            if (snapCanvas != null) {
+                targetW = snapCanvas.getWidth();
+                targetH = snapCanvas.getHeight();
             } else {
                 double scale = Math.min(1.0,
                         (double) MAX_MASK_DIM / Math.max(imageWidth, imageHeight));
@@ -265,7 +288,7 @@ public class SegmentationService {
                             "produced no usable main wall", attempt, attempts, projectId);
                 }
                 masks = generateAndProcessMasks(projectId, imageUrl, scene,
-                        canvasSmall, targetW, targetH);
+                        gateCanvas, snapCanvas, targetW, targetH);
             }
             if (masks == null) {
                 log.info("Mask model didn't produce a usable main wall for project {} " +
@@ -312,7 +335,8 @@ public class SegmentationService {
      * point, so the caller is free to retry with a fresh generation.
      */
     private ProcessedMasks generateAndProcessMasks(String projectId, String imageUrl,
-                                                   ImageType scene, BufferedImage canvasSmall,
+                                                   ImageType scene, BufferedImage gateCanvas,
+                                                   BufferedImage snapCanvas,
                                                    int targetW, int targetH) {
         Optional<byte[]> colorRaw = maskSegmenter.generateColorCodedMask(imageUrl, scene);
         if (colorRaw.isEmpty()) {
@@ -333,15 +357,15 @@ public class SegmentationService {
         log.info("Mask split [project={}]: {}", projectId, parts.keySet());
         logAspectDriftIfAny(colorRaw.get(), targetW, targetH, projectId);
 
-        byte[] mainBytes = postProcessMask(parts.get("main"), canvasSmall, targetW, targetH);
+        byte[] mainBytes = postProcessMask(parts.get("main"), gateCanvas, snapCanvas, targetW, targetH);
         if (mainBytes == null || safeForegroundCount(mainBytes) < 5000) {
             return null;
         }
-        byte[] accentBytes = postProcessMask(parts.get("accent"), canvasSmall, targetW, targetH);
+        byte[] accentBytes = postProcessMask(parts.get("accent"), gateCanvas, snapCanvas, targetW, targetH);
         if (accentBytes != null && safeForegroundCount(accentBytes) < 5000) {
             accentBytes = null;
         }
-        byte[] trimBytes = postProcessMask(parts.get("trim"), canvasSmall, targetW, targetH);
+        byte[] trimBytes = postProcessMask(parts.get("trim"), gateCanvas, snapCanvas, targetW, targetH);
         if (trimBytes != null && safeForegroundCount(trimBytes) < 2000) {
             trimBytes = null;
         }
@@ -447,25 +471,31 @@ public class SegmentationService {
      * <ol>
      *   <li>smooth-upscale to the canvas aspect/resolution — the model outputs
      *       ~1K and nearest scaling to a 4K canvas shows staircase blocks;</li>
-     *   <li>colour-gate against the cleaned canvas when available: drop pixels
+     *   <li>colour-gate against the CLEANED canvas when available: drop pixels
      *       that are clearly not freshly painted surface, so borders that bled
-     *       onto railings, doors, glass or cladding snap back to the wall;</li>
+     *       onto railings, doors, glass or cladding snap back to the wall.
+     *       Cleaned-only — the gate's "freshly repainted white" assumption
+     *       doesn't hold on an arbitrary original photo;</li>
      *   <li>morphological cleanup, as before;</li>
      *   <li>boundary straightening (when enabled): {@link MaskStraightener}
      *       traces the mask outline and collapses the model's hand-painted
      *       wobble onto straight polygon segments — architectural lines
      *       (parapet bands, tower corners, chajjas) come out ruler-straight
      *       instead of wavy;</li>
-     *   <li>edge snap against the cleaned canvas when available (and enabled):
-     *       {@link MaskRefiner} re-attaches the (now straight) mask boundary
-     *       to the canvas's real edges within a few pixels, fixing the
-     *       model's small misregistrations once, server-side, for every
-     *       consumer.</li>
+     *   <li>edge snap against the snap canvas (when enabled): {@link MaskRefiner}
+     *       re-attaches the (now straight) mask boundary to the canvas's real
+     *       edges within a few pixels, fixing the model's small
+     *       misregistrations once, server-side, for every consumer. The snap
+     *       canvas is the cleaned image when present, otherwise the ORIGINAL
+     *       photo — snapping only needs real edges, and skipping it entirely
+     *       (the old behaviour without a cleaned canvas) shipped visibly
+     *       blobby, misregistered mask borders.</li>
      * </ol>
      * Every step is best-effort: a failure falls back to the previous bytes,
      * so post-processing can only ever improve on the raw mask or leave it be.
      */
-    private byte[] postProcessMask(byte[] mask, BufferedImage canvas, int w, int h) {
+    private byte[] postProcessMask(byte[] mask, BufferedImage gateCanvas,
+                                   BufferedImage snapCanvas, int w, int h) {
         if (mask == null) return null;
         byte[] out = mask;
         try {
@@ -474,9 +504,9 @@ public class SegmentationService {
             log.warn("Mask smooth-upscale to {}x{} failed, keeping model resolution: {}",
                     w, h, e.getMessage());
         }
-        if (canvas != null) {
+        if (gateCanvas != null) {
             try {
-                out = MaskProcessor.restrictToPaintable(out, canvas,
+                out = MaskProcessor.restrictToPaintable(out, gateCanvas,
                         PAINTABLE_MAX_SPREAD, PAINTABLE_MIN_LUMA, PAINTABLE_MAX_REMOVED);
             } catch (Exception e) {
                 log.warn("Mask colour gate failed, keeping ungated mask: {}", e.getMessage());
@@ -490,9 +520,9 @@ public class SegmentationService {
                 log.warn("Mask straightening failed, keeping unstraightened mask: {}", e.getMessage());
             }
         }
-        if (canvas != null && edgeSnapEnabled) {
+        if (snapCanvas != null && edgeSnapEnabled) {
             try {
-                out = MaskRefiner.snapToCanvas(out, canvas);
+                out = MaskRefiner.snapToCanvas(out, snapCanvas);
             } catch (Exception e) {
                 log.warn("Mask edge snap failed, keeping unsnapped mask: {}", e.getMessage());
             }
@@ -500,9 +530,9 @@ public class SegmentationService {
         return out;
     }
 
-    /** Decodes the cleaned canvas and downsamples it to the stored-mask
-     *  resolution. Null input or a decode failure returns null — the colour
-     *  gate is skipped and mask dimensions come from the original photo. */
+    /** Decodes a canvas image (cleaned or original) and downsamples it to the
+     *  stored-mask resolution. Null input or a decode failure returns null —
+     *  the caller skips the step that needed the canvas. */
     private BufferedImage decodeCanvasForMasks(byte[] cleanedBytes) {
         if (cleanedBytes == null) return null;
         try {
