@@ -23,6 +23,11 @@ public class ProjectResponse {
     // to the cleaned image, not the original. Null when cleaning is
     // disabled or hasn't run.
     private String cleanedImageUrl;
+    // The model's raw colour-coded mask (RED/GREEN/BLUE/BLACK) from the
+    // accepted generation — diagnostics for the admin mask viewer. Only set
+    // on the owner view (never the shared/public view); null for projects
+    // segmented before this shipped or with manual-only regions.
+    private String rawMaskUrl;
     // Populated when status == FAILED so the UI can show the cause.
     private String failureReason;
     private List<RegionResponse> regions;

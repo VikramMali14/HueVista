@@ -66,6 +66,13 @@ public class Project {
     // when present, falling back to the original UploadedImage when not.
     private String cleanedImageStorageKey;
 
+    // Storage key of the model's raw colour-coded mask (RED/GREEN/BLUE/BLACK
+    // image) from the generation that was accepted. Kept purely for
+    // diagnostics — the admin mask viewer compares it against the processed
+    // per-region masks. Null for projects segmented before this shipped and
+    // for projects whose regions are manual-only.
+    private String rawMaskStorageKey;
+
     // When status == FAILED, why. Surfaced to the frontend so we can show the
     // user something actionable ("auto-segmentation not configured — click each
     // wall") instead of a generic failure. Stored as TEXT because Hibernate

@@ -296,6 +296,18 @@ public class SegmentationService {
                 return false;
             }
 
+            // Keep the accepted generation's raw colour-coded image for the
+            // admin mask viewer (raw-vs-processed comparison). Best-effort:
+            // a storage failure must never fail the segmentation itself.
+            try {
+                String rawKey = storageService.store(
+                        masks.raw(), userId, "raw_mask.png", "image/png");
+                persistRawMaskKey(projectId, rawKey);
+            } catch (Exception e) {
+                log.warn("Could not persist raw colour-coded mask for project {}: {}",
+                        projectId, e.getMessage());
+            }
+
             int saved = 0;
             int displayOrder = 0;
             saveCategoryRegion(projectId, userId, masks.main(),
@@ -324,8 +336,10 @@ public class SegmentationService {
 
     /** Post-processed per-category masks of one usable generation: main is
      *  always present; accent/trim are null when the model produced none
-     *  (or only noise) for that category. */
-    private record ProcessedMasks(byte[] main, byte[] accent, byte[] trim) {}
+     *  (or only noise) for that category. {@code raw} is the model's original
+     *  colour-coded image the categories were split from — persisted for the
+     *  admin mask viewer's raw-vs-processed comparison. */
+    private record ProcessedMasks(byte[] main, byte[] accent, byte[] trim, byte[] raw) {}
 
     /**
      * One model round-trip: generate the colour-coded image, split it and run
@@ -369,7 +383,7 @@ public class SegmentationService {
         if (trimBytes != null && safeForegroundCount(trimBytes) < 2000) {
             trimBytes = null;
         }
-        return sealSeams(new ProcessedMasks(mainBytes, accentBytes, trimBytes), projectId);
+        return sealSeams(new ProcessedMasks(mainBytes, accentBytes, trimBytes, colorRaw.get()), projectId);
     }
 
     /**
@@ -395,7 +409,7 @@ public class SegmentationService {
             byte[] main = out.get(i++);
             byte[] accent = masks.accent() != null ? out.get(i++) : null;
             byte[] trim = masks.trim() != null ? out.get(i) : null;
-            return new ProcessedMasks(main, accent, trim);
+            return new ProcessedMasks(main, accent, trim, masks.raw());
         } catch (Exception e) {
             log.warn("Seam closure failed for project {}, keeping unsealed masks: {}",
                     projectId, e.getMessage());
@@ -934,6 +948,13 @@ public class SegmentationService {
     private void persistCleanedImageKey(String projectId, String storageKey) {
         projectRepository.findById(projectId).ifPresent(p -> {
             p.setCleanedImageStorageKey(storageKey);
+            projectRepository.save(p);
+        });
+    }
+
+    private void persistRawMaskKey(String projectId, String storageKey) {
+        projectRepository.findById(projectId).ifPresent(p -> {
+            p.setRawMaskStorageKey(storageKey);
             projectRepository.save(p);
         });
     }
