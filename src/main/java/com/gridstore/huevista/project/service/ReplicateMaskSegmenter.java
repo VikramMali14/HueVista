@@ -94,55 +94,6 @@ public class ReplicateMaskSegmenter {
     }
 
     /**
-     * Generates a binary mask image for one paintable surface category.
-     * The model receives the original photo (via URL) and a prompt
-     * describing exactly which surface to mask.
-     *
-     * @param imageUrl           publicly-fetchable URL of the source photo
-     * @param surfaceDescription what to mask (e.g. "the main painted wall")
-     * @return mask bytes (PNG/JPEG, white = surface) or Optional.empty()
-     */
-    public Optional<byte[]> generateMask(String imageUrl, String surfaceDescription) {
-        if (!isConfigured()) {
-            log.debug("Mask segmenter not configured — skipping");
-            return Optional.empty();
-        }
-        try {
-            log.info("Mask segmenter [{}]: requesting mask for '{}'", model, surfaceDescription);
-
-            String prompt = buildMaskPrompt(surfaceDescription);
-
-            // buildImageEditInput picks the request schema for the configured
-            // model family (FLUX: input_images / Nano Banana: image_input);
-            // output_format "png" preferred for masks either way.
-            Map<String, Object> input = buildImageEditInput(prompt, imageUrl);
-
-            String predictionId = startPrediction(input);
-            if (predictionId == null) return Optional.empty();
-
-            Map<String, Object> result = pollUntilDone(predictionId);
-            if (result == null) {
-                log.warn("Mask segmenter prediction timed out or failed");
-                return Optional.empty();
-            }
-
-            String maskUrl = extractOutputUrl(result.get("output"));
-            if (maskUrl == null) {
-                log.warn("Mask segmenter returned no output URL");
-                return Optional.empty();
-            }
-
-            byte[] bytes = downloadBytes(maskUrl);
-            log.info("Mask segmenter generated mask for '{}': {} bytes", surfaceDescription, bytes.length);
-            return Optional.of(bytes);
-
-        } catch (Exception e) {
-            log.warn("Mask segmenter failed for '{}': {}", surfaceDescription, e.getMessage());
-            return Optional.empty();
-        }
-    }
-
-    /**
      * Produces a SINGLE flat colour-blocked image covering all three paint
      * categories at once. Red = main wall, Green = accent wall, Blue = trim,
      * Black = everything else (including the door panels and metal railings —
@@ -361,6 +312,14 @@ public class ReplicateMaskSegmenter {
           + "railing or grille mounted on a parapet, balcony or staircase is NOT "
           + "blue — only the masonry band or coping beneath it is; the railing "
           + "itself is BLACK, below.\n\n"
+          + "TRIM IS DRAWN AT ITS TRUE WIDTH ONLY. Each blue element must be "
+          + "exactly as wide as the physical trim piece itself — the band a "
+          + "painter would cut with masking tape. Never thicken a band, never "
+          + "halo it, and never draw blue outlines along wall edges, wall-to-wall "
+          + "junctions, inside corners or shadow lines: a shadow under a slab is "
+          + "NOT trim, and the joint where two red walls meet is NOT trim. Large "
+          + "flat faces are never blue — the sloping side face of a staircase "
+          + "parapet is wall (RED); only its narrow top coping band is blue.\n\n"
           + "4. EVERYTHING ELSE → BLACK (#000000)\n\n"
           + "Sky, clouds, ground, soil, road, sidewalk, vegetation, trees, "
           + "vehicles, people, furniture, floors, ceilings; the door LEAVES/"
@@ -400,7 +359,9 @@ public class ReplicateMaskSegmenter {
           + "every visible face and its edges land on true corners, recesses or "
           + "plane changes — never mid-wall.\n"
           + "- Every chajja, parapet coping, band, sill, frame and border is "
-          + "traced in BLUE — none left red.\n"
+          + "traced in BLUE — none left red — and every blue piece sits at its "
+          + "true physical width: no thick blue outlines hugging wall edges, no "
+          + "wall junctions or shadow bands marked blue.\n"
           + "- Door panels, railings, glass, sky, ground and vegetation are all "
           + "BLACK.\n"
           + "- Zero white, grey or off-palette pixels. Zero gradients, zero soft "
@@ -408,20 +369,6 @@ public class ReplicateMaskSegmenter {
           + "- Output has the same dimensions as the input, with every edge "
           + "aligned pixel-for-pixel.\n\n"
           + "Return only the finished flat colour-block image.\n";
-
-    private String buildMaskPrompt(String surfaceDescription) {
-        return ("Generate a black-and-white binary segmentation MASK image. The mask must be the "
-                + "same exact dimensions as the input photograph.\n\n"
-                + "TARGET SURFACE: " + surfaceDescription + "\n\n"
-                + "RULES:\n"
-                + "- Pure WHITE (#FFFFFF) pixels for the target surface only.\n"
-                + "- Pure BLACK (#000000) pixels for everything else: sky, ground, vegetation, "
-                + "vehicles, doors, windows, stone, brick, tile, fixtures, decorations.\n"
-                + "- Mask must be PIXEL-ALIGNED with the input photo — same resolution, same "
-                + "object positions.\n"
-                + "- No grey pixels, no anti-aliasing, no gradients, no text, no annotations.\n"
-                + "- Output: the mask image only.\n");
-    }
 
     /**
      * Base input for an image-edit prediction, plus the OPTIONAL aspect-ratio
