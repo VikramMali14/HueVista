@@ -14,8 +14,9 @@ import java.util.List;
 
 /**
  * Maintenance re-snap of ALREADY STORED region masks: applies the
- * {@link MaskRefiner} edge snap — which new segmentations get inside the
- * pipeline — retroactively, to projects segmented before the snap existed.
+ * {@link MaskStraightener} boundary straightening and the {@link MaskRefiner}
+ * edge snap — which new segmentations get inside the pipeline —
+ * retroactively, to projects segmented before those steps existed.
  *
  * <p>Scope and safety:
  * <ul>
@@ -42,6 +43,11 @@ public class MaskResnapService {
     private final ProjectRepository projectRepository;
     private final RegionRepository regionRepository;
     private final StorageService storageService;
+
+    /** Mirrors the pipeline's straighten kill switch, so the maintenance pass
+     *  applies exactly the treatment new segmentations get. */
+    @org.springframework.beans.factory.annotation.Value("${huevista.segmentation.straighten.enabled:true}")
+    private boolean straightenEnabled;
 
     /** Upper bound on projects per maintenance call — the admin endpoint runs
      *  synchronously, and each project costs a canvas download plus a guided
@@ -97,6 +103,14 @@ public class MaskResnapService {
             }
             try {
                 byte[] mask = storageService.load(stored);
+                if (straightenEnabled) {
+                    try {
+                        mask = MaskStraightener.straighten(mask);
+                    } catch (Exception e) {
+                        log.warn("Straighten failed for region {} of project {}, snapping the raw mask: {}",
+                                region.getId(), projectId, e.getMessage());
+                    }
+                }
                 byte[] snapped = MaskRefiner.snapToCanvas(mask, canvas);
                 // Stored keys are "<ownerScope>/<uuid>.<ext>"; keep the same scope.
                 int slash = stored.indexOf('/');

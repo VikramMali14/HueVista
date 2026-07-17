@@ -53,8 +53,13 @@ final class MaskRefiner {
     static final int SNAP_RADIUS = 6;
     /** Guided-filter regularisation (colours normalised to 0..1). */
     static final double SNAP_EPS = 2e-4;
-    /** How far (working-res px) snapping may move the mask boundary. */
-    static final int SNAP_BAND_PX = 4;
+    /** How far (working-res px) snapping may move the mask boundary. Widened
+     *  from 4 to match the frontend's validated band: after
+     *  {@link MaskStraightener} flattens the model's wobble, the straight
+     *  line can sit a few px off the true edge (the wobble's mean, not the
+     *  edge itself), and the snap needs the extra reach to close that gap —
+     *  the steepen guard still keeps edge-less boundaries tight. */
+    static final int SNAP_BAND_PX = 6;
     /** Re-steepening ramp for the guided alpha, centred on 0.5 so the snapped
      *  crossing point stays where the filter put it. */
     static final double STEEPEN_LO = 0.35;

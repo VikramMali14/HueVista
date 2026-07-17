@@ -50,7 +50,8 @@ import java.util.Optional;
  *       into per-category binary masks server-side.</li>
  *   <li>Each non-empty category is post-processed (smooth-upscaled to the
  *       canvas resolution, colour-gated against the cleaned canvas so bleed
- *       onto railings/doors/glass/cladding is trimmed, morph-cleaned — see
+ *       onto railings/doors/glass/cladding is trimmed, morph-cleaned,
+ *       boundary-straightened and edge-snapped — see
  *       {@link #postProcessMask}), uploaded to S3 and persisted as a
  *       {@link Region} row.</li>
  * </ol>
@@ -383,6 +384,11 @@ public class SegmentationService {
     @Value("${huevista.segmentation.edge-snap.enabled:true}")
     private boolean edgeSnapEnabled;
 
+    /** Kill switch for the boundary straightening ({@link MaskStraightener}).
+     *  Pure local compute (no external calls), so it defaults ON. */
+    @Value("${huevista.segmentation.straighten.enabled:true}")
+    private boolean straightenEnabled;
+
     /**
      * Runs a raw split mask through the fidelity pipeline:
      * <ol>
@@ -392,10 +398,16 @@ public class SegmentationService {
      *       that are clearly not freshly painted surface, so borders that bled
      *       onto railings, doors, glass or cladding snap back to the wall;</li>
      *   <li>morphological cleanup, as before;</li>
+     *   <li>boundary straightening (when enabled): {@link MaskStraightener}
+     *       traces the mask outline and collapses the model's hand-painted
+     *       wobble onto straight polygon segments — architectural lines
+     *       (parapet bands, tower corners, chajjas) come out ruler-straight
+     *       instead of wavy;</li>
      *   <li>edge snap against the cleaned canvas when available (and enabled):
-     *       {@link MaskRefiner} re-attaches the mask boundary to the canvas's
-     *       real edges within a few pixels, fixing the model's small
-     *       misregistrations once, server-side, for every consumer.</li>
+     *       {@link MaskRefiner} re-attaches the (now straight) mask boundary
+     *       to the canvas's real edges within a few pixels, fixing the
+     *       model's small misregistrations once, server-side, for every
+     *       consumer.</li>
      * </ol>
      * Every step is best-effort: a failure falls back to the previous bytes,
      * so post-processing can only ever improve on the raw mask or leave it be.
@@ -418,6 +430,13 @@ public class SegmentationService {
             }
         }
         out = safeClean(out);
+        if (straightenEnabled) {
+            try {
+                out = MaskStraightener.straighten(out);
+            } catch (Exception e) {
+                log.warn("Mask straightening failed, keeping unstraightened mask: {}", e.getMessage());
+            }
+        }
         if (canvas != null && edgeSnapEnabled) {
             try {
                 out = MaskRefiner.snapToCanvas(out, canvas);
