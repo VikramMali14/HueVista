@@ -121,7 +121,9 @@ public class ProjectController {
                     - Returns immediately with status `SEGMENTING`
                     - Poll `GET /api/projects/{id}/status` every 1–2 seconds
                     - Status will change to `SEGMENTED` (masks ready) or `FAILED`
-                    - Segmentation typically takes 2–8 seconds
+                    - Segmentation typically takes 30–90 seconds (image cleaning +
+                      mask generation are generative model calls; slow runs can
+                      take a few minutes, so poll with a generous deadline)
                     """
     )
     @ApiResponses({

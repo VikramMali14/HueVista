@@ -1,0 +1,195 @@
+package com.gridstore.huevista.project.service;
+
+import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
+import com.gridstore.huevista.account.repository.OrgMembershipRepository;
+import com.gridstore.huevista.billing.service.BillingService;
+import com.gridstore.huevista.image.model.ImageType;
+import com.gridstore.huevista.image.repository.ImageRepository;
+import com.gridstore.huevista.image.service.StorageService;
+import com.gridstore.huevista.project.model.Project;
+import com.gridstore.huevista.project.model.Region;
+import com.gridstore.huevista.project.model.RegionCategory;
+import com.gridstore.huevista.project.repository.ProjectRepository;
+import com.gridstore.huevista.project.repository.RegionRepository;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.client.RestTemplate;
+
+import javax.imageio.ImageIO;
+import java.awt.Color;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.util.Optional;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * Unit tests for the colour-coded auto-segmentation path: a dud generation
+ * (no usable main wall) is retried with a fresh model call, and — critically
+ * — persists NOTHING, so a failed run can't leave orphan accent/trim rows on
+ * a FAILED project.
+ */
+class SegmentationServiceTest {
+
+    private static final int W = 200;
+    private static final int H = 100;
+
+    private final ProjectRepository projects = mock(ProjectRepository.class);
+    private final RegionRepository regions = mock(RegionRepository.class);
+    private final StorageService storage = mock(StorageService.class);
+    private final ReplicateMaskSegmenter segmenter = mock(ReplicateMaskSegmenter.class);
+    private final SegmentationService service = new SegmentationService(
+            projects, regions, storage, mock(RestTemplate.class), segmenter,
+            mock(ImageCleanerService.class), mock(ImageRepository.class),
+            mock(BillingService.class), mock(CustomerAccessCodeRepository.class),
+            mock(OrgMembershipRepository.class));
+
+    /** Colour-coded model output WITH a usable main wall: red block (12000 px)
+     *  plus a blue trim block (4000 px), rest black. */
+    private static byte[] goodCodedPng() throws Exception {
+        BufferedImage img = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
+        fill(img, Color.RED, 0, 0, 120, H);
+        fill(img, Color.BLUE, 160, 0, 40, H);
+        return png(img);
+    }
+
+    /** Dud output: trim only — plenty of blue but NO red main wall anywhere. */
+    private static byte[] dudCodedPng() throws Exception {
+        BufferedImage img = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
+        fill(img, Color.BLUE, 0, 0, W, H);
+        return png(img);
+    }
+
+    private static void fill(BufferedImage img, Color c, int x0, int y0, int w, int h) {
+        for (int y = y0; y < y0 + h; y++) {
+            for (int x = x0; x < x0 + w; x++) {
+                img.setRGB(x, y, c.getRGB());
+            }
+        }
+    }
+
+    private static byte[] png(BufferedImage img) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ImageIO.write(img, "png", out);
+        return out.toByteArray();
+    }
+
+    @Test
+    void retriesAfterDudGenerationAndPersistsNothingFromIt() throws Exception {
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 2);
+        when(segmenter.isConfigured()).thenReturn(true);
+        // First generation is a dud (trim but no main wall); second is usable.
+        when(segmenter.generateColorCodedMask(anyString(), any()))
+                .thenReturn(Optional.of(dudCodedPng()))
+                .thenReturn(Optional.of(goodCodedPng()));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("masks/key.png");
+        when(projects.getReferenceById("p1")).thenReturn(mock(Project.class));
+
+        boolean ok = service.tryColorCodedSegmentation(
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, W, H);
+
+        assertThat(ok).isTrue();
+        verify(segmenter, times(2)).generateColorCodedMask(anyString(), any());
+
+        // Only the GOOD attempt's regions were saved — the dud's blue trim was
+        // never persisted even though it cleared the trim size threshold.
+        ArgumentCaptor<Region> saved = ArgumentCaptor.forClass(Region.class);
+        verify(regions, times(2)).save(saved.capture());
+        assertThat(saved.getAllValues())
+                .extracting(Region::getCategory)
+                .containsExactly(RegionCategory.MAIN_WALL, RegionCategory.TRIM);
+    }
+
+    @Test
+    void failsWithoutPersistingAnythingWhenEveryAttemptIsADud() throws Exception {
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 2);
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.generateColorCodedMask(anyString(), any()))
+                .thenReturn(Optional.of(dudCodedPng()));
+
+        boolean ok = service.tryColorCodedSegmentation(
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, W, H);
+
+        assertThat(ok).isFalse();
+        verify(segmenter, times(2)).generateColorCodedMask(anyString(), any());
+        verify(regions, never()).save(any());
+        verify(storage, never()).store(any(byte[].class), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void singleAttemptConfigKeepsOldSingleShotBehaviour() throws Exception {
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.generateColorCodedMask(anyString(), any()))
+                .thenReturn(Optional.of(dudCodedPng()));
+
+        boolean ok = service.tryColorCodedSegmentation(
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, W, H);
+
+        assertThat(ok).isFalse();
+        verify(segmenter, times(1)).generateColorCodedMask(anyString(), any());
+    }
+
+    /** Coded image where the model left the accent wall WHITE and that white
+     *  blob touches the top edge of the frame. */
+    private static byte[] topTouchingWhiteAccentPng() throws Exception {
+        BufferedImage img = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
+        fill(img, Color.RED, 0, 0, 100, H);        // main
+        fill(img, Color.WHITE, 110, 0, 80, 90);    // accent left white, touches top
+        return png(img);
+    }
+
+    @Test
+    void interiorSceneSalvagesATopTouchingWhiteWall() throws Exception {
+        // Indoors there is no sky, so the white-salvage sky filter must be off:
+        // a wall reaching the top of a cropped photo is still adopted as accent.
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.generateColorCodedMask(anyString(), any()))
+                .thenReturn(Optional.of(topTouchingWhiteAccentPng()));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("masks/key.png");
+        when(projects.getReferenceById("p1")).thenReturn(mock(Project.class));
+
+        boolean ok = service.tryColorCodedSegmentation(
+                "p1", "u1", "http://img", ImageType.INDOOR, null, W, H);
+
+        assertThat(ok).isTrue();
+        ArgumentCaptor<Region> saved = ArgumentCaptor.forClass(Region.class);
+        verify(regions, times(2)).save(saved.capture());
+        assertThat(saved.getAllValues())
+                .extracting(Region::getCategory)
+                .containsExactly(RegionCategory.MAIN_WALL, RegionCategory.ACCENT_WALL);
+    }
+
+    @Test
+    void exteriorSceneRejectsATopTouchingWhiteBlobAsSky() throws Exception {
+        // Same image, OUTDOOR scene: the top-touching white blob is treated as
+        // sky and never becomes a paintable accent region.
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.generateColorCodedMask(anyString(), any()))
+                .thenReturn(Optional.of(topTouchingWhiteAccentPng()));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("masks/key.png");
+        when(projects.getReferenceById("p1")).thenReturn(mock(Project.class));
+
+        boolean ok = service.tryColorCodedSegmentation(
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, W, H);
+
+        assertThat(ok).isTrue();
+        ArgumentCaptor<Region> saved = ArgumentCaptor.forClass(Region.class);
+        verify(regions, times(1)).save(saved.capture());
+        assertThat(saved.getValue().getCategory()).isEqualTo(RegionCategory.MAIN_WALL);
+    }
+}
