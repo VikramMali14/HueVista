@@ -13,7 +13,6 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
@@ -125,12 +124,10 @@ public class ProjectController {
                     - Segmentation typically takes 30–90 seconds (image cleaning +
                       mask generation are generative model calls; slow runs can
                       take a few minutes, so poll with a generous deadline)
-                    - Body is optional; its fields (ADMIN only) control the run:
-                      `cleanImage: false` skips the image-cleaner step, and the
-                      mask-enhancement flags (`colourGate`, `morphClean`,
-                      `straighten`, `edgeSnap`, `closeSeams`) enable individual
-                      post-processing steps for this run (default: none — raw
-                      model masks)
+                    - Body is optional; its only field (ADMIN only) controls the
+                      run: `cleanImage: false` skips the image-cleaner step.
+                      Masks are always stored raw — exactly as the model
+                      produced them, with no post-processing
                     """
     )
     @ApiResponses({
@@ -149,35 +146,6 @@ public class ProjectController {
                 .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
         return ResponseEntity.ok(projectService.requestSegmentation(
                 userId(auth), id, admin ? request : null));
-    }
-
-    @Operation(
-            summary = "Re-process region masks from the stored raw mask (ADMIN)",
-            description = """
-                    Re-derives the project's AUTO region masks from the STORED raw
-                    colour-coded mask with the requested mask-enhancement flags
-                    (`colourGate`, `morphClean`, `straighten`, `edgeSnap`,
-                    `closeSeams`; empty body = raw masks). No model call and no AI
-                    charge — deterministic, so enhancement combinations can be
-                    compared on the same model output. Existing regions keep their
-                    identity and applied colours; only their mask files change.
-                    Runs synchronously (a few seconds) and returns the updated
-                    project with fresh mask URLs.
-                    """
-    )
-    @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "Masks re-processed; updated project returned"),
-            @ApiResponse(responseCode = "404", description = "Project not found, or no raw mask stored for it")
-    })
-    @PreAuthorize("hasRole('ADMIN')")
-    @PostMapping("/{id}/masks/reprocess")
-    public ResponseEntity<ProjectResponse> reprocessMasks(
-            @PathVariable String id,
-            @RequestBody(required = false) SegmentRequest request,
-            Authentication auth
-    ) {
-        projectService.reprocessMasks(userId(auth), id, request);
-        return ResponseEntity.ok(projectService.getProject(userId(auth), id));
     }
 
     @Operation(

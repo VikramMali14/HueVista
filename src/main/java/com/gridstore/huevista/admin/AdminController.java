@@ -17,7 +17,6 @@ import com.gridstore.huevista.billing.repository.SubscriptionRepository;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.repository.ProjectRepository;
-import com.gridstore.huevista.project.service.MaskResnapService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -53,7 +52,6 @@ public class AdminController {
     private final ProjectRepository projectRepository;
     private final AuditService auditService;
     private final com.gridstore.huevista.common.audit.AuditLogRepository auditLogRepository;
-    private final MaskResnapService maskResnapService;
 
     /** Hard cap on admin page sizes — these tables are unbounded. */
     private static final int MAX_PAGE_SIZE = 500;
@@ -270,20 +268,5 @@ public class AdminController {
                 "activeSubscriptions", activeCount,
                 "avgAiGenerationsPerActiveSubscription", Math.round(avgPerActiveUser * 100.0) / 100.0
         ));
-    }
-
-    @Operation(summary = "Re-snap stored region masks",
-            description = "Maintenance pass: re-runs the MaskRefiner edge snap over already-stored "
-                    + "auto region masks for up to `limit` projects that have a cleaned canvas, "
-                    + "oldest first. Projects segmented since the snap shipped are already aligned; "
-                    + "re-running is safe (snapping a snapped mask is a no-op). Returns counts.")
-    @PostMapping("/maintenance/resnap-masks")
-    public ResponseEntity<MaskResnapService.ResnapSummary> resnapMasks(
-            @RequestParam(defaultValue = "50") int limit,
-            Authentication auth) {
-        MaskResnapService.ResnapSummary summary = maskResnapService.resnapProjects(limit);
-        auditService.record(auth.getName(), "MASKS_RESNAPPED", "SYSTEM", "masks",
-                summary.toString());
-        return ResponseEntity.ok(summary);
     }
 }
