@@ -50,11 +50,13 @@ import java.util.Optional;
  *       into per-category binary masks server-side.</li>
  *   <li>Each non-empty category is smooth-upscaled to the canvas resolution
  *       (see {@link #postProcessMask}), uploaded to S3 and persisted as a
- *       {@link Region} row. By DEFAULT that resize is the only processing —
- *       the stored regions match the raw model output. An ADMIN can enable
- *       individual enhancement steps per run from the studio testing panel
- *       ({@link MaskEnhancement}: colour gate, morph clean, straighten,
- *       edge snap, seam close), persisted on the project.</li>
+ *       {@link Region} row. By DEFAULT the only other processing is the
+ *       COLOUR GATE (when a cleaned canvas exists): it strips mask pixels
+ *       sitting on clearly non-paintable fixtures — charcoal railings, dark
+ *       door leaves, window glass/grills — so paint never lands on them,
+ *       while the boundaries stay where the model drew them. An ADMIN can
+ *       override the step set per run from the studio testing panel
+ *       ({@link MaskEnhancement}), persisted on the project.</li>
  * </ol>
  *
  * <h3>Manual flow (segmentPointAndSave)</h3>
@@ -269,12 +271,17 @@ public class SegmentationService {
                 return false;
             }
 
-            // Which enhancement steps this run applies (ADMIN testing panel,
-            // persisted on the project; empty = raw model masks, the default).
-            java.util.Set<MaskEnhancement> enhancements = MaskEnhancement.parseCsv(
-                    projectRepository.findMaskEnhancementsById(projectId).orElse(null));
+            // Which enhancement steps this run applies. A stored choice (ADMIN
+            // testing panel; empty string = explicitly none) wins; a project
+            // with NO stored choice gets the default — just the colour gate,
+            // so paint never lands on railings/doors/grills while the mask
+            // boundaries stay exactly where the model drew them.
+            java.util.Set<MaskEnhancement> enhancements =
+                    projectRepository.findMaskEnhancementsById(projectId)
+                            .map(MaskEnhancement::parseCsv)
+                            .orElseGet(MaskEnhancement::defaultSet);
             if (!enhancements.isEmpty()) {
-                log.info("Mask enhancements enabled for project {}: {}", projectId, enhancements);
+                log.info("Mask enhancements for project {}: {}", projectId, enhancements);
             }
 
             // The canvas SIZES the stored masks: the cleaned repaint when
@@ -695,9 +702,9 @@ public class SegmentationService {
     /**
      * Smooth-upscales a raw split mask to the canvas aspect/resolution — the
      * model outputs ~1K and nearest scaling to a 4K canvas shows staircase
-     * blocks. By DEFAULT that resize is the only processing, so the stored
-     * masks match the raw model output. The run's {@code enhancements} set
-     * (ADMIN testing panel, see {@link MaskEnhancement}) can additionally
+     * blocks. The run's {@code enhancements} set (default: just the
+     * fixture-protecting colour gate — see {@link MaskEnhancement#defaultSet};
+     * overridable per run from the ADMIN testing panel) can additionally
      * enable, in order: the colour gate against the CLEANED canvas, the
      * morphological cleanup, the boundary straightening and the edge snap.
      * Every step is best-effort: a failure falls back to the previous bytes.

@@ -17,9 +17,11 @@ public class SegmentRequest {
      */
     private Boolean cleanImage;
 
-    // Per-run mask enhancement steps (see MaskEnhancement). Default is NONE:
-    // the stored regions are exactly the model's raw masks, only resized to
-    // the canvas. true enables a step for this run; null/false leaves it off.
+    // Per-run mask enhancement steps (see MaskEnhancement). A project that
+    // never received an admin choice runs the default set (just the
+    // fixture-protecting colour gate); a submitted body replaces it with
+    // exactly the flags set true — so sending everything false gives fully
+    // raw masks.
 
     /** Trim mask pixels that aren't freshly painted surface on the CLEANED
      *  canvas (railings/doors/glass). No-op when cleaning was skipped. */

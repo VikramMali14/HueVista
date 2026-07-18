@@ -82,8 +82,9 @@ public class Project {
 
     // ADMIN testing knob, set per segmentation request: comma-separated
     // MaskEnhancement names to apply to this run's masks (COLOUR_GATE,
-    // MORPH_CLEAN, STRAIGHTEN, EDGE_SNAP, CLOSE_SEAMS). Null/blank = none —
-    // masks are stored exactly as the model painted them (the default).
+    // MORPH_CLEAN, STRAIGHTEN, EDGE_SNAP, CLOSE_SEAMS). Null = never chosen,
+    // so MaskEnhancement.defaultSet() applies (just the fixture-protecting
+    // colour gate); EMPTY STRING = the admin explicitly chose no steps.
     private String maskEnhancements;
 
     // When status == FAILED, why. Surfaced to the frontend so we can show the
