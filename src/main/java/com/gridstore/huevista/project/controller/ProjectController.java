@@ -124,8 +124,12 @@ public class ProjectController {
                     - Segmentation typically takes 30–90 seconds (image cleaning +
                       mask generation are generative model calls; slow runs can
                       take a few minutes, so poll with a generous deadline)
-                    - Body is optional; `cleanImage: false` (ADMIN only) skips the
-                      image-cleaner step for this run
+                    - Body is optional; its fields (ADMIN only) control the run:
+                      `cleanImage: false` skips the image-cleaner step, and the
+                      mask-enhancement flags (`colourGate`, `morphClean`,
+                      `straighten`, `edgeSnap`, `closeSeams`) enable individual
+                      post-processing steps for this run (default: none — raw
+                      model masks)
                     """
     )
     @ApiResponses({
@@ -138,12 +142,12 @@ public class ProjectController {
             @RequestBody(required = false) SegmentRequest request,
             Authentication auth
     ) {
-        // The clean-image override is an ADMIN testing knob — silently ignored
-        // for every other role so a crafted request can't skip the cleaner.
+        // The whole options body is an ADMIN testing panel — silently ignored
+        // for every other role so a crafted request can't alter the pipeline.
         boolean admin = auth.getAuthorities().stream()
                 .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
-        Boolean cleanImage = admin && request != null ? request.getCleanImage() : null;
-        return ResponseEntity.ok(projectService.requestSegmentation(userId(auth), id, cleanImage));
+        return ResponseEntity.ok(projectService.requestSegmentation(
+                userId(auth), id, admin ? request : null));
     }
 
     @Operation(
