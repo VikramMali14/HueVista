@@ -221,6 +221,99 @@ public class BillingService {
         return SubscriptionResponse.from(sub);
     }
 
+    /**
+     * ADMIN: activate a subscription for {@code targetUserId} without a payment —
+     * used to comp a shop, onboard offline-paying customers, or restore access.
+     * Any currently ACTIVE subscription (paid or trial) is expired first so the
+     * user never holds two active plans; the granted one has no Razorpay id, so a
+     * later self-serve cancel ends it locally (see {@link #cancelSubscription}).
+     */
+    @Transactional
+    public SubscriptionResponse adminGrantSubscription(String adminUserId, String targetUserId,
+                                                       Plan plan, int days, Integer aiLimitOverride) {
+        User user = userRepository.findById(targetUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + targetUserId));
+
+        subscriptionRepository.findByUserIdAndStatus(targetUserId, SubscriptionStatus.ACTIVE)
+                .forEach(existing -> {
+                    existing.setStatus(SubscriptionStatus.EXPIRED);
+                    subscriptionRepository.save(existing);
+                    log.info("Subscription superseded by admin grant: user={} subId={}",
+                            targetUserId, existing.getId());
+                });
+
+        LocalDateTime now = LocalDateTime.now();
+        Subscription sub = Subscription.builder()
+                .user(user)
+                .plan(plan)
+                .status(SubscriptionStatus.ACTIVE)
+                .trial(false)
+                .currentPeriodStart(now)
+                .currentPeriodEnd(now.plusDays(days))
+                .aiGenerationsUsed(0)
+                .aiGenerationsLimit(aiLimitOverride != null ? aiLimitOverride : plan.getMonthlyAiLimit())
+                .pdfDownloadsLimit(plan.getMonthlyPdfLimit())
+                .pdfImageLimit(plan.getPdfImageLimit())
+                .build();
+        subscriptionRepository.save(sub);
+
+        auditService.record(adminUserId, "ADMIN_SUBSCRIPTION_GRANT", "SUBSCRIPTION", sub.getId(),
+                "user=" + targetUserId + " plan=" + plan + " days=" + days
+                        + (aiLimitOverride != null ? " aiLimit=" + aiLimitOverride : ""));
+        log.info("Admin {} granted subscription: user={} plan={} days={}", adminUserId, targetUserId, plan, days);
+        return SubscriptionResponse.from(sub);
+    }
+
+    /**
+     * ADMIN: adjust a user's most recent subscription in place — add AI generation
+     * credits (raises the limit) and/or extend the period end. Extending a lapsed
+     * (EXPIRED/CANCELLED/HALTED) subscription reactivates it, which is how an
+     * ended plan is brought back without making the user pay again.
+     */
+    @Transactional
+    public SubscriptionResponse adminAdjustSubscription(String adminUserId, String targetUserId,
+                                                        Integer addAiGenerations, Integer extendDays) {
+        if (addAiGenerations == null && extendDays == null) {
+            throw new IllegalArgumentException(
+                    "Nothing to adjust — provide addAiGenerations and/or extendDays.");
+        }
+        Subscription sub = subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(targetUserId, SubscriptionStatus.ACTIVE)
+                .orElseGet(() -> subscriptionRepository
+                        .findByUserIdOrderByCreatedAtDesc(targetUserId)
+                        .stream().findFirst()
+                        .orElseThrow(() -> new ResourceNotFoundException(
+                                "No subscription to adjust — grant one first.")));
+
+        LocalDateTime now = LocalDateTime.now();
+        if (addAiGenerations != null) {
+            long raised = (long) sub.getAiGenerationsLimit() + addAiGenerations;
+            sub.setAiGenerationsLimit(raised > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) raised);
+        }
+        if (extendDays != null) {
+            LocalDateTime base = sub.getCurrentPeriodEnd();
+            LocalDateTime from = (base == null || base.isBefore(now)) ? now : base;
+            sub.setCurrentPeriodEnd(from.plusDays(extendDays));
+            if (sub.getCurrentPeriodStart() == null) {
+                sub.setCurrentPeriodStart(now);
+            }
+            // Extension implies "this user should have access" — bring a lapsed
+            // subscription back to life. A still-ACTIVE one is left as-is.
+            if (sub.getStatus() != SubscriptionStatus.ACTIVE) {
+                sub.setStatus(SubscriptionStatus.ACTIVE);
+            }
+        }
+        subscriptionRepository.save(sub);
+
+        auditService.record(adminUserId, "ADMIN_SUBSCRIPTION_ADJUST", "SUBSCRIPTION", sub.getId(),
+                "user=" + targetUserId
+                        + (addAiGenerations != null ? " addAiGenerations=" + addAiGenerations : "")
+                        + (extendDays != null ? " extendDays=" + extendDays : ""));
+        log.info("Admin {} adjusted subscription {}: addAi={} extendDays={}",
+                adminUserId, sub.getId(), addAiGenerations, extendDays);
+        return SubscriptionResponse.from(sub);
+    }
+
     @Transactional(readOnly = true)
     public SubscriptionResponse getCurrentSubscription(String userId) {
         Subscription sub = subscriptionRepository

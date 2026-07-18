@@ -33,6 +33,9 @@ public class ProjectResponse {
     private List<RegionResponse> regions;
     private boolean hasShareLink;
     private LocalDateTime shareExpiresAt;
+    // Shared/public view only: brand names the retailer opened for the share
+    // viewer's repaint palette. Empty = every brand. Null on the owner view.
+    private List<String> sharedBrands;
     // When the customer sent the project to the issuing shop; null until then.
     private LocalDateTime sentToShopAt;
     private LocalDateTime createdAt;
@@ -74,6 +77,7 @@ public class ProjectResponse {
                 .imageId(project.getImage().getId())
                 .imageUrl(imageUrl)
                 .regions(regions)
+                .sharedBrands(project.getShareBrandList())
                 // The guest needs this to render "Sent ✓" after a reload.
                 .sentToShopAt(project.getSentToShopAt())
                 .build();

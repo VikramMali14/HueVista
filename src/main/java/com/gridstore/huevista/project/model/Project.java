@@ -87,6 +87,32 @@ public class Project {
 
     private LocalDateTime shareExpiresAt;
 
+    // Paint companies the sharing retailer opened up for the share-link viewer's
+    // repaint palette, stored as a comma-separated list of brand names. Null or
+    // blank means no restriction — the viewer may repaint with every brand.
+    @Column(columnDefinition = "TEXT")
+    private String shareBrands;
+
+    /** Allowed share-repaint brand names as a list. Empty list = no restriction. */
+    public List<String> getShareBrandList() {
+        if (shareBrands == null || shareBrands.isBlank()) return List.of();
+        return java.util.Arrays.stream(shareBrands.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
+    }
+
+    public void setShareBrandList(List<String> brands) {
+        if (brands == null || brands.isEmpty()) {
+            this.shareBrands = null;
+            return;
+        }
+        this.shareBrands = brands.stream()
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(java.util.stream.Collectors.joining(","));
+    }
+
     // When the customer explicitly sent this project to the issuing shop
     // ("I'm done — this is the one"). Null until they do; the portal shows a
     // "sent by customer" badge and the shop owner gets a heads-up email.

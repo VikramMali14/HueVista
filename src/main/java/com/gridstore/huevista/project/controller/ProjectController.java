@@ -250,6 +250,9 @@ public class ProjectController {
                     The shared view shows applied colors but **hides shade codes** from the end customer.
 
                     Valid durations: `3`, `7`, or `14` days (defaults to 7).
+
+                    `brands` (optional, comma-separated brand names) limits which paint
+                    companies the share viewer may repaint with; omit for all brands.
                     """
     )
     @ApiResponse(responseCode = "200", description = "Share link with token and expiry")
@@ -257,10 +260,16 @@ public class ProjectController {
     public ResponseEntity<ShareResponse> generateShareLink(
             @PathVariable String id,
             @Parameter(description = "Validity in days: 3, 7, or 14") @RequestParam(defaultValue = "7") int days,
+            @Parameter(description = "Comma-separated paint company names the viewer may repaint with (blank = all)")
+            @RequestParam(required = false) String brands,
             Authentication auth
     ) {
         if (days != 3 && days != 7 && days != 14) days = 7;
-        return ResponseEntity.ok(projectService.generateShareLink(userId(auth), id, days));
+        java.util.List<String> brandList = (brands == null || brands.isBlank())
+                ? java.util.List.of()
+                : java.util.Arrays.stream(brands.split(","))
+                        .map(String::trim).filter(s -> !s.isEmpty()).toList();
+        return ResponseEntity.ok(projectService.generateShareLink(userId(auth), id, days, brandList));
     }
 
     @Operation(
