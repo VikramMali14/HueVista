@@ -202,6 +202,49 @@ class SegmentationServiceTest {
     }
 
     @Test
+    void defaultColourGateStripsMaskPixelsSittingOnDarkFixtures() throws Exception {
+        // No admin ever touched the testing panel (no stored enhancement CSV):
+        // the default set applies — just the colour gate. The model's blue trim
+        // block (x160-200) partly covers a charcoal railing strip (x160-175) on
+        // the cleaned canvas; the gate strips exactly those pixels so paint
+        // never lands on the fixture, and the rest of the mask is untouched.
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.generateColorCodedMask(anyString(), any()))
+                .thenReturn(Optional.of(goodCodedPng()));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("masks/key.png");
+        when(projects.getReferenceById("p1")).thenReturn(mock(Project.class));
+
+        BufferedImage cleaned = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
+        fill(cleaned, Color.WHITE, 0, 0, W, H);
+        fill(cleaned, new Color(60, 60, 60), 160, 0, 15, H); // charcoal railing
+
+        boolean ok = service.tryColorCodedSegmentation(
+                "p1", "u1", "http://img", ImageType.OUTDOOR, png(cleaned), null, W, H);
+
+        assertThat(ok).isTrue();
+        // Stored blobs in order: raw colour-coded mask, main, trim.
+        ArgumentCaptor<byte[]> maskBytes = ArgumentCaptor.forClass(byte[].class);
+        verify(storage, times(3)).store(maskBytes.capture(), anyString(), anyString(), anyString());
+        int trimForeground = countForeground(maskBytes.getAllValues().get(2));
+        // 4000 px of blue trim minus the 1500 px railing strip ≈ 2500 kept.
+        assertThat(trimForeground).isBetween(2200, 2900);
+    }
+
+    /** Counts bright (foreground) pixels of a stored white-on-black mask PNG. */
+    private static int countForeground(byte[] png) throws Exception {
+        BufferedImage img = ImageIO.read(new ByteArrayInputStream(png));
+        int n = 0;
+        for (int y = 0; y < img.getHeight(); y++) {
+            for (int x = 0; x < img.getWidth(); x++) {
+                if ((img.getRGB(x, y) & 0xff) > 127) n++;
+            }
+        }
+        return n;
+    }
+
+    @Test
     void reprocessRepointsExistingRegionMasksFromTheStoredRawMask() throws Exception {
         // Admin studio panel "apply": regions are re-derived from the STORED
         // raw mask (no model call), and the existing rows keep their identity
