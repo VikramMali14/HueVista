@@ -14,10 +14,10 @@ import java.util.Deque;
 /**
  * Pixel toolbox for the colour-coded mask pipeline: splits the model's
  * RED/GREEN/BLUE/BLACK image into per-category binary masks
- * ({@link #splitColorCodedMask}) and provides the fidelity primitives the
- * segmentation post-processing runs on them — smooth binary resize,
- * morphological cleanup, the cleaned-canvas colour gate
- * ({@link #restrictToPaintable}) and inversion repair for SAM point masks.
+ * ({@link #splitColorCodedMask}), smooth-resizes them to the canvas
+ * resolution ({@link #resizeBinarySmooth}) and repairs the occasional
+ * inverted SAM point mask ({@link #ensureWhiteForeground}). The masks are
+ * otherwise stored exactly as the model produced them — no post-processing.
  *
  * 8-connectivity (including diagonals) wherever blobs are traced, so faint
  * JPEG-compression gaps along wall corners don't split one wall into two.
@@ -45,16 +45,6 @@ final class MaskProcessor {
         return n;
     }
 
-    private static BufferedImage resizeNearest(BufferedImage src, int w, int h) {
-        if (src.getWidth() == w && src.getHeight() == h) return src;
-        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
-        Graphics2D g = out.createGraphics();
-        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
-        g.drawImage(src, 0, 0, w, h, null);
-        g.dispose();
-        return out;
-    }
-
     /**
      * Decodes JPEG/PNG bytes to a BufferedImage at the original resolution.
      */
@@ -67,7 +57,7 @@ final class MaskProcessor {
     /**
      * Returns a downsampled copy of an image with the longest side capped at
      * {@code maxDim}. Used to bring canvases down to the stored-mask
-     * resolution before the colour gate and edge snap run on them.
+     * resolution the region masks are sized off.
      */
     static BufferedImage downsample(BufferedImage src, int maxDim) {
         int w = src.getWidth(), h = src.getHeight();
@@ -83,28 +73,6 @@ final class MaskProcessor {
         return out;
     }
 
-    /**
-     * Cleans up a binary mask using morphological close-then-open with a 3×3
-     * structuring element. Close (dilate→erode) fills small holes — paint-through
-     * gaps where the model dropped a few wall pixels around light switches or
-     * picture frames. Open (erode→dilate) removes speckle noise — stray "wall"
-     * pixels on the floor, sky, or sofa. Both operations preserve overall wall
-     * shape. Returns a re-encoded PNG.
-     */
-    static byte[] morphClean(byte[] maskBytes) throws IOException {
-        BufferedImage img = ImageIO.read(new ByteArrayInputStream(maskBytes));
-        if (img == null) {
-            throw new IOException("Could not decode mask image for morphological cleanup");
-        }
-        int width = img.getWidth();
-        int height = img.getHeight();
-
-        boolean[] binary = thresholdToBinary(img, width, height);
-        boolean[] closed = erode(dilate(binary, width, height), width, height);
-        boolean[] cleaned = dilate(erode(closed, width, height), width, height);
-        return encodeBinaryPng(cleaned, width, height);
-    }
-
     static boolean[] thresholdToBinary(BufferedImage img, int w, int h) {
         boolean[] bin = new boolean[w * h];
         for (int y = 0; y < h; y++) {
@@ -115,54 +83,6 @@ final class MaskProcessor {
             }
         }
         return bin;
-    }
-
-    /** 3×3 dilation: a pixel becomes white if itself or any 8-neighbor is white. */
-    private static boolean[] dilate(boolean[] in, int w, int h) {
-        boolean[] out = new boolean[w * h];
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                int idx = y * w + x;
-                if (in[idx]) { out[idx] = true; continue; }
-                boolean any = false;
-                outer:
-                for (int dy = -1; dy <= 1; dy++) {
-                    int ny = y + dy;
-                    if (ny < 0 || ny >= h) continue;
-                    for (int dx = -1; dx <= 1; dx++) {
-                        int nx = x + dx;
-                        if (nx < 0 || nx >= w) continue;
-                        if (in[ny * w + nx]) { any = true; break outer; }
-                    }
-                }
-                out[idx] = any;
-            }
-        }
-        return out;
-    }
-
-    /** 3×3 erosion: a pixel stays white only if every 8-neighbor (and the pixel) is white. */
-    private static boolean[] erode(boolean[] in, int w, int h) {
-        boolean[] out = new boolean[w * h];
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                int idx = y * w + x;
-                if (!in[idx]) continue;
-                boolean all = true;
-                outer:
-                for (int dy = -1; dy <= 1; dy++) {
-                    int ny = y + dy;
-                    if (ny < 0 || ny >= h) { all = false; break; }
-                    for (int dx = -1; dx <= 1; dx++) {
-                        int nx = x + dx;
-                        if (nx < 0 || nx >= w) { all = false; break outer; }
-                        if (!in[ny * w + nx]) { all = false; break outer; }
-                    }
-                }
-                out[idx] = all;
-            }
-        }
-        return out;
     }
 
     static byte[] encodeBinaryPng(boolean[] bin, int w, int h) throws IOException {
@@ -380,124 +300,6 @@ final class MaskProcessor {
     }
 
     /**
-     * Closes the unpaintable seams BETWEEN adjacent region masks.
-     *
-     * <p>The per-category masks are post-processed independently (colour gate,
-     * morph clean, straighten, edge snap), so two regions that abut in the
-     * colour-coded source drift apart by a few pixels — and every pixel in the
-     * gap belongs to no region, rendering as an unpainted ribbon of bare canvas
-     * between the painted surfaces. This pass assigns those gap pixels to the
-     * nearest region.
-     *
-     * <p>Only pixels within {@code maxDistPx} (chessboard distance) of TWO OR
-     * MORE different masks are filled — a true seam always has a region on
-     * both sides. Background bordered by a single region (window panes, sky,
-     * railing gaps, door leaves) is never touched, so this cannot bleed paint
-     * onto non-paintable surfaces; it can only re-join surfaces that were
-     * connected in the source segmentation.
-     *
-     * @param maskPngs binary mask PNGs, all at identical dimensions
-     * @return masks in the same order with seam pixels filled; the input list
-     *         itself when nothing changed
-     * @throws IOException when a mask can't be decoded or dimensions differ —
-     *                     callers keep the unsealed masks
-     */
-    static java.util.List<byte[]> closeSeams(java.util.List<byte[]> maskPngs, int maxDistPx)
-            throws IOException {
-        int k = maskPngs.size();
-        if (k < 2 || maxDistPx <= 0) return maskPngs;
-
-        boolean[][] bins = new boolean[k][];
-        int w = -1, h = -1;
-        for (int m = 0; m < k; m++) {
-            BufferedImage img = decode(maskPngs.get(m));
-            if (w < 0) {
-                w = img.getWidth();
-                h = img.getHeight();
-            } else if (img.getWidth() != w || img.getHeight() != h) {
-                throw new IOException("Mask dimensions differ (" + img.getWidth() + "x"
-                        + img.getHeight() + " vs " + w + "x" + h + ") — cannot close seams");
-            }
-            bins[m] = thresholdToBinary(img, w, h);
-        }
-
-        int[][] dist = new int[k][];
-        for (int m = 0; m < k; m++) {
-            dist[m] = chessboardDistance(bins[m], w, h);
-        }
-
-        boolean changed = false;
-        for (int i = 0; i < w * h; i++) {
-            int best = -1, bestD = Integer.MAX_VALUE, within = 0;
-            boolean foreground = false;
-            for (int m = 0; m < k; m++) {
-                int d = dist[m][i];
-                if (d == 0) {
-                    foreground = true;
-                    break;
-                }
-                if (d <= maxDistPx) {
-                    within++;
-                    if (d < bestD) {
-                        bestD = d;
-                        best = m;
-                    }
-                }
-            }
-            if (foreground || within < 2) continue;
-            bins[best][i] = true;
-            changed = true;
-        }
-        if (!changed) return maskPngs;
-
-        java.util.List<byte[]> out = new java.util.ArrayList<>(k);
-        for (int m = 0; m < k; m++) {
-            out.add(encodeBinaryPng(bins[m], w, h));
-        }
-        return out;
-    }
-
-    /**
-     * Exact chessboard (L∞) distance to the nearest foreground pixel, via the
-     * classic two-pass raster scan (forward with the already-visited 8-half,
-     * backward with the other). Foreground pixels are 0.
-     */
-    static int[] chessboardDistance(boolean[] fg, int w, int h) {
-        final int inf = Integer.MAX_VALUE / 4;
-        int[] d = new int[w * h];
-        for (int i = 0; i < d.length; i++) d[i] = fg[i] ? 0 : inf;
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                int i = y * w + x;
-                if (d[i] == 0) continue;
-                int best = d[i];
-                if (x > 0) best = Math.min(best, d[i - 1] + 1);
-                if (y > 0) {
-                    best = Math.min(best, d[i - w] + 1);
-                    if (x > 0) best = Math.min(best, d[i - w - 1] + 1);
-                    if (x < w - 1) best = Math.min(best, d[i - w + 1] + 1);
-                }
-                d[i] = best;
-            }
-        }
-        for (int y = h - 1; y >= 0; y--) {
-            for (int x = w - 1; x >= 0; x--) {
-                int i = y * w + x;
-                if (d[i] == 0) continue;
-                int best = d[i];
-                if (x < w - 1) best = Math.min(best, d[i + 1] + 1);
-                if (y < h - 1) {
-                    best = Math.min(best, d[i + w] + 1);
-                    if (x < w - 1) best = Math.min(best, d[i + w + 1] + 1);
-                    if (x > 0) best = Math.min(best, d[i + w - 1] + 1);
-                }
-                d[i] = best;
-            }
-        }
-        return d;
-    }
-
-    /**
      * Resizes a binary mask to {@code w}×{@code h} with BILINEAR interpolation
      * and re-thresholds the result. Interpolating the 0/255 edge and cutting it
      * at 50% grey lands the new boundary between the source pixels
@@ -515,58 +317,6 @@ final class MaskProcessor {
         g.drawImage(src, 0, 0, w, h, null);
         g.dispose();
         return encodeBinaryPng(thresholdToBinary(gray, w, h), w, h);
-    }
-
-    /**
-     * Drops mask pixels whose colour on the CLEANED canvas cannot be freshly
-     * painted plaster. The clean step repaints every paintable wall and trim
-     * surface near-white, so a masked pixel that is dark or strongly coloured
-     * is mask bleed onto something else — a charcoal railing, a dark door
-     * leaf, window glass, vegetation, the dark grout of stone cladding — and
-     * is removed. This only ever REMOVES pixels: ragged mask borders snap
-     * inward to the real painted surface, never outward.
-     *
-     * A pixel counts as paint-like when its channel spread (max−min) is at
-     * most {@code maxChannelSpread} AND its luminance is at least
-     * {@code minLuma}. Both thresholds are forgiving on purpose: the repaint
-     * keeps the photo's shading, so a white wall at dusk reads warm (spread
-     * up to ~60) and a wall in shadow sits well below full brightness.
-     *
-     * <p>Safety valve: if the gate would remove more than
-     * {@code maxRemovedFraction} of the mask, the input is returned unchanged
-     * — the canvas is probably NOT the white repaint (cleaner disabled or
-     * failed), so the colour assumption doesn't hold.
-     */
-    static byte[] restrictToPaintable(byte[] maskBytes, BufferedImage canvas,
-                                      int maxChannelSpread, int minLuma,
-                                      double maxRemovedFraction) throws IOException {
-        int w = canvas.getWidth(), h = canvas.getHeight();
-        BufferedImage mask = decode(maskBytes);
-        if (mask.getWidth() != w || mask.getHeight() != h) {
-            mask = resizeNearest(mask, w, h);
-        }
-        boolean[] bin = thresholdToBinary(mask, w, h);
-        boolean[] out = new boolean[w * h];
-        long total = 0, kept = 0;
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                int idx = y * w + x;
-                if (!bin[idx]) continue;
-                total++;
-                int p = canvas.getRGB(x, y);
-                int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
-                int spread = Math.max(r, Math.max(g, b)) - Math.min(r, Math.min(g, b));
-                int luma = (2126 * r + 7152 * g + 722 * b) / 10000;
-                if (spread <= maxChannelSpread && luma >= minLuma) {
-                    out[idx] = true;
-                    kept++;
-                }
-            }
-        }
-        if (total == 0 || (double) (total - kept) / total > maxRemovedFraction) {
-            return maskBytes;
-        }
-        return encodeBinaryPng(out, w, h);
     }
 
     /**

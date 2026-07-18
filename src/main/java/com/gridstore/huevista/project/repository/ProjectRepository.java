@@ -76,42 +76,10 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
     Optional<String> findImageIdById(@Param("projectId") String projectId);
 
     /**
-     * Reads the cleaned canvas's storage key without pulling the full entity —
-     * used by the mask maintenance/point-segment paths to fetch the image the
-     * region masks must align to.
-     */
-    @Query("SELECT p.cleanedImageStorageKey FROM Project p WHERE p.id = :projectId")
-    Optional<String> findCleanedImageKeyById(@Param("projectId") String projectId);
-
-    /**
-     * Ids of projects that have a cleaned canvas stored (the image their masks
-     * align to), oldest first so a capped maintenance pass walks the backlog
-     * deterministically across repeated runs.
-     */
-    @Query("SELECT p.id FROM Project p WHERE p.cleanedImageStorageKey IS NOT NULL ORDER BY p.createdAt ASC, p.id ASC")
-    List<String> findIdsWithCleanedImage(org.springframework.data.domain.Pageable pageable);
-
-    /**
      * Reads the ADMIN skip-image-clean testing flag without pulling the full
      * entity — checked by the async segmentation worker before the cleaner
      * step. Empty optional = flag never set = default behaviour.
      */
     @Query("SELECT p.skipImageClean FROM Project p WHERE p.id = :projectId")
     Optional<Boolean> findSkipImageCleanById(@Param("projectId") String projectId);
-
-    /**
-     * Reads the ADMIN mask-enhancement CSV (MaskEnhancement names) without
-     * pulling the full entity — checked by the async segmentation worker to
-     * decide which post-processing steps this run applies. Empty optional or
-     * blank = none (raw model masks, the default).
-     */
-    @Query("SELECT p.maskEnhancements FROM Project p WHERE p.id = :projectId")
-    Optional<String> findMaskEnhancementsById(@Param("projectId") String projectId);
-
-    /**
-     * Reads the stored raw colour-coded mask's storage key without pulling the
-     * full entity — the admin mask-reprocess path re-derives regions from it.
-     */
-    @Query("SELECT p.rawMaskStorageKey FROM Project p WHERE p.id = :projectId")
-    Optional<String> findRawMaskKeyById(@Param("projectId") String projectId);
 }

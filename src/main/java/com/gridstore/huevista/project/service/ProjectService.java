@@ -16,7 +16,6 @@ import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.StorageService;
 import com.gridstore.huevista.project.dto.*;
-import com.gridstore.huevista.project.model.MaskEnhancement;
 import com.gridstore.huevista.project.model.Project;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
@@ -208,29 +207,17 @@ public class ProjectService {
     /**
      * @param options ADMIN testing panel (already role-gated by the
      *                controller; null for non-admin callers, which leaves the
-     *                project's stored choices untouched): cleanImage=false
-     *                skips the image-cleaner step, and the mask-enhancement
-     *                flags pick which post-processing steps run — every
-     *                admin request overwrites the enhancement set with exactly
-     *                what was sent, so what's checked is what runs. Persisted
-     *                on the project so the async worker (possibly another JVM
-     *                reading the Redis queue) sees the same choice.
+     *                project's stored choice untouched): cleanImage=false
+     *                skips the image-cleaner step. Persisted on the project so
+     *                the async worker (possibly another JVM reading the Redis
+     *                queue) sees the same choice.
      */
     @Transactional
     public ProjectResponse requestSegmentation(String userId, String projectId,
                                                com.gridstore.huevista.project.dto.SegmentRequest options) {
         Project project = findOwned(userId, projectId);
-        if (options != null) {
-            if (options.getCleanImage() != null) {
-                project.setSkipImageClean(!options.getCleanImage());
-            }
-            java.util.EnumSet<MaskEnhancement> steps = java.util.EnumSet.noneOf(MaskEnhancement.class);
-            if (Boolean.TRUE.equals(options.getColourGate())) steps.add(MaskEnhancement.COLOUR_GATE);
-            if (Boolean.TRUE.equals(options.getMorphClean())) steps.add(MaskEnhancement.MORPH_CLEAN);
-            if (Boolean.TRUE.equals(options.getStraighten())) steps.add(MaskEnhancement.STRAIGHTEN);
-            if (Boolean.TRUE.equals(options.getEdgeSnap())) steps.add(MaskEnhancement.EDGE_SNAP);
-            if (Boolean.TRUE.equals(options.getCloseSeams())) steps.add(MaskEnhancement.CLOSE_SEAMS);
-            project.setMaskEnhancements(MaskEnhancement.toCsv(steps));
+        if (options != null && options.getCleanImage() != null) {
+            project.setSkipImageClean(!options.getCleanImage());
         }
 
         // Gate on the retailer's own AI quota WITHOUT charging yet: throws 402 when they
@@ -277,33 +264,6 @@ public class ProjectService {
     public ProjectResponse getStatus(String userId, String projectId) {
         Project project = findOwned(userId, projectId);
         return toResponse(project);
-    }
-
-    /**
-     * ADMIN testing: re-derives the project's AUTO region masks from the
-     * STORED raw colour-coded mask with the requested enhancement set — no
-     * model call, no AI charge, deterministic (the controller role-gates this
-     * endpoint). Deliberately NOT @Transactional: the mask compute takes
-     * seconds and must not hold a DB connection; each repository write is its
-     * own transaction.
-     */
-    public void reprocessMasks(String userId, String projectId,
-                               com.gridstore.huevista.project.dto.SegmentRequest options) {
-        Project project = findOwned(userId, projectId);
-        java.util.EnumSet<MaskEnhancement> steps = java.util.EnumSet.noneOf(MaskEnhancement.class);
-        if (options != null) {
-            if (Boolean.TRUE.equals(options.getColourGate())) steps.add(MaskEnhancement.COLOUR_GATE);
-            if (Boolean.TRUE.equals(options.getMorphClean())) steps.add(MaskEnhancement.MORPH_CLEAN);
-            if (Boolean.TRUE.equals(options.getStraighten())) steps.add(MaskEnhancement.STRAIGHTEN);
-            if (Boolean.TRUE.equals(options.getEdgeSnap())) steps.add(MaskEnhancement.EDGE_SNAP);
-            if (Boolean.TRUE.equals(options.getCloseSeams())) steps.add(MaskEnhancement.CLOSE_SEAMS);
-        }
-        // Remember the last-applied set (also what a later re-segment reuses).
-        project.setMaskEnhancements(MaskEnhancement.toCsv(steps));
-        projectRepository.save(project);
-        segmentationService.reprocessStoredMasks(projectId, steps);
-        auditService.record(userId, "PROJECT_MASK_REPROCESS", "PROJECT", projectId,
-                "enhancements=" + (steps.isEmpty() ? "none" : MaskEnhancement.toCsv(steps)));
     }
 
     @Transactional

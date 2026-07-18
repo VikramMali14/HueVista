@@ -238,53 +238,6 @@ class MaskProcessorTest {
     }
 
     // ---------------------------------------------------------------------
-    // closeSeams
-    // ---------------------------------------------------------------------
-
-    @Test
-    void closeSeamsFillsTheGapBetweenTwoRegions() throws Exception {
-        // Region A covers x<18, region B covers x≥22: post-processing left a
-        // 4px unpainted seam. Closure must split it between the two nearest
-        // regions with no pixel left unassigned and no overlap.
-        byte[] a = binaryPng(40, 20, (x, y) -> x < 18);
-        byte[] b = binaryPng(40, 20, (x, y) -> x >= 22);
-        java.util.List<byte[]> sealed = MaskProcessor.closeSeams(java.util.List.of(a, b), 8);
-
-        for (int x = 16; x <= 23; x++) {
-            boolean inA = whiteAt(sealed.get(0), x, 10);
-            boolean inB = whiteAt(sealed.get(1), x, 10);
-            assertThat(inA ^ inB)
-                    .as("seam column %d covered by exactly one region", x)
-                    .isTrue();
-        }
-    }
-
-    @Test
-    void closeSeamsLeavesBackgroundNearOnlyOneRegionAlone() throws Exception {
-        // A 6px hole INSIDE region A (a railing gap, a window) borders only A;
-        // region B is far away. The hole must stay unpainted — filling it
-        // would bleed paint onto a non-paintable surface.
-        byte[] a = binaryPng(60, 20, (x, y) -> x < 20 || (x >= 26 && x < 34));
-        byte[] b = binaryPng(60, 20, (x, y) -> x >= 54);
-        java.util.List<byte[]> sealed = MaskProcessor.closeSeams(java.util.List.of(a, b), 8);
-
-        assertThat(whiteAt(sealed.get(0), 23, 10)).isFalse(); // hole in A stays
-        assertThat(whiteAt(sealed.get(1), 23, 10)).isFalse();
-        // Wide gap between A and B (x 34..53, 20px > 2×8) also stays.
-        assertThat(whiteAt(sealed.get(0), 44, 10)).isFalse();
-        assertThat(whiteAt(sealed.get(1), 44, 10)).isFalse();
-    }
-
-    @Test
-    void closeSeamsRejectsMismatchedDimensions() throws Exception {
-        byte[] a = binaryPng(40, 20, (x, y) -> x < 18);
-        byte[] b = binaryPng(30, 20, (x, y) -> x >= 22);
-        org.assertj.core.api.Assertions.assertThatThrownBy(
-                        () -> MaskProcessor.closeSeams(java.util.List.of(a, b), 8))
-                .isInstanceOf(java.io.IOException.class);
-    }
-
-    // ---------------------------------------------------------------------
     // resizeBinarySmooth
     // ---------------------------------------------------------------------
 
@@ -325,65 +278,5 @@ class MaskProcessorTest {
     void resizeBinarySmoothIsIdentityAtSameSize() throws Exception {
         byte[] mask = binaryPng(20, 10, (x, y) -> x < 10);
         assertThat(MaskProcessor.resizeBinarySmooth(mask, 20, 10)).isSameAs(mask);
-    }
-
-    // ---------------------------------------------------------------------
-    // restrictToPaintable
-    // ---------------------------------------------------------------------
-
-    private static final int GATE_SPREAD = 70;
-    private static final int GATE_MIN_LUMA = 78;
-    private static final double GATE_MAX_REMOVED = 0.5;
-
-    /** Canvas of vertical bands (same geometry as {@link #strip}). */
-    private static BufferedImage canvasStrip(Color... bands) {
-        BufferedImage img = new BufferedImage(BAND * bands.length, HEIGHT, BufferedImage.TYPE_INT_RGB);
-        for (int i = 0; i < bands.length; i++) {
-            for (int y = 0; y < HEIGHT; y++) {
-                for (int x = 0; x < BAND; x++) {
-                    img.setRGB(i * BAND + x, y, bands[i].getRGB());
-                }
-            }
-        }
-        return img;
-    }
-
-    @Test
-    void restrictToPaintableDropsNonPaintPixels() throws Exception {
-        // Cleaned canvas: mostly white wall (bright + dusk-warm + shadowed),
-        // with a charcoal railing band and a sky band the mask bled onto.
-        // Paint must stay the majority or the safety valve (rightly) refuses
-        // to gate — real masks are mostly wall with bleed at the borders.
-        BufferedImage canvas = canvasStrip(
-                new Color(238, 234, 226),   // fresh white paint, full light → keep
-                new Color(200, 170, 140),   // same paint in warm dusk light → keep
-                new Color(120, 108, 96),    // same paint in deep shade → keep
-                new Color(67, 70, 74),      // charcoal railing (luma ~70) → drop
-                new Color(120, 160, 215));  // sky (spread ~95) → drop
-        byte[] mask = binaryPng(canvas.getWidth(), canvas.getHeight(), (x, y) -> true);
-
-        byte[] gated = MaskProcessor.restrictToPaintable(
-                mask, canvas, GATE_SPREAD, GATE_MIN_LUMA, GATE_MAX_REMOVED);
-
-        assertThat(bandIsForeground(gated, 0)).isTrue();
-        assertThat(bandIsForeground(gated, 1)).isTrue();
-        assertThat(bandIsForeground(gated, 2)).isTrue();
-        assertThat(bandIsForeground(gated, 3)).isFalse();
-        assertThat(bandIsForeground(gated, 4)).isFalse();
-    }
-
-    @Test
-    void restrictToPaintableFallsBackWhenItWouldRemoveTooMuch() throws Exception {
-        // Canvas is all charcoal — the gate would wipe 100% of the mask, which
-        // means the canvas is not the white repaint. Input must come back as-is.
-        BufferedImage canvas = canvasStrip(
-                new Color(67, 70, 74), new Color(67, 70, 74), new Color(67, 70, 74));
-        byte[] mask = binaryPng(canvas.getWidth(), canvas.getHeight(), (x, y) -> true);
-
-        byte[] gated = MaskProcessor.restrictToPaintable(
-                mask, canvas, GATE_SPREAD, GATE_MIN_LUMA, GATE_MAX_REMOVED);
-
-        assertThat(gated).isSameAs(mask);
-        assertThat(bandIsForeground(gated, 1)).isTrue();
     }
 }
