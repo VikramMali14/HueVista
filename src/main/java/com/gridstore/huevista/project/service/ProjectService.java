@@ -201,7 +201,23 @@ public class ProjectService {
 
     @Transactional
     public ProjectResponse requestSegmentation(String userId, String projectId) {
+        return requestSegmentation(userId, projectId, null);
+    }
+
+    /**
+     * @param cleanImage ADMIN testing knob (already role-gated by the
+     *                   controller): false skips the image-cleaner step for
+     *                   this run, true forces the default cleaning behaviour,
+     *                   null leaves whatever the project had. Persisted on the
+     *                   project so the async worker (possibly another JVM
+     *                   reading the Redis queue) sees the same choice.
+     */
+    @Transactional
+    public ProjectResponse requestSegmentation(String userId, String projectId, Boolean cleanImage) {
         Project project = findOwned(userId, projectId);
+        if (cleanImage != null) {
+            project.setSkipImageClean(!cleanImage);
+        }
 
         // Gate on the retailer's own AI quota WITHOUT charging yet: throws 402 when they
         // have no active subscription or have hit their monthly limit. This mirrors the
