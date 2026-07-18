@@ -142,13 +142,11 @@ class SegmentationServiceTest {
     }
 
     @Test
-    void originalPhotoBecomesTheSnapCanvasWhenNoCleanedCanvasExists() throws Exception {
-        // Cleaner disabled/failed: the ORIGINAL photo is adopted as the snap
-        // canvas, so post-processing runs (edge snap included) and the stored
-        // masks take the canvas's resolution — previously the whole snap step
-        // was silently skipped and masks shipped with raw model borders.
+    void originalPhotoSizesTheStoredMasksWhenNoCleanedCanvasExists() throws Exception {
+        // Cleaner disabled/failed: the ORIGINAL photo is the canvas the
+        // frontend renders on, so the stored masks are resized to ITS
+        // aspect and resolution rather than the model's output size.
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
-        ReflectionTestUtils.setField(service, "edgeSnapEnabled", true);
         when(segmenter.isConfigured()).thenReturn(true);
         when(segmenter.generateColorCodedMask(anyString(), any()))
                 .thenReturn(Optional.of(goodCodedPng()));
@@ -164,7 +162,7 @@ class SegmentationServiceTest {
 
         assertThat(ok).isTrue();
         // Three blobs stored: the raw colour-coded mask first (diagnostics for
-        // the admin mask viewer), then the processed main + trim region masks.
+        // the admin mask viewer), then the resized main + trim region masks.
         ArgumentCaptor<byte[]> maskBytes = ArgumentCaptor.forClass(byte[].class);
         verify(storage, times(3)).store(maskBytes.capture(), anyString(), anyString(), anyString());
         BufferedImage storedMain = ImageIO.read(new ByteArrayInputStream(maskBytes.getAllValues().get(1)));
