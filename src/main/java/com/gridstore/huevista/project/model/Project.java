@@ -73,6 +73,13 @@ public class Project {
     // for projects whose regions are manual-only.
     private String rawMaskStorageKey;
 
+    // ADMIN testing knob, set per segmentation request: TRUE = skip the
+    // image-cleaner step for the next run (masks are generated straight from
+    // the original photo). Null/FALSE = default behaviour (the cleaner runs
+    // when globally enabled). Persisted on the project rather than carried in
+    // the queue payload so the choice survives worker restarts and requeues.
+    private Boolean skipImageClean;
+
     // When status == FAILED, why. Surfaced to the frontend so we can show the
     // user something actionable ("auto-segmentation not configured — click each
     // wall") instead of a generic failure. Stored as TEXT because Hibernate

@@ -146,11 +146,24 @@ public class SegmentationService {
             // cleaned image becomes the canvas the masks are aligned to;
             // otherwise we mask the original directly. The cleaned bytes are
             // also kept in memory: the stored masks are sized off this canvas
-            // (see tryColorCodedSegmentation).
+            // (see tryColorCodedSegmentation). An ADMIN can skip this step per
+            // run via the segment request's cleanImage=false testing knob
+            // (persisted on the project — see requestSegmentation).
+            boolean skipClean = Boolean.TRUE.equals(
+                    projectRepository.findSkipImageCleanById(projectId).orElse(null));
+            if (skipClean) {
+                log.info("Image cleaner skipped for project {} (admin cleanImage=false)", projectId);
+                // Drop any cleaned canvas left by a previous run: this run's
+                // masks align to the ORIGINAL photo, and a stale cleaned key
+                // would make the frontend render them on the wrong canvas.
+                persistCleanedImageKey(projectId, null);
+            }
             String maskImageUrl = imageUrl;
             byte[] cleanedBytes = null;
             try {
-                Optional<byte[]> cleanedOpt = imageCleaner.cleanImage(imageUrl, uploadedImage.getImageType());
+                Optional<byte[]> cleanedOpt = skipClean
+                        ? Optional.empty()
+                        : imageCleaner.cleanImage(imageUrl, uploadedImage.getImageType());
                 if (cleanedOpt.isPresent()) {
                     cleanedBytes = cleanedOpt.get();
                     String cleanedKey = storageService.store(

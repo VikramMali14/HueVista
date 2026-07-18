@@ -90,4 +90,12 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
      */
     @Query("SELECT p.id FROM Project p WHERE p.cleanedImageStorageKey IS NOT NULL ORDER BY p.createdAt ASC, p.id ASC")
     List<String> findIdsWithCleanedImage(org.springframework.data.domain.Pageable pageable);
+
+    /**
+     * Reads the ADMIN skip-image-clean testing flag without pulling the full
+     * entity — checked by the async segmentation worker before the cleaner
+     * step. Empty optional = flag never set = default behaviour.
+     */
+    @Query("SELECT p.skipImageClean FROM Project p WHERE p.id = :projectId")
+    Optional<Boolean> findSkipImageCleanById(@Param("projectId") String projectId);
 }
