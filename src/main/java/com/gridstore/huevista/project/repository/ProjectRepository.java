@@ -98,4 +98,13 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
      */
     @Query("SELECT p.skipImageClean FROM Project p WHERE p.id = :projectId")
     Optional<Boolean> findSkipImageCleanById(@Param("projectId") String projectId);
+
+    /**
+     * Reads the ADMIN mask-enhancement CSV (MaskEnhancement names) without
+     * pulling the full entity — checked by the async segmentation worker to
+     * decide which post-processing steps this run applies. Empty optional or
+     * blank = none (raw model masks, the default).
+     */
+    @Query("SELECT p.maskEnhancements FROM Project p WHERE p.id = :projectId")
+    Optional<String> findMaskEnhancementsById(@Param("projectId") String projectId);
 }

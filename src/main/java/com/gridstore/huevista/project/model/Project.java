@@ -80,6 +80,12 @@ public class Project {
     // the queue payload so the choice survives worker restarts and requeues.
     private Boolean skipImageClean;
 
+    // ADMIN testing knob, set per segmentation request: comma-separated
+    // MaskEnhancement names to apply to this run's masks (COLOUR_GATE,
+    // MORPH_CLEAN, STRAIGHTEN, EDGE_SNAP, CLOSE_SEAMS). Null/blank = none —
+    // masks are stored exactly as the model painted them (the default).
+    private String maskEnhancements;
+
     // When status == FAILED, why. Surfaced to the frontend so we can show the
     // user something actionable ("auto-segmentation not configured — click each
     // wall") instead of a generic failure. Stored as TEXT because Hibernate

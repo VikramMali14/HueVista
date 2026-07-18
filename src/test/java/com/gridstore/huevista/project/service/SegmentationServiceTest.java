@@ -170,6 +170,37 @@ class SegmentationServiceTest {
         assertThat(storedMain.getHeight()).isEqualTo(150);
     }
 
+    @Test
+    void enablingEveryMaskEnhancementStillProducesRegions() throws Exception {
+        // ADMIN testing panel with every enhancement checked: the run applies
+        // morph clean, straighten, edge snap and seam closure (the colour gate
+        // no-ops here — no cleaned canvas) and still persists usable regions
+        // at the canvas resolution.
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
+        ReflectionTestUtils.setField(service, "seamClosePx", 8);
+        when(projects.findMaskEnhancementsById("p1")).thenReturn(Optional.of(
+                "COLOUR_GATE,MORPH_CLEAN,STRAIGHTEN,EDGE_SNAP,CLOSE_SEAMS"));
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.generateColorCodedMask(anyString(), any()))
+                .thenReturn(Optional.of(goodCodedPng()));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("masks/key.png");
+        when(projects.getReferenceById("p1")).thenReturn(mock(Project.class));
+
+        BufferedImage original = new BufferedImage(300, 150, BufferedImage.TYPE_INT_RGB);
+        fill(original, Color.WHITE, 0, 0, 300, 150);
+
+        boolean ok = service.tryColorCodedSegmentation(
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, png(original), W, H);
+
+        assertThat(ok).isTrue();
+        ArgumentCaptor<byte[]> maskBytes = ArgumentCaptor.forClass(byte[].class);
+        verify(storage, times(3)).store(maskBytes.capture(), anyString(), anyString(), anyString());
+        BufferedImage storedMain = ImageIO.read(new ByteArrayInputStream(maskBytes.getAllValues().get(1)));
+        assertThat(storedMain.getWidth()).isEqualTo(300);
+        assertThat(storedMain.getHeight()).isEqualTo(150);
+    }
+
     /** Coded image where the model left the accent wall WHITE and that white
      *  blob touches the top edge of the frame. */
     private static byte[] topTouchingWhiteAccentPng() throws Exception {

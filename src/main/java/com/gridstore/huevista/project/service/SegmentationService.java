@@ -6,6 +6,7 @@ import com.gridstore.huevista.image.model.ImageType;
 import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.StorageService;
+import com.gridstore.huevista.project.model.MaskEnhancement;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
 import com.gridstore.huevista.project.model.RegionCategory;
@@ -49,9 +50,11 @@ import java.util.Optional;
  *       into per-category binary masks server-side.</li>
  *   <li>Each non-empty category is smooth-upscaled to the canvas resolution
  *       (see {@link #postProcessMask}), uploaded to S3 and persisted as a
- *       {@link Region} row. Beyond that resize the masks are stored exactly
- *       as the model painted them — no gate/clean/straighten/snap reshaping,
- *       so the stored regions match the raw model output.</li>
+ *       {@link Region} row. By DEFAULT that resize is the only processing —
+ *       the stored regions match the raw model output. An ADMIN can enable
+ *       individual enhancement steps per run from the studio testing panel
+ *       ({@link MaskEnhancement}: colour gate, morph clean, straighten,
+ *       edge snap, seam close), persisted on the project.</li>
  * </ol>
  *
  * <h3>Manual flow (segmentPointAndSave)</h3>
@@ -266,11 +269,27 @@ public class SegmentationService {
                 return false;
             }
 
-            // The canvas is only needed to SIZE the stored masks: the cleaned
-            // repaint when present (it's what the frontend renders on),
-            // otherwise the original photo.
+            // Which enhancement steps this run applies (ADMIN testing panel,
+            // persisted on the project; empty = raw model masks, the default).
+            java.util.Set<MaskEnhancement> enhancements = MaskEnhancement.parseCsv(
+                    projectRepository.findMaskEnhancementsById(projectId).orElse(null));
+            if (!enhancements.isEmpty()) {
+                log.info("Mask enhancements enabled for project {}: {}", projectId, enhancements);
+            }
+
+            // The canvas SIZES the stored masks: the cleaned repaint when
+            // present (it's what the frontend renders on), otherwise the
+            // original photo. The enhancement steps reuse it: the colour GATE
+            // needs the cleaned repaint specifically (its "freshly painted"
+            // assumption doesn't hold on an arbitrary photo), while the edge
+            // SNAP only needs real edges, so any faithful canvas will do.
             BufferedImage sizeCanvas = decodeCanvasForMasks(
                     cleanedBytes != null ? cleanedBytes : originalBytes);
+            BufferedImage gateCanvas =
+                    enhancements.contains(MaskEnhancement.COLOUR_GATE) && cleanedBytes != null
+                            ? sizeCanvas : null;
+            BufferedImage snapCanvas =
+                    enhancements.contains(MaskEnhancement.EDGE_SNAP) ? sizeCanvas : null;
 
             // Masks are stored at the CANVAS's aspect and resolution (capped at
             // MAX_MASK_DIM), not at whatever size the model generated — the
@@ -295,7 +314,7 @@ public class SegmentationService {
                             "produced no usable main wall", attempt, attempts, projectId);
                 }
                 masks = generateAndProcessMasks(projectId, imageUrl, scene,
-                        targetW, targetH);
+                        gateCanvas, snapCanvas, targetW, targetH, enhancements);
             }
             if (masks == null) {
                 log.info("Mask model didn't produce a usable main wall for project {} " +
@@ -349,15 +368,18 @@ public class SegmentationService {
     private record ProcessedMasks(byte[] main, byte[] accent, byte[] trim, byte[] raw) {}
 
     /**
-     * One model round-trip: generate the colour-coded image, split it and
-     * resize every category to the canvas resolution. Returns null when the
-     * round produced no usable MAIN wall (empty output, off-palette image,
-     * main below the noise threshold) — nothing has been persisted at that
-     * point, so the caller is free to retry with a fresh generation.
+     * One model round-trip: generate the colour-coded image, split it, resize
+     * every category to the canvas resolution and apply whichever enhancement
+     * steps this run enabled (none by default). Returns null when the round
+     * produced no usable MAIN wall (empty output, off-palette image, main
+     * below the noise threshold) — nothing has been persisted at that point,
+     * so the caller is free to retry with a fresh generation.
      */
     private ProcessedMasks generateAndProcessMasks(String projectId, String imageUrl,
-                                                   ImageType scene,
-                                                   int targetW, int targetH) {
+                                                   ImageType scene, BufferedImage gateCanvas,
+                                                   BufferedImage snapCanvas,
+                                                   int targetW, int targetH,
+                                                   java.util.Set<MaskEnhancement> enhancements) {
         Optional<byte[]> colorRaw = maskSegmenter.generateColorCodedMask(imageUrl, scene);
         if (colorRaw.isEmpty()) {
             log.info("Mask segmenter returned no color-coded mask for project {}", projectId);
@@ -377,19 +399,55 @@ public class SegmentationService {
         log.info("Mask split [project={}]: {}", projectId, parts.keySet());
         logAspectDriftIfAny(colorRaw.get(), targetW, targetH, projectId);
 
-        byte[] mainBytes = postProcessMask(parts.get("main"), targetW, targetH);
+        byte[] mainBytes = postProcessMask(parts.get("main"), gateCanvas, snapCanvas,
+                targetW, targetH, enhancements);
         if (mainBytes == null || safeForegroundCount(mainBytes) < 5000) {
             return null;
         }
-        byte[] accentBytes = postProcessMask(parts.get("accent"), targetW, targetH);
+        byte[] accentBytes = postProcessMask(parts.get("accent"), gateCanvas, snapCanvas,
+                targetW, targetH, enhancements);
         if (accentBytes != null && safeForegroundCount(accentBytes) < 5000) {
             accentBytes = null;
         }
-        byte[] trimBytes = postProcessMask(parts.get("trim"), targetW, targetH);
+        byte[] trimBytes = postProcessMask(parts.get("trim"), gateCanvas, snapCanvas,
+                targetW, targetH, enhancements);
         if (trimBytes != null && safeForegroundCount(trimBytes) < 2000) {
             trimBytes = null;
         }
-        return new ProcessedMasks(mainBytes, accentBytes, trimBytes, colorRaw.get());
+        ProcessedMasks masks = new ProcessedMasks(mainBytes, accentBytes, trimBytes, colorRaw.get());
+        return enhancements.contains(MaskEnhancement.CLOSE_SEAMS)
+                ? sealSeams(masks, projectId) : masks;
+    }
+
+    /**
+     * CLOSE_SEAMS enhancement: fills the unpainted ribbons between adjacent
+     * category masks. When the other steps move each category's boundary
+     * independently, coinciding boundaries end up a few pixels apart — and the
+     * gap belongs to no region, rendering as a bare-canvas seam around every
+     * trim band. {@link MaskProcessor#closeSeams} fills only gap pixels near
+     * TWO different regions, so windows, sky and railings (bordered by one
+     * region at most) are never painted over. Best-effort: any failure keeps
+     * the unsealed masks.
+     */
+    private ProcessedMasks sealSeams(ProcessedMasks masks, String projectId) {
+        if (seamClosePx <= 0) return masks;
+        List<byte[]> in = new java.util.ArrayList<>();
+        in.add(masks.main());
+        if (masks.accent() != null) in.add(masks.accent());
+        if (masks.trim() != null) in.add(masks.trim());
+        if (in.size() < 2) return masks;
+        try {
+            List<byte[]> out = MaskProcessor.closeSeams(in, seamClosePx);
+            int i = 0;
+            byte[] main = out.get(i++);
+            byte[] accent = masks.accent() != null ? out.get(i++) : null;
+            byte[] trim = masks.trim() != null ? out.get(i) : null;
+            return new ProcessedMasks(main, accent, trim, masks.raw());
+        } catch (Exception e) {
+            log.warn("Seam closure failed for project {}, keeping unsealed masks: {}",
+                    projectId, e.getMessage());
+            return masks;
+        }
     }
 
     private void saveCategoryRegion(String projectId, String userId, byte[] maskBytes,
@@ -475,25 +533,68 @@ public class SegmentationService {
     @Value("${huevista.segmentation.auto-mask-attempts:2}")
     private int autoMaskAttempts;
 
+    // Colour-gate thresholds (see MaskProcessor#restrictToPaintable): forgiving
+    // enough to keep dusk-warm (spread ≤ ~60) and shadowed white walls, strict
+    // enough to drop charcoal railings (luma ≈ 70), dark door leaves, window
+    // glass and saturated sky/vegetation the mask bled onto.
+    private static final int PAINTABLE_MAX_SPREAD = 70;
+    private static final int PAINTABLE_MIN_LUMA = 78;
+    private static final double PAINTABLE_MAX_REMOVED = 0.5;
+
+    /** Max distance (px at the stored-mask resolution) each side of an
+     *  unpainted seam between two adjacent region masks may be from its region
+     *  for the CLOSE_SEAMS enhancement to close it. 0 disables even when the
+     *  enhancement is requested. */
+    @Value("${huevista.segmentation.seam-close-px:8}")
+    private int seamClosePx;
+
     /**
      * Smooth-upscales a raw split mask to the canvas aspect/resolution — the
      * model outputs ~1K and nearest scaling to a 4K canvas shows staircase
-     * blocks. That resize is the ONLY processing an auto mask gets: the old
-     * fidelity pipeline (colour gate, morphological cleanup, boundary
-     * straightening, edge snap, seam sealing) reshaped the model's output and
-     * made the stored regions drift from what the model actually painted, so
-     * it was removed — the stored masks now match the raw model output.
-     * Best-effort: a resize failure keeps the mask at model resolution.
+     * blocks. By DEFAULT that resize is the only processing, so the stored
+     * masks match the raw model output. The run's {@code enhancements} set
+     * (ADMIN testing panel, see {@link MaskEnhancement}) can additionally
+     * enable, in order: the colour gate against the CLEANED canvas, the
+     * morphological cleanup, the boundary straightening and the edge snap.
+     * Every step is best-effort: a failure falls back to the previous bytes.
      */
-    private byte[] postProcessMask(byte[] mask, int w, int h) {
+    private byte[] postProcessMask(byte[] mask, BufferedImage gateCanvas,
+                                   BufferedImage snapCanvas, int w, int h,
+                                   java.util.Set<MaskEnhancement> enhancements) {
         if (mask == null) return null;
+        byte[] out = mask;
         try {
-            return MaskProcessor.resizeBinarySmooth(mask, w, h);
+            out = MaskProcessor.resizeBinarySmooth(out, w, h);
         } catch (Exception e) {
             log.warn("Mask smooth-upscale to {}x{} failed, keeping model resolution: {}",
                     w, h, e.getMessage());
-            return mask;
         }
+        if (gateCanvas != null) {
+            try {
+                out = MaskProcessor.restrictToPaintable(out, gateCanvas,
+                        PAINTABLE_MAX_SPREAD, PAINTABLE_MIN_LUMA, PAINTABLE_MAX_REMOVED);
+            } catch (Exception e) {
+                log.warn("Mask colour gate failed, keeping ungated mask: {}", e.getMessage());
+            }
+        }
+        if (enhancements.contains(MaskEnhancement.MORPH_CLEAN)) {
+            out = safeClean(out);
+        }
+        if (enhancements.contains(MaskEnhancement.STRAIGHTEN)) {
+            try {
+                out = MaskStraightener.straighten(out);
+            } catch (Exception e) {
+                log.warn("Mask straightening failed, keeping unstraightened mask: {}", e.getMessage());
+            }
+        }
+        if (snapCanvas != null) {
+            try {
+                out = MaskRefiner.snapToCanvas(out, snapCanvas);
+            } catch (Exception e) {
+                log.warn("Mask edge snap failed, keeping unsnapped mask: {}", e.getMessage());
+            }
+        }
+        return out;
     }
 
     /** Decodes a canvas image (cleaned or original) and downsamples it to the

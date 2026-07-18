@@ -16,6 +16,7 @@ import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.StorageService;
 import com.gridstore.huevista.project.dto.*;
+import com.gridstore.huevista.project.model.MaskEnhancement;
 import com.gridstore.huevista.project.model.Project;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
@@ -205,18 +206,31 @@ public class ProjectService {
     }
 
     /**
-     * @param cleanImage ADMIN testing knob (already role-gated by the
-     *                   controller): false skips the image-cleaner step for
-     *                   this run, true forces the default cleaning behaviour,
-     *                   null leaves whatever the project had. Persisted on the
-     *                   project so the async worker (possibly another JVM
-     *                   reading the Redis queue) sees the same choice.
+     * @param options ADMIN testing panel (already role-gated by the
+     *                controller; null for non-admin callers, which leaves the
+     *                project's stored choices untouched): cleanImage=false
+     *                skips the image-cleaner step, and the mask-enhancement
+     *                flags pick which post-processing steps run — every
+     *                admin request overwrites the enhancement set with exactly
+     *                what was sent, so what's checked is what runs. Persisted
+     *                on the project so the async worker (possibly another JVM
+     *                reading the Redis queue) sees the same choice.
      */
     @Transactional
-    public ProjectResponse requestSegmentation(String userId, String projectId, Boolean cleanImage) {
+    public ProjectResponse requestSegmentation(String userId, String projectId,
+                                               com.gridstore.huevista.project.dto.SegmentRequest options) {
         Project project = findOwned(userId, projectId);
-        if (cleanImage != null) {
-            project.setSkipImageClean(!cleanImage);
+        if (options != null) {
+            if (options.getCleanImage() != null) {
+                project.setSkipImageClean(!options.getCleanImage());
+            }
+            java.util.EnumSet<MaskEnhancement> steps = java.util.EnumSet.noneOf(MaskEnhancement.class);
+            if (Boolean.TRUE.equals(options.getColourGate())) steps.add(MaskEnhancement.COLOUR_GATE);
+            if (Boolean.TRUE.equals(options.getMorphClean())) steps.add(MaskEnhancement.MORPH_CLEAN);
+            if (Boolean.TRUE.equals(options.getStraighten())) steps.add(MaskEnhancement.STRAIGHTEN);
+            if (Boolean.TRUE.equals(options.getEdgeSnap())) steps.add(MaskEnhancement.EDGE_SNAP);
+            if (Boolean.TRUE.equals(options.getCloseSeams())) steps.add(MaskEnhancement.CLOSE_SEAMS);
+            project.setMaskEnhancements(MaskEnhancement.toCsv(steps));
         }
 
         // Gate on the retailer's own AI quota WITHOUT charging yet: throws 402 when they
