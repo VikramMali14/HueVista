@@ -107,4 +107,11 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
      */
     @Query("SELECT p.maskEnhancements FROM Project p WHERE p.id = :projectId")
     Optional<String> findMaskEnhancementsById(@Param("projectId") String projectId);
+
+    /**
+     * Reads the stored raw colour-coded mask's storage key without pulling the
+     * full entity — the admin mask-reprocess path re-derives regions from it.
+     */
+    @Query("SELECT p.rawMaskStorageKey FROM Project p WHERE p.id = :projectId")
+    Optional<String> findRawMaskKeyById(@Param("projectId") String projectId);
 }

@@ -279,6 +279,33 @@ public class ProjectService {
         return toResponse(project);
     }
 
+    /**
+     * ADMIN testing: re-derives the project's AUTO region masks from the
+     * STORED raw colour-coded mask with the requested enhancement set — no
+     * model call, no AI charge, deterministic (the controller role-gates this
+     * endpoint). Deliberately NOT @Transactional: the mask compute takes
+     * seconds and must not hold a DB connection; each repository write is its
+     * own transaction.
+     */
+    public void reprocessMasks(String userId, String projectId,
+                               com.gridstore.huevista.project.dto.SegmentRequest options) {
+        Project project = findOwned(userId, projectId);
+        java.util.EnumSet<MaskEnhancement> steps = java.util.EnumSet.noneOf(MaskEnhancement.class);
+        if (options != null) {
+            if (Boolean.TRUE.equals(options.getColourGate())) steps.add(MaskEnhancement.COLOUR_GATE);
+            if (Boolean.TRUE.equals(options.getMorphClean())) steps.add(MaskEnhancement.MORPH_CLEAN);
+            if (Boolean.TRUE.equals(options.getStraighten())) steps.add(MaskEnhancement.STRAIGHTEN);
+            if (Boolean.TRUE.equals(options.getEdgeSnap())) steps.add(MaskEnhancement.EDGE_SNAP);
+            if (Boolean.TRUE.equals(options.getCloseSeams())) steps.add(MaskEnhancement.CLOSE_SEAMS);
+        }
+        // Remember the last-applied set (also what a later re-segment reuses).
+        project.setMaskEnhancements(MaskEnhancement.toCsv(steps));
+        projectRepository.save(project);
+        segmentationService.reprocessStoredMasks(projectId, steps);
+        auditService.record(userId, "PROJECT_MASK_REPROCESS", "PROJECT", projectId,
+                "enhancements=" + (steps.isEmpty() ? "none" : MaskEnhancement.toCsv(steps)));
+    }
+
     @Transactional
     public ShareResponse generateShareLink(String userId, String projectId, int validDays,
                                            java.util.List<String> brands) {

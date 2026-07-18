@@ -477,6 +477,150 @@ public class SegmentationService {
                 category, projectId, key, appliedHex);
     }
 
+    // ========================================================================
+    // REPROCESS (admin testing: re-derive regions from the STORED raw mask)
+    // ========================================================================
+
+    /**
+     * Re-derives the AUTO region masks from the project's STORED raw
+     * colour-coded mask with the given enhancement set — no model call, no AI
+     * cost, and deterministic, so enhancement combinations can be compared on
+     * the SAME model output instead of paying for a fresh (and different)
+     * generation each time. This is the studio testing panel's "apply" path.
+     *
+     * <p>Existing region rows keep their identity and applied colours; only
+     * their mask files are re-pointed (new storage key, old object left in
+     * place — same convention as {@link MaskResnapService}). A category whose
+     * reprocessed mask falls below the noise threshold keeps its old mask; a
+     * category that clears the threshold but has no row (dropped at
+     * generation time) gets one, opened in the scene's default colour.
+     * Synchronous: every step is local compute.
+     *
+     * @return number of region masks written
+     */
+    public int reprocessStoredMasks(String projectId, java.util.Set<MaskEnhancement> enhancements) {
+        String rawKey = projectRepository.findRawMaskKeyById(projectId)
+                .filter(k -> !k.isBlank())
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "No raw mask is stored for this project — run wall detection once to capture it."));
+        byte[] raw;
+        try {
+            raw = storageService.load(rawKey);
+        } catch (Exception e) {
+            throw new ExternalServiceException("Could not load the stored raw mask: " + e.getMessage());
+        }
+
+        ImageType scene = projectRepository.findImageTypeById(projectId).orElse(null);
+
+        // Canvas roles mirror generation: the colour GATE needs the CLEANED
+        // repaint specifically, while snap and sizing accept any faithful
+        // canvas — loadSnapCanvas returns the cleaned image when present,
+        // otherwise the original photo.
+        BufferedImage canvas = loadSnapCanvas(projectId);
+        boolean hasCleaned = projectRepository.findCleanedImageKeyById(projectId)
+                .filter(k -> !k.isBlank()).isPresent();
+        BufferedImage gateCanvas =
+                enhancements.contains(MaskEnhancement.COLOUR_GATE) && hasCleaned && canvas != null
+                        ? canvas : null;
+        BufferedImage snapCanvas =
+                enhancements.contains(MaskEnhancement.EDGE_SNAP) ? canvas : null;
+
+        int targetW, targetH;
+        if (canvas != null) {
+            targetW = canvas.getWidth();
+            targetH = canvas.getHeight();
+        } else {
+            try {
+                BufferedImage rawImg = MaskProcessor.decode(raw);
+                double scale = Math.min(1.0,
+                        (double) MAX_MASK_DIM / Math.max(rawImg.getWidth(), rawImg.getHeight()));
+                targetW = Math.max(1, (int) Math.round(rawImg.getWidth() * scale));
+                targetH = Math.max(1, (int) Math.round(rawImg.getHeight() * scale));
+            } catch (Exception e) {
+                throw new ExternalServiceException("Could not decode the stored raw mask: " + e.getMessage());
+            }
+        }
+
+        Map<String, byte[]> parts;
+        try {
+            parts = MaskProcessor.splitColorCodedMask(raw, 2000, scene != ImageType.INDOOR);
+        } catch (Exception e) {
+            throw new ExternalServiceException("Could not split the stored raw mask: " + e.getMessage());
+        }
+
+        byte[] main = postProcessMask(parts.get("main"), gateCanvas, snapCanvas,
+                targetW, targetH, enhancements);
+        if (main != null && safeForegroundCount(main) < 5000) main = null;
+        byte[] accent = postProcessMask(parts.get("accent"), gateCanvas, snapCanvas,
+                targetW, targetH, enhancements);
+        if (accent != null && safeForegroundCount(accent) < 5000) accent = null;
+        byte[] trim = postProcessMask(parts.get("trim"), gateCanvas, snapCanvas,
+                targetW, targetH, enhancements);
+        if (trim != null && safeForegroundCount(trim) < 2000) trim = null;
+
+        ProcessedMasks masks = new ProcessedMasks(main, accent, trim, raw);
+        if (enhancements.contains(MaskEnhancement.CLOSE_SEAMS) && main != null) {
+            masks = sealSeams(masks, projectId);
+        }
+
+        String ownerUserId = projectRepository.findUserIdById(projectId).orElse(null);
+        String storageScope = ownerUserId != null ? ownerUserId
+                : projectRepository.findAccessCodeIdById(projectId).orElse(null);
+        if (storageScope == null) {
+            throw new ResourceNotFoundException("Project owner not found: " + projectId);
+        }
+
+        Map<RegionCategory, byte[]> byCategory = new java.util.EnumMap<>(RegionCategory.class);
+        if (masks.main() != null) byCategory.put(RegionCategory.MAIN_WALL, masks.main());
+        if (masks.accent() != null) byCategory.put(RegionCategory.ACCENT_WALL, masks.accent());
+        if (masks.trim() != null) byCategory.put(RegionCategory.TRIM, masks.trim());
+
+        int written = 0;
+        for (Region region : regionRepository.findAutoRegionsByProjectId(projectId)) {
+            byte[] bytes = byCategory.remove(region.getCategory());
+            if (bytes == null) continue; // below threshold now — keep the old mask
+            try {
+                String key = storageService.store(bytes, storageScope,
+                        region.getCategory().name().toLowerCase() + ".png", "image/png");
+                region.setMaskUrl(key);
+                region.setMaskData(key);
+                regionRepository.save(region);
+                written++;
+            } catch (Exception e) {
+                log.warn("Storing reprocessed {} mask failed for project {}: {}",
+                        region.getCategory(), projectId, e.getMessage());
+            }
+        }
+        // Categories that cleared the threshold this time but have no row yet.
+        for (Map.Entry<RegionCategory, byte[]> entry : byCategory.entrySet()) {
+            try {
+                saveCategoryRegion(projectId, storageScope, entry.getValue(),
+                        labelFor(entry.getKey()), entry.getKey(),
+                        regionRepository.countByProjectId(projectId),
+                        defaultHexFor(entry.getKey(), scene));
+                written++;
+            } catch (Exception e) {
+                log.warn("Creating reprocessed {} region failed for project {}: {}",
+                        entry.getKey(), projectId, e.getMessage());
+            }
+        }
+        log.info("Reprocessed {} region mask(s) for project {} with {}", written, projectId,
+                enhancements.isEmpty() ? "no enhancements (raw)" : enhancements);
+        return written;
+    }
+
+    /** Display label used when the auto path (or a reprocess) creates a
+     *  category's region row. */
+    private static String labelFor(RegionCategory category) {
+        return switch (category) {
+            case MAIN_WALL -> "Main Wall";
+            case ACCENT_WALL -> "Accent Wall";
+            case TRIM -> "Trim & Frames";
+            case OTHER_WALL -> "Other Wall";
+            case MANUAL -> "Region";
+        };
+    }
+
     // Exterior "colour on create" reference palette. These are the swatches the
     // project opens painted with (through the masks, on the cleaned white
     // canvas) — the canvas itself stays white so the frontend's scene-light
