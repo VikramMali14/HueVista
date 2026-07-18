@@ -201,6 +201,46 @@ class SegmentationServiceTest {
         assertThat(storedMain.getHeight()).isEqualTo(150);
     }
 
+    @Test
+    void reprocessRepointsExistingRegionMasksFromTheStoredRawMask() throws Exception {
+        // Admin studio panel "apply": regions are re-derived from the STORED
+        // raw mask (no model call), and the existing rows keep their identity
+        // — only their mask keys move.
+        ReflectionTestUtils.setField(service, "seamClosePx", 8);
+        when(projects.findRawMaskKeyById("p1")).thenReturn(Optional.of("u1/raw.png"));
+        when(storage.load("u1/raw.png")).thenReturn(goodCodedPng());
+        when(projects.findImageTypeById("p1")).thenReturn(Optional.of(ImageType.OUTDOOR));
+        when(projects.findUserIdById("p1")).thenReturn(Optional.of("u1"));
+        Region mainRow = Region.builder().category(RegionCategory.MAIN_WALL).maskUrl("u1/old-main.png").build();
+        Region trimRow = Region.builder().category(RegionCategory.TRIM).maskUrl("u1/old-trim.png").build();
+        when(regions.findAutoRegionsByProjectId("p1")).thenReturn(
+                java.util.List.of(mainRow, trimRow));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("u1/new-main.png", "u1/new-trim.png");
+
+        int written = service.reprocessStoredMasks("p1",
+                java.util.EnumSet.of(com.gridstore.huevista.project.model.MaskEnhancement.MORPH_CLEAN,
+                        com.gridstore.huevista.project.model.MaskEnhancement.STRAIGHTEN,
+                        com.gridstore.huevista.project.model.MaskEnhancement.CLOSE_SEAMS));
+
+        assertThat(written).isEqualTo(2);
+        assertThat(mainRow.getMaskUrl()).isEqualTo("u1/new-main.png");
+        assertThat(trimRow.getMaskUrl()).isEqualTo("u1/new-trim.png");
+        verify(regions, times(2)).save(any());
+        verify(segmenter, never()).generateColorCodedMask(anyString(), any());
+    }
+
+    @Test
+    void reprocessWithoutAStoredRawMaskFailsWithANotFound() {
+        when(projects.findRawMaskKeyById("p1")).thenReturn(Optional.empty());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        service.reprocessStoredMasks("p1",
+                                java.util.EnumSet.noneOf(com.gridstore.huevista.project.model.MaskEnhancement.class)))
+                .isInstanceOf(com.gridstore.huevista.common.exception.ResourceNotFoundException.class);
+        verify(regions, never()).save(any());
+    }
+
     /** Coded image where the model left the accent wall WHITE and that white
      *  blob touches the top edge of the frame. */
     private static byte[] topTouchingWhiteAccentPng() throws Exception {
