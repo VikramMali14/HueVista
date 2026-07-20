@@ -30,6 +30,11 @@ public class ProjectResponse {
     private String rawMaskUrl;
     // Populated when status == FAILED so the UI can show the cause.
     private String failureReason;
+    // "AUTO" / "MANUAL" — the wall-creation choice this project was (last)
+    // segmented with; null = default AUTO. MANUAL projects come back SEGMENTED
+    // with zero auto regions: the cleaned canvas is ready and the user marks
+    // walls themselves.
+    private String maskMode;
     private List<RegionResponse> regions;
     private boolean hasShareLink;
     private LocalDateTime shareExpiresAt;
@@ -55,6 +60,7 @@ public class ProjectResponse {
                 .imageId(project.getImage().getId())
                 .imageUrl(imageUrl)
                 .failureReason(project.getFailureReason())
+                .maskMode(project.getMaskMode())
                 .regions(regions)
                 .hasShareLink(project.getShareToken() != null)
                 .shareExpiresAt(project.getShareExpiresAt())

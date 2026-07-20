@@ -82,4 +82,12 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
      */
     @Query("SELECT p.skipImageClean FROM Project p WHERE p.id = :projectId")
     Optional<Boolean> findSkipImageCleanById(@Param("projectId") String projectId);
+
+    /**
+     * Reads the project's mask mode ("AUTO"/"MANUAL") without pulling the full
+     * entity — checked by the async segmentation worker after the clean-up step.
+     * Empty optional / null = default AUTO behaviour.
+     */
+    @Query("SELECT p.maskMode FROM Project p WHERE p.id = :projectId")
+    Optional<String> findMaskModeById(@Param("projectId") String projectId);
 }

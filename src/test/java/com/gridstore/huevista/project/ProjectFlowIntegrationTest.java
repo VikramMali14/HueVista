@@ -89,7 +89,7 @@ class ProjectFlowIntegrationTest {
                 .currentPeriodStart(LocalDateTime.now())
                 .currentPeriodEnd(LocalDateTime.now().plusDays(14))
                 .aiGenerationsUsed(0)
-                .aiGenerationsLimit(Plan.PROFESSIONAL.getMonthlyAiLimit())
+                .aiGenerationsLimit(Plan.PROFESSIONAL.getMonthlyImageLimit())
                 .build());
 
         // Login

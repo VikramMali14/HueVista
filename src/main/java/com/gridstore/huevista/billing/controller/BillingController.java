@@ -27,6 +27,7 @@ public class BillingController {
 
     private final BillingService billingService;
     private final PdfQuotaService pdfQuotaService;
+    private final com.gridstore.huevista.billing.service.ImageCreditService imageCreditService;
 
     @Operation(summary = "Create subscription",
             description = "Creates a Razorpay subscription and returns a payment URL for checkout.")
@@ -70,21 +71,59 @@ public class BillingController {
         return ResponseEntity.ok(billingService.cancelSubscription(userDetails.getUsername()));
     }
 
-    @Operation(summary = "Get available plans", description = "Returns all plan options with pricing, AI generation and PDF limits.")
+    @Operation(summary = "Get available plans",
+            description = "Returns all plan options with base pricing, GST, image / auto-mask / PDF "
+                    + "limits and the pay-per-image overage price.")
     @GetMapping("/plans")
     public ResponseEntity<List<Map<String, Object>>> getPlans() {
-        var plans = List.of(
-            com.gridstore.huevista.billing.model.Plan.values()
-        ).stream().map(p -> Map.<String, Object>of(
-            "plan", p.name(),
-            "displayName", p.getDisplayName(),
-            "priceInPaise", p.getPriceInPaise(),
-            "priceInRupees", p.priceInRupees(),
-            "monthlyAiLimit", p.getMonthlyAiLimit() == Integer.MAX_VALUE ? "unlimited" : p.getMonthlyAiLimit(),
-            "pdfImageLimit", p.getPdfImageLimit(),
-            "monthlyPdfLimit", p.getMonthlyPdfLimit() == Integer.MAX_VALUE ? "unlimited" : p.getMonthlyPdfLimit()
-        )).toList();
+        var plans = java.util.Arrays.stream(com.gridstore.huevista.billing.model.Plan.values())
+            .map(p -> {
+                Map<String, Object> m = new java.util.LinkedHashMap<>();
+                m.put("plan", p.name());
+                m.put("displayName", p.getDisplayName());
+                m.put("priceInPaise", p.getPriceInPaise());
+                m.put("priceInRupees", p.priceInRupees());
+                m.put("taxPercent", com.gridstore.huevista.billing.model.Plan.GST_PERCENT);
+                m.put("priceWithTaxInPaise", p.priceWithTaxInPaise());
+                m.put("priceWithTaxInRupees", p.priceWithTaxInRupees());
+                // Kept under the historical "monthlyAiLimit" key for API compatibility;
+                // it counts IMAGES processed (clean-up is compulsory on every image).
+                m.put("monthlyAiLimit", p.getMonthlyImageLimit() == Integer.MAX_VALUE
+                        ? "unlimited" : p.getMonthlyImageLimit());
+                m.put("monthlyImageLimit", p.getMonthlyImageLimit() == Integer.MAX_VALUE
+                        ? "unlimited" : p.getMonthlyImageLimit());
+                m.put("monthlyAutoMaskLimit", p.getMonthlyAutoMaskLimit() == Integer.MAX_VALUE
+                        ? "unlimited" : p.getMonthlyAutoMaskLimit());
+                m.put("pdfImageLimit", p.getPdfImageLimit());
+                m.put("monthlyPdfLimit", p.getMonthlyPdfLimit() == Integer.MAX_VALUE
+                        ? "unlimited" : p.getMonthlyPdfLimit());
+                m.put("imageOveragePriceInPaise",
+                        com.gridstore.huevista.billing.model.Plan.IMAGE_OVERAGE_PRICE_PAISE);
+                m.put("imageOveragePriceWithTaxInPaise",
+                        com.gridstore.huevista.billing.model.Plan.imageOveragePriceWithTaxInPaise());
+                return m;
+            }).toList();
         return ResponseEntity.ok(plans);
+    }
+
+    @Operation(summary = "Buy one extra image (order)",
+            description = "Creates a one-time Razorpay order for a single extra image at Rs. 50 + 18% GST, "
+                    + "used once the monthly image quota is spent. Requires an active subscription.")
+    @PostMapping("/image-credits/order")
+    public ResponseEntity<com.gridstore.huevista.billing.dto.ProjectCreditOrderResponse> createImageCreditOrder(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(imageCreditService.createOrder(userDetails.getUsername()));
+    }
+
+    @Operation(summary = "Buy one extra image (verify)",
+            description = "Verifies the Razorpay Checkout signature and credits one extra image to the "
+                    + "active subscription. Replay-protected — one payment buys exactly one image.")
+    @PostMapping("/image-credits/verify")
+    public ResponseEntity<SubscriptionResponse> verifyImageCredit(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Valid @RequestBody com.gridstore.huevista.billing.dto.VerifyProjectCreditRequest request) {
+        return ResponseEntity.ok(imageCreditService.verifyAndCredit(userDetails.getUsername(), request));
     }
 
     @Operation(summary = "Get my colour-board PDF allowance",

@@ -127,8 +127,10 @@ class GuestFlowIntegrationTest {
 
     @Test
     void guest_segmentation_is_allowed_and_not_charged_upfront_when_shop_has_credits() throws Exception {
-        // Give the shop owner an active subscription with AI quota.
-        billingService.grantTrial(retailerId, Plan.STARTER, 14);
+        // Give the shop owner an active subscription with image AND auto-mask quota —
+        // guest runs are always fully automatic, so a plan without auto-mask credits
+        // (Starter is manual-masking only) would 402 the guest into the manual fallback.
+        billingService.grantTrial(retailerId, Plan.PROFESSIONAL, 14);
 
         String guestToken = redeemAsGuest();
         String imageId = guestUpload(guestToken);

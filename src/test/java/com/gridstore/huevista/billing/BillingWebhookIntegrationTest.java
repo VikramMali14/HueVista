@@ -74,7 +74,7 @@ class BillingWebhookIntegrationTest {
                 .plan(Plan.STARTER)
                 .status(SubscriptionStatus.CREATED)
                 .razorpaySubscriptionId("sub_test_123")
-                .aiGenerationsLimit(Plan.STARTER.getMonthlyAiLimit())
+                .aiGenerationsLimit(Plan.STARTER.getMonthlyImageLimit())
                 .build());
     }
 

@@ -33,15 +33,37 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
     long countByStatus(SubscriptionStatus status);
 
     /**
-     * Atomically charge one AI generation only while usage is below the limit. A single
-     * conditional UPDATE (no read-modify-write in Java) so two concurrent requests can't
-     * both consume the last remaining credit. Returns the number of rows updated: 1 when
-     * a credit was taken, 0 when the limit was already reached.
+     * Atomically charge one image only while usage is below the effective allowance
+     * (monthly limit + purchased pay-per-image credits). A single conditional UPDATE
+     * (no read-modify-write in Java) so two concurrent requests can't both consume the
+     * last remaining credit. Returns the number of rows updated: 1 when a credit was
+     * taken, 0 when the allowance was already reached.
      */
     @Modifying(clearAutomatically = true)
     @Query("UPDATE Subscription s SET s.aiGenerationsUsed = s.aiGenerationsUsed + 1 " +
-           "WHERE s.id = :id AND s.aiGenerationsUsed < s.aiGenerationsLimit")
+           "WHERE s.id = :id AND s.aiGenerationsUsed < s.aiGenerationsLimit + s.purchasedImageCredits")
     int incrementAiUsageIfWithinLimit(@Param("id") String id);
+
+    /**
+     * Atomically charge one AI auto-mask run while usage is below the plan's auto-mask
+     * allowance — same conditional-UPDATE pattern as the image quota. Returns 1 when
+     * charged, 0 when the allowance is spent (or the plan has none: limit 0).
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE Subscription s SET s.autoMasksUsed = s.autoMasksUsed + 1 " +
+           "WHERE s.id = :id AND s.autoMasksUsed < s.autoMasksLimit")
+    int incrementAutoMaskUsageIfWithinLimit(@Param("id") String id);
+
+    /** Atomically charge one auto-mask run regardless of the limit — the run already happened. */
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE Subscription s SET s.autoMasksUsed = s.autoMasksUsed + 1 WHERE s.id = :id")
+    int incrementAutoMaskUsage(@Param("id") String id);
+
+    /** Add pay-per-image overage credits after a verified Rs. 50 + GST payment. */
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE Subscription s SET s.purchasedImageCredits = s.purchasedImageCredits + :count " +
+           "WHERE s.id = :id")
+    int addPurchasedImageCredits(@Param("id") String id, @Param("count") int count);
 
     /**
      * Atomically charge one AI generation regardless of the limit — used when the work has

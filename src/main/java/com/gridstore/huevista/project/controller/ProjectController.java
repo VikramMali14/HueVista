@@ -124,10 +124,15 @@ public class ProjectController {
                     - Segmentation typically takes 30–90 seconds (image cleaning +
                       mask generation are generative model calls; slow runs can
                       take a few minutes, so poll with a generous deadline)
-                    - Body is optional; its only field (ADMIN only) controls the
-                      run: `cleanImage: false` skips the image-cleaner step.
-                      Masks are always stored raw — exactly as the model
-                      produced them, with no post-processing
+                    - Body is optional. `maskMode` ("AUTO" default / "MANUAL")
+                      chooses what happens AFTER the compulsory AI photo
+                      clean-up: AUTO runs AI wall detection (consumes one
+                      auto-mask credit; 402 AUTO_MASK_UNAVAILABLE when the plan
+                      has none), MANUAL stops after the clean-up so walls are
+                      marked by hand (free). `cleanImage: false` (ADMIN only)
+                      skips the image-cleaner step. Masks are always stored
+                      raw — exactly as the model produced them, with no
+                      post-processing
                     """
     )
     @ApiResponses({
@@ -140,12 +145,18 @@ public class ProjectController {
             @RequestBody(required = false) SegmentRequest request,
             Authentication auth
     ) {
-        // The whole options body is an ADMIN testing panel — silently ignored
-        // for every other role so a crafted request can't alter the pipeline.
+        // maskMode is a real product choice open to everyone; the remaining
+        // options are an ADMIN testing panel — silently stripped for every
+        // other role so a crafted request can't alter the pipeline.
         boolean admin = auth.getAuthorities().stream()
                 .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
+        SegmentRequest effective = request;
+        if (!admin && request != null) {
+            effective = new SegmentRequest();
+            effective.setMaskMode(request.getMaskMode());
+        }
         return ResponseEntity.ok(projectService.requestSegmentation(
-                userId(auth), id, admin ? request : null));
+                userId(auth), id, effective));
     }
 
     @Operation(

@@ -93,7 +93,7 @@ class TrialSignupIntegrationTest {
         assertThat(sub.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
         assertThat(sub.getPlan()).isEqualTo(Plan.PROFESSIONAL);
         assertThat(sub.getRazorpaySubscriptionId()).isNull();
-        assertThat(sub.getAiGenerationsLimit()).isEqualTo(Plan.PROFESSIONAL.getMonthlyAiLimit());
+        assertThat(sub.getAiGenerationsLimit()).isEqualTo(Plan.PROFESSIONAL.getMonthlyImageLimit());
     }
 
     /** Public signup creates a plain CUSTOMER — no shop, no subscription. */

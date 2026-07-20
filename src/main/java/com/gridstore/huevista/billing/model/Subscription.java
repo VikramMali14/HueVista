@@ -42,12 +42,33 @@ public class Subscription {
     private LocalDateTime currentPeriodStart;
     private LocalDateTime currentPeriodEnd;
 
+    // Images processed this cycle. Every image consumes one — the AI photo
+    // clean-up step is compulsory. (Column names keep the historical
+    // "ai_generations" naming for DB compatibility.)
     @Column(nullable = false)
     @Builder.Default
     private int aiGenerationsUsed = 0;
 
     @Column(nullable = false)
     private int aiGenerationsLimit;
+
+    /** AI auto-mask (wall-detection) runs this cycle — charged only when the
+     *  shop picks the automatic mask after clean-up; manual masking is free. */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int autoMasksUsed = 0;
+
+    /** Auto-mask runs allowed per cycle (0 = plan is manual-masking only). */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int autoMasksLimit = 0;
+
+    /** Pay-per-image overage credits bought at Rs. 50 + GST each once the
+     *  monthly image quota is spent. NOT reset on renewal — a paid credit
+     *  never evaporates; it simply extends the image allowance. */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int purchasedImageCredits = 0;
 
     /** Colour-board PDF downloads this billing cycle — reset on renewal like AI usage. */
     @Column(nullable = false, columnDefinition = "integer not null default 0")

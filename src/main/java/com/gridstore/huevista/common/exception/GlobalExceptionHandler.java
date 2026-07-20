@@ -93,6 +93,24 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).body(body);
     }
 
+    @ExceptionHandler(ImageLimitReachedException.class)
+    public ResponseEntity<Map<String, Object>> handleImageLimitReached(ImageLimitReachedException ex) {
+        // Monthly image allowance spent — tagged so the frontend offers the
+        // Rs. 50 + GST buy-one-extra-image checkout instead of a dead end.
+        Map<String, Object> body = baseError(HttpStatus.PAYMENT_REQUIRED, ex.getMessage());
+        body.put("code", "IMAGE_LIMIT_REACHED");
+        return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).body(body);
+    }
+
+    @ExceptionHandler(AutoMaskUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> handleAutoMaskUnavailable(AutoMaskUnavailableException ex) {
+        // AI auto-mask not in the plan / allowance spent — frontend steers to
+        // manual masking (free on every tier) or an upgrade.
+        Map<String, Object> body = baseError(HttpStatus.PAYMENT_REQUIRED, ex.getMessage());
+        body.put("code", "AUTO_MASK_UNAVAILABLE");
+        return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).body(body);
+    }
+
     @ExceptionHandler(QuotaExceededException.class)
     public ResponseEntity<Map<String, Object>> handleQuota(QuotaExceededException ex) {
         // No active subscription / AI limit reached, or a customer's project allowance is used up.

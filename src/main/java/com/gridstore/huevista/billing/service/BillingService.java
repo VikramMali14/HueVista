@@ -68,11 +68,28 @@ public class BillingService {
             throw new IllegalArgumentException("Enterprise plans require manual setup. Please contact sales.");
         }
 
-        // A PAID subscription blocks creating another; an active free trial does NOT — the
-        // trialing retailer is upgrading, and the trial is superseded once the plan activates
-        // (see verifyAndActivateSubscription / activateSubscription).
-        if (subscriptionRepository.existsByUserIdAndStatusAndTrialFalse(userId, SubscriptionStatus.ACTIVE)) {
-            throw new IllegalStateException("You already have an active subscription. Cancel it first.");
+        // An active free trial never blocks buying a plan (the trial is superseded once
+        // the plan activates). An active PAID subscription allows exactly one in-place
+        // change: an UPGRADE to a higher tier — the old plan is cancelled and replaced
+        // the moment the new one activates (see verifyAndActivateSubscription /
+        // activateSubscription). Same tier or a downgrade still requires cancelling
+        // first, so nobody accidentally double-pays for a sideways move.
+        Subscription activePaid = subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+                .filter(s -> !s.isTrial())
+                .orElse(null);
+        if (activePaid != null) {
+            if (request.getPlan() == activePaid.getPlan()) {
+                throw new IllegalStateException(
+                        "You're already on the " + activePaid.getPlan().getDisplayName() + " plan.");
+            }
+            if (!request.getPlan().isUpgradeFrom(activePaid.getPlan())) {
+                throw new IllegalStateException(
+                        "To move to a smaller plan, cancel your current one first — it stays "
+                        + "active till the end of the period, and you can subscribe to "
+                        + request.getPlan().getDisplayName() + " after that.");
+            }
+            log.info("Upgrade requested: user={} {} -> {}", userId, activePaid.getPlan(), request.getPlan());
         }
 
         User user = userRepository.findById(userId)
@@ -114,10 +131,12 @@ public class BillingService {
                     .plan(request.getPlan())
                     .status(SubscriptionStatus.CREATED)
                     .razorpaySubscriptionId(rzpSubId)
-                    // quantity multiplies the amount Razorpay bills, so scale the AI quota by it
-                    // too — otherwise a customer paying Nx would still get a single plan's limit.
-                    .aiGenerationsLimit(scaledLimit(request.getPlan().getMonthlyAiLimit(), request.getQuantity()))
-                    // PDF downloads scale with quantity like the AI quota; images-per-PDF is a
+                    // quantity multiplies the amount Razorpay bills, so scale the image and
+                    // auto-mask quotas by it too — otherwise a customer paying Nx would still
+                    // get a single plan's limit.
+                    .aiGenerationsLimit(scaledLimit(request.getPlan().getMonthlyImageLimit(), request.getQuantity()))
+                    .autoMasksLimit(scaledLimit(request.getPlan().getMonthlyAutoMaskLimit(), request.getQuantity()))
+                    // PDF downloads scale with quantity like the image quota; images-per-PDF is a
                     // per-document property of the tier, so it does NOT scale.
                     .pdfDownloadsLimit(scaledLimit(request.getPlan().getMonthlyPdfLimit(), request.getQuantity()))
                     .pdfImageLimit(request.getPlan().getPdfImageLimit())
@@ -178,9 +197,10 @@ public class BillingService {
             // Approximate the first monthly period; the renewal webhook corrects it later.
             sub.setCurrentPeriodEnd(now.plusMonths(1));
             subscriptionRepository.save(sub);
-            // The retailer just paid — end any still-active free trial so they aren't left
-            // with two active subscriptions.
-            supersedeActiveTrials(sub.getUser().getId(), sub.getId());
+            // The retailer just paid — end any other still-active subscription (a free
+            // trial, or the smaller plan this purchase upgrades from) so they never hold
+            // two active plans or get double-billed.
+            supersedeActiveSubscriptions(sub.getUser().getId(), sub.getId());
             auditService.record(userId, "SUBSCRIPTION_ACTIVATE", "SUBSCRIPTION", sub.getId(),
                     "plan=" + sub.getPlan() + " rzpId=" + request.getSubscriptionId());
             log.info("Subscription activated via checkout verify: user={} subId={}", userId, sub.getId());
@@ -212,7 +232,8 @@ public class BillingService {
                 .currentPeriodStart(now)
                 .currentPeriodEnd(now.plusDays(trialDays))
                 .aiGenerationsUsed(0)
-                .aiGenerationsLimit(p.getMonthlyAiLimit())
+                .aiGenerationsLimit(p.getMonthlyImageLimit())
+                .autoMasksLimit(p.getMonthlyAutoMaskLimit())
                 .pdfDownloadsLimit(p.getMonthlyPdfLimit())
                 .pdfImageLimit(p.getPdfImageLimit())
                 .build();
@@ -251,7 +272,8 @@ public class BillingService {
                 .currentPeriodStart(now)
                 .currentPeriodEnd(now.plusDays(days))
                 .aiGenerationsUsed(0)
-                .aiGenerationsLimit(aiLimitOverride != null ? aiLimitOverride : plan.getMonthlyAiLimit())
+                .aiGenerationsLimit(aiLimitOverride != null ? aiLimitOverride : plan.getMonthlyImageLimit())
+                .autoMasksLimit(plan.getMonthlyAutoMaskLimit())
                 .pdfDownloadsLimit(plan.getMonthlyPdfLimit())
                 .pdfImageLimit(plan.getPdfImageLimit())
                 .build();
@@ -365,9 +387,10 @@ public class BillingService {
     }
 
     /**
-     * Read-only quota gate: throws if {@code userId} has no active subscription or has
-     * hit their limit, but does NOT increment. Used as a cheap fail-fast pre-flight before
-     * the actual charge lands once the AI work succeeds (see {@link #incrementAiUsage}) —
+     * Read-only image-quota gate: throws if {@code userId} has no active subscription or
+     * has spent their effective image allowance (monthly limit + purchased pay-per-image
+     * credits), but does NOT increment. Used as a cheap fail-fast pre-flight before the
+     * actual charge lands once the AI work succeeds (see {@link #incrementAiUsage}) —
      * e.g. guest wall-detection billed to the shop, so a failed run never costs a credit.
      */
     @Transactional(readOnly = true)
@@ -376,11 +399,76 @@ public class BillingService {
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
                 .orElseThrow(() -> new QuotaExceededException(
                         "No active subscription. Subscribe to use AI features."));
-        if (sub.getAiGenerationsUsed() >= sub.getAiGenerationsLimit()) {
-            throw new QuotaExceededException(
-                    "Monthly AI generation limit reached (" + sub.getAiGenerationsLimit() + "). " +
-                    "Upgrade your plan or wait for next billing cycle.");
+        if (sub.getAiGenerationsUsed() >= effectiveImageAllowance(sub)) {
+            throw new com.gridstore.huevista.common.exception.ImageLimitReachedException(
+                    "Monthly image limit reached (" + sub.getAiGenerationsLimit() + "). " +
+                    "Buy an extra image for Rs. " + (Plan.imageOveragePriceWithTaxInPaise() / 100)
+                    + " (Rs. " + (Plan.IMAGE_OVERAGE_PRICE_PAISE / 100) + " + 18% GST), "
+                    + "upgrade your plan, or wait for the next billing cycle.");
         }
+    }
+
+    /**
+     * Read-only auto-mask gate for the AI wall-detection step (the optional mask created
+     * automatically AFTER the compulsory photo clean-up). Throws 402-tagged
+     * {@code AUTO_MASK_UNAVAILABLE} when the plan has no auto-masking at all (Starter is
+     * manual-only) or the monthly auto-mask allowance is spent — manual masking stays
+     * available either way, so the caller should steer the user there or to an upgrade.
+     */
+    @Transactional(readOnly = true)
+    public void assertAutoMaskQuotaAvailable(String userId) {
+        Subscription sub = subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+                .orElseThrow(() -> new QuotaExceededException(
+                        "No active subscription. Subscribe to use AI features."));
+        if (sub.getAutoMasksLimit() <= 0) {
+            throw new com.gridstore.huevista.common.exception.AutoMaskUnavailableException(
+                    "AI wall detection isn't included in the " + sub.getPlan().getDisplayName()
+                    + " plan — mark walls yourself with click-to-segment (free, unlimited), "
+                    + "or upgrade to a plan with AI auto-masking.");
+        }
+        if (sub.getAutoMasksUsed() >= sub.getAutoMasksLimit()) {
+            throw new com.gridstore.huevista.common.exception.AutoMaskUnavailableException(
+                    "Monthly AI wall-detection limit reached (" + sub.getAutoMasksLimit() + "). "
+                    + "Mark walls yourself with click-to-segment (free, unlimited), upgrade "
+                    + "your plan, or wait for the next billing cycle.");
+        }
+    }
+
+    /**
+     * Charges one AI auto-mask run to {@code userId} once wall detection has actually
+     * succeeded. Best-effort like {@link #incrementAiUsage} — a missing subscription is a
+     * no-op and the increment is not limit-gated because the run already happened.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void incrementAutoMaskUsage(String userId) {
+        subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+                .ifPresent(sub -> subscriptionRepository.incrementAutoMaskUsage(sub.getId()));
+    }
+
+    /**
+     * Credit one pay-per-image overage purchase (verified Rs. 50 + GST payment) to the
+     * user's ACTIVE subscription. Throws when there is no active subscription — the
+     * payment flow requires one up-front, so this only trips on a race with expiry.
+     */
+    @Transactional
+    public SubscriptionResponse creditPurchasedImage(String userId) {
+        Subscription sub = subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "No active subscription to credit — contact support with your payment id."));
+        subscriptionRepository.addPurchasedImageCredits(sub.getId(), 1);
+        Subscription fresh = subscriptionRepository.findById(sub.getId()).orElse(sub);
+        log.info("Image overage credit added: user={} subId={} credits={}",
+                userId, fresh.getId(), fresh.getPurchasedImageCredits());
+        return SubscriptionResponse.from(fresh);
+    }
+
+    /** Monthly image limit + purchased overage credits, clamped against int overflow. */
+    private static int effectiveImageAllowance(Subscription sub) {
+        long allowance = (long) sub.getAiGenerationsLimit() + sub.getPurchasedImageCredits();
+        return allowance > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) allowance;
     }
 
     /**
@@ -399,9 +487,9 @@ public class BillingService {
                         "No active subscription. Subscribe to use AI features."));
         int reserved = subscriptionRepository.incrementAiUsageIfWithinLimit(sub.getId());
         if (reserved == 0) {
-            throw new QuotaExceededException(
-                    "Monthly AI generation limit reached (" + sub.getAiGenerationsLimit() + "). " +
-                    "Upgrade your plan or wait for next billing cycle.");
+            throw new com.gridstore.huevista.common.exception.ImageLimitReachedException(
+                    "Monthly image limit reached (" + sub.getAiGenerationsLimit() + "). " +
+                    "Buy an extra image, upgrade your plan, or wait for the next billing cycle.");
         }
     }
 
@@ -444,8 +532,9 @@ public class BillingService {
             sub.setCurrentPeriodStart(LocalDateTime.now());
             sub.setCurrentPeriodEnd(resolvePeriodEnd(currentEnd));
             subscriptionRepository.save(sub);
-            // End any still-active free trial now that a paid plan is live.
-            supersedeActiveTrials(sub.getUser().getId(), sub.getId());
+            // End any other still-active subscription (free trial, or the plan this
+            // one upgrades from) now that the new paid plan is live.
+            supersedeActiveSubscriptions(sub.getUser().getId(), sub.getId());
             log.info("Subscription activated: {}", razorpaySubscriptionId);
             if (!wasActive) {
                 billingEmailService.sendSubscriptionActivated(sub);
@@ -460,10 +549,16 @@ public class BillingService {
     public void markCancelled(String razorpaySubscriptionId) {
         subscriptionRepository.findByRazorpaySubscriptionId(razorpaySubscriptionId).ifPresent(sub -> {
             boolean wasCancelled = sub.getStatus() == SubscriptionStatus.CANCELLED;
+            // An upgrade cancels the old plan at the gateway; when that webhook echoes
+            // back the user already holds a new ACTIVE plan — a "your subscription has
+            // ended" email would only alarm someone who just paid for a bigger one.
+            boolean superseded = sub.getStatus() == SubscriptionStatus.EXPIRED
+                    && subscriptionRepository.existsByUserIdAndStatus(
+                            sub.getUser().getId(), SubscriptionStatus.ACTIVE);
             sub.setStatus(SubscriptionStatus.CANCELLED);
             subscriptionRepository.save(sub);
             log.info("Subscription cancelled: {}", razorpaySubscriptionId);
-            if (!wasCancelled) {
+            if (!wasCancelled && !superseded) {
                 billingEmailService.sendSubscriptionEnded(sub);
             }
         });
@@ -516,12 +611,18 @@ public class BillingService {
 
             sub.setStatus(SubscriptionStatus.ACTIVE);
             sub.setAiGenerationsUsed(0);
+            sub.setAutoMasksUsed(0);
             sub.setPdfDownloadsUsed(0);
-            // Older rows (pre-PDF-quota) were backfilled with base allowances; refreshing
+            // Purchased pay-per-image credits deliberately survive renewal — a paid
+            // credit never evaporates.
+            // Older rows (pre-quota-split) were backfilled with base allowances; refreshing
             // from the plan on every renewal also picks up any plan-limit changes.
             sub.setPdfImageLimit(sub.getPlan().getPdfImageLimit());
             if (sub.getPdfDownloadsLimit() < sub.getPlan().getMonthlyPdfLimit()) {
                 sub.setPdfDownloadsLimit(sub.getPlan().getMonthlyPdfLimit());
+            }
+            if (sub.getAutoMasksLimit() < sub.getPlan().getMonthlyAutoMaskLimit()) {
+                sub.setAutoMasksLimit(sub.getPlan().getMonthlyAutoMaskLimit());
             }
             sub.setCurrentPeriodStart(LocalDateTime.now());
             LocalDateTime newEnd = resolvePeriodEnd(currentEnd);
@@ -566,18 +667,39 @@ public class BillingService {
     }
 
     /**
-     * End any of {@code userId}'s active free trials except {@code keepSubId}, called when a
-     * paid plan goes live so a retailer never holds two active subscriptions at once.
+     * End every other ACTIVE subscription of {@code userId} except {@code keepSubId},
+     * called when a paid plan goes live so a retailer never holds two active plans.
+     * A superseded free trial simply expires locally; a superseded PAID plan (the
+     * upgrade case) is also cancelled at Razorpay immediately so its next renewal
+     * never charges the card again. The gateway cancel is best-effort: a Razorpay
+     * hiccup must not fail the activation of the plan the user just paid for — the
+     * local EXPIRED status is what the app enforces either way.
      */
-    private void supersedeActiveTrials(String userId, String keepSubId) {
+    private void supersedeActiveSubscriptions(String userId, String keepSubId) {
         subscriptionRepository.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE)
                 .forEach(existing -> {
-                    if (existing.isTrial() && !existing.getId().equals(keepSubId)) {
-                        existing.setStatus(SubscriptionStatus.EXPIRED);
-                        subscriptionRepository.save(existing);
-                        log.info("Trial superseded by paid activation: user={} trialSubId={}",
-                                userId, existing.getId());
+                    if (existing.getId().equals(keepSubId)) {
+                        return;
                     }
+                    boolean paidAtGateway = !existing.isTrial()
+                            && existing.getRazorpaySubscriptionId() != null
+                            && !existing.getRazorpaySubscriptionId().isBlank();
+                    if (paidAtGateway) {
+                        try {
+                            JSONObject cancelRequest = new JSONObject();
+                            cancelRequest.put("cancel_at_cycle_end", 0);
+                            razorpayClient.subscriptions.cancel(
+                                    existing.getRazorpaySubscriptionId(), cancelRequest);
+                        } catch (RazorpayException e) {
+                            log.warn("Razorpay cancel of superseded subscription {} failed "
+                                    + "(local expiry still applied): {}",
+                                    existing.getRazorpaySubscriptionId(), e.getMessage());
+                        }
+                    }
+                    existing.setStatus(SubscriptionStatus.EXPIRED);
+                    subscriptionRepository.save(existing);
+                    log.info("Subscription superseded by new activation: user={} oldSubId={} trial={}",
+                            userId, existing.getId(), existing.isTrial());
                 });
     }
 
