@@ -178,6 +178,25 @@ public class SegmentationService {
                         projectId, e.getMessage());
             }
 
+            // MANUAL mask mode: the pipeline deliberately stops after the
+            // compulsory clean-up — the user marks walls themselves with
+            // click-to-segment / hand-drawing (free, unlimited on every tier).
+            // The project is usable right away (cleaned canvas when the clean
+            // succeeded, original photo otherwise), and only the IMAGE credit
+            // is charged: no AI wall detection ran, so no auto-mask credit.
+            if ("MANUAL".equalsIgnoreCase(
+                    projectRepository.findMaskModeById(projectId).orElse(null))) {
+                markSegmented(projectId);
+                if (guestAccessCodeId != null) {
+                    billGuestUsage(guestAccessCodeId, false);
+                } else {
+                    billingService.incrementAiUsage(ownerUserId);
+                }
+                log.info("Manual mask mode: stopped after clean-up for project {} " +
+                        "(image credit charged, walls to be marked by hand)", projectId);
+                return;
+            }
+
             // Without a cleaned canvas (cleaner disabled or failed) the
             // ORIGINAL photo is the canvas the frontend renders on — load it
             // so the stored masks can be sized off its exact aspect and
@@ -199,13 +218,15 @@ public class SegmentationService {
                     uploadedImage.getImageType(), cleanedBytes, snapFallbackBytes,
                     uploadedImage.getWidth(), uploadedImage.getHeight())) {
                 markSegmented(projectId);
-                // Charge one AI preview now that walls were actually produced — a failed
+                // Charge one IMAGE credit (compulsory clean-up) plus one AUTO-MASK credit
+                // (AI wall detection ran) now that walls were actually produced — a failed
                 // run never costs a credit. Guest runs bill the issuing shop; a retailer's
                 // own run bills the retailer (gated upfront in requestSegmentation).
                 if (guestAccessCodeId != null) {
-                    billGuestSegmentationIfNeeded(guestAccessCodeId);
+                    billGuestUsage(guestAccessCodeId, true);
                 } else {
                     billingService.incrementAiUsage(ownerUserId);
+                    billingService.incrementAutoMaskUsage(ownerUserId);
                 }
                 log.info("Segmentation complete: project={}", projectId);
                 return;
@@ -528,12 +549,13 @@ public class SegmentationService {
     }
 
     /**
-     * Charges one AI generation to the shop that issued a guest's access code, after a
-     * guest run has actually produced walls. No-op for normal (user-owned) runs — pass
-     * null. Best-effort: a missing code/org/owner just means no charge (the guest still
-     * got their result), so billing problems never fail an otherwise-successful run.
+     * Charges one IMAGE credit — and, when AI wall detection ran, one AUTO-MASK
+     * credit — to the shop that issued a guest's access code, after a guest run has
+     * actually completed. No-op for normal (user-owned) runs — pass null. Best-effort:
+     * a missing code/org/owner just means no charge (the guest still got their result),
+     * so billing problems never fail an otherwise-successful run.
      */
-    private void billGuestSegmentationIfNeeded(String guestAccessCodeId) {
+    private void billGuestUsage(String guestAccessCodeId, boolean autoMaskRan) {
         if (guestAccessCodeId == null) return;
         try {
             String orgId = accessCodeRepository.findOrganizationIdById(guestAccessCodeId).orElse(null);
@@ -541,7 +563,12 @@ public class SegmentationService {
             orgMembershipRepository
                     .findUserIdsByOrganizationIdAndRole(orgId, com.gridstore.huevista.account.model.OrgMemberRole.OWNER)
                     .stream().findFirst()
-                    .ifPresent(billingService::incrementAiUsage);
+                    .ifPresent(ownerId -> {
+                        billingService.incrementAiUsage(ownerId);
+                        if (autoMaskRan) {
+                            billingService.incrementAutoMaskUsage(ownerId);
+                        }
+                    });
         } catch (Exception e) {
             log.warn("Guest segmentation succeeded but billing the shop failed (code={}): {}",
                     guestAccessCodeId, e.getMessage());

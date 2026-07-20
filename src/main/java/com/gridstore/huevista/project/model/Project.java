@@ -80,6 +80,15 @@ public class Project {
     // the queue payload so the choice survives worker restarts and requeues.
     private Boolean skipImageClean;
 
+    // How walls are created after the compulsory AI photo clean-up: "AUTO"
+    // (null = default) runs AI wall detection and consumes one auto-mask
+    // credit; "MANUAL" stops the pipeline after the clean-up so the user marks
+    // walls themselves (free, unlimited). Persisted on the project rather than
+    // carried in the queue payload so the choice survives worker restarts and
+    // requeues — same reasoning as skipImageClean above.
+    @Column(length = 16)
+    private String maskMode;
+
     // When status == FAILED, why. Surfaced to the frontend so we can show the
     // user something actionable ("auto-segmentation not configured — click each
     // wall") instead of a generic failure. Stored as TEXT because Hibernate

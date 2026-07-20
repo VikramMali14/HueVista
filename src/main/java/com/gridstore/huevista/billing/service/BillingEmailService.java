@@ -143,6 +143,40 @@ public class BillingEmailService {
                 """.formatted(firstName(user), amountPaise / 100.0)));
     }
 
+    /** One-time pay-per-image overage purchase receipt. */
+    public void sendImageCreditPurchased(String userId, int amountPaise) {
+        userRepository.findById(userId).ifPresent(user -> deliver(user,
+                "Payment received — 1 extra HueVista image",
+                """
+                Hi %s,
+
+                Thank you — your payment of Rs. %.2f (incl. 18%% GST) was received and one
+                extra image has been added to your plan. It's ready to use right away and
+                never expires.
+
+                Razorpay will email you the tax invoice separately.
+
+                — The HueVista team
+                """.formatted(firstName(user), amountPaise / 100.0)));
+    }
+
+    /** Wallet top-up receipt. */
+    public void sendWalletTopUp(String userId, long amountPaise) {
+        userRepository.findById(userId).ifPresent(user -> deliver(user,
+                "Payment received — HueVista wallet top-up",
+                """
+                Hi %s,
+
+                Thank you — Rs. %.2f has been added to your HueVista wallet. It's ready to
+                spend on extra images and AI auto-masks whenever your monthly allowance runs
+                out, and it never expires.
+
+                Razorpay will email you the tax invoice separately.
+
+                — The HueVista team
+                """.formatted(firstName(user), amountPaise / 100.0)));
+    }
+
     // ── internals ────────────────────────────────────────────────────────────
 
     private void deliver(User user, String subject, String body) {

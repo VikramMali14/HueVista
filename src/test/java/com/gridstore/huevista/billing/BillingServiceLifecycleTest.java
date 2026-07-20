@@ -68,10 +68,14 @@ class BillingServiceLifecycleTest {
     }
 
     private static Subscription activePaid(int used, int limit) {
+        return activePaid(used, limit, Plan.STARTER);
+    }
+
+    private static Subscription activePaid(int used, int limit, Plan plan) {
         User owner = new User();
         owner.setId(USER);
         return Subscription.builder()
-                .id(SUB_ID).user(owner).plan(Plan.STARTER)
+                .id(SUB_ID).user(owner).plan(plan)
                 .status(SubscriptionStatus.ACTIVE).trial(false)
                 .razorpaySubscriptionId("rzp_sub_1")
                 .aiGenerationsUsed(used).aiGenerationsLimit(limit)
@@ -82,8 +86,10 @@ class BillingServiceLifecycleTest {
 
     @Test
     void createSubscriptionAllowedWhenOnlyAnActiveTrialExists_andScalesQuotaByQuantity() throws Exception {
-        // Only a trial is active -> the "already have a paid plan" guard must NOT trip.
-        when(subs.existsByUserIdAndStatusAndTrialFalse(USER, SubscriptionStatus.ACTIVE)).thenReturn(false);
+        // Only a trial is active -> the "already have a paid plan" guard must NOT trip
+        // (the paid-plan lookup filters trials out).
+        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
+                .thenReturn(Optional.of(activeTrial()));
         User user = new User();
         user.setId(USER);
         when(users.findById(USER)).thenReturn(Optional.of(user));
@@ -100,8 +106,11 @@ class BillingServiceLifecycleTest {
         assertThat(out.getStatus()).isEqualTo(SubscriptionStatus.CREATED);
         ArgumentCaptor<Subscription> saved = ArgumentCaptor.forClass(Subscription.class);
         verify(subs).save(saved.capture());
-        // STARTER grants 20/month; billed quantity 3 => 60.
-        assertThat(saved.getValue().getAiGenerationsLimit()).isEqualTo(60);
+        // Image and auto-mask quotas both scale with the billed quantity (x3).
+        assertThat(saved.getValue().getAiGenerationsLimit())
+                .isEqualTo(Plan.STARTER.getMonthlyImageLimit() * 3);
+        assertThat(saved.getValue().getAutoMasksLimit())
+                .isEqualTo(Plan.STARTER.getMonthlyAutoMaskLimit() * 3);
     }
 
     @Test
@@ -124,15 +133,61 @@ class BillingServiceLifecycleTest {
     }
 
     @Test
-    void createSubscriptionBlockedByAnActivePaidPlan() {
-        when(subs.existsByUserIdAndStatusAndTrialFalse(USER, SubscriptionStatus.ACTIVE)).thenReturn(true);
+    void createSubscriptionBlockedForTheSamePlanAlreadyActive() {
+        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
+                .thenReturn(Optional.of(activePaid(0, 25, Plan.STARTER)));
         CreateSubscriptionRequest req = new CreateSubscriptionRequest();
         req.setPlan(Plan.STARTER);
 
         assertThatThrownBy(() -> service().createSubscription(USER, req))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("already have an active subscription");
+                .hasMessageContaining("already on");
         verify(subs, never()).save(any());
+    }
+
+    @Test
+    void createSubscriptionBlockedForADowngradeWhilePaidPlanActive() {
+        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
+                .thenReturn(Optional.of(activePaid(0, 60, Plan.PROFESSIONAL)));
+        CreateSubscriptionRequest req = new CreateSubscriptionRequest();
+        req.setPlan(Plan.STARTER);
+
+        assertThatThrownBy(() -> service().createSubscription(USER, req))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("cancel your current one first");
+        verify(subs, never()).save(any());
+    }
+
+    @Test
+    void createSubscriptionAllowedAsAnUpgradeOverAnActivePaidPlan() throws Exception {
+        // STARTER is active and paid; buying PROFESSIONAL is a step UP the ladder,
+        // so the guard lets it through (activation later supersedes the old plan).
+        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
+                .thenReturn(Optional.of(activePaid(0, 25, Plan.STARTER)));
+        User user = new User();
+        user.setId(USER);
+        when(users.findById(USER)).thenReturn(Optional.of(user));
+        razorpay.subscriptions = mock(SubscriptionClient.class);
+        when(razorpay.subscriptions.create(any(JSONObject.class)))
+                .thenReturn(new com.razorpay.Subscription(new JSONObject().put("id", "rzp_sub_up")));
+
+        CreateSubscriptionRequest req = new CreateSubscriptionRequest();
+        req.setPlan(Plan.PROFESSIONAL);
+
+        SubscriptionResponse out = serviceWithProfessionalPlan().createSubscription(USER, req);
+
+        assertThat(out.getStatus()).isEqualTo(SubscriptionStatus.CREATED);
+        ArgumentCaptor<Subscription> saved = ArgumentCaptor.forClass(Subscription.class);
+        verify(subs).save(saved.capture());
+        assertThat(saved.getValue().getPlan()).isEqualTo(Plan.PROFESSIONAL);
+        assertThat(saved.getValue().getAutoMasksLimit())
+                .isEqualTo(Plan.PROFESSIONAL.getMonthlyAutoMaskLimit());
+    }
+
+    private BillingService serviceWithProfessionalPlan() {
+        BillingService svc = service();
+        ReflectionTestUtils.setField(svc, "planIdProfessional", "plan_professional");
+        return svc;
     }
 
     @Test

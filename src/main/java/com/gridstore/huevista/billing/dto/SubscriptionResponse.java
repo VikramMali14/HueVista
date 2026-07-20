@@ -23,9 +23,22 @@ public class SubscriptionResponse {
     private String razorpayKeyId;
     private LocalDateTime currentPeriodStart;
     private LocalDateTime currentPeriodEnd;
+    // Image quota (the compulsory clean-up makes every image consume one).
+    // Field names keep the historical "aiGenerations" naming for API compatibility.
     private int aiGenerationsUsed;
     private int aiGenerationsLimit;
     private int aiGenerationsRemaining;
+    // AI auto-mask (wall-detection) quota — spent only when the shop picks the
+    // automatic mask after clean-up.
+    private int autoMasksUsed;
+    private int autoMasksLimit;
+    private int autoMasksRemaining;
+    /** Pay-per-image overage credits (Rs. 50 + GST each) still unused. Included in
+     *  {@code aiGenerationsRemaining}. */
+    private int purchasedImageCredits;
+    /** Pay-per-use auto-mask credits (Rs. 25 + GST each, wallet-paid) still unused.
+     *  Included in {@code autoMasksRemaining}. */
+    private int purchasedAutoMaskCredits;
     private int pdfDownloadsUsed;
     private int pdfDownloadsLimit;
     private int pdfDownloadsRemaining;
@@ -43,9 +56,15 @@ public class SubscriptionResponse {
     }
 
     public static SubscriptionResponse from(Subscription sub, String paymentUrl, String razorpayKeyId) {
+        // Remaining images include purchased pay-per-image overage credits.
+        long allowance = (long) sub.getAiGenerationsLimit() + sub.getPurchasedImageCredits();
         int remaining = sub.getAiGenerationsLimit() == Integer.MAX_VALUE
                 ? Integer.MAX_VALUE
-                : Math.max(0, sub.getAiGenerationsLimit() - sub.getAiGenerationsUsed());
+                : (int) Math.max(0, Math.min(Integer.MAX_VALUE, allowance - sub.getAiGenerationsUsed()));
+        long autoAllowance = (long) sub.getAutoMasksLimit() + sub.getPurchasedAutoMaskCredits();
+        int autoMasksRemaining = sub.getAutoMasksLimit() == Integer.MAX_VALUE
+                ? Integer.MAX_VALUE
+                : (int) Math.max(0, Math.min(Integer.MAX_VALUE, autoAllowance - sub.getAutoMasksUsed()));
         int pdfRemaining = sub.getPdfDownloadsLimit() == Integer.MAX_VALUE
                 ? Integer.MAX_VALUE
                 : Math.max(0, sub.getPdfDownloadsLimit() - sub.getPdfDownloadsUsed());
@@ -63,6 +82,11 @@ public class SubscriptionResponse {
                 .aiGenerationsUsed(sub.getAiGenerationsUsed())
                 .aiGenerationsLimit(sub.getAiGenerationsLimit())
                 .aiGenerationsRemaining(remaining)
+                .autoMasksUsed(sub.getAutoMasksUsed())
+                .autoMasksLimit(sub.getAutoMasksLimit())
+                .autoMasksRemaining(autoMasksRemaining)
+                .purchasedImageCredits(sub.getPurchasedImageCredits())
+                .purchasedAutoMaskCredits(sub.getPurchasedAutoMaskCredits())
                 .pdfDownloadsUsed(sub.getPdfDownloadsUsed())
                 .pdfDownloadsLimit(sub.getPdfDownloadsLimit())
                 .pdfDownloadsRemaining(pdfRemaining)

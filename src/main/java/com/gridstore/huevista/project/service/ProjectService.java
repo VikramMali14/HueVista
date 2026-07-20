@@ -205,12 +205,13 @@ public class ProjectService {
     }
 
     /**
-     * @param options ADMIN testing panel (already role-gated by the
-     *                controller; null for non-admin callers, which leaves the
-     *                project's stored choice untouched): cleanImage=false
-     *                skips the image-cleaner step. Persisted on the project so
-     *                the async worker (possibly another JVM reading the Redis
-     *                queue) sees the same choice.
+     * @param options Per-run choices, persisted on the project so the async
+     *                worker (possibly another JVM reading the Redis queue) sees
+     *                the same choice. maskMode ("AUTO"/"MANUAL") is open to all
+     *                callers — it decides whether AI wall detection runs after
+     *                the compulsory clean-up; cleanImage=false is an ADMIN
+     *                testing knob (the controller strips it for other roles)
+     *                that skips the image-cleaner step.
      */
     @Transactional
     public ProjectResponse requestSegmentation(String userId, String projectId,
@@ -219,13 +220,27 @@ public class ProjectService {
         if (options != null && options.getCleanImage() != null) {
             project.setSkipImageClean(!options.getCleanImage());
         }
+        if (options != null && options.getMaskMode() != null && !options.getMaskMode().isBlank()) {
+            String mode = options.getMaskMode().trim().toUpperCase();
+            if (!mode.equals("AUTO") && !mode.equals("MANUAL")) {
+                throw new IllegalArgumentException("maskMode must be AUTO or MANUAL.");
+            }
+            project.setMaskMode(mode);
+        }
 
-        // Gate on the retailer's own AI quota WITHOUT charging yet: throws 402 when they
-        // have no active subscription or have hit their monthly limit. This mirrors the
-        // guest path (requestGuestSegmentation) — segmentation is the billable AI preview,
-        // and the credit is only charged once the run actually produces walls
-        // (SegmentationService bills on success), so a failed run stays free.
+        // Gate on the retailer's own quotas WITHOUT charging yet: throws 402 when they
+        // have no active subscription or have hit their monthly image limit. This mirrors
+        // the guest path (requestGuestSegmentation) — every image consumes one image
+        // credit (the clean-up step is compulsory), and the credit is only charged once
+        // the run actually completes (SegmentationService bills on success), so a failed
+        // run stays free.
         billingService.assertAiQuotaAvailable(userId);
+        // AUTO mask mode additionally needs an auto-mask credit — rejected up-front with
+        // a 402 AUTO_MASK_UNAVAILABLE the frontend turns into "mark walls yourself (free)
+        // or upgrade", instead of burning the clean-up on a run that can't finish.
+        if (!"MANUAL".equalsIgnoreCase(project.getMaskMode())) {
+            billingService.assertAutoMaskQuotaAvailable(userId);
+        }
 
         // Allow re-triggering if the previous run never finished (e.g. it
         // crashed, the worker JVM restarted, or an upstream API like Gemini
@@ -681,6 +696,10 @@ public class ProjectService {
         // produces walls (SegmentationService bills on success), so a failed run is free.
         String shopOwnerUserId = resolveShopOwnerUserId(code);
         billingService.assertAiQuotaAvailable(shopOwnerUserId);
+        // Guest runs are always fully automatic (clean-up + AI wall detection), so the
+        // shop's plan must also cover an auto-mask credit; when it doesn't the guest
+        // falls back to marking walls by hand exactly like on an image-quota 402.
+        billingService.assertAutoMaskQuotaAvailable(shopOwnerUserId);
 
         // Re-trigger guard mirrors requestSegmentation: a run stuck >5 min is treated as stale.
         if (project.getStatus() == ProjectStatus.SEGMENTING) {
