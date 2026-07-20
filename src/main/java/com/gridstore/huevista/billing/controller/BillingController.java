@@ -28,6 +28,7 @@ public class BillingController {
     private final BillingService billingService;
     private final PdfQuotaService pdfQuotaService;
     private final com.gridstore.huevista.billing.service.ImageCreditService imageCreditService;
+    private final com.gridstore.huevista.billing.service.BillingWalletService walletService;
 
     @Operation(summary = "Create subscription",
             description = "Creates a Razorpay subscription and returns a payment URL for checkout.")
@@ -101,6 +102,10 @@ public class BillingController {
                         com.gridstore.huevista.billing.model.Plan.IMAGE_OVERAGE_PRICE_PAISE);
                 m.put("imageOveragePriceWithTaxInPaise",
                         com.gridstore.huevista.billing.model.Plan.imageOveragePriceWithTaxInPaise());
+                m.put("autoMaskOveragePriceInPaise",
+                        com.gridstore.huevista.billing.model.Plan.AUTO_MASK_OVERAGE_PRICE_PAISE);
+                m.put("autoMaskOveragePriceWithTaxInPaise",
+                        com.gridstore.huevista.billing.model.Plan.autoMaskOveragePriceWithTaxInPaise());
                 return m;
             }).toList();
         return ResponseEntity.ok(plans);
@@ -124,6 +129,58 @@ public class BillingController {
             @AuthenticationPrincipal UserDetails userDetails,
             @Valid @RequestBody com.gridstore.huevista.billing.dto.VerifyProjectCreditRequest request) {
         return ResponseEntity.ok(imageCreditService.verifyAndCredit(userDetails.getUsername(), request));
+    }
+
+    // ── Prepaid billing wallet ───────────────────────────────────────────────
+
+    @Operation(summary = "Get my billing wallet",
+            description = "Prepaid wallet balance, pay-per-use prices and the recent statement. "
+                    + "The wallet pays for overage (extra images at Rs. 50 + GST, extra AI "
+                    + "auto-masks at Rs. 25 + GST) once monthly allowances are spent.")
+    @GetMapping("/wallet")
+    public ResponseEntity<com.gridstore.huevista.billing.dto.BillingWalletSummaryResponse> getWallet(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.ok(walletService.getWallet(userDetails.getUsername()));
+    }
+
+    @Operation(summary = "Top up the wallet (order)",
+            description = "Creates a one-time Razorpay order that adds the paid amount to the wallet "
+                    + "once verified. Requires an active subscription.")
+    @PostMapping("/wallet/topup/order")
+    public ResponseEntity<com.gridstore.huevista.billing.dto.ProjectCreditOrderResponse> createWalletTopUpOrder(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Valid @RequestBody com.gridstore.huevista.billing.dto.WalletTopUpRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(walletService.createTopUpOrder(userDetails.getUsername(), request.getAmountPaise()));
+    }
+
+    @Operation(summary = "Top up the wallet (verify)",
+            description = "Verifies the Razorpay Checkout signature and credits the order amount to the "
+                    + "wallet. Replay-protected — one payment credits exactly once.")
+    @PostMapping("/wallet/topup/verify")
+    public ResponseEntity<com.gridstore.huevista.billing.dto.BillingWalletSummaryResponse> verifyWalletTopUp(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Valid @RequestBody com.gridstore.huevista.billing.dto.VerifyProjectCreditRequest request) {
+        return ResponseEntity.ok(walletService.verifyTopUp(userDetails.getUsername(), request));
+    }
+
+    @Operation(summary = "Pay for one extra image from the wallet",
+            description = "Atomically debits Rs. 59 (Rs. 50 + 18% GST) from the wallet and credits one "
+                    + "extra image to the active subscription. 402 when the balance is insufficient.")
+    @PostMapping("/wallet/pay/image-credit")
+    public ResponseEntity<SubscriptionResponse> walletPayImageCredit(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.ok(walletService.payForImageCredit(userDetails.getUsername()));
+    }
+
+    @Operation(summary = "Pay for one extra AI auto-mask from the wallet",
+            description = "Atomically debits Rs. 29.50 (Rs. 25 + 18% GST) from the wallet and credits one "
+                    + "extra AI auto-mask run to the active subscription. 402 when the balance is "
+                    + "insufficient.")
+    @PostMapping("/wallet/pay/auto-mask-credit")
+    public ResponseEntity<SubscriptionResponse> walletPayAutoMaskCredit(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.ok(walletService.payForAutoMaskCredit(userDetails.getUsername()));
     }
 
     @Operation(summary = "Get my colour-board PDF allowance",

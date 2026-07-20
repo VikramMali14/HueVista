@@ -45,14 +45,20 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
     int incrementAiUsageIfWithinLimit(@Param("id") String id);
 
     /**
-     * Atomically charge one AI auto-mask run while usage is below the plan's auto-mask
-     * allowance — same conditional-UPDATE pattern as the image quota. Returns 1 when
-     * charged, 0 when the allowance is spent (or the plan has none: limit 0).
+     * Atomically charge one AI auto-mask run while usage is below the effective
+     * allowance (plan limit + purchased pay-per-use credits) — same conditional-UPDATE
+     * pattern as the image quota. Returns 1 when charged, 0 when the allowance is spent.
      */
     @Modifying(clearAutomatically = true)
     @Query("UPDATE Subscription s SET s.autoMasksUsed = s.autoMasksUsed + 1 " +
-           "WHERE s.id = :id AND s.autoMasksUsed < s.autoMasksLimit")
+           "WHERE s.id = :id AND s.autoMasksUsed < s.autoMasksLimit + s.purchasedAutoMaskCredits")
     int incrementAutoMaskUsageIfWithinLimit(@Param("id") String id);
+
+    /** Add pay-per-use auto-mask credits after a verified wallet debit (Rs. 25 + GST each). */
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE Subscription s SET s.purchasedAutoMaskCredits = s.purchasedAutoMaskCredits + :count " +
+           "WHERE s.id = :id")
+    int addPurchasedAutoMaskCredits(@Param("id") String id, @Param("count") int count);
 
     /** Atomically charge one auto-mask run regardless of the limit — the run already happened. */
     @Modifying(clearAutomatically = true)

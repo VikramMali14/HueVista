@@ -160,6 +160,23 @@ public class BillingEmailService {
                 """.formatted(firstName(user), amountPaise / 100.0)));
     }
 
+    /** Wallet top-up receipt. */
+    public void sendWalletTopUp(String userId, long amountPaise) {
+        userRepository.findById(userId).ifPresent(user -> deliver(user,
+                "Payment received — HueVista wallet top-up",
+                """
+                Hi %s,
+
+                Thank you — Rs. %.2f has been added to your HueVista wallet. It's ready to
+                spend on extra images and AI auto-masks whenever your monthly allowance runs
+                out, and it never expires.
+
+                Razorpay will email you the tax invoice separately.
+
+                — The HueVista team
+                """.formatted(firstName(user), amountPaise / 100.0)));
+    }
+
     // ── internals ────────────────────────────────────────────────────────────
 
     private void deliver(User user, String subject, String body) {

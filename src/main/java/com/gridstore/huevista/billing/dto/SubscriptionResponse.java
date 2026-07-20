@@ -29,13 +29,16 @@ public class SubscriptionResponse {
     private int aiGenerationsLimit;
     private int aiGenerationsRemaining;
     // AI auto-mask (wall-detection) quota — spent only when the shop picks the
-    // automatic mask after clean-up. Limit 0 = plan is manual-masking only.
+    // automatic mask after clean-up.
     private int autoMasksUsed;
     private int autoMasksLimit;
     private int autoMasksRemaining;
     /** Pay-per-image overage credits (Rs. 50 + GST each) still unused. Included in
      *  {@code aiGenerationsRemaining}. */
     private int purchasedImageCredits;
+    /** Pay-per-use auto-mask credits (Rs. 25 + GST each, wallet-paid) still unused.
+     *  Included in {@code autoMasksRemaining}. */
+    private int purchasedAutoMaskCredits;
     private int pdfDownloadsUsed;
     private int pdfDownloadsLimit;
     private int pdfDownloadsRemaining;
@@ -58,9 +61,10 @@ public class SubscriptionResponse {
         int remaining = sub.getAiGenerationsLimit() == Integer.MAX_VALUE
                 ? Integer.MAX_VALUE
                 : (int) Math.max(0, Math.min(Integer.MAX_VALUE, allowance - sub.getAiGenerationsUsed()));
+        long autoAllowance = (long) sub.getAutoMasksLimit() + sub.getPurchasedAutoMaskCredits();
         int autoMasksRemaining = sub.getAutoMasksLimit() == Integer.MAX_VALUE
                 ? Integer.MAX_VALUE
-                : Math.max(0, sub.getAutoMasksLimit() - sub.getAutoMasksUsed());
+                : (int) Math.max(0, Math.min(Integer.MAX_VALUE, autoAllowance - sub.getAutoMasksUsed()));
         int pdfRemaining = sub.getPdfDownloadsLimit() == Integer.MAX_VALUE
                 ? Integer.MAX_VALUE
                 : Math.max(0, sub.getPdfDownloadsLimit() - sub.getPdfDownloadsUsed());
@@ -82,6 +86,7 @@ public class SubscriptionResponse {
                 .autoMasksLimit(sub.getAutoMasksLimit())
                 .autoMasksRemaining(autoMasksRemaining)
                 .purchasedImageCredits(sub.getPurchasedImageCredits())
+                .purchasedAutoMaskCredits(sub.getPurchasedAutoMaskCredits())
                 .pdfDownloadsUsed(sub.getPdfDownloadsUsed())
                 .pdfDownloadsLimit(sub.getPdfDownloadsLimit())
                 .pdfDownloadsRemaining(pdfRemaining)

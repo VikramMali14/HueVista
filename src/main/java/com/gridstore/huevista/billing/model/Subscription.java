@@ -70,6 +70,13 @@ public class Subscription {
     @Builder.Default
     private int purchasedImageCredits = 0;
 
+    /** Pay-per-use AI auto-mask credits bought at Rs. 25 + GST each (from the
+     *  prepaid billing wallet) once the monthly auto-mask allowance is spent.
+     *  NOT reset on renewal, same as purchasedImageCredits. */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int purchasedAutoMaskCredits = 0;
+
     /** Colour-board PDF downloads this billing cycle — reset on renewal like AI usage. */
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default

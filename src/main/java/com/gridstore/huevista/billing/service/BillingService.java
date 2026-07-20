@@ -421,17 +421,20 @@ public class BillingService {
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
                 .orElseThrow(() -> new QuotaExceededException(
                         "No active subscription. Subscribe to use AI features."));
-        if (sub.getAutoMasksLimit() <= 0) {
+        long allowance = (long) sub.getAutoMasksLimit() + sub.getPurchasedAutoMaskCredits();
+        if (allowance <= 0) {
             throw new com.gridstore.huevista.common.exception.AutoMaskUnavailableException(
                     "AI wall detection isn't included in the " + sub.getPlan().getDisplayName()
                     + " plan — mark walls yourself with click-to-segment (free, unlimited), "
                     + "or upgrade to a plan with AI auto-masking.");
         }
-        if (sub.getAutoMasksUsed() >= sub.getAutoMasksLimit()) {
+        if (sub.getAutoMasksUsed() >= allowance) {
             throw new com.gridstore.huevista.common.exception.AutoMaskUnavailableException(
                     "Monthly AI wall-detection limit reached (" + sub.getAutoMasksLimit() + "). "
-                    + "Mark walls yourself with click-to-segment (free, unlimited), upgrade "
-                    + "your plan, or wait for the next billing cycle.");
+                    + "Pay Rs. " + (Plan.autoMaskOveragePriceWithTaxInPaise() / 100.0)
+                    + " from your wallet for one more, mark walls yourself with "
+                    + "click-to-segment (free, unlimited), upgrade your plan, or wait for "
+                    + "the next billing cycle.");
         }
     }
 
@@ -462,6 +465,23 @@ public class BillingService {
         Subscription fresh = subscriptionRepository.findById(sub.getId()).orElse(sub);
         log.info("Image overage credit added: user={} subId={} credits={}",
                 userId, fresh.getId(), fresh.getPurchasedImageCredits());
+        return SubscriptionResponse.from(fresh);
+    }
+
+    /**
+     * Credit one pay-per-use AI auto-mask purchase (verified wallet debit of
+     * Rs. 25 + GST) to the user's ACTIVE subscription.
+     */
+    @Transactional
+    public SubscriptionResponse creditPurchasedAutoMask(String userId) {
+        Subscription sub = subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "No active subscription to credit — contact support with your payment id."));
+        subscriptionRepository.addPurchasedAutoMaskCredits(sub.getId(), 1);
+        Subscription fresh = subscriptionRepository.findById(sub.getId()).orElse(sub);
+        log.info("Auto-mask overage credit added: user={} subId={} credits={}",
+                userId, fresh.getId(), fresh.getPurchasedAutoMaskCredits());
         return SubscriptionResponse.from(fresh);
     }
 

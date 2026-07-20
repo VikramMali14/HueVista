@@ -4,7 +4,7 @@
 --                             is compulsory, so every image consumes one)
 --   auto_masks_used/limit   — AI wall-detection runs, consumed only when the shop
 --                             picks the automatic mask after clean-up (manual
---                             masking is free/unlimited; 0 = plan has none)
+--                             masking is free/unlimited)
 --   purchased_image_credits — pay-per-image overage bought at Rs. 50 + GST once
 --                             the monthly image quota is spent; never reset on
 --                             renewal (a paid credit doesn't evaporate)
@@ -13,9 +13,9 @@ ALTER TABLE subscriptions
     ADD COLUMN auto_masks_limit integer NOT NULL DEFAULT 0,
     ADD COLUMN purchased_image_credits integer NOT NULL DEFAULT 0;
 
--- Backfill from each plan's new auto-mask allowance (Starter is manual-only).
+-- Backfill from each plan's new auto-mask allowance.
 UPDATE subscriptions SET auto_masks_limit = CASE plan
-    WHEN 'STARTER'      THEN 0
+    WHEN 'STARTER'      THEN 5
     WHEN 'PROFESSIONAL' THEN 40
     WHEN 'BUSINESS'     THEN 90
     WHEN 'ENTERPRISE'   THEN 2147483647
