@@ -51,9 +51,9 @@ public class ShopProduct {
     @Builder.Default
     private QualityTier qualityTier = QualityTier.PREMIUM;
 
-    /** 1–5 brightness/quality score shown in the indicator. */
+    /** 1–10 brightness/quality score shown in the indicator. */
     @Builder.Default
-    private Integer brightness = 4;
+    private Integer brightness = 8;
 
     private String imageUrl;
 

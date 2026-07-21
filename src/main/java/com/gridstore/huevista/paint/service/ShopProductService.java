@@ -67,6 +67,42 @@ public class ShopProductService {
     }
 
     @Transactional
+    public ShopProductResponse update(String userId, String orgId, String productId, CreateShopProductRequest req) {
+        requireOwnerOrManager(userId, orgId);
+        ShopProduct product = productRepository.findByIdAndOrganizationId(productId, orgId)
+                .orElseThrow(() -> new ResourceNotFoundException("Product not found: " + productId));
+
+        // Allow re-pointing the listing at a different line (e.g. corrected pick).
+        if (req.getLineId() != null
+                && (product.getLine() == null || !req.getLineId().equals(product.getLine().getId()))) {
+            PaintLine line = lineRepository.findById(req.getLineId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Paint line not found: " + req.getLineId()));
+            product.setLine(line);
+        }
+
+        PaintLine line = product.getLine();
+        QualityTier tier = req.getQualityTier() != null ? req.getQualityTier()
+                : (line != null ? line.getQualityTier() : product.getQualityTier());
+        int brightness = req.getBrightness() != null ? req.getBrightness()
+                : (tier != null ? tier.defaultBrightness()
+                        : (product.getBrightness() != null ? product.getBrightness() : 8));
+
+        product.setPrice(req.getPrice());
+        product.setPriceUnit(req.getPriceUnit());
+        product.setPackSize(req.getPackSize());
+        product.setCoverage(req.getCoverage());
+        product.setFinish(req.getFinish() != null ? req.getFinish()
+                : (line != null ? line.getDefaultFinish() : product.getFinish()));
+        product.setQualityTier(tier != null ? tier : QualityTier.PREMIUM);
+        product.setBrightness(brightness);
+        product.setImageUrl(req.getImageUrl());
+        product.setFeatures(req.getFeatures());
+        product.setDescription(req.getDescription());
+
+        return ShopProductResponse.from(productRepository.save(product));
+    }
+
+    @Transactional
     public void delete(String userId, String orgId, String productId) {
         requireOwnerOrManager(userId, orgId);
         ShopProduct product = productRepository.findByIdAndOrganizationId(productId, orgId)

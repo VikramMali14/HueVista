@@ -37,6 +37,14 @@ public class ShopProductController {
                 .body(shopProductService.create(auth.getName(), orgId, request));
     }
 
+    @Operation(summary = "Update a product listing")
+    @PutMapping("/{productId}")
+    public ResponseEntity<ShopProductResponse> update(
+            @PathVariable String orgId, @PathVariable String productId,
+            @Valid @RequestBody CreateShopProductRequest request, Authentication auth) {
+        return ResponseEntity.ok(shopProductService.update(auth.getName(), orgId, productId, request));
+    }
+
     @Operation(summary = "Remove a product listing")
     @DeleteMapping("/{productId}")
     public ResponseEntity<Void> delete(
