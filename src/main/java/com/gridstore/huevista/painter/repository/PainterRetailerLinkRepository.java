@@ -11,6 +11,10 @@ public interface PainterRetailerLinkRepository extends JpaRepository<PainterReta
 
     List<PainterRetailerLink> findByRetailerIdAndStatus(String retailerId, PainterLinkStatus status);
 
+    List<PainterRetailerLink> findByRetailerIdInAndStatus(java.util.Collection<String> retailerIds, PainterLinkStatus status);
+
+    List<PainterRetailerLink> findByStatus(PainterLinkStatus status);
+
     List<PainterRetailerLink> findByPainterIdAndStatus(String painterId, PainterLinkStatus status);
 
     Optional<PainterRetailerLink> findByPainterIdAndRetailerId(String painterId, String retailerId);

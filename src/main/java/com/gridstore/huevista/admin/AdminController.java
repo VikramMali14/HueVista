@@ -4,10 +4,11 @@ import com.gridstore.huevista.account.dto.OrgResponse;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.auth.dto.AdminUserResponse;
 import com.gridstore.huevista.auth.dto.ChangeRoleRequest;
+import com.gridstore.huevista.auth.dto.CreateDistributorRequest;
 import com.gridstore.huevista.auth.dto.CreateRetailerRequest;
+import com.gridstore.huevista.hierarchy.service.HierarchyService;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
-import com.gridstore.huevista.auth.service.AuthService;
 import com.gridstore.huevista.billing.dto.AdminAdjustSubscriptionRequest;
 import com.gridstore.huevista.billing.dto.AdminGrantSubscriptionRequest;
 import com.gridstore.huevista.billing.dto.SubscriptionResponse;
@@ -44,7 +45,7 @@ import java.util.Map;
 @Tag(name = "Admin", description = "Super-admin endpoints — ROLE_ADMIN only")
 public class AdminController {
 
-    private final AuthService authService;
+    private final HierarchyService hierarchyService;
     private final UserRepository userRepository;
     private final OrganizationRepository orgRepository;
     private final SubscriptionRepository subscriptionRepository;
@@ -145,9 +146,23 @@ public class AdminController {
     public ResponseEntity<AdminUserResponse> createRetailer(
             @Valid @RequestBody CreateRetailerRequest request,
             Authentication auth) {
-        AdminUserResponse created = authService.adminCreateRetailer(request);
+        // Through the hierarchy service so the new shop records who created it.
+        AdminUserResponse created = hierarchyService.createRetailer(auth.getName(), request);
         auditService.record(auth.getName(), "RETAILER_CREATED", "USER", created.getId(),
                 "shop account created by admin");
+        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    @Operation(summary = "Create a distributor account",
+            description = "Provisions a DISTRIBUTOR user + organization. Distributors then create their "
+                    + "own retailers, which land in their downline. ADMIN only.")
+    @PostMapping("/distributors")
+    public ResponseEntity<AdminUserResponse> createDistributor(
+            @Valid @RequestBody CreateDistributorRequest request,
+            Authentication auth) {
+        AdminUserResponse created = hierarchyService.createDistributor(auth.getName(), request);
+        auditService.record(auth.getName(), "DISTRIBUTOR_CREATED", "USER", created.getId(),
+                "distributor account created by admin");
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 

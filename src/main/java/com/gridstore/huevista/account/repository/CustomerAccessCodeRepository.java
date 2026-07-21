@@ -24,6 +24,19 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
     Optional<String> findOrganizationIdById(@Param("id") String id);
 
     /**
+     * Per-org access-code totals for the network report: [orgId, issued, redeemed].
+     * COUNT(c.usedAt) only counts non-null values, i.e. consumed codes. Callers must
+     * guard against an empty collection (JPQL IN () is invalid).
+     */
+    @Query("""
+            SELECT c.organization.id, COUNT(c), COUNT(c.usedAt)
+              FROM CustomerAccessCode c
+             WHERE c.organization.id IN :orgIds
+             GROUP BY c.organization.id
+            """)
+    List<Object[]> issuedAndRedeemedByOrgIds(@Param("orgIds") java.util.Collection<String> orgIds);
+
+    /**
      * Atomically consumes a code for a signed-in user. The {@code usedByUser IS NULL
      * AND usedAt IS NULL} guard makes this a compare-and-set: when two requests race
      * on the same code, exactly one UPDATE matches and returns 1 — the loser gets 0

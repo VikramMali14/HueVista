@@ -84,6 +84,42 @@ public class AccountService {
         return org;
     }
 
+    /**
+     * Provision a DISTRIBUTOR organization for a newly-created distributor account.
+     * Mirrors {@link #provisionRetailerOrg}: derives a unique slug, creates the org
+     * (+ OWNER membership), and reuses an existing distributor org if the user
+     * already owns one. Called from admin distributor creation.
+     */
+    @Transactional
+    public Organization provisionDistributorOrg(String userId, String companyName, String city, String state) {
+        User owner = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+        var existing = membershipRepository.findByUserId(userId).stream()
+                .map(OrgMembership::getOrganization)
+                .filter(o -> o.getType() == OrgType.DISTRIBUTOR)
+                .findFirst();
+        if (existing.isPresent()) return existing.get();
+
+        Organization org = orgRepository.save(Organization.builder()
+                .name(companyName)
+                .slug(uniqueSlug(companyName))
+                .type(OrgType.DISTRIBUTOR)
+                .city(blankToNull(city))
+                .state(blankToNull(state))
+                .owner(owner)
+                .build());
+
+        membershipRepository.save(OrgMembership.builder()
+                .user(owner)
+                .organization(org)
+                .role(OrgMemberRole.OWNER)
+                .build());
+
+        log.info("Distributor org provisioned: id={} slug={}", org.getId(), org.getSlug());
+        return org;
+    }
+
     private String uniqueSlug(String name) {
         String base = name == null ? "" : name.toLowerCase()
                 .replaceAll("[^a-z0-9]+", "-")

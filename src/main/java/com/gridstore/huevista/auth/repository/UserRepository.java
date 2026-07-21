@@ -18,6 +18,8 @@ public interface UserRepository extends JpaRepository<User, String> {
 
     List<User> findTop10ByOrderByCreatedAtDesc();
 
+    long countByRole(com.gridstore.huevista.auth.model.UserRole role);
+
     @Query("SELECT COUNT(u) FROM User u WHERE u.createdAt >= :since")
     long countByCreatedAtAfter(@Param("since") LocalDateTime since);
 
