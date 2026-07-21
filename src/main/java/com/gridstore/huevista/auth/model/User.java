@@ -69,6 +69,11 @@ public class User {
     // sessions revoked, and the original email freed for re-registration.
     private LocalDateTime deletedAt;
 
+    // Hierarchy provenance: the user who provisioned this account (admin → distributor
+    // → retailer → painter). Null for self-signups and pre-hierarchy accounts.
+    @Column(name = "created_by_user_id")
+    private String createdById;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 
