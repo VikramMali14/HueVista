@@ -2,8 +2,10 @@ package com.gridstore.huevista.hierarchy;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.model.Organization;
+import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.repository.DistributorRetailerLinkRepository;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.auth.dto.AuthResponse;
@@ -52,6 +54,7 @@ class HierarchyFlowIntegrationTest {
     @Autowired OrganizationRepository organizationRepository;
     @Autowired DistributorRetailerLinkRepository distributorLinkRepository;
     @Autowired PainterRetailerLinkRepository painterLinkRepository;
+    @Autowired CustomerAccessCodeRepository accessCodeRepository;
     @Autowired PasswordEncoder passwordEncoder;
 
     private String tokenFor(String email, String password) throws Exception {
@@ -218,5 +221,116 @@ class HierarchyFlowIntegrationTest {
         mockMvc.perform(get("/api/hierarchy/network")
                         .header("Authorization", "Bearer " + custToken))
                 .andExpect(status().isForbidden());
+    }
+
+    /**
+     * The report math: one distributor with two shops (2 + 1 painters) and
+     * access codes (3 issued/2 redeemed at shop A, 1 issued/0 redeemed at shop B).
+     * Verifies the rollups add up at every level.
+     */
+    @Test
+    void report_rollups_are_correct_across_two_shops() throws Exception {
+        seedAdmin();
+        String adminToken = tokenFor("root@example.com", "password123");
+        createDistributor(adminToken, "Big Dist", "bigdist@example.com");
+        String distToken = tokenFor("bigdist@example.com", "password123");
+
+        // Two shops under the distributor.
+        createRetailer(distToken, "Owner A", "shopa@example.com", "Shop A");
+        createRetailer(distToken, "Owner B", "shopb@example.com", "Shop B");
+        String shopAToken = tokenFor("shopa@example.com", "password123");
+        String shopBToken = tokenFor("shopb@example.com", "password123");
+
+        // Shop A: two painters; Shop B: one painter.
+        createPainter(shopAToken, "P A1", "pa1@example.com");
+        createPainter(shopAToken, "P A2", "pa2@example.com");
+        createPainter(shopBToken, "P B1", "pb1@example.com");
+
+        // Access codes: shop A 3 issued / 2 redeemed, shop B 1 issued / 0 redeemed.
+        Organization shopAOrg = orgOf("shopa@example.com");
+        Organization shopBOrg = orgOf("shopb@example.com");
+        seedCode(shopAOrg, "CODEAA01", true);
+        seedCode(shopAOrg, "CODEAA02", true);
+        seedCode(shopAOrg, "CODEAA03", false);
+        seedCode(shopBOrg, "CODEBB01", false);
+
+        // Distributor report: 2 shops, 3 painters, 4 codes issued, 2 redeemed.
+        JsonNode dist = report(distToken);
+        assertThat(dist.get("viewerRole").asText()).isEqualTo("DISTRIBUTOR");
+        assertThat(dist.get("totals").get("retailers").asLong()).isEqualTo(2);
+        assertThat(dist.get("totals").get("painters").asLong()).isEqualTo(3);
+        assertThat(dist.get("totals").get("codesIssued").asLong()).isEqualTo(4);
+        assertThat(dist.get("totals").get("codesRedeemed").asLong()).isEqualTo(2);
+        JsonNode distRoot = dist.get("roots").get(0);
+        assertThat(distRoot.get("retailerCount").asLong()).isEqualTo(2);
+        assertThat(distRoot.get("painterCount").asLong()).isEqualTo(3);
+        assertThat(distRoot.get("children")).hasSize(2);
+
+        // Shop A retailer report: 2 painters, 3 codes issued, 2 redeemed.
+        JsonNode shopA = report(shopAToken);
+        assertThat(shopA.get("viewerRole").asText()).isEqualTo("RETAILER");
+        assertThat(shopA.get("totals").get("painters").asLong()).isEqualTo(2);
+        assertThat(shopA.get("totals").get("codesIssued").asLong()).isEqualTo(3);
+        assertThat(shopA.get("totals").get("codesRedeemed").asLong()).isEqualTo(2);
+        assertThat(shopA.get("roots").get(0).get("children")).hasSize(2); // the two painters
+
+        // Admin totals: 1 distributor, 2 retailers, 3 painters, 4/2 codes.
+        JsonNode admin = report(adminToken);
+        assertThat(admin.get("totals").get("distributors").asLong()).isEqualTo(1);
+        assertThat(admin.get("totals").get("retailers").asLong()).isEqualTo(2);
+        assertThat(admin.get("totals").get("painters").asLong()).isEqualTo(3);
+        assertThat(admin.get("totals").get("codesIssued").asLong()).isEqualTo(4);
+        assertThat(admin.get("totals").get("codesRedeemed").asLong()).isEqualTo(2);
+    }
+
+    // ── helpers ────────────────────────────────────────────────────────────
+
+    private void createDistributor(String adminToken, String company, String email) throws Exception {
+        mockMvc.perform(post("/api/admin/distributors")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"" + company + "\",\"email\":\"" + email
+                                + "\",\"password\":\"password123\",\"companyName\":\"" + company + "\"}"))
+                .andExpect(status().isCreated());
+    }
+
+    private void createRetailer(String token, String owner, String email, String shopName) throws Exception {
+        mockMvc.perform(post("/api/hierarchy/retailers")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"" + owner + "\",\"email\":\"" + email
+                                + "\",\"password\":\"password123\",\"shopName\":\"" + shopName + "\",\"tier\":\"pro\"}"))
+                .andExpect(status().isCreated());
+    }
+
+    private void createPainter(String token, String name, String email) throws Exception {
+        mockMvc.perform(post("/api/hierarchy/painters")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"" + name + "\",\"email\":\"" + email + "\",\"password\":\"password123\"}"))
+                .andExpect(status().isCreated());
+    }
+
+    private JsonNode report(String token) throws Exception {
+        MvcResult res = mockMvc.perform(get("/api/hierarchy/network")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andReturn();
+        return objectMapper.readTree(res.getResponse().getContentAsString());
+    }
+
+    private Organization orgOf(String email) {
+        User u = userRepository.findByEmail(email).orElseThrow();
+        return organizationRepository.findByOwnerIdAndType(u.getId(), OrgType.RETAILER).get(0);
+    }
+
+    private void seedCode(Organization org, String code, boolean redeemed) {
+        accessCodeRepository.save(CustomerAccessCode.builder()
+                .organization(org)
+                .code(code)
+                .validDays(7)
+                .expiresAt(java.time.LocalDateTime.now().plusDays(7))
+                .usedAt(redeemed ? java.time.LocalDateTime.now() : null)
+                .guestRedeemed(redeemed)
+                .build());
     }
 }
