@@ -112,7 +112,7 @@ public class BillingController {
     }
 
     @Operation(summary = "Buy one extra image (order)",
-            description = "Creates a one-time Razorpay order for a single extra image at Rs. 50 + 18% GST, "
+            description = "Creates a one-time Razorpay order for a single extra image at Rs. 50, "
                     + "used once the monthly image quota is spent. Requires an active subscription.")
     @PostMapping("/image-credits/order")
     public ResponseEntity<com.gridstore.huevista.billing.dto.ProjectCreditOrderResponse> createImageCreditOrder(
@@ -135,8 +135,8 @@ public class BillingController {
 
     @Operation(summary = "Get my billing wallet",
             description = "Prepaid wallet balance, pay-per-use prices and the recent statement. "
-                    + "The wallet pays for overage (extra images at Rs. 50 + GST, extra AI "
-                    + "auto-masks at Rs. 25 + GST) once monthly allowances are spent.")
+                    + "The wallet pays for overage (extra images at Rs. 50, extra AI "
+                    + "auto-masks at Rs. 25) once monthly allowances are spent.")
     @GetMapping("/wallet")
     public ResponseEntity<com.gridstore.huevista.billing.dto.BillingWalletSummaryResponse> getWallet(
             @AuthenticationPrincipal UserDetails userDetails) {
@@ -165,7 +165,7 @@ public class BillingController {
     }
 
     @Operation(summary = "Pay for one extra image from the wallet",
-            description = "Atomically debits Rs. 59 (Rs. 50 + 18% GST) from the wallet and credits one "
+            description = "Atomically debits Rs. 50 from the wallet and credits one "
                     + "extra image to the active subscription. 402 when the balance is insufficient.")
     @PostMapping("/wallet/pay/image-credit")
     public ResponseEntity<SubscriptionResponse> walletPayImageCredit(
@@ -174,7 +174,7 @@ public class BillingController {
     }
 
     @Operation(summary = "Pay for one extra AI auto-mask from the wallet",
-            description = "Atomically debits Rs. 29.50 (Rs. 25 + 18% GST) from the wallet and credits one "
+            description = "Atomically debits Rs. 25 from the wallet and credits one "
                     + "extra AI auto-mask run to the active subscription. 402 when the balance is "
                     + "insufficient.")
     @PostMapping("/wallet/pay/auto-mask-credit")

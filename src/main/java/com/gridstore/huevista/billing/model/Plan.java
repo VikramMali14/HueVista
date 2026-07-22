@@ -21,10 +21,10 @@ import lombok.RequiredArgsConstructor;
  * </ul>
  *
  * Prices are BASE prices in paise; GST ({@link #GST_PERCENT}) is added on
- * top — see {@link #priceWithTaxInPaise()}. The Razorpay plan configured on
- * the dashboard must be the GST-inclusive amount. Once the image quota is
- * spent, extra images can be bought one at a time at
- * {@link #IMAGE_OVERAGE_PRICE_PAISE} + GST.
+ * top — see {@link #priceWithTaxInPaise()}. GST is currently 0, so the
+ * with-tax amounts equal the base prices. Once the image quota is spent,
+ * extra images can be bought one at a time at
+ * {@link #IMAGE_OVERAGE_PRICE_PAISE}.
  */
 @Getter
 @RequiredArgsConstructor
@@ -36,16 +36,19 @@ public enum Plan {
     BUSINESS(499900, 120, 90, 12, 300, "Business"),
     ENTERPRISE(-1, Integer.MAX_VALUE, Integer.MAX_VALUE, 16, Integer.MAX_VALUE, "Enterprise");
 
-    /** GST charged on every plan and on all pay-per-use overage. */
-    public static final int GST_PERCENT = 18;
+    /** GST rate applied to every plan and all pay-per-use overage. Set to 0 for
+     *  now — this runs as an individual (non-GST-registered) project, so prices
+     *  are billed and shown flat, with no tax added. Restore to 18 to re-enable
+     *  GST once the project is registered. */
+    public static final int GST_PERCENT = 0;
 
     /** Base price of ONE extra image once the monthly image quota is spent
-     *  (Rs. 50; Rs. 59 with GST — covers the ~Rs. 40 full pipeline cost). */
+     *  (Rs. 50 — covers the ~Rs. 40 full pipeline cost). */
     public static final int IMAGE_OVERAGE_PRICE_PAISE = 5000;
 
     /** Base price of ONE extra AI auto-mask run once the monthly auto-mask
-     *  allowance is spent (Rs. 25; Rs. 29.50 with GST — covers the ~Rs. 15
-     *  model cost). Payable from the prepaid billing wallet. */
+     *  allowance is spent (Rs. 25 — covers the ~Rs. 15 model cost). Payable
+     *  from the prepaid billing wallet. */
     public static final int AUTO_MASK_OVERAGE_PRICE_PAISE = 2500;
 
     private final int priceInPaise;           // base price, -1 = custom pricing
@@ -63,7 +66,8 @@ public enum Plan {
         return priceInPaise / 100.0;
     }
 
-    /** Base price + 18% GST, in paise (what Razorpay actually bills). -1 for custom pricing. */
+    /** Base price + GST, in paise (what Razorpay actually bills). GST is
+     *  currently 0, so this equals the base price. -1 for custom pricing. */
     public int priceWithTaxInPaise() {
         if (priceInPaise < 0) return -1;
         return priceInPaise * (100 + GST_PERCENT) / 100;
@@ -73,12 +77,12 @@ public enum Plan {
         return priceInPaise < 0 ? -1 : priceWithTaxInPaise() / 100.0;
     }
 
-    /** Price of one extra image incl. GST, in paise (Rs. 59). */
+    /** Price of one extra image incl. GST, in paise (Rs. 50 at 0% GST). */
     public static int imageOveragePriceWithTaxInPaise() {
         return IMAGE_OVERAGE_PRICE_PAISE * (100 + GST_PERCENT) / 100;
     }
 
-    /** Price of one extra AI auto-mask run incl. GST, in paise (Rs. 29.50). */
+    /** Price of one extra AI auto-mask run incl. GST, in paise (Rs. 25 at 0% GST). */
     public static int autoMaskOveragePriceWithTaxInPaise() {
         return AUTO_MASK_OVERAGE_PRICE_PAISE * (100 + GST_PERCENT) / 100;
     }

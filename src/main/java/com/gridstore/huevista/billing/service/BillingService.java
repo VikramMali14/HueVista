@@ -403,8 +403,7 @@ public class BillingService {
             throw new com.gridstore.huevista.common.exception.ImageLimitReachedException(
                     "Monthly image limit reached (" + sub.getAiGenerationsLimit() + "). " +
                     "Buy an extra image for Rs. " + (Plan.imageOveragePriceWithTaxInPaise() / 100)
-                    + " (Rs. " + (Plan.IMAGE_OVERAGE_PRICE_PAISE / 100) + " + 18% GST), "
-                    + "upgrade your plan, or wait for the next billing cycle.");
+                    + ", upgrade your plan, or wait for the next billing cycle.");
         }
     }
 

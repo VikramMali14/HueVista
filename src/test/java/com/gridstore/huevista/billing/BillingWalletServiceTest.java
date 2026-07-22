@@ -88,8 +88,8 @@ class BillingWalletServiceTest {
 
         service().payForAutoMaskCredit(USER);
 
-        // Rs. 25 + 18% GST = 2950 paise.
-        verify(wallets).debitIfSufficient(USER, 2950L);
+        // Rs. 25 at 0% GST = 2500 paise.
+        verify(wallets).debitIfSufficient(USER, 2500L);
         verify(billing).creditPurchasedAutoMask(USER);
     }
 

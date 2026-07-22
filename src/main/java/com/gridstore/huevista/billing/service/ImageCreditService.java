@@ -23,7 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Pay-per-image overage: once a retailer's monthly image quota is spent, one
- * extra image can be bought at Rs. 50 + 18% GST (Rs. 59) via a one-time Razorpay
+ * extra image can be bought at Rs. 50 (GST currently 0%) via a one-time Razorpay
  * order. Mirrors {@link ProjectCreditService} (orders API + server-side signature
  * verification + replay-protected redemption), but credits the retailer's ACTIVE
  * subscription with a purchased image credit instead of a customer project.
@@ -45,9 +45,9 @@ public class ImageCreditService {
     @Value("${razorpay.key-secret:}")
     private String keySecret;
 
-    /** Rs. 50 base + 18% GST = Rs. 59. Kept configurable for promos, but the
+    /** Rs. 50 (GST currently 0%). Kept configurable for promos, but the
      *  default must track {@link Plan#IMAGE_OVERAGE_PRICE_PAISE}. */
-    @Value("${app.image-credit.amount-paise:5900}")
+    @Value("${app.image-credit.amount-paise:5000}")
     private int amountPaise;
 
     @Value("${app.image-credit.currency:INR}")
