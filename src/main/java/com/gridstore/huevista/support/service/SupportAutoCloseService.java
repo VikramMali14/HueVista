@@ -23,7 +23,7 @@ public class SupportAutoCloseService {
     private final SupportService supportService;
 
     /** Hours of inactivity after which a live chat is auto-closed (0 disables). */
-    @Value("${app.support.idle-auto-close-hours:48}")
+    @Value("${app.support.idle-auto-close-hours:24}")
     private long idleHours;
 
     @Scheduled(cron = "0 15 * * * *") // hourly, at :15 past the hour
