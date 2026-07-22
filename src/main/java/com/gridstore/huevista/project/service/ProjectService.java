@@ -109,7 +109,12 @@ public class ProjectService {
         return projectRepository.findByUserIdWithImage(
                         userId, org.springframework.data.domain.PageRequest.of(
                                 Math.max(0, page), Math.min(Math.max(1, size), 200))).stream()
-                .map(p -> ProjectSummaryResponse.from(p, storageService.getPublicUrl(p.getImage().getStorageKey())))
+                .map(p -> ProjectSummaryResponse.from(
+                        p,
+                        storageService.getPublicUrl(p.getImage().getStorageKey()),
+                        p.getCleanedImageStorageKey() != null
+                                ? storageService.getPublicUrl(p.getCleanedImageStorageKey())
+                                : null))
                 .toList();
     }
 
@@ -633,7 +638,12 @@ public class ProjectService {
     @Transactional(readOnly = true)
     public List<ProjectSummaryResponse> getGuestProjects(String accessCodeId) {
         return projectRepository.findByAccessCodeIdOrderByUpdatedAtDesc(accessCodeId).stream()
-                .map(p -> ProjectSummaryResponse.from(p, storageService.getPublicUrl(p.getImage().getStorageKey())))
+                .map(p -> ProjectSummaryResponse.from(
+                        p,
+                        storageService.getPublicUrl(p.getImage().getStorageKey()),
+                        p.getCleanedImageStorageKey() != null
+                                ? storageService.getPublicUrl(p.getCleanedImageStorageKey())
+                                : null))
                 .toList();
     }
 
