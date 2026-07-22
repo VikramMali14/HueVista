@@ -6,12 +6,12 @@ public enum QualityTier {
     PREMIUM,
     LUXURY;
 
-    /** Default 1–5 brightness/quality score for a tier (the shop can override). */
+    /** Default 1–10 brightness/quality score for a tier (the shop can override). */
     public int defaultBrightness() {
         return switch (this) {
-            case ECONOMY -> 2;
-            case PREMIUM -> 4;
-            case LUXURY -> 5;
+            case ECONOMY -> 4;
+            case PREMIUM -> 8;
+            case LUXURY -> 10;
         };
     }
 }

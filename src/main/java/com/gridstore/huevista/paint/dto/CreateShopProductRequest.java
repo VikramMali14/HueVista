@@ -28,7 +28,7 @@ public class CreateShopProductRequest {
     private QualityTier qualityTier;
 
     @Min(1)
-    @Max(5)
+    @Max(10)
     private Integer brightness;
 
     @Size(max = 2048)
