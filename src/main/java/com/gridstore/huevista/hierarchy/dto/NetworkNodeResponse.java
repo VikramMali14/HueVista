@@ -37,6 +37,13 @@ public class NetworkNodeResponse {
     private long codesIssued;
     private long codesRedeemed;
 
+    /**
+     * Paint brands the distributor has granted this shop (RETAILER nodes only).
+     * Empty means the shop is unrestricted ("all brands"); null on nodes where
+     * the concept does not apply.
+     */
+    private List<String> assignedBrands;
+
     @Builder.Default
     private List<NetworkNodeResponse> children = new ArrayList<>();
 }

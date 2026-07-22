@@ -4,7 +4,9 @@ import com.gridstore.huevista.auth.dto.AdminUserResponse;
 import com.gridstore.huevista.auth.dto.CreatePainterRequest;
 import com.gridstore.huevista.auth.dto.CreateRetailerRequest;
 import com.gridstore.huevista.common.audit.AuditService;
+import com.gridstore.huevista.hierarchy.dto.AssignBrandsRequest;
 import com.gridstore.huevista.hierarchy.dto.NetworkReportResponse;
+import com.gridstore.huevista.hierarchy.dto.RetailerBrandOption;
 import com.gridstore.huevista.hierarchy.service.HierarchyService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -15,10 +17,14 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * The account hierarchy: ADMIN → DISTRIBUTOR → RETAILER → PAINTER. Each level
@@ -69,5 +75,31 @@ public class HierarchyController {
     @GetMapping("/network")
     public ResponseEntity<NetworkReportResponse> network(Authentication auth) {
         return ResponseEntity.ok(hierarchyService.network(auth.getName()));
+    }
+
+    @Operation(summary = "List a shop's brand assignments",
+            description = "ADMIN or DISTRIBUTOR. Every paint brand with a flag for whether the shop currently "
+                    + "has it assigned. A shop with none assigned is unrestricted (all brands).")
+    @PreAuthorize("hasAnyRole('ADMIN','DISTRIBUTOR')")
+    @GetMapping("/retailers/{retailerOrgId}/brands")
+    public ResponseEntity<List<RetailerBrandOption>> retailerBrands(
+            @PathVariable String retailerOrgId, Authentication auth) {
+        return ResponseEntity.ok(hierarchyService.retailerBrandOptions(auth.getName(), retailerOrgId));
+    }
+
+    @Operation(summary = "Set a shop's brand assignments",
+            description = "ADMIN or DISTRIBUTOR. Replaces the shop's brand selection wholesale; an empty list "
+                    + "clears every restriction (the shop reverts to all brands).")
+    @PreAuthorize("hasAnyRole('ADMIN','DISTRIBUTOR')")
+    @PutMapping("/retailers/{retailerOrgId}/brands")
+    public ResponseEntity<List<RetailerBrandOption>> setRetailerBrands(
+            @PathVariable String retailerOrgId,
+            @Valid @RequestBody AssignBrandsRequest request,
+            Authentication auth) {
+        List<RetailerBrandOption> options =
+                hierarchyService.assignBrands(auth.getName(), retailerOrgId, request.getBrandIds());
+        auditService.record(auth.getName(), "RETAILER_BRANDS_ASSIGNED", "ORGANIZATION", retailerOrgId,
+                request.getBrandIds() == null ? "0 brands" : request.getBrandIds().size() + " brands");
+        return ResponseEntity.ok(options);
     }
 }

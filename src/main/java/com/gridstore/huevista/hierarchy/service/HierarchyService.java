@@ -3,9 +3,11 @@ package com.gridstore.huevista.hierarchy.service;
 import com.gridstore.huevista.account.model.DistributorRetailerLink;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.model.Organization;
+import com.gridstore.huevista.account.model.RetailerBrandAssignment;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.repository.DistributorRetailerLinkRepository;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
+import com.gridstore.huevista.account.repository.RetailerBrandAssignmentRepository;
 import com.gridstore.huevista.account.service.AccountService;
 import com.gridstore.huevista.auth.dto.AdminUserResponse;
 import com.gridstore.huevista.auth.dto.CreateDistributorRequest;
@@ -17,7 +19,10 @@ import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.auth.service.AuthService;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
+import com.gridstore.huevista.hierarchy.dto.RetailerBrandOption;
 import com.gridstore.huevista.notification.EmailSender;
+import com.gridstore.huevista.paint.model.Brand;
+import com.gridstore.huevista.paint.repository.BrandRepository;
 import com.gridstore.huevista.painter.model.PainterLinkStatus;
 import com.gridstore.huevista.painter.model.PainterProfile;
 import com.gridstore.huevista.painter.model.PainterRetailerLink;
@@ -64,6 +69,8 @@ public class HierarchyService {
     private final UserRepository userRepository;
     private final OrganizationRepository orgRepository;
     private final DistributorRetailerLinkRepository distributorLinkRepository;
+    private final RetailerBrandAssignmentRepository brandAssignmentRepository;
+    private final BrandRepository brandRepository;
     private final PainterRetailerLinkRepository painterLinkRepository;
     private final CustomerAccessCodeRepository accessCodeRepository;
     private final AccountService accountService;
@@ -186,6 +193,103 @@ public class HierarchyService {
         return AdminUserResponse.from(user);
     }
 
+    // ── Brand assignments (distributor → shop) ────────────────────────────
+
+    /** The distributor + retailer orgs a caller is allowed to act on for one shop. */
+    private record ManageableShop(Organization distributor, Organization retailer) {}
+
+    /**
+     * Resolve the shop and check the caller may manage its brands: an ADMIN can
+     * manage any shop; a DISTRIBUTOR only shops linked to their own org.
+     */
+    private ManageableShop resolveManageableShop(String callerUserId, String retailerOrgId) {
+        User caller = userRepository.findById(callerUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + callerUserId));
+        Organization retailer = orgRepository.findById(retailerOrgId)
+                .filter(o -> o.getType() == OrgType.RETAILER)
+                .orElseThrow(() -> new ResourceNotFoundException("Shop not found: " + retailerOrgId));
+
+        if (caller.getRole() == UserRole.ADMIN) {
+            Organization distributor = distributorLinkRepository.findByRetailerId(retailerOrgId).stream()
+                    .findFirst().map(DistributorRetailerLink::getDistributor).orElse(null);
+            return new ManageableShop(distributor, retailer);
+        }
+        if (caller.getRole() == UserRole.DISTRIBUTOR) {
+            Organization distributor = firstOrgOf(callerUserId, OrgType.DISTRIBUTOR)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Your distributor organization was not found — contact the administrator."));
+            if (!distributorLinkRepository.existsByDistributorIdAndRetailerId(distributor.getId(), retailerOrgId)) {
+                throw new SecurityException("That shop is not in your network.");
+            }
+            return new ManageableShop(distributor, retailer);
+        }
+        throw new SecurityException("Only admins and distributors can manage a shop's brands.");
+    }
+
+    /** Every brand with a flag for whether this shop currently has it assigned. */
+    @Transactional(readOnly = true)
+    public List<RetailerBrandOption> retailerBrandOptions(String callerUserId, String retailerOrgId) {
+        resolveManageableShop(callerUserId, retailerOrgId);
+        Set<Long> assigned = brandAssignmentRepository.findByRetailerId(retailerOrgId).stream()
+                .map(a -> a.getBrand().getId()) // id comes off the lazy proxy without a query
+                .collect(Collectors.toSet());
+        return brandRepository.findAllByOrderByNameAsc().stream()
+                .map(b -> RetailerBrandOption.of(b, assigned.contains(b.getId())))
+                .toList();
+    }
+
+    /**
+     * Replace a shop's brand selection wholesale with {@code brandIds}. An empty
+     * list clears every restriction (the shop reverts to "all brands"). Returns
+     * the refreshed option list.
+     */
+    @Transactional
+    public List<RetailerBrandOption> assignBrands(String callerUserId, String retailerOrgId, List<Long> brandIds) {
+        ManageableShop shop = resolveManageableShop(callerUserId, retailerOrgId);
+        Organization distributor = shop.distributor();
+        if (distributor == null) {
+            throw new IllegalStateException(
+                    "This shop is not linked to a distributor, so brands can't be assigned.");
+        }
+        // Wipe the old selection, then re-create from the (deduped) request.
+        brandAssignmentRepository.deleteByRetailerId(retailerOrgId);
+        brandAssignmentRepository.flush();
+        List<Long> ids = brandIds == null ? List.of()
+                : brandIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (!ids.isEmpty()) {
+            for (Brand brand : brandRepository.findAllById(ids)) {
+                brandAssignmentRepository.save(RetailerBrandAssignment.builder()
+                        .distributor(distributor)
+                        .retailer(shop.retailer())
+                        .brand(brand)
+                        .build());
+            }
+        }
+        log.info("{} set {} brand(s) for shop {}", callerUserId, ids.size(), retailerOrgId);
+        return retailerBrandOptions(callerUserId, retailerOrgId);
+    }
+
+    /** Attach each shop's assigned brand names to its report node (empty = all). */
+    private void attachAssignedBrands(Collection<NetworkNodeResponse> retailerNodes) {
+        List<String> orgIds = retailerNodes.stream()
+                .map(NetworkNodeResponse::getOrgId).filter(java.util.Objects::nonNull).toList();
+        if (orgIds.isEmpty()) return;
+        Map<String, List<String>> byOrg = new HashMap<>();
+        for (RetailerBrandAssignment a : brandAssignmentRepository.findWithBrandByRetailerIdIn(orgIds)) {
+            byOrg.computeIfAbsent(a.getRetailer().getId(), k -> new java.util.ArrayList<>())
+                    .add(a.getBrand().getName());
+        }
+        for (NetworkNodeResponse node : retailerNodes) {
+            List<String> names = byOrg.get(node.getOrgId());
+            if (names != null) {
+                names.sort(String::compareToIgnoreCase);
+                node.setAssignedBrands(names);
+            } else {
+                node.setAssignedBrands(List.of());
+            }
+        }
+    }
+
     // ── Network report ────────────────────────────────────────────────────
 
     /** Role-scoped downline report — see {@link NetworkReportResponse}. */
@@ -210,6 +314,7 @@ public class HierarchyService {
 
         Map<String, NetworkNodeResponse> retailerNodes =
                 buildRetailerNodes(retailerOrgs, painterLinks, batchUsers(orgs, painterLinks));
+        attachAssignedBrands(retailerNodes.values());
 
         Map<String, NetworkNodeResponse> distributorNodes = new LinkedHashMap<>();
         Map<String, User> owners = batchUsers(distributorOrgs, List.of());
@@ -259,6 +364,7 @@ public class HierarchyService {
 
         Map<String, NetworkNodeResponse> retailerNodes =
                 buildRetailerNodes(retailerOrgs, painterLinks, batchUsers(retailerOrgs, painterLinks));
+        attachAssignedBrands(retailerNodes.values());
 
         NetworkNodeResponse self = orgNode(distributorOrg, viewer, UserRole.DISTRIBUTOR);
         self.getChildren().addAll(retailerNodes.values());
