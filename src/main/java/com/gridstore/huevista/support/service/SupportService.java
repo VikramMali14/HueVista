@@ -14,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -178,6 +179,31 @@ public class SupportService {
             }
         }
         return toResponse(c);
+    }
+
+    /**
+     * Auto-close chats that have gone quiet. Every OPEN or NEEDS_HUMAN conversation
+     * whose last activity is older than {@code idleFor} is marked RESOLVED, with a
+     * SYSTEM note so both ends see why it ended. This is what makes a chat "get
+     * over": a customer coming back the next day starts a fresh thread instead of
+     * reopening a stale one (the in-app widget and the WhatsApp lookup both resume
+     * only non-resolved conversations). Returns how many were closed.
+     */
+    @Transactional
+    public int autoCloseIdle(Duration idleFor) {
+        LocalDateTime cutoff = LocalDateTime.now().minus(idleFor);
+        List<Conversation> stale = conversationRepo.findByStatusInAndUpdatedAtBefore(
+                List.of(ConversationStatus.OPEN, ConversationStatus.NEEDS_HUMAN), cutoff);
+        for (Conversation c : stale) {
+            c.setStatus(ConversationStatus.RESOLVED);
+            conversationRepo.save(c);
+            addMessage(c, MessageSender.SYSTEM,
+                    "This chat was closed after a period of inactivity. Send a new message to start a fresh chat.");
+        }
+        if (!stale.isEmpty()) {
+            log.info("Auto-closed {} idle support conversation(s) (idle > {})", stale.size(), idleFor);
+        }
+        return stale.size();
     }
 
     @Transactional
