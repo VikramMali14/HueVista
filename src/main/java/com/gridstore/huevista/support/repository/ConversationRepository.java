@@ -5,6 +5,8 @@ import com.gridstore.huevista.support.model.ConversationStatus;
 import com.gridstore.huevista.support.model.SupportChannel;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -16,4 +18,9 @@ public interface ConversationRepository extends JpaRepository<Conversation, Stri
     /** Most recent non-resolved conversation for an external contact on a channel. */
     Optional<Conversation> findFirstByChannelAndContactChannelIdAndStatusNotOrderByUpdatedAtDesc(
             SupportChannel channel, String contactChannelId, ConversationStatus status);
+
+    /** Live conversations (any of the given statuses) untouched since the cutoff —
+     *  candidates for auto-close after a period of inactivity. */
+    List<Conversation> findByStatusInAndUpdatedAtBefore(
+            Collection<ConversationStatus> statuses, LocalDateTime cutoff);
 }

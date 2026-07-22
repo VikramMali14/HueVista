@@ -129,4 +129,21 @@ class SupportServiceTest {
         verify(claude, org.mockito.Mockito.never()).complete(anyString(), any(), org.mockito.ArgumentMatchers.anyInt());
         assertThat(c.getStatus()).isEqualTo(ConversationStatus.NEEDS_HUMAN);
     }
+
+    @Test
+    void auto_close_resolves_idle_conversations_with_a_system_note() {
+        // A chat left open past the idle window is swept closed so the customer's
+        // next message opens a fresh thread instead of resuming this stale one.
+        Conversation c = conversation(SupportChannel.IN_APP, ConversationStatus.NEEDS_HUMAN);
+        when(convos.findByStatusInAndUpdatedAtBefore(any(), any())).thenReturn(List.of(c));
+        stubMessageReads();
+
+        int closed = service.autoCloseIdle(java.time.Duration.ofHours(48));
+
+        assertThat(closed).isEqualTo(1);
+        assertThat(c.getStatus()).isEqualTo(ConversationStatus.RESOLVED);
+        ArgumentCaptor<SupportMessage> saved = ArgumentCaptor.forClass(SupportMessage.class);
+        verify(messages).save(saved.capture());
+        assertThat(saved.getValue().getSender()).isEqualTo(MessageSender.SYSTEM);
+    }
 }
