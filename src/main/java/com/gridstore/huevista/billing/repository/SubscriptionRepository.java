@@ -45,6 +45,18 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
     int incrementAiUsageIfWithinLimit(@Param("id") String id);
 
     /**
+     * Atomically reserve {@code count} images at once (used when a retailer assigns a
+     * multi-project access code — each assigned project is charged one image up front).
+     * The single conditional UPDATE only applies when the WHOLE block fits under the
+     * effective allowance, so a partial reservation is impossible. Returns 1 when the
+     * block was charged, 0 when it wouldn't fit.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE Subscription s SET s.aiGenerationsUsed = s.aiGenerationsUsed + :count " +
+           "WHERE s.id = :id AND s.aiGenerationsUsed + :count <= s.aiGenerationsLimit + s.purchasedImageCredits")
+    int reserveImagesIfWithinLimit(@Param("id") String id, @Param("count") int count);
+
+    /**
      * Atomically charge one AI auto-mask run while usage is below the effective
      * allowance (plan limit + purchased pay-per-use credits) — same conditional-UPDATE
      * pattern as the image quota. Returns 1 when charged, 0 when the allowance is spent.

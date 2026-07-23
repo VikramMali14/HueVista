@@ -86,6 +86,15 @@ public class ProjectService {
                 // COUNT, not a full fetch — naming a project must not load every row the user owns.
                 : "Project " + (projectRepository.countByUserId(userId) + 1);
 
+        // Access-code customers: link the project to the code they redeemed so the
+        // issuing retailer keeps visibility of the customer's work (the counter reads
+        // the real shades from it), mirroring the anonymous-guest link. The code link
+        // is never cleared once set.
+        CustomerAccessCode linkedCode =
+                user.getRole() == com.gridstore.huevista.auth.model.UserRole.CUSTOMER
+                        ? accessCodeRepository.findFirstByUsedByUserIdOrderByCreatedAtDesc(userId).orElse(null)
+                        : null;
+
         Project project = projectRepository.save(Project.builder()
                 .user(user)
                 .image(image)
@@ -93,6 +102,7 @@ public class ProjectService {
                 .roomType(blankToNull(request.getRoomType()))
                 .notes(blankToNull(request.getNotes()))
                 .status(ProjectStatus.CREATED)
+                .accessCode(linkedCode)
                 .build());
 
         // Count this project against the customer's allowance (monotonic — deleting won't refund).
