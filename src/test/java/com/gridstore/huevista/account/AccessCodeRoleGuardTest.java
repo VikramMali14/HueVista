@@ -10,7 +10,10 @@ import com.gridstore.huevista.account.service.CustomerEntitlementService;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.auth.service.AuthService;
 import com.gridstore.huevista.auth.service.JwtService;
+import com.gridstore.huevista.billing.repository.SubscriptionRepository;
+import com.gridstore.huevista.paint.repository.ShopProductRepository;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -38,9 +41,12 @@ class AccessCodeRoleGuardTest {
     private final UserRepository users = mock(UserRepository.class);
     private final CustomerEntitlementService entitlements = mock(CustomerEntitlementService.class);
     private final JwtService jwt = mock(JwtService.class);
+    private final AuthService auth = mock(AuthService.class);
+    private final SubscriptionRepository subscriptions = mock(SubscriptionRepository.class);
+    private final ShopProductRepository shopProducts = mock(ShopProductRepository.class);
 
     private final AccessCodeService service =
-            new AccessCodeService(codes, orgs, memberships, users, entitlements, jwt);
+            new AccessCodeService(codes, orgs, memberships, users, entitlements, jwt, auth, subscriptions, shopProducts);
 
     private static CustomerAccessCode validCode() {
         Organization org = new Organization();
@@ -91,7 +97,7 @@ class AccessCodeRoleGuardTest {
 
         service.redeemCode("user-1", "ABCD2345");
 
-        verify(entitlements).onAccessCodeRedeemed(any(User.class), eq(code.getOrganization()), eq(7));
+        verify(entitlements).onAccessCodeRedeemed(any(User.class), eq(code.getOrganization()), eq(7), eq(1));
         assertThat(code.getUsedAt()).isNotNull();
     }
 }

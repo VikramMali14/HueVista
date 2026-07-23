@@ -1,8 +1,10 @@
 package com.gridstore.huevista.account.service;
 
 import com.gridstore.huevista.account.dto.AccessCodeResponse;
+import com.gridstore.huevista.account.dto.AssignedProductsResponse;
 import com.gridstore.huevista.account.dto.GenerateAccessCodeRequest;
 import com.gridstore.huevista.account.dto.GuestRedeemResponse;
+import com.gridstore.huevista.account.dto.RedeemAccountResponse;
 import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.model.OrgType;
@@ -10,12 +12,22 @@ import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.repository.OrgMembershipRepository;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
+import com.gridstore.huevista.auth.dto.AuthResponse;
+import com.gridstore.huevista.auth.model.AuthProvider;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.auth.service.AuthService;
+import com.gridstore.huevista.billing.model.Subscription;
+import com.gridstore.huevista.billing.model.SubscriptionStatus;
+import com.gridstore.huevista.billing.repository.SubscriptionRepository;
+import com.gridstore.huevista.common.exception.QuotaExceededException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
+import com.gridstore.huevista.paint.dto.ShopProductResponse;
+import com.gridstore.huevista.paint.repository.ShopProductRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,10 +46,16 @@ public class AccessCodeService {
     private final UserRepository userRepository;
     private final CustomerEntitlementService entitlementService;
     private final com.gridstore.huevista.auth.service.JwtService jwtService;
+    private final AuthService authService;
+    private final SubscriptionRepository subscriptionRepository;
+    private final ShopProductRepository shopProductRepository;
 
     private static final String CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
     private static final int CODE_LENGTH = 8;
     private static final SecureRandom RANDOM = new SecureRandom();
+
+    /** Retailer-assigned customer codes are always valid for 10 days. */
+    private static final int FIXED_VALID_DAYS = 10;
 
     @Transactional
     public AccessCodeResponse generateCode(String requestingUserId, String orgId, GenerateAccessCodeRequest request) {
@@ -50,21 +68,62 @@ public class AccessCodeService {
 
         requireOwnerOrManager(requestingUserId, orgId);
 
+        // Validate the individually-unlocked products actually belong to this shop, so a
+        // crafted request can't unlock a competitor's listing. Whole-company brands are
+        // free-text (a UX filter only), so they need no ownership check.
+        List<String> productIds = request.getAllowedProductIds();
+        if (productIds != null) {
+            for (String pid : productIds.stream().distinct().toList()) {
+                shopProductRepository.findByIdAndOrganizationId(pid, orgId)
+                        .orElseThrow(() -> new ResourceNotFoundException(
+                                "Product is not one of this shop's listings: " + pid));
+            }
+        }
+
+        // Charge the assigned projects against the retailer OWNER's monthly image quota
+        // BEFORE creating the code — one image reserved per assigned project. A single
+        // atomic all-or-nothing reservation; if it won't fit, nothing is charged.
+        reserveProjectQuota(orgId, request.getProjectQuota());
+
         String code = generateUniqueCode();
-        LocalDateTime expiresAt = LocalDateTime.now().plusDays(request.getValidDays());
+        LocalDateTime expiresAt = LocalDateTime.now().plusDays(FIXED_VALID_DAYS);
 
         CustomerAccessCode accessCode = CustomerAccessCode.builder()
                 .organization(org)
                 .code(code)
-                .validDays(request.getValidDays())
+                .validDays(FIXED_VALID_DAYS)
                 .expiresAt(expiresAt)
+                .customerName(request.getCustomerName().trim())
+                .projectQuota(request.getProjectQuota())
                 .build();
         accessCode.setAllowedBrandList(request.getAllowedBrands());
+        accessCode.setAllowedProductIdList(productIds);
         accessCode = codeRepository.save(accessCode);
 
-        log.info("Access code generated: org={} code={} validDays={} brands={}",
-                orgId, code, request.getValidDays(), accessCode.getAllowedBrandList());
-        return AccessCodeResponse.from(accessCode);
+        log.info("Access code generated: org={} code={} customer={} quota={} brands={} products={}",
+                orgId, code, accessCode.getCustomerName(), accessCode.getProjectQuota(),
+                accessCode.getAllowedBrandList(), accessCode.getAllowedProductIdList().size());
+        return withAssignedProducts(accessCode);
+    }
+
+    /**
+     * Reserve {@code projectQuota} images against the retailer owner's ACTIVE subscription
+     * (one image per assigned project). Throws {@link QuotaExceededException} when the shop
+     * has no active plan or not enough remaining quota — the retailer must top up or assign
+     * fewer projects.
+     */
+    private void reserveProjectQuota(String orgId, int projectQuota) {
+        String ownerId = resolveOrgOwnerUserId(orgId);
+        Subscription sub = subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(ownerId, SubscriptionStatus.ACTIVE)
+                .orElseThrow(() -> new QuotaExceededException(
+                        "No active subscription. Subscribe to a plan before assigning projects to customers."));
+        if (subscriptionRepository.reserveImagesIfWithinLimit(sub.getId(), projectQuota) == 0) {
+            throw new QuotaExceededException(
+                    "Not enough image quota to assign " + projectQuota + " project"
+                    + (projectQuota == 1 ? "" : "s") + ". Buy more images or assign fewer.");
+        }
+        log.info("Reserved {} image(s) from subscription {} for access-code assignment", projectQuota, sub.getId());
     }
 
     @Transactional(readOnly = true)
@@ -119,11 +178,150 @@ public class AccessCodeService {
         accessCode.setUsedByUser(user);
         accessCode.setUsedAt(now);
 
-        // Create/refresh the customer's project entitlement: 1 included project, valid for validDays.
-        entitlementService.onAccessCodeRedeemed(user, accessCode.getOrganization(), accessCode.getValidDays());
+        // Create/refresh the customer's project entitlement: the assigned quota, valid for validDays.
+        entitlementService.onAccessCodeRedeemed(user, accessCode.getOrganization(),
+                accessCode.getValidDays(), accessCode.getProjectQuota());
 
         log.info("Access code redeemed: user={} org={} code={}", userId, accessCode.getOrganization().getId(), code);
         return AccessCodeResponse.from(accessCode);
+    }
+
+    /**
+     * Redeems a retailer access code with NO login: auto-provisions a passwordless
+     * CUSTOMER account named as the retailer entered, signs it in, and returns a full
+     * session. The customer lands on their dashboard with their own name and their
+     * assigned project quota + products.
+     *
+     * RE-ENTRY: because the account has no password, a customer who loses their session
+     * (dead phone, closed tab) must be able to get back in with the same code while it is
+     * valid. So a code already redeemed into an account re-mints a session for that SAME
+     * account rather than stranding them — the entitlement is NOT reset, so any projects
+     * they already created are preserved. One account per code; a code consumed by the
+     * signed-in role-flip path ({@link #redeemCode}) stays as-is.
+     */
+    @Transactional
+    public RedeemAccountResponse redeemAsNewCustomer(String code) {
+        CustomerAccessCode accessCode = codeRepository.findByCode(code.toUpperCase())
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + code));
+
+        if (accessCode.isExpired()) {
+            throw new IllegalStateException("This access code has expired");
+        }
+
+        // A code already consumed by an ACCOUNT can only be re-entered by that same
+        // auto-provisioned customer account (re-entry). A guest-consumed legacy code has
+        // no account to sign into here.
+        if (accessCode.getUsedByUser() != null) {
+            User existing = accessCode.getUsedByUser();
+            if (existing.getProvider() != AuthProvider.ACCESS_CODE) {
+                throw new IllegalStateException("This access code has already been used");
+            }
+            AuthResponse session = authService.buildAuthResponse(existing);
+            log.info("Access code re-entered by customer account: user={} code={}", existing.getId(), code);
+            return toRedeemResponse(session, accessCode);
+        }
+        if (accessCode.isUsed()) {
+            throw new IllegalStateException("This access code has already been used");
+        }
+
+        // First redemption: create the account, consume the code, set the entitlement. The
+        // synthetic e-mail is derived from the code, so a concurrent double-redeem hits the
+        // unique-email constraint — caught below and resolved to the winner's account.
+        String email = customerEmailForCode(accessCode.getCode());
+        User customer;
+        try {
+            customer = userRepository.saveAndFlush(User.builder()
+                    .name(accessCode.getCustomerName() != null && !accessCode.getCustomerName().isBlank()
+                            ? accessCode.getCustomerName().trim() : "Customer")
+                    .email(email)
+                    .password(null) // passwordless — never logs in with credentials
+                    .provider(AuthProvider.ACCESS_CODE)
+                    .role(UserRole.CUSTOMER)
+                    .emailVerified(false)
+                    .createdById(resolveOrgOwnerUserIdOrNull(accessCode.getOrganization().getId()))
+                    .build());
+        } catch (DataIntegrityViolationException race) {
+            User winner = userRepository.findByEmail(email)
+                    .orElseThrow(() -> new IllegalStateException("This access code has already been used"));
+            AuthResponse session = authService.buildAuthResponse(winner);
+            return toRedeemResponse(session, accessCode);
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        if (codeRepository.consumeForUser(accessCode.getId(), customer, now) == 0) {
+            throw new IllegalStateException("This access code has already been used");
+        }
+        accessCode.setUsedByUser(customer);
+        accessCode.setUsedAt(now);
+
+        entitlementService.onAccessCodeRedeemed(customer, accessCode.getOrganization(),
+                accessCode.getValidDays(), accessCode.getProjectQuota());
+
+        AuthResponse session = authService.buildAuthResponse(customer);
+        log.info("Access code redeemed into new customer account: user={} org={} code={} quota={}",
+                customer.getId(), accessCode.getOrganization().getId(), code, accessCode.getProjectQuota());
+        return toRedeemResponse(session, accessCode);
+    }
+
+    /** The paint (companies + individual products) a redeemed customer was assigned. */
+    @Transactional(readOnly = true)
+    public AssignedProductsResponse getAssignedProducts(String customerUserId) {
+        CustomerAccessCode code = codeRepository.findFirstByUsedByUserIdOrderByCreatedAtDesc(customerUserId)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "No access code is linked to this account."));
+        return AssignedProductsResponse.builder()
+                .shopName(code.getOrganization().getName())
+                .allowedBrands(code.getAllowedBrandList())
+                .products(resolveProducts(code))
+                .build();
+    }
+
+    private RedeemAccountResponse toRedeemResponse(AuthResponse session, CustomerAccessCode code) {
+        return RedeemAccountResponse.builder()
+                .accessToken(session.getAccessToken())
+                .refreshToken(session.getRefreshToken())
+                .tokenType(session.getTokenType())
+                .expiresIn(session.getExpiresIn())
+                .user(session.getUser())
+                .shopName(code.getOrganization().getName())
+                .validDays(code.getValidDays())
+                .customerName(code.getCustomerName())
+                .build();
+    }
+
+    /** AccessCodeResponse with the individually-assigned products resolved to full listings. */
+    private AccessCodeResponse withAssignedProducts(CustomerAccessCode code) {
+        AccessCodeResponse res = AccessCodeResponse.from(code);
+        res.setAssignedProducts(resolveProducts(code));
+        return res;
+    }
+
+    private List<ShopProductResponse> resolveProducts(CustomerAccessCode code) {
+        List<String> ids = code.getAllowedProductIdList();
+        if (ids.isEmpty()) return List.of();
+        return shopProductRepository.findAllById(ids).stream()
+                .map(ShopProductResponse::from)
+                .toList();
+    }
+
+    /** Synthetic, unique, passwordless-account e-mail derived from the code. */
+    private String customerEmailForCode(String code) {
+        return "ac-" + code.toLowerCase() + "@customers.huevista.local";
+    }
+
+    private String resolveOrgOwnerUserId(String orgId) {
+        return resolveOrgOwnerUserIdOptional(orgId)
+                .orElseThrow(() -> new QuotaExceededException(
+                        "This shop has no owner account to bill. Contact support."));
+    }
+
+    private String resolveOrgOwnerUserIdOrNull(String orgId) {
+        return resolveOrgOwnerUserIdOptional(orgId).orElse(null);
+    }
+
+    private java.util.Optional<String> resolveOrgOwnerUserIdOptional(String orgId) {
+        return membershipRepository.findUserIdsByOrganizationIdAndRole(orgId, OrgMemberRole.OWNER)
+                .stream().findFirst();
     }
 
     /**

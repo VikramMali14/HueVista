@@ -133,6 +133,9 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/share/**").permitAll()
                 // Anonymous guest redemption of a shop access code — issues a guest token
                 .requestMatchers(HttpMethod.POST, "/api/access-codes/redeem-guest").permitAll()
+                // No-login redemption that auto-creates a passwordless CUSTOMER account and
+                // returns a full session — the primary walk-in flow.
+                .requestMatchers(HttpMethod.POST, "/api/access-codes/redeem-account").permitAll()
                 // Public in-store kiosk: view a store link, create the payment order,
                 // verify it (Razorpay signature is the proof) — per-IP rate-limited.
                 .requestMatchers(HttpMethod.GET, "/api/store/*").permitAll()

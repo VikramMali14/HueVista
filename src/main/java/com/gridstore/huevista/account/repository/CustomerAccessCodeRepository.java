@@ -15,6 +15,9 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
 
     Optional<CustomerAccessCode> findByCode(String code);
 
+    /** The access code a redeemed customer account was created from (one per account). */
+    Optional<CustomerAccessCode> findFirstByUsedByUserIdOrderByCreatedAtDesc(String usedByUserId);
+
     List<CustomerAccessCode> findByOrganizationIdOrderByCreatedAtDesc(String organizationId);
 
     boolean existsByCode(String code);

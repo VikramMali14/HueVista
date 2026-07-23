@@ -147,6 +147,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 new Rule("POST", "/api/auth/verify/phone/confirm", otpConfirm),
                 new Rule("POST", "/api/access-codes/redeem", redeem),
                 new Rule("POST", "/api/access-codes/redeem-guest", redeem),
+                new Rule("POST", "/api/access-codes/redeem-account", redeem),
                 // Paid-classification / storage-write endpoints.
                 new Rule("POST", "/api/images/upload", upload),
                 new Rule("POST", "/api/guest/images/upload", upload),
