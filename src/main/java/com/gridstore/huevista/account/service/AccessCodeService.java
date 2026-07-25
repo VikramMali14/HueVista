@@ -34,6 +34,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 @Slf4j
 @Service
@@ -225,9 +226,17 @@ public class AccessCodeService {
         }
 
         // First redemption: create the account, consume the code, set the entitlement. The
-        // synthetic e-mail is derived from the code, so a concurrent double-redeem hits the
-        // unique-email constraint — caught below and resolved to the winner's account.
+        // synthetic e-mail is derived from the code, so an account left behind by an earlier
+        // partial redemption is found here and simply signed back in.
         String email = customerEmailForCode(accessCode.getCode());
+        Optional<User> orphaned = userRepository.findByEmail(email);
+        if (orphaned.isPresent() && orphaned.get().getProvider() == AuthProvider.ACCESS_CODE) {
+            User owner = orphaned.get();
+            AuthResponse session = authService.buildAuthResponse(owner);
+            log.info("Access code re-entered by existing customer account: user={} code={}", owner.getId(), code);
+            return toRedeemResponse(session, accessCode);
+        }
+
         User customer;
         try {
             customer = userRepository.saveAndFlush(User.builder()
@@ -241,10 +250,11 @@ public class AccessCodeService {
                     .createdById(resolveOrgOwnerUserIdOrNull(accessCode.getOrganization().getId()))
                     .build());
         } catch (DataIntegrityViolationException race) {
-            User winner = userRepository.findByEmail(email)
-                    .orElseThrow(() -> new IllegalStateException("This access code has already been used"));
-            AuthResponse session = authService.buildAuthResponse(winner);
-            return toRedeemResponse(session, accessCode);
+            // A concurrent redeem of the same code won the insert. The transaction is already
+            // poisoned at this point, so it cannot be recovered in place — the customer retries
+            // and the pre-check above signs them into the winner's account.
+            log.warn("Concurrent redeem of access code {}: {}", code, race.getMostSpecificCause().getMessage());
+            throw new IllegalStateException("This access code is being redeemed. Please try again.");
         }
 
         LocalDateTime now = LocalDateTime.now();
