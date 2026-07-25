@@ -34,6 +34,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Slf4j
@@ -50,6 +51,7 @@ public class AccessCodeService {
     private final AuthService authService;
     private final SubscriptionRepository subscriptionRepository;
     private final ShopProductRepository shopProductRepository;
+    private final com.gridstore.huevista.project.repository.ProjectRepository projectRepository;
 
     private static final String CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
     private static final int CODE_LENGTH = 8;
@@ -130,9 +132,24 @@ public class AccessCodeService {
     @Transactional(readOnly = true)
     public List<AccessCodeResponse> listCodes(String requestingUserId, String orgId) {
         requireOwnerOrManager(requestingUserId, orgId);
-        return codeRepository.findByOrganizationIdOrderByCreatedAtDesc(orgId).stream()
+        List<AccessCodeResponse> codes = codeRepository.findByOrganizationIdOrderByCreatedAtDesc(orgId).stream()
                 .map(AccessCodeResponse::from)
                 .toList();
+        // The shop pays an image per assigned project, so the list has to show the
+        // quota counting down as the customer creates rooms. One grouped query for
+        // the whole page rather than a COUNT per code.
+        Map<String, Long> usedByCode = countProjectsByCode(codes.stream().map(AccessCodeResponse::getId).toList());
+        codes.forEach(c -> c.applyProjectsUsed(usedByCode.getOrDefault(c.getId(), 0L).intValue()));
+        return codes;
+    }
+
+    /** Rooms created per access code, keyed by code id. Empty input short-circuits
+     *  (JPQL rejects an empty {@code IN ()} list). */
+    private Map<String, Long> countProjectsByCode(List<String> codeIds) {
+        if (codeIds.isEmpty()) return Map.of();
+        return projectRepository.countByAccessCodeIds(codeIds).stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        row -> (String) row[0], row -> ((Number) row[1]).longValue()));
     }
 
     /**
@@ -217,6 +234,10 @@ public class AccessCodeService {
             if (existing.getProvider() != AuthProvider.ACCESS_CODE) {
                 throw new IllegalStateException("This access code has already been used");
             }
+            // Re-entry must not reset the allowance, but the account MUST end up with an
+            // entitlement: without one every project read answers 403 "Your access is not
+            // set up" and the customer is signed in to a dashboard that can load nothing.
+            entitlementService.ensureEntitlementForCode(existing, accessCode);
             AuthResponse session = authService.buildAuthResponse(existing);
             log.info("Access code re-entered by customer account: user={} code={}", existing.getId(), code);
             return toRedeemResponse(session, accessCode);
@@ -232,6 +253,18 @@ public class AccessCodeService {
         Optional<User> orphaned = userRepository.findByEmail(email);
         if (orphaned.isPresent() && orphaned.get().getProvider() == AuthProvider.ACCESS_CODE) {
             User owner = orphaned.get();
+            // The account exists but the code was never consumed, so the earlier redemption
+            // stopped half-way. Finish it here instead of handing back a session that owns
+            // nothing: claim the code for this account (the e-mail is derived from the code,
+            // so it can belong to no one else) and make sure the entitlement is in place.
+            // Losing the compare-and-set means someone else consumed it concurrently — the
+            // account is still this code's, so sign them in anyway.
+            LocalDateTime consumedAt = LocalDateTime.now();
+            if (codeRepository.consumeForUser(accessCode.getId(), owner, consumedAt) == 1) {
+                accessCode.setUsedByUser(owner);
+                accessCode.setUsedAt(consumedAt);
+            }
+            entitlementService.ensureEntitlementForCode(owner, accessCode);
             AuthResponse session = authService.buildAuthResponse(owner);
             log.info("Access code re-entered by existing customer account: user={} code={}", owner.getId(), code);
             return toRedeemResponse(session, accessCode);

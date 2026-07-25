@@ -25,6 +25,11 @@ public class AccessCodeResponse {
     private String customerName;
     // Projects the customer may create with this code.
     private int projectQuota;
+    // Rooms actually created against this code, and what is left of the quota. The
+    // shop paid an image per assigned project, so it needs to see them counted down.
+    // Populated by the service (the lightweight from() projection leaves them at 0).
+    private int projectsUsed;
+    private int projectsRemaining;
     // Paint companies unlocked for this customer. Empty = all brands.
     private List<String> allowedBrands;
     // Individual product ids unlocked (in addition to whole companies).
@@ -47,8 +52,15 @@ public class AccessCodeResponse {
                 .createdAt(c.getCreatedAt())
                 .customerName(c.getCustomerName())
                 .projectQuota(c.getProjectQuota())
+                .projectsRemaining(c.getProjectQuota())
                 .allowedBrands(c.getAllowedBrandList())
                 .allowedProductIds(c.getAllowedProductIdList())
                 .build();
+    }
+
+    /** Records how many rooms this code has produced, keeping `remaining` consistent. */
+    public void applyProjectsUsed(int used) {
+        this.projectsUsed = Math.max(0, used);
+        this.projectsRemaining = Math.max(0, projectQuota - this.projectsUsed);
     }
 }

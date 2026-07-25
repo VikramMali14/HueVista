@@ -88,6 +88,18 @@ public class AccessCodeController {
         return ResponseEntity.ok(accessCodeService.getAssignedProducts(userDetails.getUsername()));
     }
 
+    @Operation(summary = "View every room created against a code",
+            description = "Shop-only. Returns ALL projects created against this code WITH real shade "
+                    + "codes, newest first — a retailer-assigned code can carry several projects. "
+                    + "Requires owner/manager of the issuing org; empty list when nothing exists yet.")
+    @GetMapping("/api/access-codes/{codeId}/projects")
+    public ResponseEntity<List<ProjectResponse>> getProjectsForShop(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String codeId) {
+        accessCodeService.requireManagedCode(userDetails.getUsername(), codeId);
+        return ResponseEntity.ok(projectService.getProjectsForShop(codeId));
+    }
+
     @Operation(summary = "View a guest's selections for a code",
             description = "Shop-only. Returns the guest project created against this code WITH real shade "
                     + "codes, so the counter can fulfil the order. Requires owner/manager of the issuing org.")

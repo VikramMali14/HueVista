@@ -45,6 +45,7 @@ class AccountIntegrationTest {
     @Autowired UserRepository userRepository;
     @Autowired PasswordEncoder passwordEncoder;
     @Autowired SubscriptionRepository subscriptionRepository;
+    @Autowired com.gridstore.huevista.account.repository.CustomerEntitlementRepository entitlementRepository;
 
     private String retailerOwnerToken;
     private String customerToken;
@@ -189,6 +190,99 @@ class AccountIntegrationTest {
                 .andExpect(jsonPath("$.user.name").value("Priya Sharma"))
                 .andExpect(jsonPath("$.shopName").value("Sharda"))
                 .andExpect(jsonPath("$.validDays").value(10));
+    }
+
+    /**
+     * Re-entry is the customer's ONLY way back in — their account has no password.
+     * If it hands back a session without an entitlement, every project read answers
+     * 403 "Your access is not set up" and the dashboard they land on can load
+     * nothing. Redeeming again must repair that, without resetting what they used.
+     */
+    @Test
+    void redeemAccount_reEntry_restoresMissingEntitlement() throws Exception {
+        String retailerOrgId = createOrg(retailerOwnerToken, "Sharda", "sharda-paints", OrgType.RETAILER);
+        seedActiveSubscription("retailer-owner@example.com");
+
+        GenerateAccessCodeRequest gen = new GenerateAccessCodeRequest();
+        gen.setCustomerName("Priya Sharma");
+        gen.setProjectQuota(3);
+        MvcResult genResult = mockMvc.perform(post("/api/organizations/{orgId}/access-codes", retailerOrgId)
+                        .header("Authorization", "Bearer " + retailerOwnerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(gen)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String code = objectMapper.readTree(genResult.getResponse().getContentAsString()).get("code").asText();
+
+        RedeemCodeRequest redeem = new RedeemCodeRequest();
+        redeem.setCode(code);
+        mockMvc.perform(post("/api/access-codes/redeem-account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(redeem)))
+                .andExpect(status().isOk());
+
+        // Simulate a redemption that stopped half-way: the passwordless account is
+        // there, its entitlement is not.
+        User customer = userRepository.findByEmail("ac-" + code.toLowerCase() + "@customers.huevista.local")
+                .orElseThrow();
+        entitlementRepository.findByCustomerId(customer.getId()).ifPresent(entitlementRepository::delete);
+        entitlementRepository.flush();
+
+        MvcResult again = mockMvc.perform(post("/api/access-codes/redeem-account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(redeem)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.role").value("CUSTOMER"))
+                .andReturn();
+        String customerToken2 = objectMapper.readTree(again.getResponse().getContentAsString())
+                .get("accessToken").asText();
+
+        // The repaired entitlement mirrors the code: its quota, its own expiry.
+        mockMvc.perform(get("/api/me/entitlement").header("Authorization", "Bearer " + customerToken2))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.projectAllowance").value(3))
+                .andExpect(jsonPath("$.projectsCreated").value(0))
+                .andExpect(jsonPath("$.expired").value(false));
+
+        // And the dashboard's project fetch works instead of 403ing.
+        mockMvc.perform(get("/api/projects").header("Authorization", "Bearer " + customerToken2))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    /** A customer with no entitlement at all owns no shop work, so listing their
+     *  projects must answer an empty list — not the 403 that turned the dashboard
+     *  into an error panel sitting next to a "redeem a code" banner. */
+    @Test
+    void listProjects_forCustomerWithoutEntitlement_isEmptyNotForbidden() throws Exception {
+        mockMvc.perform(get("/api/projects").header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    /** The shop pays an image per assigned project, so the code list has to report
+     *  the quota and what is left of it. */
+    @Test
+    void listCodes_reportsProjectQuotaAndRemainder() throws Exception {
+        String retailerOrgId = createOrg(retailerOwnerToken, "Sharda", "sharda-paints", OrgType.RETAILER);
+        seedActiveSubscription("retailer-owner@example.com");
+
+        GenerateAccessCodeRequest gen = new GenerateAccessCodeRequest();
+        gen.setCustomerName("Priya Sharma");
+        gen.setProjectQuota(3);
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes", retailerOrgId)
+                        .header("Authorization", "Bearer " + retailerOwnerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(gen)))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/api/organizations/{orgId}/access-codes", retailerOrgId)
+                        .header("Authorization", "Bearer " + retailerOwnerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].projectQuota").value(3))
+                .andExpect(jsonPath("$[0].projectsUsed").value(0))
+                .andExpect(jsonPath("$[0].projectsRemaining").value(3));
     }
 
     @Test
