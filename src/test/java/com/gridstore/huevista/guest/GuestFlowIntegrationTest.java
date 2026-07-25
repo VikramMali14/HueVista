@@ -151,11 +151,14 @@ class GuestFlowIntegrationTest {
 
     @Test
     void shop_scopes_a_code_to_companies_and_guest_redeem_returns_them() throws Exception {
+        // Issuing a code names the customer and charges the assigned projects against
+        // the owner's monthly image quota, so the shop needs an active plan.
+        billingService.grantTrial(retailerId, Plan.PROFESSIONAL, 14);
         // Owner issues a brand-scoped code.
         MvcResult issued = mockMvc.perform(post("/api/organizations/" + orgId + "/access-codes")
                         .header("Authorization", "Bearer " + retailerToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"validDays\":7,\"allowedBrands\":[\"Asian Paints\",\"Berger\"]}"))
+                        .content("{\"customerName\":\"Anjali Nair\",\"projectQuota\":1,\"allowedBrands\":[\"Asian Paints\",\"Berger\"]}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.allowedBrands.length()").value(2))
                 .andReturn();

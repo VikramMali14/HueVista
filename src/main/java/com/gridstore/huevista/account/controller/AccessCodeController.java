@@ -1,8 +1,10 @@
 package com.gridstore.huevista.account.controller;
 
 import com.gridstore.huevista.account.dto.AccessCodeResponse;
+import com.gridstore.huevista.account.dto.AssignedProductsResponse;
 import com.gridstore.huevista.account.dto.GenerateAccessCodeRequest;
 import com.gridstore.huevista.account.dto.GuestRedeemResponse;
+import com.gridstore.huevista.account.dto.RedeemAccountResponse;
 import com.gridstore.huevista.account.dto.RedeemCodeRequest;
 import com.gridstore.huevista.account.service.AccessCodeService;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
@@ -64,6 +66,26 @@ public class AccessCodeController {
     @PostMapping("/api/access-codes/redeem-guest")
     public ResponseEntity<GuestRedeemResponse> redeemAsGuest(@Valid @RequestBody RedeemCodeRequest request) {
         return ResponseEntity.ok(accessCodeService.redeemAsGuest(request.getCode()));
+    }
+
+    @Operation(summary = "Redeem access code (auto-create customer account)",
+            description = "Public. Redeems a retailer-issued code with no login: auto-provisions a "
+                    + "passwordless CUSTOMER account named as the retailer entered and returns a full "
+                    + "session (access + refresh tokens). The customer lands on their dashboard with "
+                    + "their assigned project quota and products.")
+    @SecurityRequirements
+    @PostMapping("/api/access-codes/redeem-account")
+    public ResponseEntity<RedeemAccountResponse> redeemAsNewCustomer(@Valid @RequestBody RedeemCodeRequest request) {
+        return ResponseEntity.ok(accessCodeService.redeemAsNewCustomer(request.getCode()));
+    }
+
+    @Operation(summary = "My assigned products",
+            description = "For a redeemed customer: the whole companies and individual products the "
+                    + "retailer unlocked on their access code.")
+    @GetMapping("/api/me/assigned-products")
+    public ResponseEntity<AssignedProductsResponse> getAssignedProducts(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.ok(accessCodeService.getAssignedProducts(userDetails.getUsername()));
     }
 
     @Operation(summary = "View a guest's selections for a code",

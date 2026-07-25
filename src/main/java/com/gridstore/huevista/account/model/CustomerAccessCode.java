@@ -30,10 +30,29 @@ public class CustomerAccessCode {
     private String code;
 
     @Column(nullable = false)
-    private int validDays; // 3, 7, or 14
+    private int validDays; // fixed 10-day window for retailer-assigned codes
 
     @Column(nullable = false)
     private LocalDateTime expiresAt;
+
+    // The customer's name, entered by the retailer when the code is generated. Used
+    // as the display name of the auto-provisioned CUSTOMER account at redeem time, so
+    // the customer sees their own name in the header after redeeming.
+    @Column(length = 120)
+    private String customerName;
+
+    // How many projects the redeeming customer may create — set by the retailer at
+    // generation and charged against the retailer's monthly image quota. Becomes the
+    // customer's entitlement allowance. Defaults to 1 for legacy codes.
+    @Column(nullable = false, columnDefinition = "integer not null default 1")
+    @Builder.Default
+    private int projectQuota = 1;
+
+    // Individual shop products (ShopProduct UUIDs) the retailer unlocked for this
+    // customer, stored comma-separated. Combined with allowedBrands (whole companies):
+    // the customer sees the UNION. Empty/null on both means "no restriction".
+    @Column(length = 4096)
+    private String allowedProductIds;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "used_by_user_id")
@@ -72,6 +91,28 @@ public class CustomerAccessCode {
             return;
         }
         this.allowedBrands = brands.stream()
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .distinct()
+                .reduce((a, b) -> a + "," + b)
+                .orElse(null);
+    }
+
+    /** Individual unlocked product ids as a list. Empty list means none selected individually. */
+    public List<String> getAllowedProductIdList() {
+        if (allowedProductIds == null || allowedProductIds.isBlank()) return List.of();
+        return Arrays.stream(allowedProductIds.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
+    }
+
+    public void setAllowedProductIdList(List<String> productIds) {
+        if (productIds == null || productIds.isEmpty()) {
+            this.allowedProductIds = null;
+            return;
+        }
+        this.allowedProductIds = productIds.stream()
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
                 .distinct()

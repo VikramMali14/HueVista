@@ -42,19 +42,23 @@ public class CustomerEntitlementService {
 
     private static final int DEFAULT_INCLUDED_PROJECTS = 1;
 
-    /** Create or refresh the customer's entitlement when they redeem an access code. */
+    /**
+     * Create or refresh the customer's entitlement when they redeem an access code.
+     * {@code projectAllowance} is the number of projects the retailer assigned on the
+     * code (at least 1); a freshly redeemed code starts a new period at that allowance.
+     */
     @Transactional
-    public void onAccessCodeRedeemed(User customer, Organization retailerOrg, int validDays) {
+    public void onAccessCodeRedeemed(User customer, Organization retailerOrg, int validDays, int projectAllowance) {
         CustomerEntitlement ent = entitlementRepository.findByCustomerId(customer.getId())
                 .orElseGet(() -> CustomerEntitlement.builder().customer(customer).build());
         ent.setRetailerOrg(retailerOrg);
         ent.setAccessExpiresAt(LocalDateTime.now().plusDays(validDays));
-        // A freshly redeemed code starts a new period: reset to the included allowance.
-        ent.setProjectAllowance(DEFAULT_INCLUDED_PROJECTS);
+        // A freshly redeemed code starts a new period: reset to the assigned allowance.
+        ent.setProjectAllowance(Math.max(DEFAULT_INCLUDED_PROJECTS, projectAllowance));
         ent.setProjectsCreated(0);
         entitlementRepository.save(ent);
-        log.info("Entitlement set: customer={} retailer={} expires={}",
-                customer.getId(), retailerOrg.getId(), ent.getAccessExpiresAt());
+        log.info("Entitlement set: customer={} retailer={} allowance={} expires={}",
+                customer.getId(), retailerOrg.getId(), ent.getProjectAllowance(), ent.getAccessExpiresAt());
     }
 
     /**
