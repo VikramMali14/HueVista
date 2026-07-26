@@ -105,12 +105,65 @@ public class CustomerEntitlementService {
                 customer.getId(), code.getOrganization().getId(), projectsClaimed, ent.getAccessExpiresAt());
     }
 
-    /** Guard for ANY project access (view/manage). Enforces the full expiry lock. */
+    /**
+     * Guarantee a redeemed customer HAS an entitlement, without touching what they
+     * have already used. Called on every re-entry into an access-code account: the
+     * account is signed in from the code alone, and a customer with no entitlement
+     * row is locked out of every project read ("Your access is not set up") — the
+     * exact opposite of what redeeming their code just promised.
+     *
+     * - No row: create one mirroring the code — its shop, its own expiry (never a
+     *   fresh window), its assigned quota, nothing used yet.
+     * - Existing row: only ever fill gaps. Usage is never reset and the window is
+     *   never shortened; the code's expiry can only extend an earlier one, which in
+     *   practice is a no-op since the entitlement was opened at redeem time.
+     */
+    @Transactional
+    public void ensureEntitlementForCode(User customer, CustomerAccessCode code) {
+        LocalDateTime codeExpiry = code.getExpiresAt();
+        int codeAllowance = Math.max(DEFAULT_INCLUDED_PROJECTS, code.getProjectQuota());
+        CustomerEntitlement ent = entitlementRepository.findByCustomerId(customer.getId()).orElse(null);
+        if (ent == null) {
+            ent = CustomerEntitlement.builder()
+                    .customer(customer)
+                    .retailerOrg(code.getOrganization())
+                    // Column is NOT NULL; a code with no expiry (shouldn't happen) yields an
+                    // already-expired entitlement rather than a constraint violation.
+                    .accessExpiresAt(codeExpiry != null ? codeExpiry : LocalDateTime.now())
+                    .projectAllowance(codeAllowance)
+                    .projectsCreated(0)
+                    .build();
+            log.info("Entitlement repaired on code re-entry: customer={} retailer={} allowance={} expires={}",
+                    customer.getId(), code.getOrganization().getId(), codeAllowance, ent.getAccessExpiresAt());
+        } else {
+            if (ent.getRetailerOrg() == null) {
+                ent.setRetailerOrg(code.getOrganization());
+            }
+            if (codeExpiry != null
+                    && (ent.getAccessExpiresAt() == null || codeExpiry.isAfter(ent.getAccessExpiresAt()))) {
+                ent.setAccessExpiresAt(codeExpiry);
+            }
+            if (ent.getProjectAllowance() < codeAllowance) {
+                ent.setProjectAllowance(codeAllowance);
+            }
+        }
+        entitlementRepository.save(ent);
+    }
+
+    /**
+     * Guard for ANY project access (view/manage). Enforces the full expiry lock.
+     *
+     * A customer with NO entitlement row at all is deliberately let through: they
+     * have never held shop access, so they own nothing to lock, and throwing here
+     * turned their dashboard into a 403 error panel sitting next to a banner that
+     * (correctly) invited them to redeem a code. Creating a project still requires
+     * a real entitlement — see {@link #assertCanCreateProject}.
+     */
     @Transactional(readOnly = true)
     public void assertAccessValid(String userId) {
         if (!isCustomer(userId)) return;
-        CustomerEntitlement ent = requireEntitlement(userId);
-        if (ent.isExpired()) {
+        CustomerEntitlement ent = entitlementRepository.findByCustomerId(userId).orElse(null);
+        if (ent != null && ent.isExpired()) {
             throw new AccessExpiredException(
                     "Your access has ended. Ask your retailer for a new access code.");
         }

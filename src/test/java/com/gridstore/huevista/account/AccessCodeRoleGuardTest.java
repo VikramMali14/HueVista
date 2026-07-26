@@ -44,9 +44,11 @@ class AccessCodeRoleGuardTest {
     private final AuthService auth = mock(AuthService.class);
     private final SubscriptionRepository subscriptions = mock(SubscriptionRepository.class);
     private final ShopProductRepository shopProducts = mock(ShopProductRepository.class);
+    private final com.gridstore.huevista.project.repository.ProjectRepository projects =
+            mock(com.gridstore.huevista.project.repository.ProjectRepository.class);
 
-    private final AccessCodeService service =
-            new AccessCodeService(codes, orgs, memberships, users, entitlements, jwt, auth, subscriptions, shopProducts);
+    private final AccessCodeService service = new AccessCodeService(
+            codes, orgs, memberships, users, entitlements, jwt, auth, subscriptions, shopProducts, projects);
 
     private static CustomerAccessCode validCode() {
         Organization org = new Organization();

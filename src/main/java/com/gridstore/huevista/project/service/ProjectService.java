@@ -819,6 +819,20 @@ public class ProjectService {
     }
 
     /**
+     * EVERY room created against a code — the shop's real view, newest first, WITH
+     * real shade codes. A retailer-assigned code can carry several projects (they
+     * paid an image per project), so answering with just the first one hid the rest
+     * of the order from the counter. Caller must have already verified the requester
+     * owns/manages the code's organization. Empty when nothing has been created yet.
+     */
+    @Transactional(readOnly = true)
+    public List<ProjectResponse> getProjectsForShop(String accessCodeId) {
+        return projectRepository.findByAccessCodeIdOrderByUpdatedAtDesc(accessCodeId).stream()
+                .map(this::toResponse)
+                .toList();
+    }
+
+    /**
      * Links the projects a guest created (owned by their access code) to a real user
      * account — called when the guest signs up. The accessCode link is kept, so the
      * issuing shop keeps visibility; the user becomes the owner and can keep working.

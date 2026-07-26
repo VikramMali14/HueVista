@@ -44,6 +44,20 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
     long countByAccessCodeId(@Param("accessCodeId") String accessCodeId);
 
     /**
+     * Rooms created per access code as [codeId, count] — one query for a whole
+     * page of the shop's codes, so the "projects used" column doesn't cost an
+     * extra COUNT per row. Callers must guard against an empty collection
+     * (JPQL {@code IN ()} is invalid).
+     */
+    @Query("""
+            SELECT p.accessCode.id, COUNT(p)
+              FROM Project p
+             WHERE p.accessCode.id IN :accessCodeIds
+             GROUP BY p.accessCode.id
+            """)
+    List<Object[]> countByAccessCodeIds(@Param("accessCodeIds") java.util.Collection<String> accessCodeIds);
+
+    /**
      * Pulls the owning user's id without triggering lazy initialization on the
      * Project.user association — needed inside the async segmentation worker,
      * which runs outside any transaction.
