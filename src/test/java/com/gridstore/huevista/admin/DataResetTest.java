@@ -24,6 +24,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -138,6 +139,35 @@ class DataResetTest {
                     assertThat(u.getPassword()).isEqualTo("hashed");
                     assertThat(u.getDeletedAt()).isNull();
                 });
+    }
+
+    /**
+     * The audit entry must be written with no transaction of ours in progress.
+     *
+     * {@code AuditService#record} is REQUIRES_NEW: it suspends the caller's transaction
+     * and opens a second connection. Called from inside the truncate's transaction it
+     * waits for a lock on {@code audit_logs} that the truncate holds and will not
+     * release until the request returns — so it blocks forever, and PostgreSQL's
+     * deadlock detector never fires because the holder is waiting on application code
+     * rather than on a database lock. That froze all 34 tables in production.
+     *
+     * H2 cannot reproduce the lock (its TRUNCATE commits as it goes), so this asserts
+     * the structural property instead: by the time the reset returns, no transaction is
+     * active on the calling thread, and the audit row is really there.
+     */
+    @Test
+    void theAuditWriteHappensOutsideTheTruncateTransaction() {
+        assertThat(TransactionSynchronizationManager.isActualTransactionActive())
+                .as("precondition: the test itself must not be transactional")
+                .isFalse();
+
+        service.resetKeepingCatalogue(adminId, DataResetService.CONFIRM_PHRASE, false);
+
+        // A transaction spanning the whole reset would have wrapped this call too.
+        assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM audit_logs WHERE action = 'PLATFORM_DATA_RESET'", Long.class))
+                .isEqualTo(1);
     }
 
     @Test

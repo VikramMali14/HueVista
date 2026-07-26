@@ -4,13 +4,13 @@ import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.common.audit.AuditService;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
+import com.gridstore.huevista.image.service.StorageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -33,8 +33,8 @@ import java.util.Set;
  *   <li>{@code flyway_schema_history} — clearing it makes Flyway try to replay every
  *       migration over a schema that already has them, and the app stops booting.</li>
  *   <li>{@code brands}, {@code paint_lines}, {@code shades} — the catalogue.</li>
- *   <li>The calling admin's own {@code users} row, restored with its original id (see
- *       {@link #restore}) so the reset does not sign the operator out mid-flight.</li>
+ *   <li>The calling admin's own {@code users} row, restored with its original id so the
+ *       reset does not sign the operator out mid-flight.</li>
  * </ul>
  *
  * <h2>Why the table list is discovered, not hard-coded</h2>
@@ -43,6 +43,12 @@ import java.util.Set;
  * schema instead means a new table is cleared by default and only the explicitly
  * {@link #PRESERVED} ones survive — the safe direction to fail in. {@code DataResetTest}
  * pins the resulting split so adding a table is a conscious decision, not a surprise.
+ *
+ * <h2>Ordering</h2>
+ * Only the truncate is transactional (see {@link DataResetTransaction}). The audit
+ * entry and the image purge both run afterwards, once the exclusive table locks the
+ * truncate takes have been released — doing either inside deadlocked the reset in
+ * production.
  */
 @Slf4j
 @Service
@@ -66,13 +72,15 @@ public class DataResetService {
     private final JdbcTemplate jdbc;
     private final UserRepository userRepository;
     private final AuditService auditService;
-    private final com.gridstore.huevista.image.service.StorageService storageService;
+    private final StorageService storageService;
+    private final DataResetTransaction resetTransaction;
 
     /**
      * @param clearedTables  every table emptied, alphabetically
      * @param preservedTables the catalogue tables deliberately left alone, with their row counts
      * @param deletedRows    rows removed per table, only for tables that actually had any
      * @param totalDeleted   sum of {@code deletedRows}
+     * @param deletedImageFiles files removed from the image store; always 0 on a preview
      */
     public record ResetResult(List<String> clearedTables,
                               Map<String, Long> preservedTables,
@@ -83,6 +91,9 @@ public class DataResetService {
     /**
      * Wipe everything but the catalogue.
      *
+     * Deliberately NOT {@code @Transactional} — see the class note. The truncate gets its
+     * own short transaction; the audit write and the image purge follow it.
+     *
      * @param adminUserId the signed-in admin, whose own account is preserved
      * @param confirmation must equal {@link #CONFIRM_PHRASE}
      * @param deleteImageFiles also purge the image store (S3 bucket or upload directory).
@@ -91,11 +102,9 @@ public class DataResetService {
      *                         snapshot while the files cannot.
      * @throws IllegalArgumentException if the confirmation phrase does not match
      */
-    @Transactional
     public ResetResult resetKeepingCatalogue(String adminUserId, String confirmation,
                                              boolean deleteImageFiles) {
-        if (confirmation == null
-                || !confirmation.trim().equalsIgnoreCase(CONFIRM_PHRASE)) {
+        if (confirmation == null || !confirmation.trim().equalsIgnoreCase(CONFIRM_PHRASE)) {
             throw new IllegalArgumentException(
                     "Type \"" + CONFIRM_PHRASE + "\" exactly to confirm the reset.");
         }
@@ -108,21 +117,10 @@ public class DataResetService {
 
         log.warn("[admin] DATA RESET starting: admin={} tables={} rows={} images={}",
                 adminUserId, tables.size(), totalDeleted, deleteImageFiles);
-        truncate(tables);
-        restore(admin);
+        resetTransaction.wipe(tables, admin);
 
-        // Files go last, and never throw: the rows are already gone, so failing here
-        // would report a failed reset that in fact happened, and invite a second run.
-        int deletedFiles = 0;
-        if (deleteImageFiles) {
-            try {
-                deletedFiles = storageService.deleteAll();
-            } catch (Exception e) {
-                log.error("[admin] image purge failed after the data reset — the database is "
-                          + "already clear, so these files are orphaned and must be removed "
-                          + "by hand: {}", e.getMessage());
-            }
-        }
+        // Everything below runs with the truncate committed and its locks released.
+        int deletedFiles = deleteImageFiles ? purgeImageFiles() : 0;
 
         // Recorded AFTER the truncate on purpose: audit_logs is one of the cleared
         // tables, so writing it first would erase the only trace of the reset.
@@ -134,6 +132,22 @@ public class DataResetService {
                 totalDeleted, tables.size(), deletedFiles);
 
         return new ResetResult(tables, countRows(catalogueTables()), deletedRows, totalDeleted, deletedFiles);
+    }
+
+    /**
+     * Never throws: the rows are already gone by the time this runs, so reporting a
+     * failure here would describe a reset that did in fact happen and invite a second
+     * run. Logs loudly and reports zero instead.
+     */
+    private int purgeImageFiles() {
+        try {
+            return storageService.deleteAll();
+        } catch (Exception e) {
+            log.error("[admin] image purge failed after the data reset — the database is "
+                      + "already clear, so these files are orphaned and must be removed "
+                      + "by hand: {}", e.getMessage());
+            return 0;
+        }
     }
 
     /** A preview for the confirmation screen — what would go, and what would stay. */
@@ -176,74 +190,6 @@ public class DataResetService {
             }
         }
         return counts;
-    }
-
-    /**
-     * Empty the tables in one shot.
-     *
-     * PostgreSQL takes every table in a single {@code TRUNCATE}, which sidesteps
-     * foreign-key ordering entirely — a table may be truncated as long as everything
-     * referencing it is in the same statement, and here everything is. H2 (tests only)
-     * has no multi-table form, so referential integrity comes off for the batch.
-     */
-    private void truncate(List<String> tables) {
-        if (tables.isEmpty()) return;
-        if (isPostgres()) {
-            jdbc.execute("TRUNCATE TABLE " + String.join(", ", tables) + " RESTART IDENTITY");
-            return;
-        }
-        jdbc.execute("SET REFERENTIAL_INTEGRITY FALSE");
-        try {
-            tables.forEach(t -> jdbc.execute("TRUNCATE TABLE " + t + " RESTART IDENTITY"));
-        } finally {
-            jdbc.execute("SET REFERENTIAL_INTEGRITY TRUE");
-        }
-    }
-
-    private boolean isPostgres() {
-        try {
-            String product = jdbc.execute(
-                    (org.springframework.jdbc.core.ConnectionCallback<String>) c ->
-                            c.getMetaData().getDatabaseProductName());
-            return product != null && product.toLowerCase(Locale.ROOT).contains("postgres");
-        } catch (Exception e) {
-            log.warn("[admin] could not read the database product name ({}); "
-                     + "assuming PostgreSQL for the reset", e.getMessage());
-            return true;
-        }
-    }
-
-    /**
-     * Put the acting admin back, keeping the ORIGINAL id.
-     *
-     * The JWT carries the user id and {@code JwtAuthFilter} resolves it on every
-     * request, so a new id would log the admin out the instant the reset finished and
-     * leave the audit entry pointing at nobody. Written as a plain INSERT rather than
-     * a JPA save because the row must land with an assigned id despite the entity's
-     * UUID generator.
-     */
-    private void restore(User admin) {
-        jdbc.update("""
-                INSERT INTO users (id, email, password, name, picture, provider, provider_id,
-                                   role, email_verified, failed_login_attempts, phone_number,
-                                   phone_verified, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                admin.getId(),
-                admin.getEmail(),
-                admin.getPassword(),
-                admin.getName(),
-                admin.getPicture(),
-                admin.getProvider() == null ? null : admin.getProvider().name(),
-                admin.getProviderId(),
-                admin.getRole() == null ? null : admin.getRole().name(),
-                admin.isEmailVerified(),
-                0,
-                admin.getPhoneNumber(),
-                admin.isPhoneVerified(),
-                admin.getCreatedAt() == null ? LocalDateTime.now() : admin.getCreatedAt(),
-                LocalDateTime.now());
-        log.warn("[admin] restored acting admin account {} after the reset", admin.getEmail());
     }
 
     /** Tables cleared, as a plain list — used by the confirmation screen and tests. */
