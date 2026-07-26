@@ -52,6 +52,8 @@ public class AdminController {
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final ProjectRepository projectRepository;
     private final AuditService auditService;
+    private final com.gridstore.huevista.billing.service.BillingWalletService billingWalletService;
+    private final com.gridstore.huevista.account.service.AccountService accountService;
     private final com.gridstore.huevista.common.audit.AuditLogRepository auditLogRepository;
 
     /** Hard cap on admin page sizes — these tables are unbounded. */
@@ -133,6 +135,30 @@ public class AdminController {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
         var previous = user.getRole();
+        if (previous == request.getRole()) {
+            return ResponseEntity.ok(AdminUserResponse.from(user));
+        }
+
+        // Role and org membership are two independent authorization systems, and letting
+        // them disagree is how a "demoted" retailer kept issuing customer codes (those
+        // check org membership, not role) while their own dashboard treated them as a
+        // customer. Refuse the change while the account still owns an organization —
+        // the org has to be transferred or closed first.
+        String ownedOrg = accountService.firstOwnedOrgId(userId);
+        if (ownedOrg != null) {
+            throw new IllegalStateException(
+                    "This account owns organization " + ownedOrg + ". Changing its role would leave "
+                    + "the organization with an owner whose role no longer matches it — transfer or "
+                    + "close the organization first.");
+        }
+        // Demoting to CUSTOMER while a plan is running would keep billing a card for a
+        // plan the account can no longer use (and can no longer re-buy — CUSTOMER is
+        // refused at checkout). End it deliberately rather than stranding it.
+        if (request.getRole() == com.gridstore.huevista.auth.model.UserRole.CUSTOMER
+                && subscriptionRepository.existsByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE)) {
+            billingService.endSubscriptionsForDeletedAccount(userId);
+        }
+
         user.setRole(request.getRole());
         userRepository.save(user);
         auditService.record(auth.getName(), "ROLE_CHANGE", "USER", userId,
@@ -207,6 +233,22 @@ public class AdminController {
         return ResponseEntity.ok(
                 billingService.adminAdjustSubscription(auth.getName(), userId,
                         request.getAddAiGenerations(), request.getExtendDays()));
+    }
+
+    @Operation(summary = "Refund a retailer's prepaid billing wallet",
+            description = "Writes the prepaid wallet balance back off the account and returns the "
+                    + "amount to transfer (the money movement itself is manual, like kiosk payouts). "
+                    + "Use when a shop cancels or closes an account with money still on it — top-ups "
+                    + "and spending both need an active plan, so that balance is otherwise stranded.")
+    @PostMapping("/users/{userId}/wallet/refund")
+    public ResponseEntity<Map<String, Object>> refundBillingWallet(
+            @PathVariable String userId,
+            @RequestParam(required = false) String reason,
+            Authentication auth) {
+        long refunded = billingWalletService.refundWallet(auth.getName(), userId, reason);
+        auditService.record(auth.getName(), "BILLING_WALLET_REFUND", "USER", userId,
+                "amountPaise=" + refunded + (reason != null ? " reason=" + reason : ""));
+        return ResponseEntity.ok(Map.of("userId", userId, "refundedPaise", refunded));
     }
 
     @Operation(summary = "List all subscriptions")

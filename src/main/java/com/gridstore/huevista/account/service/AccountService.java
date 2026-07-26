@@ -21,6 +21,7 @@ public class AccountService {
     private final OrganizationRepository orgRepository;
     private final OrgMembershipRepository membershipRepository;
     private final DistributorRetailerLinkRepository linkRepository;
+    private final RetailerBrandAssignmentRepository brandAssignmentRepository;
     private final UserRepository userRepository;
 
     @Transactional
@@ -229,6 +230,49 @@ public class AccountService {
         return OrgResponse.from(retailer);
     }
 
+    /**
+     * End a distributor ↔ retailer relationship.
+     *
+     * There was previously no way out of a link at all: once a shop was attached to a
+     * distributor it stayed attached forever, so a distributor could never drop a shop
+     * and a shop could never move networks. Either side may end it — the distributor
+     * (owner/manager of the distributor org) or the shop itself (its owner) — because a
+     * relationship one party can't leave isn't one.
+     *
+     * The shop's brand assignments go with the link: they were granted BY this
+     * distributor, so leaving must not silently leave the shop carrying brands nobody is
+     * supplying. The shop reverts to unrestricted rather than to zero brands, so ending a
+     * distributor relationship never quietly empties a working catalogue.
+     */
+    @Transactional
+    public void unlinkRetailer(String requestingUserId, String distributorOrgId, String retailerOrgId) {
+        DistributorRetailerLink link = linkRepository
+                .findByDistributorIdAndRetailerId(distributorOrgId, retailerOrgId)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "That shop is not linked to this distributor."));
+
+        boolean distributorSide = membershipRepository
+                .existsByUserIdAndOrganizationIdAndRole(requestingUserId, distributorOrgId, OrgMemberRole.OWNER)
+                || membershipRepository.existsByUserIdAndOrganizationIdAndRole(
+                        requestingUserId, distributorOrgId, OrgMemberRole.MANAGER);
+        boolean retailerSide = membershipRepository
+                .existsByUserIdAndOrganizationIdAndRole(requestingUserId, retailerOrgId, OrgMemberRole.OWNER);
+        if (!distributorSide && !retailerSide) {
+            throw new SecurityException(
+                    "Only the distributor or the shop itself can end this link.");
+        }
+
+        linkRepository.delete(link);
+        brandAssignmentRepository.deleteByRetailerId(retailerOrgId);
+        orgRepository.findById(retailerOrgId).ifPresent(retailer -> {
+            retailer.setBrandsRestricted(false);
+            orgRepository.save(retailer);
+        });
+
+        log.info("Retailer unlinked: distributor={} retailer={} by={}",
+                distributorOrgId, retailerOrgId, requestingUserId);
+    }
+
     @Transactional(readOnly = true)
     public List<OrgResponse> getLinkedRetailers(String requestingUserId, String distributorOrgId) {
         requireMember(requestingUserId, distributorOrgId);
@@ -243,6 +287,21 @@ public class AccountService {
         return linkRepository.findByRetailerId(retailerOrgId).stream()
                 .map(l -> OrgResponse.from(l.getDistributor()))
                 .toList();
+    }
+
+    /**
+     * The id of the first organization this user OWNS, or null. Used to refuse
+     * self-service account deletion for an owner: the org's access codes, staff, kiosk
+     * takings and payouts all hang off that account, so tombstoning it silently would
+     * leave a shop running with nobody to bill or pay.
+     */
+    @Transactional(readOnly = true)
+    public String firstOwnedOrgId(String userId) {
+        return membershipRepository.findByUserId(userId).stream()
+                .filter(m -> m.getRole() == OrgMemberRole.OWNER)
+                .map(m -> m.getOrganization().getId())
+                .findFirst()
+                .orElse(null);
     }
 
     private Organization findOrg(String orgId) {

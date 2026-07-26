@@ -85,6 +85,19 @@ public class AccountController {
                 .body(accountService.linkRetailer(userDetails.getUsername(), distributorOrgId, request));
     }
 
+    @Operation(summary = "Unlink a retailer from a distributor",
+            description = "Ends the relationship. Either side may call it: the distributor "
+                    + "(owner/manager) or the shop itself (owner). The distributor's brand "
+                    + "assignments for that shop are cleared and the shop reverts to unrestricted.")
+    @DeleteMapping("/{distributorOrgId}/retailers/{retailerOrgId}")
+    public ResponseEntity<Void> unlinkRetailer(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String distributorOrgId,
+            @PathVariable String retailerOrgId) {
+        accountService.unlinkRetailer(userDetails.getUsername(), distributorOrgId, retailerOrgId);
+        return ResponseEntity.noContent().build();
+    }
+
     @Operation(summary = "Get linked retailers", description = "Returns all retailer orgs linked under a distributor. Caller must be a member of the distributor.")
     @GetMapping("/{distributorOrgId}/retailers")
     public ResponseEntity<List<OrgResponse>> getLinkedRetailers(

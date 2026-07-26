@@ -66,6 +66,10 @@ public class CleaningHintService {
               + "PRESERVE: the specific architectural features actually visible here that must stay "
               + "identical (windows, doors, frames, fixtures, cabinetry, railings, etc.).\n"
               + finishList
+              + "Only list things that are ACTUALLY VISIBLE in this photo. Never suggest adding, "
+              + "staging, decorating, replacing or upgrading anything, and never describe how the "
+              + "space 'could' or 'should' look — the edit must not invent objects that are not "
+              + "already there.\n"
               + "Be concrete and brief, one item per line. No preamble and no headings other than "
               + headings + ".";
         try {

@@ -34,4 +34,22 @@ public interface PaintJobRepository extends JpaRepository<PaintJob, String> {
     List<PaintJob> findByPainterIdAndStatusInOrderByCreatedAtDesc(String painterId, List<PaintJobStatus> statuses);
 
     Optional<PaintJob> findByProjectId(String projectId);
+
+    /**
+     * Cancel every unfinished job a painter holds for one shop, in a single UPDATE.
+     * Used when the shop ends the relationship: leaving open jobs assigned let a removed
+     * painter keep working (and keep reading the customer's site address) for a shop that
+     * had already cut them off. COMPLETED and already-CANCELLED jobs are untouched.
+     */
+    @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            UPDATE PaintJob j SET j.status = :cancelled, j.declineReason = :reason
+             WHERE j.painter.id = :painterId AND j.retailer.id = :retailerId
+               AND j.status IN :openStatuses
+            """)
+    int cancelOpenJobsForPainter(@Param("painterId") String painterId,
+                                 @Param("retailerId") String retailerId,
+                                 @Param("openStatuses") List<PaintJobStatus> openStatuses,
+                                 @Param("cancelled") PaintJobStatus cancelled,
+                                 @Param("reason") String reason);
 }

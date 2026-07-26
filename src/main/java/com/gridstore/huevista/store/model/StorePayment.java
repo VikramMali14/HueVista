@@ -60,6 +60,25 @@ public class StorePayment {
     @JoinColumn(name = "access_code_id")
     private CustomerAccessCode accessCode;
 
+    /**
+     * Set when Razorpay tells us the money went back to the customer (refund or
+     * chargeback). A reversed payment is excluded from the wallet balance: without this
+     * the retailer's share of a refunded sale stayed spendable, so a customer could pay,
+     * charge back, and the shop could still cash the share out over UPI — a real, silent
+     * cash loss for the platform. Kept as a timestamp (not a delete) so the ledger and
+     * the issued access code stay auditable.
+     */
+    private LocalDateTime reversedAt;
+
+    /** Paise actually returned to the customer — informational; any refund reverses the row. */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int refundedPaise = 0;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
+
+    public boolean isReversed() {
+        return reversedAt != null;
+    }
 }

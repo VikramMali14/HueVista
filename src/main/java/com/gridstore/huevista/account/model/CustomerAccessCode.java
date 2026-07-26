@@ -48,6 +48,24 @@ public class CustomerAccessCode {
     @Builder.Default
     private int projectQuota = 1;
 
+    // Image credits this code still HOLDS on the issuing shop's subscription: starts at
+    // projectQuota, drops by one each time a project under this code is actually
+    // segmented, and is released back to the shop when the code is revoked or swept
+    // after expiring unredeemed. Kept in lock-step with Subscription#reservedImages —
+    // every mutation moves both — so a shop is never billed twice for one project and
+    // never loses quota to a code nobody used.
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int reservedImages = 0;
+
+    // Set when a retailer revokes the code before it was redeemed. A revoked code can
+    // never be redeemed or re-entered; its held quota has already gone back to the shop.
+    private LocalDateTime revokedAt;
+
+    // Set once the held quota has been returned to the shop (revoke or expiry sweep), so
+    // the sweep is idempotent and a code can never be refunded twice.
+    private LocalDateTime quotaReleasedAt;
+
     // Individual shop products (ShopProduct UUIDs) the retailer unlocked for this
     // customer, stored comma-separated. Combined with allowedBrands (whole companies):
     // the customer sees the UNION. Empty/null on both means "no restriction".
@@ -121,11 +139,24 @@ public class CustomerAccessCode {
     }
 
     public boolean isExpired() {
-        return LocalDateTime.now().isAfter(expiresAt);
+        // Null-safe: a row with no expiry (legacy or a partially-built code) reads as
+        // expired rather than throwing — this is called from public redemption and kiosk
+        // replay paths, where an NPE would surface as a 500 instead of a clear refusal.
+        return expiresAt == null || LocalDateTime.now().isAfter(expiresAt);
     }
 
     /** Single-use: consumed once a real user redeems it OR a guest redeems it (usedAt set). */
     public boolean isUsed() {
         return usedByUser != null || usedAt != null;
+    }
+
+    /** Revoked by the shop before redemption — can never be redeemed or re-entered. */
+    public boolean isRevoked() {
+        return revokedAt != null;
+    }
+
+    /** Usable right now: not revoked, not expired. */
+    public boolean isLive() {
+        return !isRevoked() && !isExpired();
     }
 }

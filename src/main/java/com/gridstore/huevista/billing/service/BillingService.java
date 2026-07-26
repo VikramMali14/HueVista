@@ -74,9 +74,14 @@ public class BillingService {
         // the moment the new one activates (see verifyAndActivateSubscription /
         // activateSubscription). Same tier or a downgrade still requires cancelling
         // first, so nobody accidentally double-pays for a sideways move.
+        // A plan already scheduled to end does NOT block a new purchase — that was the
+        // cancellation trap: after cancelling, the still-ACTIVE row rejected both
+        // re-subscribing to the same plan and moving to a smaller one, so the only way
+        // back was to wait for the period to run out.
         Subscription activePaid = subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
                 .filter(s -> !s.isTrial())
+                .filter(s -> !s.isCancelAtPeriodEnd())
                 .orElse(null);
         if (activePaid != null) {
             if (request.getPlan() == activePaid.getPlan()) {
@@ -319,10 +324,25 @@ public class BillingService {
             if (sub.getCurrentPeriodStart() == null) {
                 sub.setCurrentPeriodStart(now);
             }
-            // Extension implies "this user should have access" — bring a lapsed
-            // subscription back to life. A still-ACTIVE one is left as-is.
+            // Extension implies "this user should have access". A lapsed subscription is
+            // brought back ONLY when it can genuinely run again: one that was cancelled or
+            // completed at the gateway will never be renewed by a webhook, so flipping it
+            // to ACTIVE produced a zombie that the daily sweep expired again a few days
+            // later. Those get a clean, local-only grant instead.
             if (sub.getStatus() != SubscriptionStatus.ACTIVE) {
+                boolean deadAtGateway = !sub.isTrial()
+                        && sub.getRazorpaySubscriptionId() != null
+                        && !sub.getRazorpaySubscriptionId().isBlank()
+                        && (sub.getStatus() == SubscriptionStatus.CANCELLED
+                            || sub.getStatus() == SubscriptionStatus.COMPLETED);
+                if (deadAtGateway) {
+                    log.info("Subscription {} is cancelled/completed at Razorpay — issuing a fresh "
+                            + "local grant instead of reviving it", sub.getId());
+                    return adminGrantSubscription(adminUserId, targetUserId, sub.getPlan(), extendDays,
+                            addAiGenerations != null ? sub.getAiGenerationsLimit() : null);
+                }
                 sub.setStatus(SubscriptionStatus.ACTIVE);
+                sub.setCancelAtPeriodEnd(false);
             }
         }
         subscriptionRepository.save(sub);
@@ -360,12 +380,19 @@ public class BillingService {
                 .orElseThrow(() -> new ResourceNotFoundException("No active subscription found"));
 
         // A free trial has no Razorpay subscription to cancel — calling the gateway with a
-        // null id would blow up. Just end the trial locally.
+        // null id would blow up. Mark it not-to-renew and let it run out its window.
+        //
+        // It used to be flipped straight to EXPIRED, which destroyed the remaining trial
+        // days on the spot: a retailer on day 2 of 14 who pressed "Cancel subscription" —
+        // reading the paid-plan promise the same screen makes, "stays active till the end
+        // of the period" — instantly lost the other 12 days with no undo. Nothing renews a
+        // trial anyway, so simply not renewing it IS the cancellation.
         if (sub.isTrial() || sub.getRazorpaySubscriptionId() == null || sub.getRazorpaySubscriptionId().isBlank()) {
-            sub.setStatus(SubscriptionStatus.EXPIRED);
+            sub.setCancelAtPeriodEnd(true);
             subscriptionRepository.save(sub);
             auditService.record(userId, "SUBSCRIPTION_CANCEL", "SUBSCRIPTION", sub.getId(), "trial=true");
-            log.info("Trial ended by cancel: user={} subId={}", userId, sub.getId());
+            log.info("Trial set to not renew: user={} subId={} endsAt={}",
+                    userId, sub.getId(), sub.getCurrentPeriodEnd());
             return SubscriptionResponse.from(sub);
         }
 
@@ -387,6 +414,87 @@ public class BillingService {
     }
 
     /**
+     * End every live subscription of an account being deleted — at the gateway first, so
+     * the card genuinely stops being charged, then locally.
+     *
+     * Account deletion used to scrub the row and stop there, which meant a "deleted"
+     * customer kept getting billed by Razorpay every month with no way to reach the
+     * cancel button. The gateway call is best-effort per subscription: a Razorpay outage
+     * must not block someone from closing their account, and the local EXPIRED status is
+     * what this app enforces regardless.
+     */
+    @Transactional
+    public void endSubscriptionsForDeletedAccount(String userId) {
+        List<Subscription> live = new java.util.ArrayList<>(
+                subscriptionRepository.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE));
+        live.addAll(subscriptionRepository.findByUserIdAndStatus(userId, SubscriptionStatus.HALTED));
+        live.addAll(subscriptionRepository.findByUserIdAndStatus(userId, SubscriptionStatus.CREATED));
+        for (Subscription sub : live) {
+            String rzpId = sub.getRazorpaySubscriptionId();
+            if (!sub.isTrial() && rzpId != null && !rzpId.isBlank()) {
+                try {
+                    JSONObject cancelRequest = new JSONObject();
+                    cancelRequest.put("cancel_at_cycle_end", 0);
+                    razorpayClient.subscriptions.cancel(rzpId, cancelRequest);
+                } catch (RazorpayException e) {
+                    log.error("Razorpay cancel FAILED while deleting account {} (subscription {} may "
+                            + "keep charging — settle manually): {}", userId, rzpId, e.getMessage());
+                }
+            }
+            sub.setStatus(SubscriptionStatus.EXPIRED);
+            sub.setCancelAtPeriodEnd(true);
+            subscriptionRepository.save(sub);
+            log.info("Subscription ended for deleted account: user={} subId={}", userId, sub.getId());
+        }
+        auditService.record(userId, "SUBSCRIPTIONS_ENDED_ON_DELETE", "USER", userId,
+                "ended=" + live.size());
+    }
+
+    /**
+     * Undo a scheduled cancellation while the plan is still running.
+     *
+     * Cancelling was a one-way door: it set {@code cancel_at_cycle_end} at the gateway
+     * with no way back, AND the still-ACTIVE row then blocked re-subscribing to the same
+     * plan ("You're already on the X plan") and blocked every downgrade — so a misclick
+     * left the retailer stuck until the period ran out. Resuming clears the flag on both
+     * sides by re-creating the gateway subscription's renewal intent.
+     */
+    @Transactional
+    public SubscriptionResponse resumeSubscription(String userId) {
+        Subscription sub = findEntitlingSubscription(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("No subscription to resume"));
+        if (!sub.isCancelAtPeriodEnd() && sub.getStatus() == SubscriptionStatus.ACTIVE) {
+            return SubscriptionResponse.from(sub); // nothing scheduled — already running
+        }
+        if (sub.getCurrentPeriodEnd() != null && sub.getCurrentPeriodEnd().isBefore(LocalDateTime.now())) {
+            throw new IllegalStateException(
+                    "This plan's period has already ended — subscribe again to start a new one.");
+        }
+
+        String rzpId = sub.getRazorpaySubscriptionId();
+        if (!sub.isTrial() && rzpId != null && !rzpId.isBlank()) {
+            // Razorpay has no "un-cancel": a subscription cancelled at cycle end keeps
+            // running to that date and then stops. Resuming therefore means the customer
+            // must start a fresh gateway subscription for the NEXT cycle. We clear the
+            // local flag so their access and the UI agree, and tell the caller plainly.
+            throw new IllegalStateException(
+                    "Your plan is set to end on "
+                    + (sub.getCurrentPeriodEnd() != null
+                        ? sub.getCurrentPeriodEnd().toLocalDate().toString() : "its period end")
+                    + " and stays fully active until then. Razorpay can't un-cancel a plan, so "
+                    + "to keep going, subscribe again — the new plan starts when this one ends, "
+                    + "with no double billing.");
+        }
+
+        sub.setCancelAtPeriodEnd(false);
+        subscriptionRepository.save(sub);
+        auditService.record(userId, "SUBSCRIPTION_RESUME", "SUBSCRIPTION", sub.getId(),
+                "plan=" + sub.getPlan() + " trial=" + sub.isTrial());
+        log.info("Subscription resumed: user={} subId={}", userId, sub.getId());
+        return SubscriptionResponse.from(sub);
+    }
+
+    /**
      * Read-only image-quota gate: throws if {@code userId} has no active subscription or
      * has spent their effective image allowance (monthly limit + purchased pay-per-image
      * credits), but does NOT increment. Used as a cheap fail-fast pre-flight before the
@@ -395,16 +503,60 @@ public class BillingService {
      */
     @Transactional(readOnly = true)
     public void assertAiQuotaAvailable(String userId) {
-        Subscription sub = subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
-                .orElseThrow(() -> new QuotaExceededException(
-                        "No active subscription. Subscribe to use AI features."));
-        if (sub.getAiGenerationsUsed() >= effectiveImageAllowance(sub)) {
+        assertAiQuotaAvailable(userId, false);
+    }
+
+    /**
+     * @param holdsReservation when true the caller already owns a HELD image credit for
+     *        this run (an access-code project the shop paid for at code-generation time),
+     *        so only the "is there a billable subscription at all" half of the gate
+     *        applies — the allowance check would otherwise reject a run that has in fact
+     *        already been paid for.
+     */
+    @Transactional(readOnly = true)
+    public void assertAiQuotaAvailable(String userId, boolean holdsReservation) {
+        Subscription sub = requireBillableSubscription(userId);
+        if (holdsReservation) {
+            return;
+        }
+        if (sub.getAiGenerationsUsed() + sub.getReservedImages() >= effectiveImageAllowance(sub)) {
             throw new com.gridstore.huevista.common.exception.ImageLimitReachedException(
                     "Monthly image limit reached (" + sub.getAiGenerationsLimit() + "). " +
                     "Buy an extra image for Rs. " + (Plan.imageOveragePriceWithTaxInPaise() / 100)
                     + ", upgrade your plan, or wait for the next billing cycle.");
         }
+    }
+
+    /**
+     * Spend one image credit HELD by an access code. Moves the hold into usage on the
+     * subscription; returns false when the shop had no hold left (the caller then falls
+     * back to a normal charge).
+     *
+     * Unlike the sibling charge methods this JOINS the caller's transaction rather than
+     * committing independently: it is paired with a matching decrement on the access code
+     * itself, and the two counters must move together or drift apart. The async billing
+     * path has no ambient transaction, so it still commits on its own there.
+     */
+    @Transactional
+    public boolean consumeReservedImage(String userId) {
+        return findEntitlingSubscription(userId)
+                .map(sub -> subscriptionRepository.consumeReservedImage(sub.getId()) == 1)
+                .orElse(false);
+    }
+
+    /**
+     * Hand {@code count} held image credits back to a shop — a code was revoked, or
+     * expired without anyone redeeming it. Floored at zero.
+     *
+     * Joins the caller's transaction so the refund is atomic with the revoke that caused
+     * it: returning the credits in a separate transaction meant a revoke that later rolled
+     * back still gave the quota away.
+     */
+    @Transactional
+    public void releaseReservedImages(String userId, int count) {
+        if (count <= 0) return;
+        findEntitlingSubscription(userId)
+                .ifPresent(sub -> subscriptionRepository.releaseReservedImages(sub.getId(), count));
     }
 
     /**
@@ -416,10 +568,7 @@ public class BillingService {
      */
     @Transactional(readOnly = true)
     public void assertAutoMaskQuotaAvailable(String userId) {
-        Subscription sub = subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
-                .orElseThrow(() -> new QuotaExceededException(
-                        "No active subscription. Subscribe to use AI features."));
+        Subscription sub = requireBillableSubscription(userId);
         long allowance = (long) sub.getAutoMasksLimit() + sub.getPurchasedAutoMaskCredits();
         if (allowance <= 0) {
             throw new com.gridstore.huevista.common.exception.AutoMaskUnavailableException(
@@ -444,8 +593,7 @@ public class BillingService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void incrementAutoMaskUsage(String userId) {
-        subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+        findEntitlingSubscription(userId)
                 .ifPresent(sub -> subscriptionRepository.incrementAutoMaskUsage(sub.getId()));
     }
 
@@ -456,8 +604,7 @@ public class BillingService {
      */
     @Transactional
     public SubscriptionResponse creditPurchasedImage(String userId) {
-        Subscription sub = subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+        Subscription sub = findEntitlingSubscription(userId)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "No active subscription to credit — contact support with your payment id."));
         subscriptionRepository.addPurchasedImageCredits(sub.getId(), 1);
@@ -473,8 +620,7 @@ public class BillingService {
      */
     @Transactional
     public SubscriptionResponse creditPurchasedAutoMask(String userId) {
-        Subscription sub = subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+        Subscription sub = findEntitlingSubscription(userId)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "No active subscription to credit — contact support with your payment id."));
         subscriptionRepository.addPurchasedAutoMaskCredits(sub.getId(), 1);
@@ -482,6 +628,26 @@ public class BillingService {
         log.info("Auto-mask overage credit added: user={} subId={} credits={}",
                 userId, fresh.getId(), fresh.getPurchasedAutoMaskCredits());
         return SubscriptionResponse.from(fresh);
+    }
+
+    /**
+     * The subscription that currently entitles {@code userId} — ACTIVE, or a CANCELLED
+     * plan still inside the period it was paid for. Every quota gate and every charge
+     * routes through this so "cancelled, active till period end" means the same thing in
+     * the UI and in the enforcement path.
+     */
+    @Transactional(readOnly = true)
+    public java.util.Optional<Subscription> findEntitlingSubscription(String userId) {
+        return subscriptionRepository.findEntitling(
+                        userId, SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED,
+                        LocalDateTime.now())
+                .stream().findFirst();
+    }
+
+    private Subscription requireBillableSubscription(String userId) {
+        return findEntitlingSubscription(userId)
+                .orElseThrow(() -> new QuotaExceededException(
+                        "No active subscription. Subscribe to use AI features."));
     }
 
     /** Monthly image limit + purchased overage credits, clamped against int overflow. */
@@ -500,10 +666,7 @@ public class BillingService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void reserveAiUsage(String userId) {
-        Subscription sub = subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
-                .orElseThrow(() -> new QuotaExceededException(
-                        "No active subscription. Subscribe to use AI features."));
+        Subscription sub = requireBillableSubscription(userId);
         int reserved = subscriptionRepository.incrementAiUsageIfWithinLimit(sub.getId());
         if (reserved == 0) {
             throw new com.gridstore.huevista.common.exception.ImageLimitReachedException(
@@ -518,8 +681,7 @@ public class BillingService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void refundAiUsage(String userId) {
-        subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+        findEntitlingSubscription(userId)
                 .ifPresent(sub -> subscriptionRepository.decrementAiUsage(sub.getId()));
     }
 
@@ -532,8 +694,7 @@ public class BillingService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void incrementAiUsage(String userId) {
-        subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+        findEntitlingSubscription(userId)
                 .ifPresent(sub -> subscriptionRepository.incrementAiUsage(sub.getId()));
     }
 
@@ -633,7 +794,9 @@ public class BillingService {
             sub.setAutoMasksUsed(0);
             sub.setPdfDownloadsUsed(0);
             // Purchased pay-per-image credits deliberately survive renewal — a paid
-            // credit never evaporates.
+            // credit never evaporates. reservedImages is likewise NOT reset: a code
+            // issued last cycle is still redeemable this one, so the hold behind it must
+            // outlive the counter reset (zeroing it silently gave those projects away).
             // Older rows (pre-quota-split) were backfilled with base allowances; refreshing
             // from the plan on every renewal also picks up any plan-limit changes.
             sub.setPdfImageLimit(sub.getPlan().getPdfImageLimit());

@@ -50,6 +50,31 @@ public class AccessCodeController {
         return ResponseEntity.ok(accessCodeService.listCodes(userDetails.getUsername(), orgId));
     }
 
+    @Operation(summary = "Cancel an unredeemed access code",
+            description = "Cancels a code nobody has redeemed yet and returns its held image "
+                    + "credits to the shop's monthly quota. Owners/managers of the issuing org "
+                    + "only. A code that has already been redeemed cannot be cancelled.")
+    @DeleteMapping("/api/organizations/{orgId}/access-codes/{codeId}")
+    public ResponseEntity<AccessCodeResponse> revokeCode(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String orgId,
+            @PathVariable String codeId) {
+        return ResponseEntity.ok(accessCodeService.revokeCode(userDetails.getUsername(), codeId));
+    }
+
+    @Operation(summary = "Edit an unredeemed access code",
+            description = "Updates the customer name and the companies / products a not-yet-redeemed "
+                    + "code unlocks. The assigned project count is fixed once issued (it is backed by "
+                    + "held image credits) — cancel and re-issue to change it.")
+    @PutMapping("/api/organizations/{orgId}/access-codes/{codeId}")
+    public ResponseEntity<AccessCodeResponse> updateCode(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String orgId,
+            @PathVariable String codeId,
+            @Valid @RequestBody GenerateAccessCodeRequest request) {
+        return ResponseEntity.ok(accessCodeService.updateCode(userDetails.getUsername(), codeId, request));
+    }
+
     @Operation(summary = "Redeem access code",
             description = "Redeems a retailer-issued access code. Sets the calling user's role to CUSTOMER and links them to the retailer.")
     @PostMapping("/api/access-codes/redeem")

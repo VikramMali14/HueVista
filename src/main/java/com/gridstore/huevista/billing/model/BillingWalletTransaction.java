@@ -28,7 +28,14 @@ public class BillingWalletTransaction {
         /** One extra image bought once the monthly image quota was spent. */
         EXTRA_IMAGE,
         /** One extra AI auto-mask run bought once the monthly allowance was spent. */
-        EXTRA_AUTO_MASK
+        EXTRA_AUTO_MASK,
+        /**
+         * Balance written off back to the retailer by an admin (the money movement itself
+         * is manual). Without this the prepaid balance of a retailer who cancelled or
+         * closed their account was stranded: top-ups and spending both require an active
+         * plan, so there was no path back out.
+         */
+        REFUND
     }
 
     @Id

@@ -53,6 +53,7 @@ public class ProjectService {
     private final SegmentationService segmentationService;
     private final CustomerEntitlementService entitlementService;
     private final ProjectAccessPolicy projectAccessPolicy;
+    private final ProjectBillingResolver billingResolver;
     private final com.gridstore.huevista.auth.service.JwtService jwtService;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final OrgMembershipRepository orgMembershipRepository;
@@ -70,9 +71,11 @@ public class ProjectService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
-        // Enforce the customer's project entitlement (expiry + included/granted/purchased allowance).
+        // Claim the customer's project slot ATOMICALLY (expiry + included/granted/purchased
+        // allowance). Previously this checked the allowance here and incremented after the
+        // insert, so two parallel requests could both pass on the last remaining slot.
         // No-op for non-customer roles (retailers/distributors/admins).
-        entitlementService.assertCanCreateProject(userId);
+        entitlementService.claimProjectSlot(userId);
 
         // Retailer funnel gate: email+mobile verified, and the free trial includes
         // just one project (more require a paid plan). No-op for non-retailers.
@@ -104,9 +107,6 @@ public class ProjectService {
                 .status(ProjectStatus.CREATED)
                 .accessCode(linkedCode)
                 .build());
-
-        // Count this project against the customer's allowance (monotonic — deleting won't refund).
-        entitlementService.recordProjectCreated(userId);
 
         log.info("Project created: id={} user={}", project.getId(), userId);
         return toResponse(project, image);
@@ -243,18 +243,27 @@ public class ProjectService {
             project.setMaskMode(mode);
         }
 
-        // Gate on the retailer's own quotas WITHOUT charging yet: throws 402 when they
-        // have no active subscription or have hit their monthly image limit. This mirrors
-        // the guest path (requestGuestSegmentation) — every image consumes one image
-        // credit (the clean-up step is compulsory), and the credit is only charged once
-        // the run actually completes (SegmentationService bills on success), so a failed
-        // run stays free.
-        billingService.assertAiQuotaAvailable(userId);
+        // Gate WITHOUT charging yet: throws 402 when the paying account has no active
+        // subscription or has hit its monthly image limit. The payer is NOT always the
+        // caller — a redeemed customer's project is billed to the shop that issued their
+        // access code (the shop already reserved the credit when it generated the code),
+        // because a CUSTOMER can never hold a subscription of their own. Billing this to
+        // the caller made every customer run fail with "Subscribe to use AI features" —
+        // a plan they are forbidden from buying. See ProjectBillingResolver.
+        // The credit is only charged once the run actually completes (SegmentationService
+        // bills on success), so a failed run stays free.
+        ProjectBillingResolver.Target target = billingResolver.resolve(projectId)
+                .orElseThrow(() -> new QuotaExceededException(
+                        "This project has no account to bill. Contact support."));
+        boolean holdsReservation = target.coveredByCode()
+                && accessCodeRepository.findById(target.accessCodeId())
+                        .map(c -> c.getReservedImages() > 0).orElse(false);
+        billingService.assertAiQuotaAvailable(target.billedUserId(), holdsReservation);
         // AUTO mask mode additionally needs an auto-mask credit — rejected up-front with
         // a 402 AUTO_MASK_UNAVAILABLE the frontend turns into "mark walls yourself (free)
         // or upgrade", instead of burning the clean-up on a run that can't finish.
         if (!"MANUAL".equalsIgnoreCase(project.getMaskMode())) {
-            billingService.assertAutoMaskQuotaAvailable(userId);
+            billingService.assertAutoMaskQuotaAvailable(target.billedUserId());
         }
 
         // Allow re-triggering if the previous run never finished (e.g. it
@@ -712,10 +721,13 @@ public class ProjectService {
 
         // Gate on the shop's quota WITHOUT charging yet: throws 402 when the owning
         // retailer has no active subscription or has hit their limit — the guest then
-        // falls back to manual. The credit is only charged once the AI actually
-        // produces walls (SegmentationService bills on success), so a failed run is free.
+        // falls back to manual. A code still holding a reserved credit passes the
+        // allowance half of the gate: the shop already paid for this project when it
+        // generated the code, so re-checking the limit would block work already bought.
+        // The credit is only charged once the AI actually produces walls
+        // (SegmentationService bills on success), so a failed run is free.
         String shopOwnerUserId = resolveShopOwnerUserId(code);
-        billingService.assertAiQuotaAvailable(shopOwnerUserId);
+        billingService.assertAiQuotaAvailable(shopOwnerUserId, code.getReservedImages() > 0);
         // Guest runs are always fully automatic (clean-up + AI wall detection), so the
         // shop's plan must also cover an auto-mask credit; when it doesn't the guest
         // falls back to marking walls by hand exactly like on an image-quota 402.

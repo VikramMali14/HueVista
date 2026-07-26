@@ -10,9 +10,11 @@ import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.painter.dto.PainterProfileResponse;
 import com.gridstore.huevista.painter.dto.PainterRetailerLinkResponse;
 import com.gridstore.huevista.painter.dto.UpdatePainterProfileRequest;
+import com.gridstore.huevista.painter.model.PaintJobStatus;
 import com.gridstore.huevista.painter.model.PainterLinkStatus;
 import com.gridstore.huevista.painter.model.PainterProfile;
 import com.gridstore.huevista.painter.model.PainterRetailerLink;
+import com.gridstore.huevista.painter.repository.PaintJobRepository;
 import com.gridstore.huevista.painter.repository.PainterProfileRepository;
 import com.gridstore.huevista.painter.repository.PainterRetailerLinkRepository;
 import lombok.RequiredArgsConstructor;
@@ -31,6 +33,7 @@ public class PainterService {
     private final OrganizationRepository organizationRepository;
     private final PainterProfileRepository profileRepository;
     private final PainterRetailerLinkRepository linkRepository;
+    private final PaintJobRepository paintJobRepository;
 
     @Transactional(readOnly = true)
     public PainterProfileResponse getMyProfile(String userId) {
@@ -96,7 +99,15 @@ public class PainterService {
                 .toList();
     }
 
-    /** Retailer-side: end the relationship (sets status REMOVED — keeps history). */
+    /**
+     * Retailer-side: end the relationship (sets status REMOVED — keeps history).
+     *
+     * Removing also CANCELS the painter's jobs for this shop that haven't finished yet.
+     * Flipping the link alone left every open job assigned: the "removed" painter kept
+     * passing the per-job ownership check, so they could still accept, start and complete
+     * work — and keep seeing the customer's site address — for a shop that had just cut
+     * them off. Jobs already COMPLETED are left untouched as history.
+     */
     @Transactional
     public void removePainterFromRetailer(String requesterUserId, String retailerOrgId, String painterUserId) {
         Organization retailer = organizationRepository.findById(retailerOrgId)
@@ -109,5 +120,13 @@ public class PainterService {
                         "No link between painter " + painterUserId + " and retailer " + retailerOrgId));
         link.setStatus(PainterLinkStatus.REMOVED);
         linkRepository.save(link);
+
+        int cancelled = paintJobRepository.cancelOpenJobsForPainter(
+                painterUserId, retailerOrgId,
+                java.util.List.of(PaintJobStatus.NEW, PaintJobStatus.ACCEPTED, PaintJobStatus.IN_PROGRESS),
+                PaintJobStatus.CANCELLED,
+                "The shop ended its relationship with this painter.");
+        log.info("Painter {} removed from retailer {} — {} open job(s) cancelled",
+                painterUserId, retailerOrgId, cancelled);
     }
 }

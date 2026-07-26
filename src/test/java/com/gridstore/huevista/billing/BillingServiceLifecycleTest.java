@@ -191,13 +191,16 @@ class BillingServiceLifecycleTest {
     }
 
     @Test
-    void cancellingATrialEndsItLocallyWithoutCallingTheGateway() {
+    void cancellingATrialStopsItRenewingWithoutCallingTheGateway() {
         when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
                 .thenReturn(Optional.of(activeTrial()));
 
         SubscriptionResponse out = service().cancelSubscription(USER);
 
-        assertThat(out.getStatus()).isEqualTo(SubscriptionStatus.EXPIRED);
+        // The trial keeps its remaining days — cancelling only stops it renewing (nothing
+        // renews a trial anyway), so a retailer who cancels on day 2 of 14 keeps the other 12.
+        assertThat(out.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
+        assertThat(out.isCancelAtPeriodEnd()).isTrue();
         // A trial has no Razorpay subscription -> the gateway client must be left untouched.
         verifyNoInteractions(razorpay);
     }
@@ -206,16 +209,16 @@ class BillingServiceLifecycleTest {
 
     @Test
     void reserveAiUsageThrowsWhenNoActiveSubscription() {
-        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.empty());
+        when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of());
         assertThatThrownBy(() -> service().reserveAiUsage(USER))
                 .isInstanceOf(QuotaExceededException.class);
     }
 
     @Test
     void reserveAiUsageThrowsWhenAtLimit() {
-        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.of(activePaid(20, 20)));
+        when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(activePaid(20, 20)));
         // Conditional UPDATE affected no rows -> limit already reached.
         when(subs.incrementAiUsageIfWithinLimit(SUB_ID)).thenReturn(0);
 
@@ -226,8 +229,8 @@ class BillingServiceLifecycleTest {
 
     @Test
     void reserveAiUsageSucceedsWhenCreditAvailable() {
-        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.of(activePaid(5, 20)));
+        when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(activePaid(5, 20)));
         when(subs.incrementAiUsageIfWithinLimit(SUB_ID)).thenReturn(1);
 
         service().reserveAiUsage(USER);
@@ -237,8 +240,8 @@ class BillingServiceLifecycleTest {
 
     @Test
     void incrementAiUsageChargesViaAtomicUpdate() {
-        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.of(activePaid(5, 20)));
+        when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(activePaid(5, 20)));
 
         service().incrementAiUsage(USER);
 
@@ -247,8 +250,8 @@ class BillingServiceLifecycleTest {
 
     @Test
     void refundAiUsageReturnsCreditViaAtomicUpdate() {
-        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.of(activePaid(6, 20)));
+        when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(activePaid(6, 20)));
 
         service().refundAiUsage(USER);
 

@@ -83,7 +83,8 @@ public class PdfQuotaService {
                             + "access code first."));
         }
         return subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+                .findEntitling(userId, SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED,
+                        java.time.LocalDateTime.now()).stream().findFirst()
                 .orElseThrow(() -> new QuotaExceededException(
                         "No active subscription. Subscribe to download colour-board PDFs."));
     }
@@ -99,7 +100,8 @@ public class PdfQuotaService {
                 .stream()
                 .findFirst()
                 .flatMap(ownerId -> subscriptionRepository
-                        .findTopByUserIdAndStatusOrderByCreatedAtDesc(ownerId, SubscriptionStatus.ACTIVE))
+                        .findEntitling(ownerId, SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED,
+                                java.time.LocalDateTime.now()).stream().findFirst())
                 .orElseThrow(() -> new QuotaExceededException(
                         "This shop's plan doesn't cover PDF downloads right now — "
                         + "ask the shop, or note the shade names down instead."));

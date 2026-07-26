@@ -39,6 +39,8 @@ public class PaintJobService {
     private final ProjectRepository projectRepository;
     private final OrganizationRepository organizationRepository;
     private final UserRepository userRepository;
+    private final com.gridstore.huevista.account.repository.OrgMembershipRepository orgMembershipRepository;
+    private final com.gridstore.huevista.account.repository.CustomerEntitlementRepository entitlementRepository;
 
     @Transactional
     public PaintJobResponse createJob(String requesterUserId, CreatePaintJobRequest req) {
@@ -52,10 +54,28 @@ public class PaintJobService {
         Project project = projectRepository.findById(req.getProjectId())
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + req.getProjectId()));
 
+        // The project must actually belong to this shop's world. Without this any retailer
+        // owner could pass an arbitrary project UUID and create a job on a stranger's room:
+        // it exposed that project (and its customer's identity and site address) to them
+        // and to their painter, and pushed a job into an unrelated customer's list from a
+        // shop they had never visited.
+        assertProjectBelongsToRetailer(project, retailer.getId());
+
         jobRepository.findByProjectId(project.getId()).ifPresent(j -> {
             throw new IllegalArgumentException(
                     "Project " + project.getId() + " already has a job (id=" + j.getId() + ").");
         });
+
+        // customer_id is NOT NULL, and a guest project (created against an access code,
+        // never claimed by an account) has no user — building a job from one used to blow
+        // up on the constraint, and every later read of job.getCustomer() would NPE into a
+        // 500. Refuse it with an explanation instead.
+        if (project.getUser() == null) {
+            throw new IllegalArgumentException(
+                    "This room was created by a walk-in guest who hasn't made an account yet, so "
+                    + "there's nobody to assign the job to. Ask them to sign up (their room "
+                    + "carries over), then create the job.");
+        }
 
         User painter = userRepository.findById(req.getPainterId())
                 .orElseThrow(() -> new ResourceNotFoundException("Painter user not found: " + req.getPainterId()));
@@ -182,7 +202,7 @@ public class PaintJobService {
         PaintJob job = jobRepository.findById(jobId)
                 .orElseThrow(() -> new ResourceNotFoundException("Job not found: " + jobId));
         boolean isRetailerOwner = job.getRetailer().getOwner().getId().equals(requesterUserId);
-        boolean isCustomer = job.getCustomer().getId().equals(requesterUserId);
+        boolean isCustomer = job.getCustomer() != null && job.getCustomer().getId().equals(requesterUserId);
         if (!isRetailerOwner && !isCustomer) {
             throw new SecurityException("Only the retailer owner or the customer may cancel this job.");
         }
@@ -207,10 +227,43 @@ public class PaintJobService {
 
     private void assertVisible(String requesterUserId, PaintJob job) {
         boolean isPainter  = job.getPainter() != null && job.getPainter().getId().equals(requesterUserId);
-        boolean isCustomer = job.getCustomer().getId().equals(requesterUserId);
+        boolean isCustomer = job.getCustomer() != null && job.getCustomer().getId().equals(requesterUserId);
         boolean isRetailer = job.getRetailer().getOwner().getId().equals(requesterUserId);
         if (!isPainter && !isCustomer && !isRetailer) {
             throw new SecurityException("Job " + job.getId() + " is not visible to user " + requesterUserId);
         }
+    }
+
+    /**
+     * A shop may only route its OWN work: the project must belong to the shop itself
+     * (a retailer's own room) or to a customer who came in through one of the shop's
+     * access codes. Anything else is another shop's — or another person's — project.
+     */
+    private void assertProjectBelongsToRetailer(Project project, String retailerOrgId) {
+        // Came in on one of this shop's access codes (guest or redeemed customer).
+        if (project.getAccessCode() != null
+                && project.getAccessCode().getOrganization() != null
+                && retailerOrgId.equals(project.getAccessCode().getOrganization().getId())) {
+            return;
+        }
+        String projectUserId = project.getUser() != null ? project.getUser().getId() : null;
+        if (projectUserId != null) {
+            // The shop's own room: the owner's, or any member of the shop's.
+            if (orgMembershipRepository.findByUserIdAndOrganizationId(projectUserId, retailerOrgId).isPresent()) {
+                return;
+            }
+            // Or a customer this shop onboarded — the entitlement's "managed by" link,
+            // which is what a walk-in gets when they redeem the shop's code.
+            boolean managedByThisShop = entitlementRepository.findByCustomerId(projectUserId)
+                    .map(e -> e.getRetailerOrg() != null
+                            && retailerOrgId.equals(e.getRetailerOrg().getId()))
+                    .orElse(false);
+            if (managedByThisShop) {
+                return;
+            }
+        }
+        throw new SecurityException(
+                "That room doesn't belong to your shop — you can only create jobs for your own "
+                + "rooms or for customers who used one of your access codes.");
     }
 }

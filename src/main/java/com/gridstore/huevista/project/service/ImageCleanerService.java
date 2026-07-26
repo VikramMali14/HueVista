@@ -220,13 +220,25 @@ public class ImageCleanerService {
     private static final String RAILING = "#43464a";       // charcoal grey metal
 
     private static final String CLEAN_PROMPT_EXTERIOR =
-            "Look at this photograph of a house. Edit the image so the house "
-          + "looks freshly painted in new colours and free of clutter — like a "
-          + "real estate listing photo taken right after a clean repaint. Keep "
-          + "every architectural element pristine and preserve the exact "
+            "You are RETOUCHING this photograph of a house. This is a photo retouch, "
+          + "NOT a redesign and NOT an architectural visualisation. The output must be "
+          + "the SAME photograph of the SAME building, with only the edits listed below "
+          + "applied. Keep every architectural element pristine and preserve the exact "
           + "perspective, layout, dimensions, materials, lighting, and shadows. "
           + "Only the COLOUR of the painted surfaces changes — repaint them in the "
           + "specific colours below.\n\n"
+          + "DO NOT ADD ANYTHING:\n"
+          + "- Do NOT add any element that is not already visible in the photograph. No "
+          + "new windows, doors, balconies, columns, mouldings, cladding, decorative "
+          + "panels, canopies, gates, fences, landscaping, plants, paving, vehicles, "
+          + "signage or lighting.\n"
+          + "- Do NOT 'upgrade', 'modernise' or 'beautify' the building. A plain facade "
+          + "stays plain; a bare plot stays bare.\n"
+          + "- When you remove clutter, fill the space with what is genuinely behind it "
+          + "(clean sky, the continuing wall, the existing ground). Never fill a cleared "
+          + "space with a new object or invented detail.\n"
+          + "- Do NOT re-light, re-frame or re-render the scene. Keep the original camera "
+          + "position, exposure, white balance, colour cast and grain.\n\n"
           + "REMOVE (unwanted clutter — remove it EVERYWHERE it appears in the "
           + "frame, not only where it overlaps the house: in the sky, in front of "
           + "the building, and off to the sides all count):\n"
@@ -308,7 +320,9 @@ public class ImageCleanerService {
           + EXT_BORDER + ", doors " + DOOR_LEAF + ", railings " + RAILING + "). The "
           + "house must remain pixel-faithful to the original in shape, proportion "
           + "and material; only the colour of painted surfaces changes, and "
-          + "non-painted materials are never altered.\n";
+          + "non-painted materials are never altered. If you are unsure whether "
+          + "something counts as clutter, LEAVE IT AS IT IS — an under-edited photo is "
+          + "always better than an invented one.\n";
 
     /**
      * Interior-room variant. Clutter here is furniture mess, cables, boxes and stains;
@@ -318,17 +332,40 @@ public class ImageCleanerService {
      * materials (floors, counters, cabinetry finish) alone.
      */
     private static final String CLEAN_PROMPT_INTERIOR =
-            "Look at this photograph of an interior room. Edit the image so the room "
-          + "looks freshly painted in new colours and tidy — like a real-estate listing "
-          + "photo taken right after a clean repaint. Preserve the exact perspective, "
-          + "layout, dimensions, materials, lighting and shadows. Only the COLOUR of the "
-          + "painted surfaces changes — repaint them in the specific colours below.\n\n"
-          + "REMOVE (clutter):\n"
+            "You are RETOUCHING this photograph of an interior room. This is a photo "
+          + "retouch, NOT a redesign, NOT a restyling, and NOT virtual staging. The "
+          + "output must be the SAME photograph of the SAME room, with only the edits "
+          + "listed below applied. Every pixel that is not explicitly covered by a "
+          + "REMOVE or REPAINT rule must come back unchanged.\n\n"
+          + "DO NOT ADD ANYTHING (most important rule — this is where these edits usually "
+          + "go wrong):\n"
+          + "- Do NOT add any object that is not already visible in the photograph. No new "
+          + "furniture, no cushions, throws or rugs, no plants or flowers, no vases, bowls, "
+          + "books or ornaments, no wall art, posters, mirrors or picture frames, no lamps, "
+          + "no curtains or blinds, no light fittings, no appliances, no new windows or "
+          + "doors, no shelves, no mouldings, no panelling, no wainscoting, no feature "
+          + "walls, no textures or patterns.\n"
+          + "- Do NOT 'stage', 'style', 'decorate', 'furnish', 'upgrade' or 'improve' the "
+          + "room. An empty room must stay empty. A plain wall must stay plain. A bare "
+          + "corner must stay a bare corner.\n"
+          + "- Do NOT replace an object with a different or nicer one: the existing sofa, "
+          + "bed, table, cabinet, fan, switchboard and light fitting must come back as the "
+          + "SAME item, same model, same colour, same position, same size.\n"
+          + "- When you remove clutter, fill the space with the plain surface that is "
+          + "genuinely behind it — the continuing wall, floor or skirting. Never fill a "
+          + "cleared space with a new object, and never invent detail that the photo does "
+          + "not show.\n"
+          + "- Do NOT re-light, re-frame, re-render or re-photograph the room. Keep the "
+          + "original camera position, focal length, exposure, white balance, colour cast, "
+          + "grain and depth of field.\n\n"
+          + "REMOVE (only these, and only where they are actually present):\n"
           + "- Loose papers, boxes, bags, laundry, toys, dishes, bottles, small loose objects\n"
           + "- Visible cables and wires behind TV/desk, power strips, chargers\n"
           + "- Wall stains, scuff marks, scribbles, damp patches, peeling paint, nail holes\n"
           + "- Spills and clutter on the floor\n"
-          + "- People and pets\n\n"
+          + "- People and pets\n"
+          + "Fill each removed area with the wall, floor or skirting that continues behind "
+          + "it — nothing else.\n\n"
           + "REPAINT (apply these exact reference colours, evenly and freshly):\n"
           + "- Walls: repaint every painted wall a single even coat of " + INT_WALL
           + " (a clean white). No stains, no patchiness.\n"
@@ -348,14 +385,22 @@ public class ImageCleanerService {
           + "- Windows, doors, frames, built-in cabinetry and wardrobes, kitchen units, "
           + "fireplaces, shelving, switchboards keep their exact shapes and positions; "
           + "only the paint colour of painted ones changes, per REPAINT.\n"
-          + "- Large furniture that defines the room (sofa, bed, dining table): keep it in place; "
-          + "only clear small clutter and mess, never remove the furniture itself.\n"
+          + "- ALL furniture already in the room (sofa, bed, dining table, chairs, "
+          + "cupboards, TV unit) stays exactly where it is, as the same item: do not "
+          + "remove it, move it, resize it, reupholster it or swap it for another. Only "
+          + "small loose clutter and mess is cleared.\n"
+          + "- Ceiling fans, light fittings, switches, sockets, AC units and curtains that "
+          + "are ALREADY in the photo stay exactly as they are.\n"
+          + "- The number of windows, doors and openings — never add or remove one.\n"
           + "- Flooring material, lighting, shadows, time of day.\n"
           + "- Camera angle, perspective, framing, image dimensions, room proportions.\n\n"
-          + "OUTPUT: the same room, decluttered, with walls repainted " + INT_WALL
-          + ", trim " + INT_BORDER + ", doors " + DOOR_LEAF + " and railings "
-          + RAILING + ". Pixel-faithful in structure and materials; "
-          + "change only the colour of painted surfaces and never restyle the room.\n";
+          + "OUTPUT: the SAME photograph of the SAME room — same contents, same furniture, "
+          + "same fittings, same framing — with only the listed clutter removed and the "
+          + "painted surfaces recoloured (walls " + INT_WALL + ", trim " + INT_BORDER
+          + ", doors " + DOOR_LEAF + ", railings " + RAILING + "). If you are unsure "
+          + "whether something counts as clutter, LEAVE IT AS IT IS. Adding, staging or "
+          + "restyling anything is a failure; an under-edited photo is always better than "
+          + "an invented one.\n";
 
     private String startPrediction(Map<String, Object> input) {
         try {
