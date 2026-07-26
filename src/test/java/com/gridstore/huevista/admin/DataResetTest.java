@@ -19,11 +19,14 @@ import com.razorpay.RazorpayClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.Locale;
 
@@ -50,6 +53,8 @@ class DataResetTest {
     @Autowired BrandRepository brandRepository;
     @Autowired ShadeRepository shadeRepository;
     @Autowired JdbcTemplate jdbc;
+
+    @Value("${app.upload.storage-path}") String storageRoot;
 
     private String adminId;
 
@@ -103,7 +108,7 @@ class DataResetTest {
         assertThat(shadeRepository.count()).isPositive();
 
         DataResetService.ResetResult result =
-                service.resetKeepingCatalogue(adminId, DataResetService.CONFIRM_PHRASE);
+                service.resetKeepingCatalogue(adminId, DataResetService.CONFIRM_PHRASE, false);
 
         // The catalogue is the whole point of this variant — it must survive.
         assertThat(brandRepository.count()).isPositive();
@@ -122,7 +127,7 @@ class DataResetTest {
         // The JWT carries the user id and JwtAuthFilter resolves it on every request, so
         // losing this row (or gaining a new id) would sign the admin out mid-reset and
         // leave the audit entry pointing at an account that no longer exists.
-        service.resetKeepingCatalogue(adminId, DataResetService.CONFIRM_PHRASE);
+        service.resetKeepingCatalogue(adminId, DataResetService.CONFIRM_PHRASE, false);
 
         assertThat(userRepository.count()).isEqualTo(1);
         assertThat(userRepository.findById(adminId)).isPresent()
@@ -139,7 +144,7 @@ class DataResetTest {
     void theResetIsRecordedInTheFreshAuditLog() {
         // audit_logs is itself cleared, so the entry has to be written afterwards or the
         // only trace of the most destructive action in the product would be erased by it.
-        service.resetKeepingCatalogue(adminId, DataResetService.CONFIRM_PHRASE);
+        service.resetKeepingCatalogue(adminId, DataResetService.CONFIRM_PHRASE, false);
 
         Long entries = jdbc.queryForObject(
                 "SELECT count(*) FROM audit_logs WHERE action = 'PLATFORM_DATA_RESET'", Long.class);
@@ -147,11 +152,45 @@ class DataResetTest {
     }
 
     @Test
+    void leavesImageFilesAloneUnlessAsked() throws Exception {
+        Path stored = writeStoredImage("keep-me.jpg");
+
+        DataResetService.ResetResult result =
+                service.resetKeepingCatalogue(adminId, DataResetService.CONFIRM_PHRASE, false);
+
+        assertThat(result.deletedImageFiles()).isZero();
+        assertThat(Files.exists(stored)).isTrue();
+    }
+
+    @Test
+    void purgesImageFilesWhenAsked() throws Exception {
+        Path one = writeStoredImage("one.jpg");
+        Path two = writeStoredImage("two.png");
+
+        DataResetService.ResetResult result =
+                service.resetKeepingCatalogue(adminId, DataResetService.CONFIRM_PHRASE, true);
+
+        assertThat(result.deletedImageFiles()).isGreaterThanOrEqualTo(2);
+        assertThat(Files.exists(one)).isFalse();
+        assertThat(Files.exists(two)).isFalse();
+        // The root survives so the next upload doesn't have to recreate it.
+        assertThat(Files.isDirectory(Path.of(storageRoot))).isTrue();
+    }
+
+    /** A file under a per-user folder, exactly as {@code LocalStorageService} writes them. */
+    private Path writeStoredImage(String name) throws Exception {
+        Path target = Path.of(storageRoot, "user-" + adminId, name);
+        Files.createDirectories(target.getParent());
+        Files.write(target, new byte[] {1, 2, 3});
+        return target;
+    }
+
+    @Test
     void refusesWithoutTheExactConfirmationPhrase() {
-        assertThatThrownBy(() -> service.resetKeepingCatalogue(adminId, "reset"))
+        assertThatThrownBy(() -> service.resetKeepingCatalogue(adminId, "reset", false))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining(DataResetService.CONFIRM_PHRASE);
-        assertThatThrownBy(() -> service.resetKeepingCatalogue(adminId, null))
+        assertThatThrownBy(() -> service.resetKeepingCatalogue(adminId, null, false))
                 .isInstanceOf(IllegalArgumentException.class);
 
         assertThat(orgRepository.count()).isPositive(); // nothing was touched
@@ -159,7 +198,7 @@ class DataResetTest {
 
     @Test
     void theConfirmationPhraseIsForgivingAboutCaseAndPadding() {
-        service.resetKeepingCatalogue(adminId, "  reset all data  ");
+        service.resetKeepingCatalogue(adminId, "  reset all data  ", false);
         assertThat(orgRepository.count()).isZero();
     }
 

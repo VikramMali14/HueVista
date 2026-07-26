@@ -1,6 +1,7 @@
 package com.gridstore.huevista.image.service;
 
 import com.gridstore.huevista.common.exception.StorageException;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -9,6 +10,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.UUID;
 
+@Slf4j
 public class LocalStorageService implements StorageService {
 
     private final String storagePath;
@@ -49,6 +51,38 @@ public class LocalStorageService implements StorageService {
         } catch (IOException e) {
             throw new StorageException("Failed to delete file", e);
         }
+    }
+
+    /**
+     * Deletes every file under the storage root, then the now-empty per-user directories,
+     * leaving the root itself in place so the next upload does not have to recreate it.
+     *
+     * Deliberately confined to {@code storagePath}: it walks that tree and nothing above
+     * it, so a misconfigured root cannot take a parent directory with it. A missing root
+     * is simply nothing to do.
+     */
+    @Override
+    public int deleteAll() {
+        Path root = Path.of(storagePath);
+        if (!Files.isDirectory(root)) return 0;
+        int deleted = 0;
+        try (var paths = Files.walk(root)) {
+            // Deepest first, so a directory is only visited once its contents are gone.
+            for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                if (path.equals(root)) continue;
+                boolean isFile = Files.isRegularFile(path);
+                try {
+                    Files.deleteIfExists(path);
+                    if (isFile) deleted++;
+                } catch (IOException e) {
+                    // Best-effort: one stubborn file must not strand the rest.
+                    log.warn("[admin] could not delete {}: {}", path, e.getMessage());
+                }
+            }
+        } catch (IOException e) {
+            throw new StorageException("Failed to purge local image storage", e);
+        }
+        return deleted;
     }
 
     @Override

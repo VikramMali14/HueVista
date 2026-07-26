@@ -15,6 +15,7 @@ import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequ
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 
 @Slf4j
@@ -102,6 +103,47 @@ public class S3StorageService implements StorageService {
         } catch (Exception e) {
             throw new StorageException("Failed to delete image from S3", e);
         }
+    }
+
+    /**
+     * Empties the bucket, 1000 keys per request (the DeleteObjects maximum), following
+     * the continuation token so a bucket larger than one page is fully cleared.
+     *
+     * Every object lives at {@code <userId>/<uuid>.<ext>} with no shared prefix, so the
+     * bucket holds this application's uploads and nothing else — there is no subset to
+     * spare. Failures are logged and counted out rather than thrown: a reset that
+     * cleared the database must not appear to have failed because one object was
+     * already gone.
+     */
+    @Override
+    public int deleteAll() {
+        int deleted = 0;
+        String continuationToken = null;
+        try {
+            do {
+                ListObjectsV2Request.Builder list = ListObjectsV2Request.builder().bucket(bucketName);
+                if (continuationToken != null) list.continuationToken(continuationToken);
+                ListObjectsV2Response page = s3Client.listObjectsV2(list.build());
+
+                List<ObjectIdentifier> batch = page.contents().stream()
+                        .map(o -> ObjectIdentifier.builder().key(o.key()).build())
+                        .toList();
+                if (!batch.isEmpty()) {
+                    DeleteObjectsResponse result = s3Client.deleteObjects(DeleteObjectsRequest.builder()
+                            .bucket(bucketName)
+                            .delete(Delete.builder().objects(batch).quiet(true).build())
+                            .build());
+                    deleted += batch.size() - result.errors().size();
+                    result.errors().forEach(e ->
+                            log.warn("[admin] could not delete S3 object {}: {}", e.key(), e.message()));
+                }
+                continuationToken = Boolean.TRUE.equals(page.isTruncated()) ? page.nextContinuationToken() : null;
+            } while (continuationToken != null);
+        } catch (Exception e) {
+            log.error("[admin] S3 purge stopped after {} object(s): {}", deleted, e.getMessage());
+        }
+        log.warn("[admin] purged {} object(s) from S3 bucket {}", deleted, bucketName);
+        return deleted;
     }
 
     /**

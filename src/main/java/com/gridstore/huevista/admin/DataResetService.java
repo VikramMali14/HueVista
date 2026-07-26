@@ -66,6 +66,7 @@ public class DataResetService {
     private final JdbcTemplate jdbc;
     private final UserRepository userRepository;
     private final AuditService auditService;
+    private final com.gridstore.huevista.image.service.StorageService storageService;
 
     /**
      * @param clearedTables  every table emptied, alphabetically
@@ -76,17 +77,23 @@ public class DataResetService {
     public record ResetResult(List<String> clearedTables,
                               Map<String, Long> preservedTables,
                               Map<String, Long> deletedRows,
-                              long totalDeleted) {}
+                              long totalDeleted,
+                              int deletedImageFiles) {}
 
     /**
      * Wipe everything but the catalogue.
      *
      * @param adminUserId the signed-in admin, whose own account is preserved
      * @param confirmation must equal {@link #CONFIRM_PHRASE}
+     * @param deleteImageFiles also purge the image store (S3 bucket or upload directory).
+     *                         Separate from the row deletion because it reaches outside
+     *                         the database, and because the rows can be restored from a
+     *                         snapshot while the files cannot.
      * @throws IllegalArgumentException if the confirmation phrase does not match
      */
     @Transactional
-    public ResetResult resetKeepingCatalogue(String adminUserId, String confirmation) {
+    public ResetResult resetKeepingCatalogue(String adminUserId, String confirmation,
+                                             boolean deleteImageFiles) {
         if (confirmation == null
                 || !confirmation.trim().equalsIgnoreCase(CONFIRM_PHRASE)) {
             throw new IllegalArgumentException(
@@ -99,20 +106,34 @@ public class DataResetService {
         Map<String, Long> deletedRows = countRows(tables);
         long totalDeleted = deletedRows.values().stream().mapToLong(Long::longValue).sum();
 
-        log.warn("[admin] DATA RESET starting: admin={} tables={} rows={}",
-                adminUserId, tables.size(), totalDeleted);
+        log.warn("[admin] DATA RESET starting: admin={} tables={} rows={} images={}",
+                adminUserId, tables.size(), totalDeleted, deleteImageFiles);
         truncate(tables);
         restore(admin);
+
+        // Files go last, and never throw: the rows are already gone, so failing here
+        // would report a failed reset that in fact happened, and invite a second run.
+        int deletedFiles = 0;
+        if (deleteImageFiles) {
+            try {
+                deletedFiles = storageService.deleteAll();
+            } catch (Exception e) {
+                log.error("[admin] image purge failed after the data reset — the database is "
+                          + "already clear, so these files are orphaned and must be removed "
+                          + "by hand: {}", e.getMessage());
+            }
+        }
 
         // Recorded AFTER the truncate on purpose: audit_logs is one of the cleared
         // tables, so writing it first would erase the only trace of the reset.
         auditService.record(adminUserId, "PLATFORM_DATA_RESET", "PLATFORM", "all",
                 "cleared=" + tables.size() + " tables rows=" + totalDeleted
+                + " imageFiles=" + deletedFiles
                 + " preserved=" + String.join(",", PRESERVED));
-        log.warn("[admin] DATA RESET complete: {} rows removed from {} tables, catalogue kept",
-                totalDeleted, tables.size());
+        log.warn("[admin] DATA RESET complete: {} rows from {} tables, {} image file(s), catalogue kept",
+                totalDeleted, tables.size(), deletedFiles);
 
-        return new ResetResult(tables, countRows(catalogueTables()), deletedRows, totalDeleted);
+        return new ResetResult(tables, countRows(catalogueTables()), deletedRows, totalDeleted, deletedFiles);
     }
 
     /** A preview for the confirmation screen — what would go, and what would stay. */
@@ -121,7 +142,7 @@ public class DataResetService {
         List<String> tables = tablesToClear();
         Map<String, Long> rows = countRows(tables);
         return new ResetResult(tables, countRows(catalogueTables()), rows,
-                rows.values().stream().mapToLong(Long::longValue).sum());
+                rows.values().stream().mapToLong(Long::longValue).sum(), 0);
     }
 
     /** Every base table in the current schema except {@link #PRESERVED}, alphabetically. */
