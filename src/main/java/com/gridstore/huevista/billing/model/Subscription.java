@@ -52,6 +52,21 @@ public class Subscription {
     @Column(nullable = false)
     private int aiGenerationsLimit;
 
+    /**
+     * Image credits currently HELD (not yet spent) by outstanding customer access
+     * codes — one per assigned project. Held at code-generation time and moved into
+     * {@link #aiGenerationsUsed} only when the project is actually segmented; returned
+     * to the pool when a code is revoked or expires unredeemed.
+     *
+     * Deliberately NOT reset on renewal: a code issued in the old cycle is still
+     * redeemable in the new one, so its hold must survive the reset (see
+     * BillingService#handlePaymentCaptured). Effective availability everywhere is
+     * {@code limit + purchasedImageCredits - used - reservedImages}.
+     */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int reservedImages = 0;
+
     /** AI auto-mask (wall-detection) runs this cycle — charged only when the
      *  shop picks the automatic mask after clean-up; manual masking is free. */
     @Column(nullable = false, columnDefinition = "integer not null default 0")
@@ -91,6 +106,18 @@ public class Subscription {
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default
     private int pdfImageLimit = 0;
+
+    /**
+     * Projects ever created while this subscription was on its free trial — monotonic,
+     * so the trial's one-project allowance can't be recycled.
+     *
+     * The trial gate used to COUNT live projects, which meant deleting the trial project
+     * freed the slot and a trial account could create an unlimited number of them one at
+     * a time, despite the message promising "your free trial includes one project".
+     */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int trialProjectsCreated = 0;
 
     @Builder.Default
     private boolean cancelAtPeriodEnd = false;

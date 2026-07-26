@@ -17,6 +17,7 @@ import org.springframework.util.StringUtils;
 public class RazorpayWebhookService {
 
     private final BillingService billingService;
+    private final com.gridstore.huevista.store.service.WalletService walletService;
     private final ProcessedWebhookEventRepository processedEventRepository;
 
     @Value("${razorpay.webhook-secret:}")
@@ -82,6 +83,27 @@ public class RazorpayWebhookService {
                 if (!subId.isBlank()) {
                     billingService.handlePaymentCaptured(subId, 0);
                 }
+            }
+            case "refund.created", "refund.processed" -> {
+                // Money went back to the customer. For a kiosk sale that means the
+                // retailer's share must stop counting toward their redeemable balance —
+                // otherwise a pay-then-chargeback leaves real cash sitting in the wallet.
+                JSONObject refund = entity.getJSONObject("refund").getJSONObject("entity");
+                String paymentId = refund.optString("payment_id", "");
+                int amount = refund.optInt("amount", 0);
+                if (!paymentId.isBlank()) {
+                    walletService.reverseKioskPayment(paymentId, amount);
+                }
+            }
+            case "payment.failed" -> {
+                // Informational: the subscription lifecycle is driven by
+                // subscription.halted, which carries the subscription id. Logged so a
+                // spike in failures is visible without digging through the dashboard.
+                JSONObject payment = entity.getJSONObject("payment").getJSONObject("entity");
+                log.warn("Razorpay payment failed: id={} reason={} description={}",
+                        payment.optString("id", "?"),
+                        payment.optString("error_reason", "?"),
+                        payment.optString("error_description", "?"));
             }
             default -> log.debug("Unhandled Razorpay event: {}", eventType);
         }

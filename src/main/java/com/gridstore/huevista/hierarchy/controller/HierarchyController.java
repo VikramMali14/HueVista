@@ -97,7 +97,7 @@ public class HierarchyController {
             @Valid @RequestBody AssignBrandsRequest request,
             Authentication auth) {
         List<RetailerBrandOption> options =
-                hierarchyService.assignBrands(auth.getName(), retailerOrgId, request.getBrandIds());
+                hierarchyService.assignBrands(auth.getName(), retailerOrgId, request.getBrandIds(), request.isUnrestricted());
         auditService.record(auth.getName(), "RETAILER_BRANDS_ASSIGNED", "ORGANIZATION", retailerOrgId,
                 request.getBrandIds() == null ? "0 brands" : request.getBrandIds().size() + " brands");
         return ResponseEntity.ok(options);

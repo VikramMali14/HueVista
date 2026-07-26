@@ -95,7 +95,8 @@ class StoreKioskServiceTest {
         when(payments.findByPaymentId("pay_1")).thenReturn(Optional.empty());
         when(payments.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
         AccessCodeService codes = mock(AccessCodeService.class);
-        CustomerAccessCode code = CustomerAccessCode.builder().id("code-1").code("ABCD2345").organization(org).build();
+        CustomerAccessCode code = CustomerAccessCode.builder().id("code-1").code("ABCD2345").organization(org)
+                .validDays(3).expiresAt(java.time.LocalDateTime.now().plusDays(3)).build();
         when(codes.issueForStore(org, 3)).thenReturn(code);
         when(codes.redeemAsGuest("ABCD2345")).thenReturn(guest("ABCD2345"));
         StoreKioskService svc = service(razorpay, links, payments, codes);
@@ -124,7 +125,8 @@ class StoreKioskServiceTest {
         StoreLinkRepository links = mock(StoreLinkRepository.class);
         when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(link));
         StorePaymentRepository payments = mock(StorePaymentRepository.class);
-        CustomerAccessCode code = CustomerAccessCode.builder().id("code-1").code("ABCD2345").organization(org).build();
+        CustomerAccessCode code = CustomerAccessCode.builder().id("code-1").code("ABCD2345").organization(org)
+                .validDays(3).expiresAt(java.time.LocalDateTime.now().plusDays(3)).build();
         StorePayment prior = StorePayment.builder()
                 .storeLink(link).organization(org).paymentId("pay_1").orderId("order_1")
                 .amountPaise(LINK_PRICE).platformFeePaise(MIN_PRICE)

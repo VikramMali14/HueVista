@@ -74,7 +74,7 @@ public class SegmentationService {
     private final ImageRepository imageRepository;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final com.gridstore.huevista.account.repository.CustomerAccessCodeRepository accessCodeRepository;
-    private final com.gridstore.huevista.account.repository.OrgMembershipRepository orgMembershipRepository;
+    private final ProjectBillingResolver billingResolver;
 
     /** Optional, mirrors ProjectService: present when the Redis-backed queue is in play. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -125,13 +125,17 @@ public class SegmentationService {
             // A non-null accessCodeId here also marks this as a GUEST run, whose AI
             // cost is billed to the issuing shop — but only once it succeeds (below).
             String ownerUserId = projectRepository.findUserIdById(projectId).orElse(null);
-            String guestAccessCodeId = ownerUserId == null
-                    ? projectRepository.findAccessCodeIdById(projectId).orElse(null) : null;
-            String userId = ownerUserId != null ? ownerUserId : guestAccessCodeId;
+            String projectAccessCodeId = projectRepository.findAccessCodeIdById(projectId).orElse(null);
+            String userId = ownerUserId != null ? ownerUserId : projectAccessCodeId;
             if (userId == null) {
                 markFailed(projectId, "Project owner not found");
                 return;
             }
+            // Who PAYS is a separate question from who OWNS: a redeemed customer's project
+            // is owned by the customer but billed to the shop that issued their code (and
+            // spends the credit that code is holding). Resolved once here so every charge
+            // site below agrees. See ProjectBillingResolver.
+            ProjectBillingResolver.Target billing = billingResolver.resolve(projectId).orElse(null);
 
             // Wipe stale auto regions; MANUAL click-segments are preserved.
             regionRepository.deleteAutoRegionsByProjectId(projectId);
@@ -187,11 +191,7 @@ public class SegmentationService {
             if ("MANUAL".equalsIgnoreCase(
                     projectRepository.findMaskModeById(projectId).orElse(null))) {
                 markSegmented(projectId);
-                if (guestAccessCodeId != null) {
-                    billGuestUsage(guestAccessCodeId, false);
-                } else {
-                    billingService.incrementAiUsage(ownerUserId);
-                }
+                billRun(billing, false);
                 log.info("Manual mask mode: stopped after clean-up for project {} " +
                         "(image credit charged, walls to be marked by hand)", projectId);
                 return;
@@ -220,14 +220,8 @@ public class SegmentationService {
                 markSegmented(projectId);
                 // Charge one IMAGE credit (compulsory clean-up) plus one AUTO-MASK credit
                 // (AI wall detection ran) now that walls were actually produced — a failed
-                // run never costs a credit. Guest runs bill the issuing shop; a retailer's
-                // own run bills the retailer (gated upfront in requestSegmentation).
-                if (guestAccessCodeId != null) {
-                    billGuestUsage(guestAccessCodeId, true);
-                } else {
-                    billingService.incrementAiUsage(ownerUserId);
-                    billingService.incrementAutoMaskUsage(ownerUserId);
-                }
+                // run never costs a credit.
+                billRun(billing, true);
                 log.info("Segmentation complete: project={}", projectId);
                 return;
             }
@@ -549,29 +543,44 @@ public class SegmentationService {
     }
 
     /**
-     * Charges one IMAGE credit — and, when AI wall detection ran, one AUTO-MASK
-     * credit — to the shop that issued a guest's access code, after a guest run has
-     * actually completed. No-op for normal (user-owned) runs — pass null. Best-effort:
-     * a missing code/org/owner just means no charge (the guest still got their result),
-     * so billing problems never fail an otherwise-successful run.
+     * Charges a completed run to whoever pays for it: one IMAGE credit (the clean-up step
+     * is compulsory) plus, when AI wall detection ran, one AUTO-MASK credit.
+     *
+     * When the project is covered by an access code the shop ALREADY paid for the image
+     * at code-generation time, so the image charge SPENDS that held credit instead of
+     * taking a second one — previously a code with quota N charged the shop N images up
+     * front and then another one per project actually rendered, i.e. double billing.
+     * A code with no hold left (a legacy code, or more projects than were reserved)
+     * falls back to a normal charge so work is never silently free.
+     *
+     * Best-effort throughout: a missing code/org/owner just means no charge (the customer
+     * still got their result), so billing problems never fail an otherwise-successful run.
      */
-    private void billGuestUsage(String guestAccessCodeId, boolean autoMaskRan) {
-        if (guestAccessCodeId == null) return;
+    private void billRun(ProjectBillingResolver.Target billing, boolean autoMaskRan) {
+        if (billing == null) {
+            log.warn("Segmentation succeeded but no billable account was resolved — not charging");
+            return;
+        }
         try {
-            String orgId = accessCodeRepository.findOrganizationIdById(guestAccessCodeId).orElse(null);
-            if (orgId == null) return;
-            orgMembershipRepository
-                    .findUserIdsByOrganizationIdAndRole(orgId, com.gridstore.huevista.account.model.OrgMemberRole.OWNER)
-                    .stream().findFirst()
-                    .ifPresent(ownerId -> {
-                        billingService.incrementAiUsage(ownerId);
-                        if (autoMaskRan) {
-                            billingService.incrementAutoMaskUsage(ownerId);
-                        }
-                    });
+            boolean spentHeldCredit = false;
+            if (billing.coveredByCode()) {
+                // Take the hold off the code first; only if that succeeds may we move the
+                // matching hold on the subscription, so the two counters stay in step.
+                spentHeldCredit = accessCodeRepository.consumeReservedImage(billing.accessCodeId()) == 1
+                        && billingService.consumeReservedImage(billing.billedUserId());
+            }
+            if (!spentHeldCredit) {
+                billingService.incrementAiUsage(billing.billedUserId());
+            }
+            if (autoMaskRan) {
+                billingService.incrementAutoMaskUsage(billing.billedUserId());
+            }
+            log.info("Run billed to {}: image={} autoMask={} (code={})",
+                    billing.billedUserId(), spentHeldCredit ? "held-credit" : "charged",
+                    autoMaskRan, billing.accessCodeId());
         } catch (Exception e) {
-            log.warn("Guest segmentation succeeded but billing the shop failed (code={}): {}",
-                    guestAccessCodeId, e.getMessage());
+            log.warn("Segmentation succeeded but billing failed (payer={}): {}",
+                    billing.billedUserId(), e.getMessage());
         }
     }
 

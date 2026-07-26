@@ -19,6 +19,13 @@ public class AccessCodeResponse {
     private LocalDateTime expiresAt;
     private boolean used;
     private boolean expired;
+    // Cancelled by the shop before anyone redeemed it. A revoked code can never be
+    // redeemed; its held image credits are already back in the shop's quota.
+    private boolean revoked;
+    private LocalDateTime revokedAt;
+    // True while the code can still be cancelled or edited (nobody has redeemed it and
+    // it has not been cancelled) — drives the shop's row actions.
+    private boolean editable;
     private LocalDateTime usedAt;
     private LocalDateTime createdAt;
     // The customer this code was issued to (retailer-entered).
@@ -48,6 +55,9 @@ public class AccessCodeResponse {
                 .expiresAt(c.getExpiresAt())
                 .used(c.isUsed())
                 .expired(c.isExpired())
+                .revoked(c.isRevoked())
+                .revokedAt(c.getRevokedAt())
+                .editable(!c.isUsed() && !c.isRevoked())
                 .usedAt(c.getUsedAt())
                 .createdAt(c.getCreatedAt())
                 .customerName(c.getCustomerName())

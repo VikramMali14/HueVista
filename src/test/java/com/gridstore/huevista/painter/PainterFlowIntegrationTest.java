@@ -57,6 +57,8 @@ class PainterFlowIntegrationTest {
     private String retailerOwnerId;
     private String painterToken;
     private String painterId;
+    @Autowired com.gridstore.huevista.account.repository.CustomerEntitlementRepository entitlementRepository;
+
     private String customerId;
     private String retailerOrgId;
     private String projectId;
@@ -104,6 +106,17 @@ class PainterFlowIntegrationTest {
                 .name("Belgavi 3BHK · Living Room")
                 .build());
         projectId = project.getId();
+
+        // A customer the shop onboarded: real walk-ins get this entitlement when they
+        // redeem the shop's access code, and it is what authorises the shop to route
+        // their room to a painter (see PaintJobService#assertProjectBelongsToRetailer).
+        entitlementRepository.save(com.gridstore.huevista.account.model.CustomerEntitlement.builder()
+                .customer(customer)
+                .retailerOrg(retailer)
+                .accessExpiresAt(java.time.LocalDateTime.now().plusDays(10))
+                .projectAllowance(1)
+                .projectsCreated(1)
+                .build());
     }
 
     // ── 1. Painter invitation + redeem ──

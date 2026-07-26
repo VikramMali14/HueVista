@@ -57,6 +57,14 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             if (userId != null && SecurityContextHolder.getContext().getAuthentication() == null) {
                 userRepository.findById(userId).ifPresentOrElse(
                         appUser -> {
+                            // A deleted account keeps its row (projects and orgs point at it
+                            // via FK), so "the user still exists" is not enough — without this
+                            // check an access token minted just before deletion stayed usable
+                            // for its full lifetime against a tombstoned account.
+                            if (appUser.getDeletedAt() != null) {
+                                log.debug("Rejecting token for deleted account {}", userId);
+                                return;
+                            }
                             UserRole role = appUser.getRole() != null ? appUser.getRole() : UserRole.CUSTOMER;
                             List<SimpleGrantedAuthority> authorities =
                                     List.of(new SimpleGrantedAuthority("ROLE_" + role.name()));

@@ -26,6 +26,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /**
@@ -72,8 +74,8 @@ class PdfQuotaServiceTest {
     @Test
     void retailer_allowance_comes_from_own_subscription() {
         when(users.findById(RETAILER)).thenReturn(Optional.of(user(RETAILER, UserRole.RETAILER)));
-        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(RETAILER, SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.of(sub(3, 100)));
+        when(subs.findEntitling(eq(RETAILER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(sub(3, 100)));
 
         PdfAllowanceResponse a = service.allowanceForUser(RETAILER);
 
@@ -86,8 +88,8 @@ class PdfQuotaServiceTest {
     @Test
     void retailer_without_subscription_gets_402() {
         when(users.findById(RETAILER)).thenReturn(Optional.of(user(RETAILER, UserRole.RETAILER)));
-        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(RETAILER, SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.empty());
+        when(subs.findEntitling(eq(RETAILER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of());
 
         assertThatThrownBy(() -> service.allowanceForUser(RETAILER))
                 .isInstanceOf(QuotaExceededException.class);
@@ -96,8 +98,8 @@ class PdfQuotaServiceTest {
     @Test
     void reserve_charges_one_download_atomically() {
         when(users.findById(RETAILER)).thenReturn(Optional.of(user(RETAILER, UserRole.RETAILER)));
-        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(RETAILER, SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.of(sub(3, 100)));
+        when(subs.findEntitling(eq(RETAILER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(sub(3, 100)));
         when(subs.incrementPdfUsageIfWithinLimit(SUB_ID)).thenReturn(1);
         when(subs.findById(SUB_ID)).thenReturn(Optional.of(sub(4, 100)));
 
@@ -111,8 +113,8 @@ class PdfQuotaServiceTest {
     @Test
     void reserve_at_limit_throws_402_and_never_overcounts() {
         when(users.findById(RETAILER)).thenReturn(Optional.of(user(RETAILER, UserRole.RETAILER)));
-        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(RETAILER, SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.of(sub(100, 100)));
+        when(subs.findEntitling(eq(RETAILER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(sub(100, 100)));
         when(subs.incrementPdfUsageIfWithinLimit(SUB_ID)).thenReturn(0);
 
         assertThatThrownBy(() -> service.reserveForUser(RETAILER))
@@ -135,8 +137,8 @@ class PdfQuotaServiceTest {
         when(entitlements.findByCustomerId(CUSTOMER)).thenReturn(Optional.of(ent));
         when(memberships.findUserIdsByOrganizationIdAndRole(ORG, OrgMemberRole.OWNER))
                 .thenReturn(List.of(RETAILER));
-        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(RETAILER, SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.of(sub(10, 100)));
+        when(subs.findEntitling(eq(RETAILER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(sub(10, 100)));
 
         PdfAllowanceResponse a = service.allowanceForUser(CUSTOMER);
 
@@ -162,8 +164,8 @@ class PdfQuotaServiceTest {
         when(codes.findById(CODE_ID)).thenReturn(Optional.of(code));
         when(memberships.findUserIdsByOrganizationIdAndRole(ORG, OrgMemberRole.OWNER))
                 .thenReturn(List.of(RETAILER));
-        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(RETAILER, SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.of(sub(0, 100)));
+        when(subs.findEntitling(eq(RETAILER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(sub(0, 100)));
         when(subs.incrementPdfUsageIfWithinLimit(SUB_ID)).thenReturn(1);
         when(subs.findById(SUB_ID)).thenReturn(Optional.of(sub(1, 100)));
 
@@ -191,8 +193,8 @@ class PdfQuotaServiceTest {
     @Test
     void unlimited_plan_reports_unlimited() {
         when(users.findById(RETAILER)).thenReturn(Optional.of(user(RETAILER, UserRole.RETAILER)));
-        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(RETAILER, SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.of(sub(5, Integer.MAX_VALUE)));
+        when(subs.findEntitling(eq(RETAILER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(sub(5, Integer.MAX_VALUE)));
 
         PdfAllowanceResponse a = service.allowanceForUser(RETAILER);
 

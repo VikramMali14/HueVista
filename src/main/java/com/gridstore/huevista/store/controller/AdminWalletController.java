@@ -49,4 +49,17 @@ public class AdminWalletController {
         return ResponseEntity.ok(walletService.decideRedemption(
                 auth.getName(), redemptionId, request.getApprove(), request.getNote()));
     }
+
+    @Operation(summary = "Reverse an approved payout",
+            description = "Undoes an approval whose UPI transfer never landed (wrong id, bounced "
+                    + "transfer, misclick). The amount goes back into the shop's balance and the "
+                    + "requester is told why. A reason is required.")
+    @PostMapping("/redemptions/{redemptionId}/reverse")
+    public ResponseEntity<WalletRedemptionResponse> reverse(
+            @PathVariable String redemptionId,
+            @Valid @RequestBody com.gridstore.huevista.store.dto.ReverseRedemptionRequest request,
+            Authentication auth) {
+        return ResponseEntity.ok(walletService.reverseRedemption(
+                auth.getName(), redemptionId, request.getNote()));
+    }
 }

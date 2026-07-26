@@ -184,6 +184,78 @@ public class WalletService {
         return WalletRedemptionResponse.from(redemption);
     }
 
+    /**
+     * Reverse a redemption that was APPROVED but never actually reached the shop — the
+     * UPI transfer bounced, the id was wrong, or the approval was a misclick.
+     *
+     * Approving used to be terminal: the only transitions were PENDING → APPROVED /
+     * REJECTED, so a failed payout could only be undone with hand-written SQL while the
+     * shop's balance stayed permanently short. Reversing returns the amount to the
+     * balance exactly like a rejection, and says why.
+     */
+    @Transactional
+    public WalletRedemptionResponse reverseRedemption(String adminUserId, String redemptionId, String note) {
+        WalletRedemption redemption = redemptionRepository.findByIdForUpdate(redemptionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Redemption not found: " + redemptionId));
+        if (redemption.getStatus() != WalletRedemptionStatus.APPROVED) {
+            throw new IllegalStateException(
+                    "Only an approved payout can be reversed (this one is "
+                    + redemption.getStatus().name().toLowerCase() + ").");
+        }
+        if (note == null || note.isBlank()) {
+            throw new IllegalArgumentException("Say why the payout is being reversed.");
+        }
+        redemption.setStatus(WalletRedemptionStatus.REJECTED);
+        redemption.setDecidedByUserId(adminUserId);
+        redemption.setDecidedAt(LocalDateTime.now());
+        redemption.setAdminNote("Reversed: " + note.trim());
+        redemption = redemptionRepository.save(redemption);
+
+        auditService.record(adminUserId, "WALLET_REDEMPTION_REVERSED", "WALLET_REDEMPTION", redemptionId,
+                "org=" + redemption.getOrganization().getId() + " amountPaise=" + redemption.getAmountPaise());
+        notifyRequester(redemption, false);
+        log.warn("Wallet redemption reversed: id={} org={} amountPaise={}",
+                redemptionId, redemption.getOrganization().getId(), redemption.getAmountPaise());
+        return WalletRedemptionResponse.from(redemption);
+    }
+
+    /**
+     * Mark a kiosk payment reversed after Razorpay refunded or charged it back, so the
+     * retailer's share stops counting toward their redeemable balance.
+     *
+     * Called from the webhook path and deliberately tolerant: an unknown payment id is
+     * simply not ours (the same merchant account also takes subscription and top-up
+     * payments), so it is a no-op rather than an error.
+     */
+    @Transactional
+    public void reverseKioskPayment(String razorpayPaymentId, int refundedPaise) {
+        paymentRepository.findByPaymentIdForUpdate(razorpayPaymentId).ifPresent(payment -> {
+            if (payment.isReversed()) {
+                return; // already handled — refund webhooks retry
+            }
+            payment.setReversedAt(LocalDateTime.now());
+            payment.setRefundedPaise(Math.max(0, refundedPaise));
+            paymentRepository.save(payment);
+            long balance = balanceOf(payment.getOrganization().getId());
+            log.warn("Kiosk payment reversed: payment={} org={} share={} balanceNow={}",
+                    razorpayPaymentId, payment.getOrganization().getId(),
+                    payment.getRetailerSharePaise(), balance);
+            if (balance < 0) {
+                // The share was already paid out before the refund landed. Nothing to claw
+                // back automatically — flag it loudly so it is settled against future
+                // earnings rather than discovered months later.
+                log.error("Shop {} now has a NEGATIVE wallet balance ({} paise) after a refund on "
+                        + "payment {} — the share was redeemed before the reversal arrived.",
+                        payment.getOrganization().getId(), balance, razorpayPaymentId);
+            }
+        });
+    }
+
+    private long balanceOf(String orgId) {
+        return paymentRepository.sumRetailerShareByOrganizationId(orgId)
+                - redemptionRepository.sumHeldByOrganizationId(orgId);
+    }
+
     private void notifyInbox(WalletRedemption redemption, Organization org, String requestingUserId) {
         try {
             String requesterEmail = userRepository.findById(requestingUserId)

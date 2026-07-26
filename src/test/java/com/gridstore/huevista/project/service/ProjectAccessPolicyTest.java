@@ -18,6 +18,8 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -47,9 +49,16 @@ class ProjectAccessPolicyTest {
                 .build();
     }
 
+    /** The trial gate claims a slot via a conditional UPDATE now, so stub that instead
+     *  of the old live-project COUNT (which let a deleted project free the slot). */
+    private void trialSlotAvailable(boolean available) {
+        when(subscriptionRepository.claimTrialProjectSlot(any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(available ? 1 : 0);
+    }
+
     private void activeSub(Subscription s) {
-        when(subscriptionRepository.findTopByUserIdAndStatusOrderByCreatedAtDesc("u1", SubscriptionStatus.ACTIVE))
-                .thenReturn(Optional.ofNullable(s));
+        when(subscriptionRepository.findEntitling(eq("u1"), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(s == null ? java.util.List.of() : java.util.List.of(s));
     }
 
     @Test
@@ -80,7 +89,7 @@ class ProjectAccessPolicyTest {
         ProjectAccessPolicy policy =
                 new ProjectAccessPolicy(subscriptionRepository, projectRepository, true, false);
         activeSub(sub(true));
-        when(projectRepository.countByUserId("u1")).thenReturn(0L);
+        trialSlotAvailable(true);
         assertThatCode(() -> policy.assertCanCreateProject(retailer(true, false)))
                 .doesNotThrowAnyException();
     }
@@ -90,7 +99,7 @@ class ProjectAccessPolicyTest {
         ProjectAccessPolicy policy =
                 new ProjectAccessPolicy(subscriptionRepository, projectRepository, false, true);
         activeSub(sub(true));
-        when(projectRepository.countByUserId("u1")).thenReturn(0L);
+        trialSlotAvailable(true);
         assertThatCode(() -> policy.assertCanCreateProject(retailer(false, true)))
                 .doesNotThrowAnyException();
     }
@@ -115,14 +124,14 @@ class ProjectAccessPolicyTest {
     @Test
     void trial_retailer_can_create_first_project() {
         activeSub(sub(true));
-        when(projectRepository.countByUserId("u1")).thenReturn(0L);
+        trialSlotAvailable(true);
         assertThatCode(() -> fullGate().assertCanCreateProject(retailer(true, true))).doesNotThrowAnyException();
     }
 
     @Test
     void trial_retailer_blocked_after_one_project() {
         activeSub(sub(true));
-        when(projectRepository.countByUserId("u1")).thenReturn(1L);
+        trialSlotAvailable(false);
         assertThatThrownBy(() -> fullGate().assertCanCreateProject(retailer(true, true)))
                 .isInstanceOf(SubscriptionRequiredException.class)
                 .hasMessageContaining("free trial includes one project");

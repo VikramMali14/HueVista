@@ -34,6 +34,7 @@ public class AuthService {
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final com.gridstore.huevista.notification.EmailSender emailSender;
+    private final com.gridstore.huevista.billing.service.BillingWalletService billingWalletService;
 
     private static final int TRIAL_DAYS = 14;
 
@@ -47,7 +48,8 @@ public class AuthService {
                        com.gridstore.huevista.account.service.AccountService accountService,
                        com.gridstore.huevista.billing.service.BillingService billingService,
                        com.gridstore.huevista.common.audit.AuditService auditService,
-                       com.gridstore.huevista.notification.EmailSender emailSender) {
+                       com.gridstore.huevista.notification.EmailSender emailSender,
+                       @Lazy com.gridstore.huevista.billing.service.BillingWalletService billingWalletService) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.oauthExchangeCodeRepository = oauthExchangeCodeRepository;
@@ -59,6 +61,7 @@ public class AuthService {
         this.billingService = billingService;
         this.auditService = auditService;
         this.emailSender = emailSender;
+        this.billingWalletService = billingWalletService;
     }
 
     @Value("${app.refresh-token.expiration-ms}")
@@ -395,11 +398,53 @@ public class AuthService {
      * personal data, keeping the row (projects/images/orgs reference it via FK) but
      * tombstoning it. The original email is freed so the person can re-register, and
      * the account becomes unusable (no one can log in as a tombstoned email).
+     *
+     * Deleting also has to STOP THE MONEY, which it previously did not: the Razorpay
+     * subscription kept renewing against the customer's card forever, outstanding access
+     * codes stayed redeemable and billable to a dead account, and any prepaid wallet
+     * balance was silently forfeited. Each of those is settled here before the row is
+     * tombstoned, and every step is best-effort so a gateway hiccup can never leave a
+     * user unable to close their account.
      */
     @Transactional
     public void deleteAccount(String userId) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
+
+        // A shop owner takes the whole organization's billing, staff and customer access
+        // with them. Refuse rather than silently orphan the org: its access codes stay
+        // redeemable, its managers keep issuing codes billed to a deleted account, and
+        // its kiosk keeps taking money nobody can pay out.
+        String ownedOrg = accountService.firstOwnedOrgId(userId);
+        if (ownedOrg != null) {
+            throw new IllegalStateException(
+                    "This account owns an organization, so it can't be deleted from here — "
+                    + "its shop, staff, customer codes and payouts would be left without an "
+                    + "owner. Contact support to transfer or close the organization first.");
+        }
+
+        // 1) Stop future charges. Cancels at the gateway AND locally, so a delayed webhook
+        //    can't resurrect the plan.
+        try {
+            billingService.endSubscriptionsForDeletedAccount(userId);
+        } catch (Exception e) {
+            log.warn("Could not end subscriptions while deleting account {}: {}", userId, e.getMessage());
+        }
+
+        // 2) Flag any money left behind so support can settle it — the balance itself is
+        //    refunded by an admin (the transfer is manual), but it must not be invisible.
+        try {
+            long stranded = billingWalletService.balancePaise(userId);
+            if (stranded > 0) {
+                log.warn("Account {} deleted with {} paise still in its billing wallet — needs a manual refund",
+                        userId, stranded);
+                auditService.record(userId, "ACCOUNT_DELETED_WITH_WALLET_BALANCE", "USER", userId,
+                        "balancePaise=" + stranded);
+            }
+        } catch (Exception e) {
+            log.warn("Could not read wallet balance while deleting account {}: {}", userId, e.getMessage());
+        }
+
         refreshTokenRepository.deleteByUser(user);
         user.setEmail("deleted-" + user.getId() + "@deleted.huevista.invalid");
         user.setName("Deleted user");
@@ -412,7 +457,7 @@ public class AuthService {
         user.setDeletedAt(java.time.LocalDateTime.now());
         userRepository.save(user);
         auditService.record(userId, "ACCOUNT_DELETED", "USER", userId,
-                "account soft-deleted: PII scrubbed, sessions revoked");
+                "account soft-deleted: PII scrubbed, sessions revoked, billing stopped");
         log.info("Account soft-deleted: {}", userId);
     }
 

@@ -64,8 +64,21 @@ public class BillingController {
         return ResponseEntity.ok(billingService.getSubscriptionHistory(userDetails.getUsername()));
     }
 
+    @Operation(summary = "Resume a subscription scheduled to end",
+            description = "Clears a pending cancellation so the plan keeps renewing. Works for a free "
+                    + "trial; for a paid plan already cancelled at Razorpay it explains that the gateway "
+                    + "can't un-cancel and the customer should subscribe again (their current period is "
+                    + "unaffected either way).")
+    @PostMapping("/subscriptions/resume")
+    public ResponseEntity<SubscriptionResponse> resumeSubscription(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.ok(billingService.resumeSubscription(userDetails.getUsername()));
+    }
+
     @Operation(summary = "Cancel subscription",
-            description = "Marks the active subscription to cancel at the end of the current billing period.")
+            description = "Marks the active subscription to cancel at the end of the current billing period. "
+                    + "Access continues in full until then — including a free trial, which keeps its "
+                    + "remaining days instead of ending on the spot.")
     @PostMapping("/subscriptions/cancel")
     public ResponseEntity<SubscriptionResponse> cancelSubscription(
             @AuthenticationPrincipal UserDetails userDetails) {

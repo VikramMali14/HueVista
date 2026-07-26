@@ -71,19 +71,22 @@ public class ProjectAccessPolicy {
 
         // 2) Must have an active subscription — the trial granted at signup counts.
         Subscription sub = subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(user.getId(), SubscriptionStatus.ACTIVE)
+                .findEntitling(user.getId(), SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED,
+                        java.time.LocalDateTime.now())
+                .stream().findFirst()
                 .orElseThrow(() -> new SubscriptionRequiredException(
                         "Your trial has ended. Subscribe to a plan to create projects."));
 
         // 3) The free trial includes exactly one project; more require a paid plan.
-        //    Counts live projects (one-at-a-time during the trial); the monthly AI
-        //    render quota remains the hard cost ceiling on either path.
-        if (sub.isTrial()) {
-            long created = projectRepository.countByUserId(user.getId());
-            if (created >= TRIAL_PROJECT_LIMIT) {
-                throw new SubscriptionRequiredException(
-                        "Your free trial includes one project. Subscribe to a plan to create more.");
-            }
+        //    Claimed against a MONOTONIC counter on the subscription, not a live count of
+        //    rows: counting live projects meant deleting the trial project handed the slot
+        //    straight back, so a trial account could create unlimited projects one at a
+        //    time while the message promised exactly one. The conditional UPDATE also
+        //    makes parallel creates safe.
+        if (sub.isTrial()
+                && subscriptionRepository.claimTrialProjectSlot(sub.getId(), TRIAL_PROJECT_LIMIT) == 0) {
+            throw new SubscriptionRequiredException(
+                    "Your free trial includes one project. Subscribe to a plan to create more.");
         }
         // Paid subscription → allowed. (A per-plan project cap with one-time
         // top-ups once it's reached is a planned follow-on.)

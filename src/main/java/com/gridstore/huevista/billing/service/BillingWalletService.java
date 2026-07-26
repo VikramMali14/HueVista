@@ -211,6 +211,45 @@ public class BillingWalletService {
         return billingService.creditPurchasedAutoMask(userId);
     }
 
+    /**
+     * ADMIN: refund a prepaid billing-wallet balance out of the platform (the actual money
+     * movement is manual, like the kiosk payouts) and zero the wallet.
+     *
+     * Needed because wallet money was otherwise a one-way street: top-ups require an
+     * active plan and so does spending, so the moment a retailer cancelled — or deleted
+     * their account — whatever they had prepaid became both unspendable and
+     * unrecoverable. Returns the amount that was written off so the admin knows what to
+     * transfer.
+     */
+    @Transactional
+    public long refundWallet(String adminUserId, String userId, String reason) {
+        BillingWallet wallet = walletRepository.findByUserId(userId).orElse(null);
+        long balance = wallet != null ? wallet.getBalancePaise() : 0L;
+        if (balance <= 0) {
+            return 0L;
+        }
+        if (walletRepository.debitIfSufficient(userId, balance) == 0) {
+            // Lost a race with a concurrent spend — the caller can retry against the
+            // now-smaller balance rather than us guessing at a partial refund.
+            throw new IllegalStateException("The wallet balance changed — retry the refund.");
+        }
+        transactionRepository.save(BillingWalletTransaction.builder()
+                .userId(userId)
+                .amountPaise(-balance)
+                .type(BillingWalletTransaction.Type.REFUND)
+                .reference(reason != null && !reason.isBlank() ? reason.trim() : "admin refund")
+                .build());
+        log.warn("Billing wallet refunded by admin {}: user={} amountPaise={} reason={}",
+                adminUserId, userId, balance, reason);
+        return balance;
+    }
+
+    /** The prepaid balance sitting on an account, in paise (0 when there is no wallet). */
+    @Transactional(readOnly = true)
+    public long balancePaise(String userId) {
+        return walletRepository.findByUserId(userId).map(BillingWallet::getBalancePaise).orElse(0L);
+    }
+
     private void debitOrThrow(String userId, long amountPaise, BillingWalletTransaction.Type type) {
         ensureWallet(userId);
         if (walletRepository.debitIfSufficient(userId, amountPaise) == 0) {

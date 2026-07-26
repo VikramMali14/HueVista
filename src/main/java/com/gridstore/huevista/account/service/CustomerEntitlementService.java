@@ -49,16 +49,41 @@ public class CustomerEntitlementService {
      */
     @Transactional
     public void onAccessCodeRedeemed(User customer, Organization retailerOrg, int validDays, int projectAllowance) {
-        CustomerEntitlement ent = entitlementRepository.findByCustomerId(customer.getId())
-                .orElseGet(() -> CustomerEntitlement.builder().customer(customer).build());
-        ent.setRetailerOrg(retailerOrg);
-        ent.setAccessExpiresAt(LocalDateTime.now().plusDays(validDays));
-        // A freshly redeemed code starts a new period: reset to the assigned allowance.
-        ent.setProjectAllowance(Math.max(DEFAULT_INCLUDED_PROJECTS, projectAllowance));
-        ent.setProjectsCreated(0);
-        entitlementRepository.save(ent);
-        log.info("Entitlement set: customer={} retailer={} allowance={} expires={}",
-                customer.getId(), retailerOrg.getId(), ent.getProjectAllowance(), ent.getAccessExpiresAt());
+        CustomerEntitlement existing = entitlementRepository.findByCustomerId(customer.getId()).orElse(null);
+        int granted = Math.max(DEFAULT_INCLUDED_PROJECTS, projectAllowance);
+
+        if (existing == null) {
+            CustomerEntitlement ent = CustomerEntitlement.builder()
+                    .customer(customer)
+                    .retailerOrg(retailerOrg)
+                    .accessExpiresAt(LocalDateTime.now().plusDays(validDays))
+                    .projectAllowance(granted)
+                    .projectsCreated(0)
+                    .build();
+            entitlementRepository.save(ent);
+            log.info("Entitlement opened: customer={} retailer={} allowance={} expires={}",
+                    customer.getId(), retailerOrg.getId(), granted, ent.getAccessExpiresAt());
+            return;
+        }
+
+        // A second code ADDS to what the customer already has; it does not replace it.
+        // Resetting projectsCreated to 0 and overwriting the allowance meant a customer who
+        // had used 3 of 5 slots from shop A and then redeemed a 1-project code from shop B
+        // came out with allowance 1 / used 0 — shop A's paid-for slots silently vanished,
+        // and the customer's remaining balance changed in whichever direction the newest
+        // code happened to point. Accumulating keeps every shop's purchase honoured.
+        LocalDateTime newExpiry = LocalDateTime.now().plusDays(validDays);
+        if (existing.getAccessExpiresAt() == null || newExpiry.isAfter(existing.getAccessExpiresAt())) {
+            existing.setAccessExpiresAt(newExpiry);
+        }
+        existing.setProjectAllowance(existing.getProjectAllowance() + granted);
+        // The newest shop becomes the "managed by" link for their customer list; the
+        // earlier shop keeps visibility of the work through the access code itself.
+        existing.setRetailerOrg(retailerOrg);
+        entitlementRepository.save(existing);
+        log.info("Entitlement extended: customer={} retailer={} +{} (allowance now {}) expires={}",
+                customer.getId(), retailerOrg.getId(), granted,
+                existing.getProjectAllowance(), existing.getAccessExpiresAt());
     }
 
     /**
@@ -169,7 +194,31 @@ public class CustomerEntitlementService {
         }
     }
 
-    /** Guard for creating a NEW project: expiry + allowance. */
+    /**
+     * Claim one project slot for a NEW project: expiry + allowance, taken ATOMICALLY.
+     *
+     * This replaces the old check-then-increment pair. Those were two separate calls, so
+     * two parallel "create project" requests could both pass the check and both create a
+     * project against a single remaining slot. The conditional UPDATE makes exactly one
+     * of them win. Non-customers are unaffected (their limits live elsewhere).
+     *
+     * The slot is monotonic: deleting a project does not refund it.
+     */
+    @Transactional
+    public void claimProjectSlot(String userId) {
+        if (!isCustomer(userId)) return;
+        CustomerEntitlement ent = requireEntitlement(userId);
+        if (ent.isExpired()) {
+            throw new AccessExpiredException(
+                    "Your access has ended. Ask your retailer for a new access code.");
+        }
+        if (entitlementRepository.claimProjectSlot(userId, LocalDateTime.now()) == 0) {
+            throw new QuotaExceededException(
+                    "You've used your included project. Pay once for another, or ask your retailer to add one.");
+        }
+    }
+
+    /** Read-only allowance check for the UI — the authoritative claim is {@link #claimProjectSlot}. */
     @Transactional(readOnly = true)
     public void assertCanCreateProject(String userId) {
         if (!isCustomer(userId)) return;
@@ -182,16 +231,6 @@ public class CustomerEntitlementService {
             throw new QuotaExceededException(
                     "You've used your included project. Pay once for another, or ask your retailer to add one.");
         }
-    }
-
-    /** Record a created project (monotonic — deleting a project does not refund the slot). */
-    @Transactional
-    public void recordProjectCreated(String userId) {
-        if (!isCustomer(userId)) return;
-        entitlementRepository.findByCustomerId(userId).ifPresent(ent -> {
-            ent.setProjectsCreated(ent.getProjectsCreated() + 1);
-            entitlementRepository.save(ent);
-        });
     }
 
     /** The customer's own status (for the UI to show remaining projects / expiry). Null if none. */

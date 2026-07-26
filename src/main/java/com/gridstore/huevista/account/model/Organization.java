@@ -45,6 +45,19 @@ public class Organization {
     @Builder.Default
     private BigDecimal commissionRate = BigDecimal.valueOf(3.00);
 
+    /**
+     * RETAILER only: whether this shop's catalogue is limited to the brands its
+     * distributor assigned.
+     *
+     * Kept as an explicit flag because "no assignment rows" is genuinely ambiguous —
+     * it can mean "not set up yet" (browse everything) or "the distributor revoked
+     * every brand" (browse nothing). Inferring it from row count made revoking a
+     * shop's last brand GRANT them the whole catalogue, the exact opposite of intent.
+     */
+    @Column(nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean brandsRestricted = false;
+
     // White-label portal (RETAILER only)
     @Builder.Default
     private boolean whitelabelEnabled = false;

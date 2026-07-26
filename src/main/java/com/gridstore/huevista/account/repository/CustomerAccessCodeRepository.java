@@ -71,4 +71,52 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
      */
     @Query("SELECT u.id FROM CustomerAccessCode c JOIN c.usedByUser u WHERE c.id = :id")
     java.util.List<String> usedByAccountUserIds(@Param("id") String id);
+
+    /**
+     * Atomically spend one of this code's held image credits. The {@code reservedImages
+     * > 0} guard makes it a compare-and-set: concurrent segmentations of two projects
+     * under the same code can never both claim the last hold. Returns 1 when a hold was
+     * taken (the caller then moves it on the subscription too), 0 when the code has none
+     * left — e.g. a legacy code issued before holds existed, or a shop that granted more
+     * projects than it reserved.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            UPDATE CustomerAccessCode c SET c.reservedImages = c.reservedImages - 1
+             WHERE c.id = :id AND c.reservedImages > 0
+            """)
+    int consumeReservedImage(@Param("id") String id);
+
+    /**
+     * Atomically zero a code's remaining holds, stamping when they were returned.
+     * The {@code quotaReleasedAt IS NULL} guard makes the release idempotent, so a
+     * revoke racing the expiry sweep can never refund the same code twice. Returns
+     * the number of rows updated (1 = this caller won and must credit the shop back).
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            UPDATE CustomerAccessCode c SET c.reservedImages = 0, c.quotaReleasedAt = :now
+             WHERE c.id = :id AND c.quotaReleasedAt IS NULL
+            """)
+    int markQuotaReleased(@Param("id") String id, @Param("now") LocalDateTime now);
+
+    /** Atomically stamp a code revoked; 0 when it was already revoked or already used. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            UPDATE CustomerAccessCode c SET c.revokedAt = :now
+             WHERE c.id = :id AND c.revokedAt IS NULL AND c.usedAt IS NULL AND c.usedByUser IS NULL
+            """)
+    int revokeIfUnused(@Param("id") String id, @Param("now") LocalDateTime now);
+
+    /**
+     * Codes whose holds are dead money: expired, never redeemed, never revoked, and not
+     * yet refunded. The daily sweep hands these holds back to the issuing shop — without
+     * it, quota reserved for a customer who never walked in is lost forever.
+     */
+    @Query("""
+            SELECT c FROM CustomerAccessCode c
+             WHERE c.expiresAt < :cutoff AND c.usedAt IS NULL AND c.usedByUser IS NULL
+               AND c.revokedAt IS NULL AND c.quotaReleasedAt IS NULL AND c.reservedImages > 0
+            """)
+    List<CustomerAccessCode> findExpiredUnredeemedWithHolds(@Param("cutoff") LocalDateTime cutoff);
 }

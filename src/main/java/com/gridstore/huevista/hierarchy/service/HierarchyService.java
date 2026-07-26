@@ -239,12 +239,17 @@ public class HierarchyService {
     }
 
     /**
-     * Replace a shop's brand selection wholesale with {@code brandIds}. An empty
-     * list clears every restriction (the shop reverts to "all brands"). Returns
-     * the refreshed option list.
+     * Replace a shop's brand selection wholesale.
+     *
+     * {@code unrestricted} lifts the limit entirely; otherwise {@code brandIds} becomes
+     * the shop's complete allowance — and an EMPTY list now means exactly that, zero
+     * brands. It previously meant "clear the restriction", so a distributor removing the
+     * last brand from a shop silently granted them the entire catalogue instead of
+     * revoking their access. Returns the refreshed option list.
      */
     @Transactional
-    public List<RetailerBrandOption> assignBrands(String callerUserId, String retailerOrgId, List<Long> brandIds) {
+    public List<RetailerBrandOption> assignBrands(String callerUserId, String retailerOrgId,
+                                                  List<Long> brandIds, boolean unrestricted) {
         ManageableShop shop = resolveManageableShop(callerUserId, retailerOrgId);
         Organization distributor = shop.distributor();
         if (distributor == null) {
@@ -254,7 +259,7 @@ public class HierarchyService {
         // Wipe the old selection, then re-create from the (deduped) request.
         brandAssignmentRepository.deleteByRetailerId(retailerOrgId);
         brandAssignmentRepository.flush();
-        List<Long> ids = brandIds == null ? List.of()
+        List<Long> ids = unrestricted || brandIds == null ? List.of()
                 : brandIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
         if (!ids.isEmpty()) {
             for (Brand brand : brandRepository.findAllById(ids)) {
@@ -265,7 +270,12 @@ public class HierarchyService {
                         .build());
             }
         }
-        log.info("{} set {} brand(s) for shop {}", callerUserId, ids.size(), retailerOrgId);
+        Organization retailer = shop.retailer();
+        retailer.setBrandsRestricted(!unrestricted);
+        orgRepository.save(retailer);
+
+        log.info("{} set brands for shop {}: unrestricted={} count={}",
+                callerUserId, retailerOrgId, unrestricted, ids.size());
         return retailerBrandOptions(callerUserId, retailerOrgId);
     }
 

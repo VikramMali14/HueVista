@@ -52,7 +52,7 @@ class SegmentationServiceTest {
             projects, regions, storage, mock(RestTemplate.class), segmenter,
             mock(ImageCleanerService.class), mock(ImageRepository.class),
             mock(BillingService.class), mock(CustomerAccessCodeRepository.class),
-            mock(OrgMembershipRepository.class));
+            mock(ProjectBillingResolver.class));
 
     /** Colour-coded model output WITH a usable main wall: red block (12000 px)
      *  plus a blue trim block (4000 px), rest black. */

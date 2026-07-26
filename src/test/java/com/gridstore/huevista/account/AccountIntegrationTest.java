@@ -170,12 +170,17 @@ class AccountIntegrationTest {
                 .andReturn();
         String code = objectMapper.readTree(genResult.getResponse().getContentAsString()).get("code").asText();
 
-        // The 3 assigned projects were charged to the owner's monthly image quota.
+        // The 3 assigned projects are HELD against the owner's monthly image quota — not
+        // spent. They move into aiGenerationsUsed one at a time as the customer actually
+        // renders each room, and come back if the code is revoked or expires unredeemed.
+        // (Charging them straight to aiGenerationsUsed double-billed the shop, because the
+        // render itself charged again.)
         User owner = userRepository.findByEmail("retailer-owner@example.com").orElseThrow();
         Subscription sub = subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(owner.getId(), SubscriptionStatus.ACTIVE)
                 .orElseThrow();
-        org.assertj.core.api.Assertions.assertThat(sub.getAiGenerationsUsed()).isEqualTo(3);
+        org.assertj.core.api.Assertions.assertThat(sub.getReservedImages()).isEqualTo(3);
+        org.assertj.core.api.Assertions.assertThat(sub.getAiGenerationsUsed()).isZero();
 
         // Redeeming needs NO auth — it auto-creates a signed-in CUSTOMER account.
         RedeemCodeRequest redeem = new RedeemCodeRequest();
@@ -300,6 +305,82 @@ class AccountIntegrationTest {
     // ── helpers ──
 
     /** Give a user an ACTIVE subscription with image quota, so they can assign projects. */
+    @Test
+    void revokingAnUnredeemedCode_returnsItsHeldQuota_andKillsTheCode() throws Exception {
+        String orgId = createOrg(retailerOwnerToken, "Sharda", "sharda-paints", OrgType.RETAILER);
+        seedActiveSubscription("retailer-owner@example.com");
+
+        GenerateAccessCodeRequest gen = new GenerateAccessCodeRequest();
+        gen.setCustomerName("Walk-in Customer");
+        gen.setProjectQuota(3);
+        MvcResult genResult = mockMvc.perform(post("/api/organizations/{orgId}/access-codes", orgId)
+                        .header("Authorization", "Bearer " + retailerOwnerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(gen)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        var body = objectMapper.readTree(genResult.getResponse().getContentAsString());
+        String codeId = body.get("id").asText();
+        String code = body.get("code").asText();
+
+        User owner = userRepository.findByEmail("retailer-owner@example.com").orElseThrow();
+        org.assertj.core.api.Assertions.assertThat(subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(owner.getId(), SubscriptionStatus.ACTIVE)
+                .orElseThrow().getReservedImages()).isEqualTo(3);
+
+        // Cancelling the code hands the three held credits straight back to the shop —
+        // previously a mistyped code could only be replaced by paying the quota twice.
+        mockMvc.perform(delete("/api/organizations/{orgId}/access-codes/{codeId}", orgId, codeId)
+                        .header("Authorization", "Bearer " + retailerOwnerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.revoked").value(true));
+
+        org.assertj.core.api.Assertions.assertThat(subscriptionRepository
+                .findTopByUserIdAndStatusOrderByCreatedAtDesc(owner.getId(), SubscriptionStatus.ACTIVE)
+                .orElseThrow().getReservedImages()).isZero();
+
+        // …and the revoked code can never be redeemed.
+        RedeemCodeRequest redeem = new RedeemCodeRequest();
+        redeem.setCode(code);
+        mockMvc.perform(post("/api/access-codes/redeem")
+                        .header("Authorization", "Bearer " + customerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(redeem)))
+                .andExpect(status().is4xxClientError());
+    }
+
+    @Test
+    void anAlreadyRedeemedCodeCannotBeRevoked() throws Exception {
+        String orgId = createOrg(retailerOwnerToken, "Sharda", "sharda-paints", OrgType.RETAILER);
+        seedActiveSubscription("retailer-owner@example.com");
+
+        GenerateAccessCodeRequest gen = new GenerateAccessCodeRequest();
+        gen.setCustomerName("Walk-in Customer");
+        gen.setProjectQuota(1);
+        MvcResult genResult = mockMvc.perform(post("/api/organizations/{orgId}/access-codes", orgId)
+                        .header("Authorization", "Bearer " + retailerOwnerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(gen)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        var body = objectMapper.readTree(genResult.getResponse().getContentAsString());
+        String codeId = body.get("id").asText();
+
+        RedeemCodeRequest redeem = new RedeemCodeRequest();
+        redeem.setCode(body.get("code").asText());
+        mockMvc.perform(post("/api/access-codes/redeem")
+                        .header("Authorization", "Bearer " + customerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(redeem)))
+                .andExpect(status().isOk());
+
+        // The customer may already have work under it — pulling access after the fact
+        // would strand them mid-visit at the counter.
+        mockMvc.perform(delete("/api/organizations/{orgId}/access-codes/{codeId}", orgId, codeId)
+                        .header("Authorization", "Bearer " + retailerOwnerToken))
+                .andExpect(status().is4xxClientError());
+    }
+
     private void seedActiveSubscription(String email) {
         User owner = userRepository.findByEmail(email).orElseThrow();
         subscriptionRepository.save(Subscription.builder()

@@ -183,6 +183,16 @@ public class StoreKioskService {
         if (payment.getAccessCode() == null || !payment.getStoreLink().getId().equals(link.getId())) {
             throw new IllegalStateException("This payment has already been redeemed.");
         }
+        // Replay is for the customer whose network dropped mid-verify, not a permanent
+        // key. Without this check the (order, payment, signature) triple minted fresh
+        // guest sessions forever — long after the code it bought had expired.
+        if (payment.getAccessCode().isExpired()) {
+            throw new IllegalStateException(
+                    "The access this payment bought has expired. Please ask at the counter.");
+        }
+        if (payment.isReversed()) {
+            throw new IllegalStateException("This payment was refunded.");
+        }
         log.info("Store kiosk payment replayed: payment={} code re-issued", payment.getPaymentId());
         GuestRedeemResponse guest = accessCodeService.redeemAsGuest(payment.getAccessCode().getCode());
         return toResponse(guest, payment.getAmountPaise());

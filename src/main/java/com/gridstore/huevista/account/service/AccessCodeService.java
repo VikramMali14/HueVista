@@ -50,6 +50,9 @@ public class AccessCodeService {
     private final com.gridstore.huevista.auth.service.JwtService jwtService;
     private final AuthService authService;
     private final SubscriptionRepository subscriptionRepository;
+    private final com.gridstore.huevista.billing.service.BillingService billingService;
+    private final com.gridstore.huevista.common.audit.AuditService auditService;
+    private final BrandAccessService brandAccessService;
     private final ShopProductRepository shopProductRepository;
     private final com.gridstore.huevista.project.repository.ProjectRepository projectRepository;
 
@@ -71,9 +74,13 @@ public class AccessCodeService {
 
         requireOwnerOrManager(requestingUserId, orgId);
 
+        // A shop may only hand on companies its distributor actually assigned it —
+        // otherwise the whole assign/revoke feature is decorative, since a retailer could
+        // unlock any brand on a code regardless of what they carry.
+        brandAccessService.assertBrandsOfferable(orgId, request.getAllowedBrands());
+
         // Validate the individually-unlocked products actually belong to this shop, so a
-        // crafted request can't unlock a competitor's listing. Whole-company brands are
-        // free-text (a UX filter only), so they need no ownership check.
+        // crafted request can't unlock a competitor's listing.
         List<String> productIds = request.getAllowedProductIds();
         if (productIds != null) {
             for (String pid : productIds.stream().distinct().toList()) {
@@ -98,6 +105,10 @@ public class AccessCodeService {
                 .expiresAt(expiresAt)
                 .customerName(request.getCustomerName().trim())
                 .projectQuota(request.getProjectQuota())
+                // One held image credit per assigned project. Spent as projects are
+                // actually segmented; returned to the shop if the code is revoked or
+                // expires with nobody redeeming it.
+                .reservedImages(request.getProjectQuota())
                 .build();
         accessCode.setAllowedBrandList(request.getAllowedBrands());
         accessCode.setAllowedProductIdList(productIds);
@@ -118,7 +129,9 @@ public class AccessCodeService {
     private void reserveProjectQuota(String orgId, int projectQuota) {
         String ownerId = resolveOrgOwnerUserId(orgId);
         Subscription sub = subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(ownerId, SubscriptionStatus.ACTIVE)
+                .findEntitling(ownerId, SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED,
+                        LocalDateTime.now())
+                .stream().findFirst()
                 .orElseThrow(() -> new QuotaExceededException(
                         "No active subscription. Subscribe to a plan before assigning projects to customers."));
         if (subscriptionRepository.reserveImagesIfWithinLimit(sub.getId(), projectQuota) == 0) {
@@ -126,7 +139,138 @@ public class AccessCodeService {
                     "Not enough image quota to assign " + projectQuota + " project"
                     + (projectQuota == 1 ? "" : "s") + ". Buy more images or assign fewer.");
         }
-        log.info("Reserved {} image(s) from subscription {} for access-code assignment", projectQuota, sub.getId());
+        log.info("Held {} image(s) on subscription {} for access-code assignment", projectQuota, sub.getId());
+    }
+
+    /**
+     * Hand a code's unspent image credits back to the issuing shop. Idempotent: the
+     * {@code quotaReleasedAt} compare-and-set means a revoke racing the expiry sweep
+     * refunds exactly once. Returns how many credits went back.
+     */
+    private int releaseHeldQuota(CustomerAccessCode code) {
+        int held = code.getReservedImages();
+        if (held <= 0) {
+            codeRepository.markQuotaReleased(code.getId(), LocalDateTime.now());
+            return 0;
+        }
+        if (codeRepository.markQuotaReleased(code.getId(), LocalDateTime.now()) == 0) {
+            return 0; // someone else already refunded this code
+        }
+        resolveOrgOwnerUserIdOptional(code.getOrganization().getId())
+                .ifPresent(ownerId -> billingService.releaseReservedImages(ownerId, held));
+        log.info("Released {} held image(s) back to shop {} from code {}",
+                held, code.getOrganization().getId(), code.getCode());
+        return held;
+    }
+
+    /**
+     * Cancel a code the shop issued but nobody has redeemed yet, returning its unspent
+     * image credits to the shop's quota.
+     *
+     * Without this a mistyped customer name or a wrong project count could only be fixed
+     * by issuing a SECOND code — paying the quota twice — while the wrong one stayed live
+     * for its full 10 days. A code that has already been redeemed is deliberately NOT
+     * revocable: the customer may already have work under it, and pulling access after
+     * the fact would strand them mid-visit at the counter.
+     */
+    @Transactional
+    public AccessCodeResponse revokeCode(String requestingUserId, String codeId) {
+        CustomerAccessCode code = codeRepository.findById(codeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + codeId));
+        requireOwnerOrManager(requestingUserId, code.getOrganization().getId());
+
+        if (code.isUsed()) {
+            throw new IllegalStateException(
+                    "This code has already been redeemed, so it can't be cancelled. "
+                    + "The customer's access ends on its own when the code expires.");
+        }
+        if (codeRepository.revokeIfUnused(codeId, LocalDateTime.now()) == 0) {
+            throw new IllegalStateException("This code was already cancelled or redeemed.");
+        }
+        int returned = releaseHeldQuota(code);
+
+        auditService.record(requestingUserId, "ACCESS_CODE_REVOKED", "ACCESS_CODE", codeId,
+                "org=" + code.getOrganization().getId() + " code=" + code.getCode()
+                        + " imagesReturned=" + returned);
+        log.info("Access code revoked: org={} code={} imagesReturned={}",
+                code.getOrganization().getId(), code.getCode(), returned);
+        return AccessCodeResponse.from(codeRepository.findById(codeId).orElse(code));
+    }
+
+    /**
+     * Amend a code that has not been redeemed yet: the customer's name, and which
+     * companies / individual products it unlocks.
+     *
+     * The assigned project count is deliberately NOT editable here — it is backed by held
+     * image credits, and re-reserving mid-flight is a second money path for very little
+     * benefit. To change the count, cancel the code (quota comes back) and issue a new one.
+     */
+    @Transactional
+    public AccessCodeResponse updateCode(String requestingUserId, String codeId,
+                                         GenerateAccessCodeRequest request) {
+        CustomerAccessCode code = codeRepository.findById(codeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + codeId));
+        String orgId = code.getOrganization().getId();
+        requireOwnerOrManager(requestingUserId, orgId);
+
+        if (code.isUsed()) {
+            throw new IllegalStateException(
+                    "This code has already been redeemed — its assignment can no longer be changed.");
+        }
+        if (code.isRevoked()) {
+            throw new IllegalStateException("This code was cancelled.");
+        }
+
+        brandAccessService.assertBrandsOfferable(orgId, request.getAllowedBrands());
+        List<String> productIds = request.getAllowedProductIds();
+        if (productIds != null) {
+            for (String pid : productIds.stream().distinct().toList()) {
+                shopProductRepository.findByIdAndOrganizationId(pid, orgId)
+                        .orElseThrow(() -> new ResourceNotFoundException(
+                                "Product is not one of this shop's listings: " + pid));
+            }
+        }
+        code.setCustomerName(request.getCustomerName().trim());
+        code.setAllowedBrandList(request.getAllowedBrands());
+        code.setAllowedProductIdList(productIds);
+        codeRepository.save(code);
+
+        auditService.record(requestingUserId, "ACCESS_CODE_UPDATED", "ACCESS_CODE", codeId,
+                "org=" + orgId + " code=" + code.getCode());
+        log.info("Access code updated: org={} code={}", orgId, code.getCode());
+        return withAssignedProducts(code);
+    }
+
+    /**
+     * Daily sweep: hand back the image credits held by codes that expired without anyone
+     * redeeming them. A shop pays a credit per assigned project the moment it prints a
+     * code; when the customer never walks back in, that credit used to stay held forever.
+     *
+     * Runs an hour after the subscription expiry job so the two never interleave on the
+     * same rows. Each code is refunded in its own transaction — one bad row must not
+     * abort the whole sweep.
+     */
+    @org.springframework.scheduling.annotation.Scheduled(cron = "0 0 2 * * *")
+    public void releaseExpiredCodeQuota() {
+        List<CustomerAccessCode> stale =
+                codeRepository.findExpiredUnredeemedWithHolds(LocalDateTime.now());
+        if (stale.isEmpty()) return;
+        int refunded = 0;
+        for (CustomerAccessCode code : stale) {
+            try {
+                refunded += releaseHeldQuotaInNewTransaction(code.getId());
+            } catch (Exception e) {
+                log.warn("Could not release held quota for expired code {}: {}",
+                        code.getId(), e.getMessage());
+            }
+        }
+        log.info("Expired-code sweep returned {} image credit(s) across {} code(s)",
+                refunded, stale.size());
+    }
+
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    public int releaseHeldQuotaInNewTransaction(String codeId) {
+        return codeRepository.findById(codeId).map(this::releaseHeldQuota).orElse(0);
     }
 
     @Transactional(readOnly = true)
@@ -163,6 +307,9 @@ public class AccessCodeService {
 
         if (accessCode.isUsed()) {
             throw new IllegalStateException("This access code has already been used");
+        }
+        if (accessCode.isRevoked()) {
+            throw new IllegalStateException("This access code was cancelled by the shop");
         }
         if (accessCode.isExpired()) {
             throw new IllegalStateException("This access code has expired");
@@ -222,6 +369,9 @@ public class AccessCodeService {
         CustomerAccessCode accessCode = codeRepository.findByCode(code.toUpperCase())
                 .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + code));
 
+        if (accessCode.isRevoked()) {
+            throw new IllegalStateException("This access code was cancelled by the shop");
+        }
         if (accessCode.isExpired()) {
             throw new IllegalStateException("This access code has expired");
         }
@@ -386,6 +536,9 @@ public class AccessCodeService {
         CustomerAccessCode accessCode = codeRepository.findByCode(code.toUpperCase())
                 .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + code));
 
+        if (accessCode.isRevoked()) {
+            throw new IllegalStateException("This access code was cancelled by the shop");
+        }
         if (accessCode.isExpired()) {
             throw new IllegalStateException("This access code has expired");
         }
