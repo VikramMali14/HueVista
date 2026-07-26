@@ -27,8 +27,12 @@ public class AdminDataResetController {
 
     private final DataResetService dataResetService;
 
-    /** Request body for the reset. The phrase is the only guard against a stray click. */
-    public record ResetRequest(String confirmation) {}
+    /**
+     * Request body for the reset. The phrase is the guard against a stray click;
+     * {@code deleteImageFiles} is opt-in because it reaches outside the database — a
+     * snapshot can bring the rows back, but nothing brings the files back.
+     */
+    public record ResetRequest(String confirmation, boolean deleteImageFiles) {}
 
     @Operation(
             summary = "Preview the platform data reset (admin)",
@@ -54,15 +58,23 @@ public class AdminDataResetController {
                     Your own admin account survives with its id intact, so you stay signed in.
                     Every other account is deleted. Irreversible: take a database snapshot first.
 
+                    Set `deleteImageFiles` to also empty the image store (S3 bucket or upload
+                    directory). Every stored file is unreachable once the rows naming it are
+                    gone, so leaving it false only means paying to keep files nothing can read.
+                    It is opt-in regardless: a database snapshot restores the rows, but nothing
+                    restores the files.
+
                     Requires `confirmation` to equal `RESET ALL DATA`.
                     """
     )
-    @ApiResponse(responseCode = "200", description = "Tables cleared, rows removed, catalogue kept")
+    @ApiResponse(responseCode = "200", description = "Tables cleared, rows and files removed, catalogue kept")
     @ApiResponse(responseCode = "400", description = "Confirmation phrase missing or wrong")
     @PostMapping
     public ResponseEntity<DataResetService.ResetResult> reset(Authentication auth,
                                                               @RequestBody ResetRequest request) {
         return ResponseEntity.ok(dataResetService.resetKeepingCatalogue(
-                auth.getName(), request == null ? null : request.confirmation()));
+                auth.getName(),
+                request == null ? null : request.confirmation(),
+                request != null && request.deleteImageFiles()));
     }
 }
