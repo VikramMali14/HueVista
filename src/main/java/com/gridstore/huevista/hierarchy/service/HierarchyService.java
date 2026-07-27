@@ -1,14 +1,19 @@
 package com.gridstore.huevista.hierarchy.service;
 
+import com.gridstore.huevista.account.model.AppFeature;
 import com.gridstore.huevista.account.model.DistributorRetailerLink;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.model.RetailerBrandAssignment;
+import com.gridstore.huevista.account.model.RetailerFeatureAssignment;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.repository.DistributorRetailerLinkRepository;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.account.repository.RetailerBrandAssignmentRepository;
+import com.gridstore.huevista.account.repository.RetailerFeatureAssignmentRepository;
 import com.gridstore.huevista.account.service.AccountService;
+import com.gridstore.huevista.account.service.BrandAccessService;
+import com.gridstore.huevista.account.service.FeatureAccessService;
 import com.gridstore.huevista.auth.dto.AdminUserResponse;
 import com.gridstore.huevista.auth.dto.CreateDistributorRequest;
 import com.gridstore.huevista.auth.dto.CreatePainterRequest;
@@ -19,7 +24,9 @@ import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.auth.service.AuthService;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
+import com.gridstore.huevista.hierarchy.dto.MyAccessResponse;
 import com.gridstore.huevista.hierarchy.dto.RetailerBrandOption;
+import com.gridstore.huevista.hierarchy.dto.RetailerFeatureOption;
 import com.gridstore.huevista.notification.EmailSender;
 import com.gridstore.huevista.paint.model.Brand;
 import com.gridstore.huevista.paint.repository.BrandRepository;
@@ -70,6 +77,9 @@ public class HierarchyService {
     private final OrganizationRepository orgRepository;
     private final DistributorRetailerLinkRepository distributorLinkRepository;
     private final RetailerBrandAssignmentRepository brandAssignmentRepository;
+    private final RetailerFeatureAssignmentRepository featureAssignmentRepository;
+    private final BrandAccessService brandAccessService;
+    private final FeatureAccessService featureAccessService;
     private final BrandRepository brandRepository;
     private final PainterRetailerLinkRepository painterLinkRepository;
     private final CustomerAccessCodeRepository accessCodeRepository;
@@ -114,6 +124,12 @@ public class HierarchyService {
      * provisioning path (org + trial + welcome email), then records provenance;
      * a distributor's new shop is additionally auto-linked to their org so it
      * lands in their downline immediately.
+     *
+     * <p>Brand and page access are applied here too, in the same transaction, so a
+     * shop is never briefly live with the run of the whole product before the
+     * distributor tightens it. Both are skipped when there is no distributor to
+     * grant them (an admin creating an unlinked shop) and both default to
+     * unrestricted, so callers that don't send them are unaffected.
      */
     @Transactional
     public AdminUserResponse createRetailer(String creatorUserId, CreateRetailerRequest request) {
@@ -143,7 +159,13 @@ public class HierarchyService {
                     .distributor(distributorOrg)
                     .retailer(retailerOrg)
                     .build());
-            log.info("Distributor {} created and linked RETAILER {}", creatorUserId, retailerUser.getEmail());
+            applyBrandGrant(distributorOrg, retailerOrg,
+                    request.getBrandIds(), request.isBrandsUnrestricted());
+            applyFeatureGrant(distributorOrg, retailerOrg,
+                    request.getFeatures(), request.isFeaturesUnrestricted());
+            log.info("Distributor {} created and linked RETAILER {} (brandsUnrestricted={}, featuresUnrestricted={})",
+                    creatorUserId, retailerUser.getEmail(),
+                    request.isBrandsUnrestricted(), request.isFeaturesUnrestricted());
         }
         return created;
     }
@@ -256,8 +278,23 @@ public class HierarchyService {
             throw new IllegalStateException(
                     "This shop is not linked to a distributor, so brands can't be assigned.");
         }
+        int count = applyBrandGrant(distributor, shop.retailer(), brandIds, unrestricted);
+        log.info("{} set brands for shop {}: unrestricted={} count={}",
+                callerUserId, retailerOrgId, unrestricted, count);
+        return retailerBrandOptions(callerUserId, retailerOrgId);
+    }
+
+    /**
+     * Write one shop's brand selection. Shared by {@link #assignBrands} and shop
+     * creation so both paths store the restriction identically — the flag on the org
+     * plus the rows, never one without the other.
+     *
+     * @return how many brands ended up assigned
+     */
+    private int applyBrandGrant(Organization distributor, Organization retailer,
+                                List<Long> brandIds, boolean unrestricted) {
         // Wipe the old selection, then re-create from the (deduped) request.
-        brandAssignmentRepository.deleteByRetailerId(retailerOrgId);
+        brandAssignmentRepository.deleteByRetailerId(retailer.getId());
         brandAssignmentRepository.flush();
         List<Long> ids = unrestricted || brandIds == null ? List.of()
                 : brandIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
@@ -265,39 +302,165 @@ public class HierarchyService {
             for (Brand brand : brandRepository.findAllById(ids)) {
                 brandAssignmentRepository.save(RetailerBrandAssignment.builder()
                         .distributor(distributor)
-                        .retailer(shop.retailer())
+                        .retailer(retailer)
                         .brand(brand)
                         .build());
             }
         }
-        Organization retailer = shop.retailer();
         retailer.setBrandsRestricted(!unrestricted);
         orgRepository.save(retailer);
-
-        log.info("{} set brands for shop {}: unrestricted={} count={}",
-                callerUserId, retailerOrgId, unrestricted, ids.size());
-        return retailerBrandOptions(callerUserId, retailerOrgId);
+        return ids.size();
     }
 
-    /** Attach each shop's assigned brand names to its report node (empty = all). */
-    private void attachAssignedBrands(Collection<NetworkNodeResponse> retailerNodes) {
+    // ── Page access (distributor → shop) ──────────────────────────────────
+
+    /** Every grantable page with a flag for whether this shop currently has it. */
+    @Transactional(readOnly = true)
+    public List<RetailerFeatureOption> retailerFeatureOptions(String callerUserId, String retailerOrgId) {
+        ManageableShop shop = resolveManageableShop(callerUserId, retailerOrgId);
+        boolean restricted = shop.retailer().isFeaturesRestricted();
+        Set<AppFeature> assigned = featureAssignmentRepository.findByRetailerId(retailerOrgId).stream()
+                .map(RetailerFeatureAssignment::getFeature)
+                .collect(Collectors.toCollection(() -> java.util.EnumSet.noneOf(AppFeature.class)));
+        return java.util.Arrays.stream(AppFeature.values())
+                // An unrestricted shop opens everything, so every box reads as ticked —
+                // the editor then starts from "all on" instead of misreporting a shop
+                // with full access as having nothing.
+                .map(f -> RetailerFeatureOption.of(f, !restricted || assigned.contains(f)))
+                .toList();
+    }
+
+    /**
+     * Replace a shop's page selection wholesale.
+     *
+     * Same three-state contract as {@link #assignBrands}: {@code unrestricted} lifts the
+     * limit, an empty {@code features} list really does mean "no optional pages", and the
+     * two are separate so revoking the last page can't read as granting everything.
+     * Unknown feature names are ignored rather than fatal, so one stale key from an older
+     * frontend can't fail the whole save.
+     */
+    @Transactional
+    public List<RetailerFeatureOption> assignFeatures(String callerUserId, String retailerOrgId,
+                                                      List<String> features, boolean unrestricted) {
+        ManageableShop shop = resolveManageableShop(callerUserId, retailerOrgId);
+        Organization distributor = shop.distributor();
+        if (distributor == null) {
+            throw new IllegalStateException(
+                    "This shop is not linked to a distributor, so pages can't be assigned.");
+        }
+        int count = applyFeatureGrant(distributor, shop.retailer(), features, unrestricted);
+        log.info("{} set pages for shop {}: unrestricted={} count={}",
+                callerUserId, retailerOrgId, unrestricted, count);
+        return retailerFeatureOptions(callerUserId, retailerOrgId);
+    }
+
+    /**
+     * Write one shop's page selection. Shared by {@link #assignFeatures} and shop
+     * creation, mirroring {@link #applyBrandGrant}.
+     *
+     * @return how many pages ended up switched on
+     */
+    private int applyFeatureGrant(Organization distributor, Organization retailer,
+                                  List<String> features, boolean unrestricted) {
+        featureAssignmentRepository.deleteByRetailerId(retailer.getId());
+        featureAssignmentRepository.flush();
+        Set<AppFeature> granted = java.util.EnumSet.noneOf(AppFeature.class);
+        if (!unrestricted && features != null) {
+            for (String raw : features) {
+                AppFeature.fromKey(raw).ifPresent(granted::add);
+            }
+        }
+        for (AppFeature feature : granted) {
+            featureAssignmentRepository.save(RetailerFeatureAssignment.builder()
+                    .distributor(distributor)
+                    .retailer(retailer)
+                    .feature(feature)
+                    .build());
+        }
+        retailer.setFeaturesRestricted(!unrestricted);
+        orgRepository.save(retailer);
+        return granted.size();
+    }
+
+    // ── What the caller may see ───────────────────────────────────────────
+
+    /**
+     * The signed-in caller's own brand + page access — one call the frontend makes to
+     * decide which nav tabs to render and which pages to admit. Non-retailers always
+     * come back unrestricted; this is a distributor→shop constraint and never applies
+     * upward.
+     */
+    @Transactional(readOnly = true)
+    public MyAccessResponse myAccess(String userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
+        MyAccessResponse.MyAccessResponseBuilder out = MyAccessResponse.builder()
+                .role(user.getRole().name())
+                .brandsRestricted(false)
+                .allowedBrands(List.of())
+                .featuresRestricted(false)
+                .allowedFeatures(List.of())
+                .allowedPaths(List.of());
+
+        Organization shop = featureAccessService.retailerOrgOf(userId).orElse(null);
+        if (shop == null) {
+            return out.build();
+        }
+        out.orgId(shop.getId()).orgName(shop.getName());
+
+        brandAccessService.allowedBrandNames(shop.getId()).ifPresent(names ->
+                out.brandsRestricted(true).allowedBrands(List.copyOf(names)));
+        featureAccessService.allowedFeatures(shop.getId()).ifPresent(features -> out
+                .featuresRestricted(true)
+                .allowedFeatures(features.stream().map(AppFeature::name).toList())
+                .allowedPaths(features.stream().map(AppFeature::getPath).toList()));
+        return out.build();
+    }
+
+    /**
+     * Attach each shop's granted brands and pages to its report node, along with the
+     * flags that say whether those lists are limits at all.
+     *
+     * The flags come off the {@link Organization} rows already loaded for the tree, so
+     * this stays two queries regardless of network size.
+     */
+    private void attachAssignedAccess(Collection<NetworkNodeResponse> retailerNodes,
+                                      Map<String, Organization> orgsById) {
         List<String> orgIds = retailerNodes.stream()
                 .map(NetworkNodeResponse::getOrgId).filter(java.util.Objects::nonNull).toList();
         if (orgIds.isEmpty()) return;
-        Map<String, List<String>> byOrg = new HashMap<>();
+
+        Map<String, List<String>> brandsByOrg = new HashMap<>();
         for (RetailerBrandAssignment a : brandAssignmentRepository.findWithBrandByRetailerIdIn(orgIds)) {
-            byOrg.computeIfAbsent(a.getRetailer().getId(), k -> new java.util.ArrayList<>())
+            brandsByOrg.computeIfAbsent(a.getRetailer().getId(), k -> new java.util.ArrayList<>())
                     .add(a.getBrand().getName());
         }
-        for (NetworkNodeResponse node : retailerNodes) {
-            List<String> names = byOrg.get(node.getOrgId());
-            if (names != null) {
-                names.sort(String::compareToIgnoreCase);
-                node.setAssignedBrands(names);
-            } else {
-                node.setAssignedBrands(List.of());
+        Map<String, List<String>> featuresByOrg = new HashMap<>();
+        for (String orgId : orgIds) {
+            for (RetailerFeatureAssignment a : featureAssignmentRepository.findByRetailerId(orgId)) {
+                featuresByOrg.computeIfAbsent(orgId, k -> new java.util.ArrayList<>())
+                        .add(a.getFeature().getLabel());
             }
         }
+
+        for (NetworkNodeResponse node : retailerNodes) {
+            List<String> names = brandsByOrg.getOrDefault(node.getOrgId(), new java.util.ArrayList<>());
+            names.sort(String::compareToIgnoreCase);
+            node.setAssignedBrands(names);
+
+            List<String> features = featuresByOrg.getOrDefault(node.getOrgId(), new java.util.ArrayList<>());
+            features.sort(String::compareToIgnoreCase);
+            node.setAssignedFeatures(features);
+
+            Organization org = orgsById.get(node.getOrgId());
+            node.setBrandsRestricted(org != null && org.isBrandsRestricted());
+            node.setFeaturesRestricted(org != null && org.isFeaturesRestricted());
+        }
+    }
+
+    /** Index the retailer orgs a report already loaded, for the access-flag lookup above. */
+    private static Map<String, Organization> byId(List<Organization> orgs) {
+        return orgs.stream().collect(Collectors.toMap(Organization::getId, Function.identity(), (a, b) -> a));
     }
 
     // ── Network report ────────────────────────────────────────────────────
@@ -324,7 +487,7 @@ public class HierarchyService {
 
         Map<String, NetworkNodeResponse> retailerNodes =
                 buildRetailerNodes(retailerOrgs, painterLinks, batchUsers(orgs, painterLinks));
-        attachAssignedBrands(retailerNodes.values());
+        attachAssignedAccess(retailerNodes.values(), byId(retailerOrgs));
 
         Map<String, NetworkNodeResponse> distributorNodes = new LinkedHashMap<>();
         Map<String, User> owners = batchUsers(distributorOrgs, List.of());
@@ -374,7 +537,7 @@ public class HierarchyService {
 
         Map<String, NetworkNodeResponse> retailerNodes =
                 buildRetailerNodes(retailerOrgs, painterLinks, batchUsers(retailerOrgs, painterLinks));
-        attachAssignedBrands(retailerNodes.values());
+        attachAssignedAccess(retailerNodes.values(), byId(retailerOrgs));
 
         NetworkNodeResponse self = orgNode(distributorOrg, viewer, UserRole.DISTRIBUTOR);
         self.getChildren().addAll(retailerNodes.values());
@@ -402,6 +565,9 @@ public class HierarchyService {
 
         Map<String, NetworkNodeResponse> nodes =
                 buildRetailerNodes(List.of(retailerOrg), painterLinks, batchUsers(List.of(retailerOrg), painterLinks));
+        // A shop sees its own grant too — "which companies am I set up for?" is a
+        // question the shop asks more often than its distributor does.
+        attachAssignedAccess(nodes.values(), byId(List.of(retailerOrg)));
         NetworkNodeResponse self = nodes.get(retailerOrg.getId());
 
         Map<String, Long> totals = new LinkedHashMap<>();

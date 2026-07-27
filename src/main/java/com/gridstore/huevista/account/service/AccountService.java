@@ -22,6 +22,7 @@ public class AccountService {
     private final OrgMembershipRepository membershipRepository;
     private final DistributorRetailerLinkRepository linkRepository;
     private final RetailerBrandAssignmentRepository brandAssignmentRepository;
+    private final RetailerFeatureAssignmentRepository featureAssignmentRepository;
     private final UserRepository userRepository;
 
     @Transactional
@@ -239,10 +240,11 @@ public class AccountService {
      * (owner/manager of the distributor org) or the shop itself (its owner) — because a
      * relationship one party can't leave isn't one.
      *
-     * The shop's brand assignments go with the link: they were granted BY this
+     * The shop's brand AND page assignments go with the link: both were granted BY this
      * distributor, so leaving must not silently leave the shop carrying brands nobody is
-     * supplying. The shop reverts to unrestricted rather than to zero brands, so ending a
-     * distributor relationship never quietly empties a working catalogue.
+     * supplying, or locked out of pages nobody is administering. Both revert to
+     * unrestricted rather than to zero, so ending a distributor relationship never
+     * quietly empties a working catalogue or strands a shop with no usable app.
      */
     @Transactional
     public void unlinkRetailer(String requestingUserId, String distributorOrgId, String retailerOrgId) {
@@ -264,8 +266,10 @@ public class AccountService {
 
         linkRepository.delete(link);
         brandAssignmentRepository.deleteByRetailerId(retailerOrgId);
+        featureAssignmentRepository.deleteByRetailerId(retailerOrgId);
         orgRepository.findById(retailerOrgId).ifPresent(retailer -> {
             retailer.setBrandsRestricted(false);
+            retailer.setFeaturesRestricted(false);
             orgRepository.save(retailer);
         });
 

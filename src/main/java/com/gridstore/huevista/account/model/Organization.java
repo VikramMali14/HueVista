@@ -58,6 +58,18 @@ public class Organization {
     @Builder.Default
     private boolean brandsRestricted = false;
 
+    /**
+     * RETAILER only: whether this shop's pages are limited to the ones its
+     * distributor switched on (see {@link RetailerFeatureAssignment}).
+     *
+     * Same explicit-flag reasoning as {@link #brandsRestricted} above — "no
+     * assignment rows" cannot distinguish "never configured" from "every page
+     * revoked", so the restriction is stated rather than inferred.
+     */
+    @Column(nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean featuresRestricted = false;
+
     // White-label portal (RETAILER only)
     @Builder.Default
     private boolean whitelabelEnabled = false;

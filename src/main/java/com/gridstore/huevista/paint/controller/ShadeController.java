@@ -1,5 +1,6 @@
 package com.gridstore.huevista.paint.controller;
 
+import com.gridstore.huevista.account.service.BrandAccessService;
 import com.gridstore.huevista.ai.util.DeltaEMatcher;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.paint.dto.AsianPaintsApiResponse;
@@ -23,11 +24,14 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @RestController
@@ -38,6 +42,7 @@ public class ShadeController {
     private final ShadeRepository shadeRepository;
     private final ShadeSeederService seederService;
     private final ShadeAdminService shadeAdminService;
+    private final BrandAccessService brandAccessService;
 
     @Operation(
             summary = "List shades with filters",
@@ -121,6 +126,72 @@ public class ShadeController {
     @GetMapping("/api/shades/brands")
     public List<ShadeBrandSummaryResponse> getShadeBrands() {
         return shadeRepository.countShadesByBrand();
+    }
+
+    // ── Signed-in, shop-scoped catalogue ──────────────────────────────────
+    //
+    // The anonymous endpoints above stay whole and cached: they are the public
+    // shopfront, and making them per-caller would break the shared cache for every
+    // visitor to serve one shop. The two endpoints below are the signed-in
+    // equivalents the shop's own tools (Studio, Colour finder, catalogue browse)
+    // call instead, and they apply the distributor's brand grant — so a shop set up
+    // for Asian Paints only never sees a Berger shade it cannot sell.
+    //
+    // These deliberately do NOT reuse the @Cacheable methods above. Calling them
+    // from inside this class is self-invocation, which never passes through the
+    // Spring proxy, so it would query anyway while reading as though it were
+    // cached. They also must not be @Cacheable themselves: the result varies per
+    // caller, and a shared cache key would serve one shop's restricted catalogue
+    // to the next shop. They query and filter directly instead — an in-memory pass
+    // over rows the list projection was going to materialise regardless.
+
+    @Operation(
+            summary = "List shades the signed-in shop may work with",
+            description = """
+                    The shop-scoped twin of `GET /api/shades`: same filters, same LIST projection,
+                    but limited to the paint companies this shop's distributor assigned it.
+
+                    A shop with no restriction (and every non-retailer caller — admins,
+                    distributors, painters) gets the full catalogue, so this is always safe to
+                    call in place of the public endpoint when a session exists.
+                    """
+    )
+    @ApiResponse(responseCode = "200", description = "Shade list, limited to the shop's brands")
+    @PreAuthorize("isAuthenticated()")
+    @GetMapping("/api/shades/mine")
+    public List<ShadeSummaryResponse> getMyShades(
+            @Parameter(description = "Brand slug, e.g. asian-paints") @RequestParam(required = false) String brand,
+            @Parameter(description = "Shade family, e.g. off whites") @RequestParam(required = false) String family,
+            @Parameter(description = "cool / warm / neutral") @RequestParam(required = false) String temperature,
+            @Parameter(description = "light / medium / dark") @RequestParam(required = false) String tonality,
+            @Parameter(description = "Name or exact shade code") @RequestParam(required = false) String search,
+            Authentication auth
+    ) {
+        Optional<Set<String>> allowed = brandAccessService.allowedBrandSlugsForUser(auth.getName());
+        List<ShadeSummaryResponse> all = shadeRepository
+                .findWithFilters(brand, family, temperature, tonality, search)
+                .stream()
+                .map(ShadeSummaryResponse::from)
+                .toList();
+        return allowed
+                .map(slugs -> all.stream().filter(s -> slugs.contains(s.getBrandSlug())).toList())
+                .orElse(all);
+    }
+
+    @Operation(
+            summary = "List companies the signed-in shop may work with",
+            description = "The shop-scoped twin of `GET /api/shades/brands` — drives the brand pickers "
+                    + "inside the app so they only offer companies the shop actually carries."
+    )
+    @ApiResponse(responseCode = "200", description = "Companies with shade counts, limited to the shop's brands")
+    @PreAuthorize("isAuthenticated()")
+    @GetMapping("/api/shades/mine/brands")
+    public List<ShadeBrandSummaryResponse> getMyShadeBrands(Authentication auth) {
+        Optional<Set<String>> allowed = brandAccessService.allowedBrandSlugsForUser(auth.getName());
+        List<ShadeBrandSummaryResponse> all = shadeRepository.countShadesByBrand();
+        return allowed
+                .map(slugs -> all.stream().filter(b -> slugs.contains(b.getSlug())).toList())
+                .orElse(all);
     }
 
     @Operation(summary = "List shades by brand", description = "Returns all shades for a brand slug ordered by popularity (LIST projection; see the filtered list endpoint).")
