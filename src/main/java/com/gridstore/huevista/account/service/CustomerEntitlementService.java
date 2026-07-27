@@ -50,6 +50,7 @@ public class CustomerEntitlementService {
     private final CustomerEntitlementRepository entitlementRepository;
     private final UserRepository userRepository;
     private final OrgMembershipRepository membershipRepository;
+    private final ProjectGrantService grantService;
 
     private static final int DEFAULT_INCLUDED_PROJECTS = 1;
 
@@ -303,20 +304,22 @@ public class CustomerEntitlementService {
                 .toList();
     }
 
-    /** Retailer: grant one more project to a customer they manage. */
+    /**
+     * Retailer: give a customer they manage more projects.
+     *
+     * Goes through {@link ProjectGrantService}, which reserves an image credit per project
+     * against the shop's plan and records the grant so it can be taken back. This used to
+     * be a bare {@code allowance + 1} that reserved nothing — a shop could hand out
+     * unlimited projects and its subscription never noticed, while issuing a CODE for the
+     * same projects charged properly. The two now cost the same thing.
+     */
     @Transactional
-    public CustomerEntitlementResponse grantExtraProject(String requestingUserId, String retailerOrgId, String customerUserId) {
-        requireOwnerOrManager(requestingUserId, retailerOrgId);
-        CustomerEntitlement ent = entitlementRepository.findByCustomerId(customerUserId)
+    public CustomerEntitlementResponse grantExtraProjects(String requestingUserId, String retailerOrgId,
+                                                          String customerUserId, int projects) {
+        grantService.grantToCustomer(requestingUserId, retailerOrgId, customerUserId, projects);
+        return entitlementRepository.findByCustomerId(customerUserId)
+                .map(CustomerEntitlementResponse::from)
                 .orElseThrow(() -> new ResourceNotFoundException("Customer entitlement not found"));
-        if (ent.getRetailerOrg() == null || !ent.getRetailerOrg().getId().equals(retailerOrgId)) {
-            throw new SecurityException("This customer is not managed by your organization.");
-        }
-        ent.setProjectAllowance(ent.getProjectAllowance() + 1);
-        entitlementRepository.save(ent);
-        log.info("Retailer org {} granted +1 project to customer {} (allowance now {})",
-                retailerOrgId, customerUserId, ent.getProjectAllowance());
-        return CustomerEntitlementResponse.from(ent);
     }
 
     // --- helpers ---

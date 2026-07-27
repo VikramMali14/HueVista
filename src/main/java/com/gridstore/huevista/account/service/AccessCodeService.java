@@ -55,6 +55,7 @@ public class AccessCodeService {
     private final BrandAccessService brandAccessService;
     private final ShopProductRepository shopProductRepository;
     private final com.gridstore.huevista.project.repository.ProjectRepository projectRepository;
+    private final ProjectGrantService projectGrantService;
 
     private static final String CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
     private static final int CODE_LENGTH = 8;
@@ -278,12 +279,16 @@ public class AccessCodeService {
             throw new IllegalStateException(
                     "This code has expired. Add another 10 days to it first, then grant the projects.");
         }
-        requireActiveSubscription(orgId,
+        Subscription funding = requireActiveSubscription(orgId,
                 "Your subscription has ended, so there's no image quota to draw from. "
                 + "Renew your plan to add projects to a customer's code.");
 
         // Same all-or-nothing reservation as generation: one held image per project.
         reserveProjectQuota(orgId, projects);
+
+        // Recorded so the shop can take it back if nobody uses it — and only while the
+        // billing period that paid for it is still running.
+        projectGrantService.recordCodeGrant(orgId, codeId, projects, funding);
 
         code.setProjectQuota(code.getProjectQuota() + projects);
         code.setReservedImages(code.getReservedImages() + projects);
@@ -351,12 +356,12 @@ public class AccessCodeService {
         return withProjectsUsed(code);
     }
 
-    /** The shop's OWNER must hold a live plan for the top-up paths. */
-    private void requireActiveSubscription(String orgId, String message) {
+    /** The shop's OWNER must hold a live plan for the top-up paths; returns it. */
+    private Subscription requireActiveSubscription(String orgId, String message) {
         String ownerId = resolveOrgOwnerUserId(orgId);
-        if (billingService.findEntitlingSubscription(ownerId).isEmpty()) {
-            throw new com.gridstore.huevista.common.exception.SubscriptionRequiredException(message);
-        }
+        return billingService.findEntitlingSubscription(ownerId)
+                .orElseThrow(() ->
+                        new com.gridstore.huevista.common.exception.SubscriptionRequiredException(message));
     }
 
     /** Response carrying this code's live "projects used / remaining" counters. */
