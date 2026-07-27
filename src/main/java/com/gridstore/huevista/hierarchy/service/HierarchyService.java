@@ -312,6 +312,28 @@ public class HierarchyService {
         return ids.size();
     }
 
+    /**
+     * Everything a distributor could grant, before any shop exists to grant it to.
+     *
+     * The shop-creation form needs the same two checklists the editors show, but
+     * {@link #retailerBrandOptions} and {@link #retailerFeatureOptions} both resolve a
+     * shop first. These are the pre-creation twins: same DTOs, nothing assigned yet.
+     */
+    @Transactional(readOnly = true)
+    public List<RetailerBrandOption> grantableBrands() {
+        return brandRepository.findAllByOrderByNameAsc().stream()
+                .map(b -> RetailerBrandOption.of(b, false))
+                .toList();
+    }
+
+    /** @see #grantableBrands() */
+    @Transactional(readOnly = true)
+    public List<RetailerFeatureOption> grantableFeatures() {
+        return java.util.Arrays.stream(AppFeature.values())
+                .map(f -> RetailerFeatureOption.of(f, false))
+                .toList();
+    }
+
     // ── Page access (distributor → shop) ──────────────────────────────────
 
     /** Every grantable page with a flag for whether this shop currently has it. */

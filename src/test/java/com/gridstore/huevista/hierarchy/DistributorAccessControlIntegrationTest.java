@@ -1,6 +1,7 @@
 package com.gridstore.huevista.hierarchy;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gridstore.huevista.account.model.AppFeature;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
@@ -308,6 +309,26 @@ class DistributorAccessControlIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.allowedFeatures.length()").value(1))
                 .andExpect(jsonPath("$.allowedFeatures[0]").value("COLOR_FINDER"));
+    }
+
+    @Test
+    void the_creation_form_can_list_what_is_grantable_before_any_shop_exists() throws Exception {
+        seedCatalogue();
+        String distToken = seedDistributor();
+
+        MvcResult res = mockMvc.perform(get("/api/hierarchy/grantable")
+                        .header("Authorization", "Bearer " + distToken))
+                .andExpect(status().isOk())
+                // Every page is offered, and none is pre-assigned — there is no shop yet.
+                .andExpect(jsonPath("$.features[0].assigned").value(false))
+                .andExpect(jsonPath("$.brands[0].assigned").value(false))
+                .andReturn();
+
+        com.fasterxml.jackson.databind.JsonNode body =
+                objectMapper.readTree(res.getResponse().getContentAsString());
+        assertThat(body.path("features")).hasSize(AppFeature.values().length);
+        // Brand ids are what the create call sends back, so they must be present.
+        assertThat(body.path("brands").get(0).path("id").asLong()).isPositive();
     }
 
     // ── Scoping ───────────────────────────────────────────────────────────

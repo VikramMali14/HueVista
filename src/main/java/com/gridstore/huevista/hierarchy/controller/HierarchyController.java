@@ -28,6 +28,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * The account hierarchy: ADMIN → DISTRIBUTOR → RETAILER → PAINTER. Each level
@@ -82,7 +83,9 @@ public class HierarchyController {
 
     @Operation(summary = "List a shop's brand assignments",
             description = "ADMIN or DISTRIBUTOR. Every paint brand with a flag for whether the shop currently "
-                    + "has it assigned. A shop with none assigned is unrestricted (all brands).")
+                    + "has it assigned. Whether the shop is limited at all is reported by `brandsRestricted` "
+                    + "on its node in /network — no rows can mean either 'unrestricted' or 'every brand "
+                    + "revoked'.")
     @PreAuthorize("hasAnyRole('ADMIN','DISTRIBUTOR')")
     @GetMapping("/retailers/{retailerOrgId}/brands")
     public ResponseEntity<List<RetailerBrandOption>> retailerBrands(
@@ -91,8 +94,10 @@ public class HierarchyController {
     }
 
     @Operation(summary = "Set a shop's brand assignments",
-            description = "ADMIN or DISTRIBUTOR. Replaces the shop's brand selection wholesale; an empty list "
-                    + "clears every restriction (the shop reverts to all brands).")
+            description = "ADMIN or DISTRIBUTOR. Replaces the shop's brand selection wholesale. "
+                    + "`unrestricted` lifts the limit entirely; otherwise `brandIds` is the complete "
+                    + "allowance and an empty list really does mean no brands at all — it does NOT "
+                    + "clear the restriction.")
     @PreAuthorize("hasAnyRole('ADMIN','DISTRIBUTOR')")
     @PutMapping("/retailers/{retailerOrgId}/brands")
     public ResponseEntity<List<RetailerBrandOption>> setRetailerBrands(
@@ -105,6 +110,18 @@ public class HierarchyController {
                 request.isUnrestricted() ? "unrestricted (all brands)"
                         : (request.getBrandIds() == null ? 0 : request.getBrandIds().size()) + " brands");
         return ResponseEntity.ok(options);
+    }
+
+    @Operation(summary = "List everything a distributor can grant",
+            description = "ADMIN or DISTRIBUTOR. The paint companies and pages available to grant, "
+                    + "with nothing assigned — what the shop-creation form fills its checklists from, "
+                    + "before there is a shop to read a selection off.")
+    @PreAuthorize("hasAnyRole('ADMIN','DISTRIBUTOR')")
+    @GetMapping("/grantable")
+    public ResponseEntity<Map<String, Object>> grantable() {
+        return ResponseEntity.ok(Map.of(
+                "brands", hierarchyService.grantableBrands(),
+                "features", hierarchyService.grantableFeatures()));
     }
 
     @Operation(summary = "List a shop's page access",
