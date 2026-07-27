@@ -569,7 +569,10 @@ public class AuthService {
                 .user(AuthResponse.UserInfo.builder()
                         .id(user.getId())
                         .name(user.getName())
-                        .email(user.getEmail())
+                        // Withheld for access-code accounts — the stored address is
+                        // synthesised from the code, so showing it in the header would
+                        // present a machine identifier as the customer's own e-mail.
+                        .email(com.gridstore.huevista.auth.util.Emails.publicEmailOf(user))
                         .picture(user.getPicture())
                         .provider(user.getProvider().name())
                         .role(user.getRole().name())

@@ -134,6 +134,49 @@ public class Project {
     // "sent by customer" badge and the shop owner gets a heads-up email.
     private LocalDateTime sentToShopAt;
 
+    // ─── Paid access window ──────────────────────────────────────────────────
+    // A project bought outright (rather than covered by a plan or a shop's access
+    // code) carries its own validity. While the window is open the project is fully
+    // workable; once it lapses the project drops to view-only — the last applied
+    // colours stay readable, but nothing can be recoloured until it is reopened.
+    //
+    // The window PAUSES while the owner holds an active subscription, because a
+    // subscriber shouldn't burn paid days they don't need: accessExpiresAt is cleared
+    // and the leftover parked in accessRemainingSeconds. When the subscription ends it
+    // resumes from exactly where it stopped. Parking the REMAINDER rather than freezing
+    // an end date is what makes reconciliation idempotent — running it twice in the
+    // same subscription state changes nothing.
+    //
+    // Null on all three means "no window": plan-covered and access-code projects are
+    // governed by the plan / the code, not by this.
+    private LocalDateTime accessExpiresAt;
+
+    private LocalDateTime accessPausedAt;
+
+    private Long accessRemainingSeconds;
+
+    /** When this project was paid for outright, and what it cost. Null when it wasn't. */
+    private LocalDateTime purchasedAt;
+
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int purchasePricePaise = 0;
+
+    /** True when this project carries a paid window at all (running or paused). */
+    public boolean hasAccessWindow() {
+        return accessExpiresAt != null || accessPausedAt != null;
+    }
+
+    /**
+     * Is the paid window currently open? A PAUSED window always reads as open: it is
+     * only ever paused because the owner holds an active subscription, and that
+     * subscription is what is granting access in the meantime.
+     */
+    public boolean isAccessWindowOpen() {
+        if (accessPausedAt != null) return true;
+        return accessExpiresAt != null && accessExpiresAt.isAfter(LocalDateTime.now());
+    }
+
     @OneToMany(mappedBy = "project", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("displayOrder ASC")
     @Builder.Default

@@ -24,7 +24,12 @@ public class CustomerEntitlementResponse {
         return CustomerEntitlementResponse.builder()
                 .customerId(e.getCustomer().getId())
                 .customerName(e.getCustomer().getName())
-                .customerEmail(e.getCustomer().getEmail())
+                // An account auto-provisioned from an access code has no real e-mail — only
+                // a synthetic one derived from the code. Publishing it made the counter (and
+                // the customer themselves) read "ac-7kq2xr9m@customers.huevista.local" as a
+                // contact address, which it is not, and which suggests an inbox somebody
+                // could reach. The name the shop typed is the identity that matters here.
+                .customerEmail(com.gridstore.huevista.auth.util.Emails.publicEmailOf(e.getCustomer()))
                 .retailerOrgId(e.getRetailerOrg() != null ? e.getRetailerOrg().getId() : null)
                 .accessExpiresAt(e.getAccessExpiresAt())
                 .expired(e.isExpired())

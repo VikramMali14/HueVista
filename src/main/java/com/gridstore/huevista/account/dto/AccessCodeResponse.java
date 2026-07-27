@@ -44,6 +44,15 @@ public class AccessCodeResponse {
     // Resolved individual products, populated by the service for list/detail views.
     // Null on the lightweight from() projection.
     private List<ShopProductResponse> assignedProducts;
+    // When the shop last pushed this code's expiry out, and how often they have. Each
+    // extension resets the window to a fresh 10 days, so a code never carries more than
+    // 10 days ahead however many times it is renewed.
+    private LocalDateTime extendedAt;
+    private int extensionCount;
+    // True while the shop can still top this code up — add projects or add 10 more days.
+    // Unlike `editable` this survives redemption: topping up a code the customer is
+    // actively using is the whole point. A cancelled code can never be topped up.
+    private boolean topUpAllowed;
 
     public static AccessCodeResponse from(CustomerAccessCode c) {
         return AccessCodeResponse.builder()
@@ -65,6 +74,9 @@ public class AccessCodeResponse {
                 .projectsRemaining(c.getProjectQuota())
                 .allowedBrands(c.getAllowedBrandList())
                 .allowedProductIds(c.getAllowedProductIdList())
+                .extendedAt(c.getExtendedAt())
+                .extensionCount(c.getExtensionCount())
+                .topUpAllowed(!c.isRevoked())
                 .build();
     }
 

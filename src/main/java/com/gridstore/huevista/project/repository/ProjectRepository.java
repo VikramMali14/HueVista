@@ -23,6 +23,37 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
 
     Optional<Project> findByIdAndUserId(String id, String userId);
 
+    /**
+     * Every room created under a code any of these organizations issued — the shop's
+     * side of its customers' work, for the retailer dashboard. The image is fetch-joined
+     * for the same N+1 reason as {@link #findByUserIdWithImage}, and the customer's own
+     * account is joined lazily-safe through the code.
+     *
+     * Projects the shop owner created themselves are excluded ({@code p.user.id <> ...}
+     * is not enough — a retailer who redeemed their own code would appear twice), so the
+     * caller can concatenate this with the owner's own list without de-duplicating.
+     * Callers must guard against an empty collection (JPQL {@code IN ()} is invalid).
+     */
+    @Query("""
+            SELECT p FROM Project p
+              JOIN FETCH p.image
+              JOIN p.accessCode c
+             WHERE c.organization.id IN :orgIds
+               AND (p.user IS NULL OR p.user.id <> :excludeUserId)
+             ORDER BY p.updatedAt DESC
+            """)
+    List<Project> findByIssuingOrgIds(@Param("orgIds") java.util.Collection<String> orgIds,
+                                      @Param("excludeUserId") String excludeUserId,
+                                      org.springframework.data.domain.Pageable pageable);
+
+    /**
+     * Projects whose paid validity window is parked because the owner was subscribed
+     * when it was last looked at. The nightly sweep re-checks each owner and resumes the
+     * ones whose plan has since ended.
+     */
+    @Query("SELECT p FROM Project p WHERE p.accessPausedAt IS NOT NULL AND p.user IS NOT NULL")
+    List<Project> findPausedWindows();
+
     Optional<Project> findByShareToken(String shareToken);
 
     Optional<Project> findByReplicatePredictionId(String predictionId);

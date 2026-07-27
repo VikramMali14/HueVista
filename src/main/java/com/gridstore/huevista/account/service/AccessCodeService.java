@@ -63,6 +63,9 @@ public class AccessCodeService {
     /** Retailer-assigned customer codes are always valid for 10 days. */
     private static final int FIXED_VALID_DAYS = 10;
 
+    /** Most projects a single top-up may add to a code — a typo guard, not a policy. */
+    private static final int MAX_GRANT_PROJECTS = 20;
+
     @Transactional
     public AccessCodeResponse generateCode(String requestingUserId, String orgId, GenerateAccessCodeRequest request) {
         Organization org = orgRepository.findById(orgId)
@@ -239,6 +242,128 @@ public class AccessCodeService {
                 "org=" + orgId + " code=" + code.getCode());
         log.info("Access code updated: org={} code={}", orgId, code.getCode());
         return withAssignedProducts(code);
+    }
+
+    /**
+     * Add more projects to a code the shop has ALREADY issued.
+     *
+     * The counter case this exists for: a customer redeems a code for two rooms, then
+     * decides they want the hallway done too. Before this the only answer was a second
+     * code — a second set of digits for the customer to type, and the first code's
+     * remaining days silently competing with the new one's. Now the shop tops up the code
+     * in the customer's hand.
+     *
+     * Requires a LIVE subscription, for the same reason issuing a code does: each added
+     * project reserves an image credit against the shop's monthly quota, and there is no
+     * quota to reserve against without a plan. The reservation is all-or-nothing.
+     *
+     * Unlike {@link #updateCode} this deliberately DOES work on a redeemed code — a code
+     * nobody has redeemed yet has no customer to give more projects to.
+     */
+    @Transactional
+    public AccessCodeResponse grantExtraProjects(String requestingUserId, String codeId, int projects) {
+        if (projects < 1 || projects > MAX_GRANT_PROJECTS) {
+            throw new IllegalArgumentException(
+                    "Add between 1 and " + MAX_GRANT_PROJECTS + " projects at a time.");
+        }
+        CustomerAccessCode code = codeRepository.findById(codeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + codeId));
+        String orgId = code.getOrganization().getId();
+        requireOwnerOrManager(requestingUserId, orgId);
+
+        if (code.isRevoked()) {
+            throw new IllegalStateException("This code was cancelled — issue a new one instead.");
+        }
+        if (code.isExpired()) {
+            throw new IllegalStateException(
+                    "This code has expired. Add another 10 days to it first, then grant the projects.");
+        }
+        requireActiveSubscription(orgId,
+                "Your subscription has ended, so there's no image quota to draw from. "
+                + "Renew your plan to add projects to a customer's code.");
+
+        // Same all-or-nothing reservation as generation: one held image per project.
+        reserveProjectQuota(orgId, projects);
+
+        code.setProjectQuota(code.getProjectQuota() + projects);
+        code.setReservedImages(code.getReservedImages() + projects);
+        codeRepository.save(code);
+
+        // A code already redeemed into an account has a live entitlement behind it; the
+        // extra projects are worthless unless that allowance grows too.
+        if (code.getUsedByUser() != null) {
+            entitlementService.addProjectAllowance(code.getUsedByUser().getId(), projects);
+        }
+
+        auditService.record(requestingUserId, "ACCESS_CODE_PROJECTS_GRANTED", "ACCESS_CODE", codeId,
+                "org=" + orgId + " code=" + code.getCode() + " added=" + projects
+                        + " quota=" + code.getProjectQuota());
+        log.info("Access code {} topped up with {} project(s) (quota now {})",
+                code.getCode(), projects, code.getProjectQuota());
+        return withProjectsUsed(code);
+    }
+
+    /**
+     * Give a code another 10 days.
+     *
+     * Each extension REPLACES the window with a fresh 10 days from now rather than adding
+     * to whatever is left, so a code can never carry more than 10 days ahead of it however
+     * often it is renewed. That keeps the promise the customer was made when they were
+     * handed it ("valid for 10 days") true at every point in its life, and stops a code
+     * quietly becoming a permanent credential through repeated top-ups.
+     *
+     * Requires a LIVE subscription: extending access is extending the shop's service to
+     * that customer, and a shop with no plan has no service to extend. Nothing is charged
+     * — the projects on the code were already paid for; only their deadline moves.
+     */
+    @Transactional
+    public AccessCodeResponse extendValidity(String requestingUserId, String codeId) {
+        CustomerAccessCode code = codeRepository.findById(codeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + codeId));
+        String orgId = code.getOrganization().getId();
+        requireOwnerOrManager(requestingUserId, orgId);
+
+        if (code.isRevoked()) {
+            throw new IllegalStateException("This code was cancelled — issue a new one instead.");
+        }
+        requireActiveSubscription(orgId,
+                "Your subscription has ended, so you can't extend a customer's access. "
+                + "Renew your plan to give this code another " + FIXED_VALID_DAYS + " days.");
+
+        LocalDateTime newExpiry = LocalDateTime.now().plusDays(FIXED_VALID_DAYS);
+        code.setExpiresAt(newExpiry);
+        code.setValidDays(FIXED_VALID_DAYS);
+        code.setExtendedAt(LocalDateTime.now());
+        code.setExtensionCount(code.getExtensionCount() + 1);
+        codeRepository.save(code);
+
+        // The customer's own access window is what actually gates their projects; moving
+        // only the code's expiry would leave them locked out with a "valid" code in hand.
+        if (code.getUsedByUser() != null) {
+            entitlementService.extendAccessTo(code.getUsedByUser().getId(), newExpiry);
+        }
+
+        auditService.record(requestingUserId, "ACCESS_CODE_EXTENDED", "ACCESS_CODE", codeId,
+                "org=" + orgId + " code=" + code.getCode() + " until=" + newExpiry
+                        + " extensions=" + code.getExtensionCount());
+        log.info("Access code {} extended to {} (extension #{})",
+                code.getCode(), newExpiry, code.getExtensionCount());
+        return withProjectsUsed(code);
+    }
+
+    /** The shop's OWNER must hold a live plan for the top-up paths. */
+    private void requireActiveSubscription(String orgId, String message) {
+        String ownerId = resolveOrgOwnerUserId(orgId);
+        if (billingService.findEntitlingSubscription(ownerId).isEmpty()) {
+            throw new com.gridstore.huevista.common.exception.SubscriptionRequiredException(message);
+        }
+    }
+
+    /** Response carrying this code's live "projects used / remaining" counters. */
+    private AccessCodeResponse withProjectsUsed(CustomerAccessCode code) {
+        AccessCodeResponse res = withAssignedProducts(code);
+        res.applyProjectsUsed((int) projectRepository.countByAccessCodeId(code.getId()));
+        return res;
     }
 
     /**

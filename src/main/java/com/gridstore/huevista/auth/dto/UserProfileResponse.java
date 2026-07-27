@@ -24,7 +24,10 @@ public class UserProfileResponse {
         return UserProfileResponse.builder()
                 .id(user.getId())
                 .name(user.getName())
-                .email(user.getEmail())
+                // Null for an account provisioned from an access code: its stored address is
+                // synthesised from the code, not something anyone can write to. See
+                // Emails#publicEmailOf.
+                .email(com.gridstore.huevista.auth.util.Emails.publicEmailOf(user))
                 .picture(user.getPicture())
                 .provider(user.getProvider().name())
                 .role(user.getRole().name())

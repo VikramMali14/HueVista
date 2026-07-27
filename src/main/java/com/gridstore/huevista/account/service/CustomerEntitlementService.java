@@ -25,10 +25,21 @@ import java.util.List;
  * Owns the per-customer project entitlement: how many projects a CUSTOMER may create,
  * and until when their retailer-issued access is valid.
  *
- * Policy (confirmed with the product owner):
- *  - 1 project is included by default.
- *  - Extra projects are unlocked by the retailer granting one, OR the customer buying one.
- *  - On expiry, EVERYTHING is locked (create + view + manage) until a new code is redeemed.
+ * This governs ONE of the two ways an account gets projects — the shop route. An
+ * entitlement row exists only for a customer a shop onboarded with an access code, and
+ * everything here is downstream of that code: the allowance the shop assigned, the
+ * window the code opened, and any top-ups the shop later added to it.
+ *
+ * An account with NO row here signed up on its own and buys projects individually; that
+ * route is the ProjectCredit ledger and the per-project validity window, and asking such
+ * an account for a code it was never given is the wrong answer. {@link #hasEntitlement}
+ * is the dividing line.
+ *
+ * Policy:
+ *  - 1 project is included by default; the shop assigns more on the code, and can top the
+ *    same code up afterwards (see AccessCodeService#grantExtraProjects).
+ *  - On expiry, EVERYTHING is locked (create + view + manage) until a new code is redeemed
+ *    or the shop extends the one they hold.
  *  - Only role == CUSTOMER is gated; retailers/distributors/admins are unrestricted.
  */
 @Slf4j
@@ -233,6 +244,48 @@ public class CustomerEntitlementService {
         }
     }
 
+    /**
+     * Does this account hold a retailer-issued entitlement at all?
+     *
+     * The dividing line between the two ways an account gets projects. An account WITH a
+     * row was onboarded by a shop, and its allowance and expiry come from the code it
+     * redeemed. An account WITHOUT one signed up on its own and buys projects
+     * individually — asking it for an access code it was never given is the wrong answer.
+     */
+    @Transactional(readOnly = true)
+    public boolean hasEntitlement(String userId) {
+        return entitlementRepository.findByCustomerId(userId).isPresent();
+    }
+
+    /**
+     * Extend a customer's access window to at least {@code until} — used when the shop
+     * adds days to the code they redeemed. Only ever lengthens: a shop topping up a code
+     * must never shorten access the customer already has from somewhere else.
+     */
+    @Transactional
+    public void extendAccessTo(String customerUserId, LocalDateTime until) {
+        if (until == null) return;
+        entitlementRepository.findByCustomerId(customerUserId).ifPresent(ent -> {
+            if (ent.getAccessExpiresAt() == null || until.isAfter(ent.getAccessExpiresAt())) {
+                ent.setAccessExpiresAt(until);
+                entitlementRepository.save(ent);
+                log.info("Entitlement window extended to {} for customer {}", until, customerUserId);
+            }
+        });
+    }
+
+    /** Add {@code count} projects to a customer's allowance — the shop granting more on a code. */
+    @Transactional
+    public void addProjectAllowance(String customerUserId, int count) {
+        if (count <= 0) return;
+        entitlementRepository.findByCustomerId(customerUserId).ifPresent(ent -> {
+            ent.setProjectAllowance(ent.getProjectAllowance() + count);
+            entitlementRepository.save(ent);
+            log.info("Entitlement allowance +{} for customer {} (now {})",
+                    count, customerUserId, ent.getProjectAllowance());
+        });
+    }
+
     /** The customer's own status (for the UI to show remaining projects / expiry). Null if none. */
     @Transactional(readOnly = true)
     public CustomerEntitlementResponse getMyEntitlement(String userId) {
@@ -263,19 +316,6 @@ public class CustomerEntitlementService {
         entitlementRepository.save(ent);
         log.info("Retailer org {} granted +1 project to customer {} (allowance now {})",
                 retailerOrgId, customerUserId, ent.getProjectAllowance());
-        return CustomerEntitlementResponse.from(ent);
-    }
-
-    /** Credit one project after a verified one-time payment by the customer. */
-    @Transactional
-    public CustomerEntitlementResponse creditPurchasedProject(String userId) {
-        CustomerEntitlement ent = entitlementRepository.findByCustomerId(userId)
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "No active entitlement to credit. Redeem a retailer access code first."));
-        ent.setProjectAllowance(ent.getProjectAllowance() + 1);
-        entitlementRepository.save(ent);
-        log.info("Credited +1 project to customer {} after payment (allowance now {})",
-                userId, ent.getProjectAllowance());
         return CustomerEntitlementResponse.from(ent);
     }
 

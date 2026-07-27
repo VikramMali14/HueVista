@@ -81,7 +81,28 @@ class ApiContractTest {
                 "id", "name", "roomType", "notes", "status", "imageId", "imageUrl",
                 "cleanedImageUrl", "rawMaskUrl", "failureReason", "maskMode", "regions",
                 "hasShareLink", "shareExpiresAt", "sharedBrands", "sentToShopAt",
-                "createdAt", "updatedAt");
+                "createdAt", "updatedAt",
+                // Access: the studio disables the palette on readOnly rather than letting
+                // the user paint and then fail on autosave.
+                "readOnly", "readOnlyReason", "accessExpiresAt", "reopenPricePaise");
+    }
+
+    @Test
+    void project_summary_matches_frontend_ProjectSummary() {
+        assertThat(propsOf("ProjectSummaryResponse")).containsExactlyInAnyOrder(
+                "id", "name", "status", "imageId", "imageUrl", "cleanedImageUrl",
+                "regionCount", "hasShareLink", "createdAt", "updatedAt",
+                // Dashboard filtering: OWN vs CUSTOMER rooms, and who each one belongs to.
+                "source", "customerName", "accessCode", "accessCodeId",
+                "readOnly", "accessExpiresAt");
+    }
+
+    @Test
+    void project_purchase_options_match_frontend() {
+        assertThat(propsOf("ProjectPurchaseOptionsResponse")).containsExactlyInAnyOrder(
+                "subscribed", "projectPricePaise", "subscribedProjectPricePaise",
+                "unsubscribedProjectPricePaise", "reopenPricePaise", "validDays",
+                "currency", "availableCredits");
     }
 
     @Test
