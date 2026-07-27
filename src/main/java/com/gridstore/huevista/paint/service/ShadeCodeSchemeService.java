@@ -47,9 +47,17 @@ public class ShadeCodeSchemeService {
     @Transactional(readOnly = true)
     public ShadeCodeSchemeResponse get(String userId, String orgId) {
         requireMember(userId, orgId);
+        return describe(orgId);
+    }
+
+    /** This shop's full display settings: the code pattern, and whether names show. */
+    private ShadeCodeSchemeResponse describe(String orgId) {
+        boolean showNames = organizationRepository.findById(orgId)
+                .map(Organization::isShowShadeNames)
+                .orElse(true);
         return schemeRepository.findByOrganizationId(orgId)
-                .map(ShadeCodeSchemeResponse::from)
-                .orElseGet(ShadeCodeSchemeResponse::empty);
+                .map(scheme -> ShadeCodeSchemeResponse.from(scheme, showNames))
+                .orElseGet(() -> ShadeCodeSchemeResponse.empty(showNames));
     }
 
     @Transactional
@@ -62,11 +70,19 @@ public class ShadeCodeSchemeService {
         String infix = normalize(req.getInfix());
         String suffix = normalize(req.getSuffix());
 
-        // All three parts empty = the shop wants no scheme; drop the row.
+        // Names are a separate switch on the org, so clearing the pattern (which deletes
+        // its row) leaves the name choice standing. Null means "not editing that".
+        if (req.getShowNames() != null && req.getShowNames() != org.isShowShadeNames()) {
+            org.setShowShadeNames(req.getShowNames());
+            organizationRepository.save(org);
+            log.info("Shade names {} for org={}", req.getShowNames() ? "shown" : "hidden", orgId);
+        }
+
+        // All three parts empty = the shop wants no pattern; drop the row.
         if (prefix.isEmpty() && infix.isEmpty() && suffix.isEmpty()) {
             schemeRepository.findByOrganizationId(orgId).ifPresent(schemeRepository::delete);
             log.info("Shade-code scheme cleared: org={}", orgId);
-            return ShadeCodeSchemeResponse.empty();
+            return ShadeCodeSchemeResponse.empty(org.isShowShadeNames());
         }
 
         ShadeCodeScheme scheme = schemeRepository.findByOrganizationId(orgId)
@@ -76,24 +92,30 @@ public class ShadeCodeSchemeService {
         scheme.setSuffix(suffix);
         scheme = schemeRepository.save(scheme);
         log.info("Shade-code scheme saved: org={} prefix={} infix={} suffix={}", orgId, prefix, infix, suffix);
-        return ShadeCodeSchemeResponse.from(scheme);
+        return ShadeCodeSchemeResponse.from(scheme, org.isShowShadeNames());
     }
 
     // --- Studio-side read (retailer staff, customers, guests) ---
 
     /**
-     * The scheme the calling principal's shop uses, resolved the same way the
-     * studio resolves shop combos. The empty scheme (never an error) when there
-     * is no shop or the shop hasn't set one — the studio then keeps codes hidden
-     * from guests exactly as before.
+     * The display settings the calling principal's shop uses, resolved the same way the
+     * studio resolves shop combos: their own shop for retailer staff and painters, their
+     * retailer's for an entitled customer, the issuing shop's for a guest.
+     *
+     * This answers for EVERYONE under the shop, not only guests. A shop that builds its
+     * own code scheme is replacing the paint company's numbering with its own — so its
+     * own staff, its painters and its customers all need to be reading the same codes the
+     * counter reads. Resolving this for guests alone meant the one pattern the shop
+     * defined appeared on exactly one surface, and the shop saw manufacturer codes their
+     * customers had never been shown.
+     *
+     * The empty response (never an error) when there is no shop to ask.
      */
     @Transactional(readOnly = true)
     public ShadeCodeSchemeResponse forPrincipal(String principalName, boolean guest) {
         String orgId = guest ? orgForGuest(principalName) : orgForUser(principalName);
         if (orgId == null) return ShadeCodeSchemeResponse.empty();
-        return schemeRepository.findByOrganizationId(orgId)
-                .map(ShadeCodeSchemeResponse::from)
-                .orElseGet(ShadeCodeSchemeResponse::empty);
+        return describe(orgId);
     }
 
     /** Guest principal = the redeemed access code's id; its shop owns the scheme. */
@@ -104,7 +126,15 @@ public class ShadeCodeSchemeService {
                 .orElse(null);
     }
 
-    /** Member of a retailer org → that org; otherwise the valid entitlement's shop. */
+    /**
+     * Member of a retailer org → that org; otherwise the shop that onboarded them.
+     *
+     * The entitlement lookup deliberately does NOT require the window to still be open.
+     * A customer whose access has lapsed still sees their saved rooms in view-only, and
+     * showing manufacturer codes there — on the very colours that were presented under
+     * the shop's own numbering — would leak exactly what the scheme exists to withhold,
+     * at the moment the shop has least control over the screen.
+     */
     private String orgForUser(String userId) {
         String memberOrg = membershipRepository.findByUserId(userId).stream()
                 .map(m -> m.getOrganization())
@@ -114,7 +144,7 @@ public class ShadeCodeSchemeService {
                 .orElse(null);
         if (memberOrg != null) return memberOrg;
         return entitlementRepository.findByCustomerId(userId)
-                .filter(ent -> !ent.isExpired() && ent.getRetailerOrg() != null)
+                .filter(ent -> ent.getRetailerOrg() != null)
                 .map(ent -> ent.getRetailerOrg().getId())
                 .orElse(null);
     }

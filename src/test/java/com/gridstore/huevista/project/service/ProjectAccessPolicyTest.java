@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -42,10 +43,14 @@ class ProjectAccessPolicyTest {
     }
 
     private Subscription sub(boolean trial) {
+        // A trial runs on the FREE tier and its project allowance IS that tier's image
+        // quota, so the limit has to come off the subscription rather than a constant.
+        Plan plan = trial ? Plan.FREE : Plan.PROFESSIONAL;
         return Subscription.builder()
-                .plan(Plan.PROFESSIONAL)
+                .plan(plan)
                 .status(SubscriptionStatus.ACTIVE)
                 .trial(trial)
+                .aiGenerationsLimit(plan.getMonthlyImageLimit())
                 .build();
     }
 
@@ -122,19 +127,29 @@ class ProjectAccessPolicyTest {
     }
 
     @Test
-    void trial_retailer_can_create_first_project() {
+    void trial_retailer_can_create_a_project_within_the_free_tiers_three() {
         activeSub(sub(true));
         trialSlotAvailable(true);
         assertThatCode(() -> fullGate().assertCanCreateProject(retailer(true, true))).doesNotThrowAnyException();
     }
 
     @Test
-    void trial_retailer_blocked_after_one_project() {
+    void trial_retailer_blocked_once_the_free_tiers_projects_are_used() {
         activeSub(sub(true));
         trialSlotAvailable(false);
         assertThatThrownBy(() -> fullGate().assertCanCreateProject(retailer(true, true)))
                 .isInstanceOf(SubscriptionRequiredException.class)
-                .hasMessageContaining("free trial includes one project");
+                .hasMessageContaining("free trial includes 3 projects");
+    }
+
+    /** The cap is read off the plan, so it moves with the tier instead of a constant. */
+    @Test
+    void theTrialCapIsTheFreeTiersImageQuota() {
+        activeSub(sub(true));
+        trialSlotAvailable(true);
+        fullGate().assertCanCreateProject(retailer(true, true));
+        verify(subscriptionRepository)
+                .claimTrialProjectSlot(any(), eq(Plan.FREE.getMonthlyImageLimit()));
     }
 
     @Test

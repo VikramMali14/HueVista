@@ -67,6 +67,13 @@ public class BillingService {
         if (request.getPlan() == Plan.ENTERPRISE) {
             throw new IllegalArgumentException("Enterprise plans require manual setup. Please contact sales.");
         }
+        // The free tier is granted, never sold — there is nothing to charge for, and
+        // letting it through would create a Razorpay subscription for Rs. 0.
+        if (request.getPlan().isFree()) {
+            throw new IllegalArgumentException(
+                    "The free trial is included with your account — there's nothing to pay. "
+                    + "Choose a paid plan to keep going once it ends.");
+        }
 
         // An active free trial never blocks buying a plan (the trial is superseded once
         // the plan activates). An active PAID subscription allows exactly one in-place
@@ -227,7 +234,9 @@ public class BillingService {
         }
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
-        Plan p = (plan == null || plan == Plan.ENTERPRISE) ? Plan.PROFESSIONAL : plan;
+        // A trial on a PAID tier handed out a month of Professional quota for nothing and
+        // made the subscribe decision feel like a downgrade. The free tier is the trial.
+        Plan p = (plan == null || plan == Plan.ENTERPRISE) ? Plan.FREE : plan;
         LocalDateTime now = LocalDateTime.now();
         Subscription sub = Subscription.builder()
                 .user(user)
@@ -896,7 +905,8 @@ public class BillingService {
             case STARTER -> planIdStarter;
             case PROFESSIONAL -> planIdProfessional;
             case BUSINESS -> planIdBusiness;
-            case ENTERPRISE -> "";
+            // Neither is sold through Checkout: FREE is granted, ENTERPRISE is arranged.
+            case FREE, ENTERPRISE -> "";
         };
     }
 

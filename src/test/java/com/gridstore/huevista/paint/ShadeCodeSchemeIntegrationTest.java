@@ -207,6 +207,80 @@ class ShadeCodeSchemeIntegrationTest {
                 .andExpect(jsonPath("$.suffix").value(""));
     }
 
+    /**
+     * Names are a separate switch from the pattern, and clearing the pattern must not
+     * quietly turn them back on — a shop that hid the paint company would otherwise have
+     * it reappear the moment they stopped using their own numbering.
+     */
+    @Test
+    void hidingNamesSurvivesClearingThePattern() throws Exception {
+        mockMvc.perform(put("/api/organizations/" + orgId + "/shade-code-scheme")
+                        .header("Authorization", "Bearer " + retailerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"prefix\":\"AB\",\"showNames\":false}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.showNames").value(false));
+
+        // Clearing every part deletes the pattern row; the name choice lives on the org.
+        mockMvc.perform(put("/api/organizations/" + orgId + "/shade-code-scheme")
+                        .header("Authorization", "Bearer " + retailerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"prefix\":\"\",\"infix\":\"\",\"suffix\":\"\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.prefix").value(""))
+                .andExpect(jsonPath("$.showNames").value(false));
+    }
+
+    /** Omitting showNames edits only the pattern — it never flips the name choice. */
+    @Test
+    void editingThePatternAloneLeavesTheNameChoiceAlone() throws Exception {
+        mockMvc.perform(put("/api/organizations/" + orgId + "/shade-code-scheme")
+                        .header("Authorization", "Bearer " + retailerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"prefix\":\"AB\",\"showNames\":false}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(put("/api/organizations/" + orgId + "/shade-code-scheme")
+                        .header("Authorization", "Bearer " + retailerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"prefix\":\"ZZ\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.prefix").value("ZZ"))
+                .andExpect(jsonPath("$.showNames").value(false));
+    }
+
+    /** Everyone under the shop reads the same settings — including guests. */
+    @Test
+    void theNameChoiceReachesGuestsToo() throws Exception {
+        mockMvc.perform(put("/api/organizations/" + orgId + "/shade-code-scheme")
+                        .header("Authorization", "Bearer " + retailerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"prefix\":\"AB\",\"showNames\":false}"))
+                .andExpect(status().isOk());
+
+        MvcResult r = mockMvc.perform(post("/api/access-codes/redeem-guest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + CODE + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        String guestToken = objectMapper.readTree(r.getResponse().getContentAsString())
+                .get("guestToken").asText();
+
+        mockMvc.perform(get("/api/me/shade-code-scheme")
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.showNames").value(false));
+    }
+
+    /** A shop that has set nothing shows names, which is the default everywhere. */
+    @Test
+    void namesShowUntilAShopSaysOtherwise() throws Exception {
+        mockMvc.perform(get("/api/me/shade-code-scheme")
+                        .header("Authorization", "Bearer " + retailerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.showNames").value(true));
+    }
+
     private String login(String email, String password) throws Exception {
         MvcResult r = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)

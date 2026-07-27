@@ -30,14 +30,11 @@ import org.springframework.transaction.annotation.Transactional;
  *     UNLESS the retailer has bought a project outright. A standalone project
  *     purchase is exactly the escape hatch for a shop whose plan has lapsed:
  *     refusing it here would have sold them something they then could not use.
- *  3. The free trial includes exactly ONE project; a second one requires an
- *     active PAID plan subscription (or, again, a bought project).
+ *  3. The free trial includes as many projects as its plan's image quota — three
+ *     on the free tier. Past that it takes a paid plan, or a bought project.
  */
 @Service
 public class ProjectAccessPolicy {
-
-    /** Projects a retailer may create while on the free trial. */
-    static final int TRIAL_PROJECT_LIMIT = 1;
 
     private final SubscriptionRepository subscriptionRepository;
     private final ProjectRepository projectRepository;
@@ -101,16 +98,20 @@ public class ProjectAccessPolicy {
             return; // an extra project bought on top of a plan bypasses the trial allowance
         }
 
-        // 3) The free trial includes exactly one project; more require a paid plan.
+        // 3) The trial's project allowance IS its image quota — three on the free tier —
+        //    rather than a second constant that can drift from the plan it describes.
         //    Claimed against a MONOTONIC counter on the subscription, not a live count of
         //    rows: counting live projects meant deleting the trial project handed the slot
         //    straight back, so a trial account could create unlimited projects one at a
-        //    time while the message promised exactly one. The conditional UPDATE also
+        //    time while the message promised a fixed number. The conditional UPDATE also
         //    makes parallel creates safe.
+        int trialProjects = Math.max(1, sub.getAiGenerationsLimit());
         if (sub.isTrial()
-                && subscriptionRepository.claimTrialProjectSlot(sub.getId(), TRIAL_PROJECT_LIMIT) == 0) {
+                && subscriptionRepository.claimTrialProjectSlot(sub.getId(), trialProjects) == 0) {
             throw new SubscriptionRequiredException(
-                    "Your free trial includes one project. Subscribe to a plan to create more.");
+                    "Your free trial includes " + trialProjects + " project"
+                    + (trialProjects == 1 ? "" : "s")
+                    + ". Subscribe to a plan to create more, or buy a single project.");
         }
         // Paid subscription → allowed. (A per-plan project cap with one-time
         // top-ups once it's reached is a planned follow-on.)

@@ -70,6 +70,23 @@ public class Organization {
     @Builder.Default
     private boolean featuresRestricted = false;
 
+    /**
+     * RETAILER only: whether paint NAMES are shown to anyone working under this shop.
+     *
+     * A shop that has built its own shade-code scheme is usually hiding which paint
+     * company a colour comes from; leaving "Asian Paints Ivory Mist" printed beside the
+     * coded number gives it straight back, and a customer can search the real product in
+     * seconds. Turning this off drops the name everywhere the colour appears — studio,
+     * PDF board, share link, kiosk — leaving the shop's own code as the only handle.
+     *
+     * Lives on the organization rather than the code scheme because the scheme row is
+     * deleted when every part is blank, and a shop may well want names hidden without
+     * running a code pattern at all.
+     */
+    @Column(nullable = false, columnDefinition = "boolean not null default true")
+    @Builder.Default
+    private boolean showShadeNames = true;
+
     // White-label portal (RETAILER only)
     @Builder.Default
     private boolean whitelabelEnabled = false;
