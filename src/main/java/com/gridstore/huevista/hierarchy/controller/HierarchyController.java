@@ -5,8 +5,11 @@ import com.gridstore.huevista.auth.dto.CreatePainterRequest;
 import com.gridstore.huevista.auth.dto.CreateRetailerRequest;
 import com.gridstore.huevista.common.audit.AuditService;
 import com.gridstore.huevista.hierarchy.dto.AssignBrandsRequest;
+import com.gridstore.huevista.hierarchy.dto.AssignFeaturesRequest;
+import com.gridstore.huevista.hierarchy.dto.MyAccessResponse;
 import com.gridstore.huevista.hierarchy.dto.NetworkReportResponse;
 import com.gridstore.huevista.hierarchy.dto.RetailerBrandOption;
+import com.gridstore.huevista.hierarchy.dto.RetailerFeatureOption;
 import com.gridstore.huevista.hierarchy.service.HierarchyService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -25,6 +28,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * The account hierarchy: ADMIN → DISTRIBUTOR → RETAILER → PAINTER. Each level
@@ -79,7 +83,9 @@ public class HierarchyController {
 
     @Operation(summary = "List a shop's brand assignments",
             description = "ADMIN or DISTRIBUTOR. Every paint brand with a flag for whether the shop currently "
-                    + "has it assigned. A shop with none assigned is unrestricted (all brands).")
+                    + "has it assigned. Whether the shop is limited at all is reported by `brandsRestricted` "
+                    + "on its node in /network — no rows can mean either 'unrestricted' or 'every brand "
+                    + "revoked'.")
     @PreAuthorize("hasAnyRole('ADMIN','DISTRIBUTOR')")
     @GetMapping("/retailers/{retailerOrgId}/brands")
     public ResponseEntity<List<RetailerBrandOption>> retailerBrands(
@@ -88,8 +94,10 @@ public class HierarchyController {
     }
 
     @Operation(summary = "Set a shop's brand assignments",
-            description = "ADMIN or DISTRIBUTOR. Replaces the shop's brand selection wholesale; an empty list "
-                    + "clears every restriction (the shop reverts to all brands).")
+            description = "ADMIN or DISTRIBUTOR. Replaces the shop's brand selection wholesale. "
+                    + "`unrestricted` lifts the limit entirely; otherwise `brandIds` is the complete "
+                    + "allowance and an empty list really does mean no brands at all — it does NOT "
+                    + "clear the restriction.")
     @PreAuthorize("hasAnyRole('ADMIN','DISTRIBUTOR')")
     @PutMapping("/retailers/{retailerOrgId}/brands")
     public ResponseEntity<List<RetailerBrandOption>> setRetailerBrands(
@@ -99,7 +107,60 @@ public class HierarchyController {
         List<RetailerBrandOption> options =
                 hierarchyService.assignBrands(auth.getName(), retailerOrgId, request.getBrandIds(), request.isUnrestricted());
         auditService.record(auth.getName(), "RETAILER_BRANDS_ASSIGNED", "ORGANIZATION", retailerOrgId,
-                request.getBrandIds() == null ? "0 brands" : request.getBrandIds().size() + " brands");
+                request.isUnrestricted() ? "unrestricted (all brands)"
+                        : (request.getBrandIds() == null ? 0 : request.getBrandIds().size()) + " brands");
         return ResponseEntity.ok(options);
+    }
+
+    @Operation(summary = "List everything a distributor can grant",
+            description = "ADMIN or DISTRIBUTOR. The paint companies and pages available to grant, "
+                    + "with nothing assigned — what the shop-creation form fills its checklists from, "
+                    + "before there is a shop to read a selection off.")
+    @PreAuthorize("hasAnyRole('ADMIN','DISTRIBUTOR')")
+    @GetMapping("/grantable")
+    public ResponseEntity<Map<String, Object>> grantable() {
+        return ResponseEntity.ok(Map.of(
+                "brands", hierarchyService.grantableBrands(),
+                "features", hierarchyService.grantableFeatures()));
+    }
+
+    @Operation(summary = "List a shop's page access",
+            description = "ADMIN or DISTRIBUTOR. Every grantable page (Studio, Colour finder, Catalogue, "
+                    + "Products, Customer portal, My network) with a flag for whether the shop can open it. "
+                    + "An unrestricted shop reports every page as assigned.")
+    @PreAuthorize("hasAnyRole('ADMIN','DISTRIBUTOR')")
+    @GetMapping("/retailers/{retailerOrgId}/features")
+    public ResponseEntity<List<RetailerFeatureOption>> retailerFeatures(
+            @PathVariable String retailerOrgId, Authentication auth) {
+        return ResponseEntity.ok(hierarchyService.retailerFeatureOptions(auth.getName(), retailerOrgId));
+    }
+
+    @Operation(summary = "Set a shop's page access",
+            description = "ADMIN or DISTRIBUTOR. Replaces the shop's page selection wholesale. "
+                    + "`unrestricted` lifts the limit entirely; otherwise `features` is the complete "
+                    + "allowance and an empty list really does mean no optional pages. The dashboard, "
+                    + "account and plan pages are never restrictable.")
+    @PreAuthorize("hasAnyRole('ADMIN','DISTRIBUTOR')")
+    @PutMapping("/retailers/{retailerOrgId}/features")
+    public ResponseEntity<List<RetailerFeatureOption>> setRetailerFeatures(
+            @PathVariable String retailerOrgId,
+            @Valid @RequestBody AssignFeaturesRequest request,
+            Authentication auth) {
+        List<RetailerFeatureOption> options = hierarchyService.assignFeatures(
+                auth.getName(), retailerOrgId, request.getFeatures(), request.isUnrestricted());
+        auditService.record(auth.getName(), "RETAILER_FEATURES_ASSIGNED", "ORGANIZATION", retailerOrgId,
+                request.isUnrestricted() ? "unrestricted (all pages)"
+                        : (request.getFeatures() == null ? 0 : request.getFeatures().size()) + " pages");
+        return ResponseEntity.ok(options);
+    }
+
+    @Operation(summary = "My access",
+            description = "The signed-in caller's own brand and page allowances — what the app uses to "
+                    + "decide which navigation tabs to render and which pages to admit. Non-retailers "
+                    + "always come back unrestricted.")
+    @PreAuthorize("isAuthenticated()")
+    @GetMapping("/my-access")
+    public ResponseEntity<MyAccessResponse> myAccess(Authentication auth) {
+        return ResponseEntity.ok(hierarchyService.myAccess(auth.getName()));
     }
 }

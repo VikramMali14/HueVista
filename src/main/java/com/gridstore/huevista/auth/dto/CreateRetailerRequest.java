@@ -5,7 +5,10 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
-/** Admin-only: create a RETAILER (shop) account with a provisioned org + trial. */
+import java.util.ArrayList;
+import java.util.List;
+
+/** ADMIN or DISTRIBUTOR: create a RETAILER (shop) account with a provisioned org + trial. */
 @Data
 public class CreateRetailerRequest {
 
@@ -28,4 +31,25 @@ public class CreateRetailerRequest {
     private String phone;
     /** "starter" | "pro"/"professional" | "business" — the shop's plan tier. */
     private String tier;
+
+    // ── Access granted at creation time (distributor-created shops) ───────
+    //
+    // A distributor decides what a shop can reach as part of setting it up, rather
+    // than creating an account with the run of the whole product and tightening it
+    // afterwards. Both restrictions default to UNRESTRICTED so an admin-created shop
+    // — and every existing caller that never sends these fields — behaves exactly as
+    // it did before. They are ignored when the new shop has no distributor to grant
+    // them (an admin creating an unlinked shop).
+
+    /** Brand ids the shop may work with. Ignored when {@link #brandsUnrestricted}. */
+    private List<Long> brandIds = new ArrayList<>();
+
+    /** True = the shop carries every paint company. */
+    private boolean brandsUnrestricted = true;
+
+    /** {@code AppFeature} names the shop may open. Ignored when {@link #featuresUnrestricted}. */
+    private List<String> features = new ArrayList<>();
+
+    /** True = the shop opens every page. */
+    private boolean featuresUnrestricted = true;
 }

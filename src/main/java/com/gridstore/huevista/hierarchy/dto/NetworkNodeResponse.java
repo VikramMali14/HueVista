@@ -38,11 +38,27 @@ public class NetworkNodeResponse {
     private long codesRedeemed;
 
     /**
-     * Paint brands the distributor has granted this shop (RETAILER nodes only).
-     * Empty means the shop is unrestricted ("all brands"); null on nodes where
-     * the concept does not apply.
+     * Paint brands the distributor has granted this shop (RETAILER nodes only);
+     * null on nodes where the concept does not apply.
+     *
+     * Read it together with {@link #brandsRestricted} — an empty list means "all
+     * brands" when the shop is unrestricted and "no brands at all" when it is not,
+     * and the list alone cannot tell those apart.
      */
     private List<String> assignedBrands;
+
+    /** RETAILER nodes: whether {@link #assignedBrands} is a limit or just a snapshot. */
+    private boolean brandsRestricted;
+
+    /**
+     * Labels of the pages the distributor has switched on for this shop (RETAILER
+     * nodes only). Same reading rule as {@link #assignedBrands}: pair it with
+     * {@link #featuresRestricted}.
+     */
+    private List<String> assignedFeatures;
+
+    /** RETAILER nodes: whether {@link #assignedFeatures} is a limit or just a snapshot. */
+    private boolean featuresRestricted;
 
     @Builder.Default
     private List<NetworkNodeResponse> children = new ArrayList<>();

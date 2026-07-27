@@ -1,8 +1,12 @@
 package com.gridstore.huevista.account.service;
 
+import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.account.repository.RetailerBrandAssignmentRepository;
+import com.gridstore.huevista.auth.model.User;
+import com.gridstore.huevista.auth.model.UserRole;
+import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,11 +27,13 @@ import java.util.Set;
  * assign/revoke feature decorative. This service turns it into a real constraint at
  * the boundary that matters — what a shop can hand on to its customers.
  *
- * The public marketing catalogue ({@code GET /api/shades/**}) is deliberately NOT
- * filtered by this: it is an anonymous, heavily-cached browse surface, and making it
- * per-caller would both break the cache and change the product. The constraint is
- * enforced where it has consequence instead: a shop cannot unlock a brand it does not
- * carry on a customer access code.
+ * The anonymous marketing catalogue ({@code GET /api/shades/**}) is deliberately NOT
+ * filtered by this: it is a public, heavily-cached browse surface, and making it
+ * per-caller would both break the cache and change the product. Signed-in shop tools
+ * ask {@code GET /api/shades/mine} instead, which applies
+ * {@link #allowedBrandSlugsForUser(String)} on top of the same cached data — so a
+ * restricted shop's Studio and Colour finder only ever offer the companies its
+ * distributor assigned, while the shopfront stays whole and cacheable.
  */
 @Slf4j
 @Service
@@ -36,6 +42,7 @@ public class BrandAccessService {
 
     private final OrganizationRepository orgRepository;
     private final RetailerBrandAssignmentRepository brandAssignmentRepository;
+    private final UserRepository userRepository;
 
     /**
      * The brand display names a shop may offer.
@@ -56,6 +63,49 @@ public class BrandAccessService {
                 .map(a -> a.getBrand().getName())
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
         return Optional.of(names);
+    }
+
+    /**
+     * The brand SLUGS a shop may offer — the same restriction as
+     * {@link #allowedBrandNames(String)}, keyed the way the shade catalogue is.
+     *
+     * Filtering shades by slug rather than display name keeps the match exact:
+     * brand names are free text that admins edit from the shade-upload console,
+     * and one renamed company would otherwise silently drop a shop's whole
+     * catalogue.
+     */
+    @Transactional(readOnly = true)
+    public Optional<Set<String>> allowedBrandSlugs(String retailerOrgId) {
+        Organization org = orgRepository.findById(retailerOrgId)
+                .orElseThrow(() -> new ResourceNotFoundException("Organization not found: " + retailerOrgId));
+        if (!org.isBrandsRestricted()) {
+            return Optional.empty();
+        }
+        Set<String> slugs = brandAssignmentRepository.findWithBrandByRetailerIdIn(List.of(retailerOrgId))
+                .stream()
+                .map(a -> a.getBrand().getSlug())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        return Optional.of(slugs);
+    }
+
+    /**
+     * The brand slugs a signed-in user's shop may offer, or empty when they are not
+     * a restricted retailer.
+     *
+     * Anyone who is not a RETAILER browses the whole catalogue: this is a
+     * distributor→shop constraint, and applying it to an admin or a distributor
+     * (who has no shop org of their own) would hide the catalogue from the very
+     * people who curate it.
+     */
+    @Transactional(readOnly = true)
+    public Optional<Set<String>> allowedBrandSlugsForUser(String userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
+        if (user.getRole() != UserRole.RETAILER) {
+            return Optional.empty();
+        }
+        return orgRepository.findByOwnerIdAndType(userId, OrgType.RETAILER).stream().findFirst()
+                .flatMap(org -> allowedBrandSlugs(org.getId()));
     }
 
     /**
