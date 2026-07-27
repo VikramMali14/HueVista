@@ -26,9 +26,12 @@ import org.springframework.transaction.annotation.Transactional;
  *     when {@code app.mail.enabled=false}. Production turns both flags on and
  *     gets the full gate; a bare environment degrades to no verification gate
  *     rather than a deadlock.
- *  2. An active subscription is required — the free trial counts as active.
+ *  2. An active subscription is required — the free trial counts as active —
+ *     UNLESS the retailer has bought a project outright. A standalone project
+ *     purchase is exactly the escape hatch for a shop whose plan has lapsed:
+ *     refusing it here would have sold them something they then could not use.
  *  3. The free trial includes exactly ONE project; a second one requires an
- *     active PAID plan subscription.
+ *     active PAID plan subscription (or, again, a bought project).
  */
 @Service
 public class ProjectAccessPolicy {
@@ -54,6 +57,17 @@ public class ProjectAccessPolicy {
 
     @Transactional(readOnly = true)
     public void assertCanCreateProject(User user) {
+        assertCanCreateProject(user, false);
+    }
+
+    /**
+     * @param holdsPurchasedProject the caller has already claimed a paid project credit
+     *        for this creation, so the subscription and trial-allowance gates are
+     *        satisfied by the payment itself. Verification is still required — a shop
+     *        we cannot reach is a shop we cannot support, whoever paid.
+     */
+    @Transactional(readOnly = true)
+    public void assertCanCreateProject(User user, boolean holdsPurchasedProject) {
         // Only the retailer funnel is gated here.
         if (user.getRole() != UserRole.RETAILER) {
             return;
@@ -69,13 +83,23 @@ public class ProjectAccessPolicy {
                     "Verify your " + what + " before creating a project.");
         }
 
-        // 2) Must have an active subscription — the trial granted at signup counts.
+        // 2) Must have an active subscription — the trial granted at signup counts —
+        //    or a project they have already paid for outright.
         Subscription sub = subscriptionRepository
                 .findEntitling(user.getId(), SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED,
                         java.time.LocalDateTime.now())
                 .stream().findFirst()
-                .orElseThrow(() -> new SubscriptionRequiredException(
-                        "Your trial has ended. Subscribe to a plan to create projects."));
+                .orElse(null);
+        if (sub == null) {
+            if (holdsPurchasedProject) {
+                return; // paid for; nothing left to check
+            }
+            throw new SubscriptionRequiredException(
+                    "Your trial has ended. Subscribe to a plan, or buy a single project, to keep going.");
+        }
+        if (holdsPurchasedProject) {
+            return; // an extra project bought on top of a plan bypasses the trial allowance
+        }
 
         // 3) The free trial includes exactly one project; more require a paid plan.
         //    Claimed against a MONOTONIC counter on the subscription, not a live count of

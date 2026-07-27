@@ -27,8 +27,10 @@ import org.springframework.transaction.annotation.Transactional;
  * The anonymous kiosk money path: Razorpay order for the link's price →
  * Checkout (UPI / QR) → server-side signature verification → one access code,
  * auto guest-redeemed so the customer lands straight in the studio. The
- * platform keeps the configured base (Rs.50); the excess is the retailer's
- * share, recorded on the payment row that the wallet balance is derived from.
+ * platform keeps the base in force for that shop (Rs.50 while their plan is live,
+ * Rs.99 once it has lapsed); the excess is the retailer's share, recorded on the
+ * payment row that the wallet balance is derived from. The kiosk itself never
+ * closes — a walk-in at the counter must always be able to pay and start.
  *
  * Mirrors {@link com.gridstore.huevista.billing.service.ProjectCreditService}
  * with one deliberate difference: replaying an already-redeemed payment is NOT
@@ -45,15 +47,13 @@ public class StoreKioskService {
     private final StoreLinkRepository linkRepository;
     private final StorePaymentRepository paymentRepository;
     private final AccessCodeService accessCodeService;
+    private final com.gridstore.huevista.billing.service.PricingService pricingService;
 
     @Value("${razorpay.key-id:}")
     private String keyId;
 
     @Value("${razorpay.key-secret:}")
     private String keySecret;
-
-    @Value("${app.store.min-price-paise:5000}")
-    private int minPricePaise;
 
     @Value("${app.store.currency:INR}")
     private String currency;
@@ -69,9 +69,15 @@ public class StoreKioskService {
         if (keyId.isBlank() || keySecret.isBlank()) {
             throw new IllegalStateException("Online payment is not configured. Please pay at the counter.");
         }
+        // What the customer pays is the shop's price or the platform base, whichever is
+        // higher. The base doubles once a shop's plan lapses, so this can exceed the price
+        // the retailer typed — the kiosk stays open either way, which is the point: a
+        // customer at the counter must never be turned away because a subscription ended.
+        int chargePaise = pricingService.kioskChargePaise(
+                link.getPricePaise(), link.getOrganization().getId());
         try {
             JSONObject req = new JSONObject();
-            req.put("amount", link.getPricePaise());
+            req.put("amount", chargePaise);
             req.put("currency", currency);
             req.put("receipt", "store_" + System.currentTimeMillis());
             JSONObject notes = new JSONObject();
@@ -81,12 +87,12 @@ public class StoreKioskService {
 
             Order order = razorpayClient.orders.create(req);
             String orderId = order.get("id");
-            log.info("Store kiosk order created: slug={} order={} amount={}",
-                    slug, orderId, link.getPricePaise());
+            log.info("Store kiosk order created: slug={} order={} amount={} listed={}",
+                    slug, orderId, chargePaise, link.getPricePaise());
 
             return StoreOrderResponse.builder()
                     .orderId(orderId)
-                    .amount(link.getPricePaise())
+                    .amount(chargePaise)
                     .currency(currency)
                     .razorpayKeyId(keyId)
                     .shopName(link.getOrganization().getName())
@@ -131,6 +137,11 @@ public class StoreKioskService {
         // merchant account. Fetch the order and confirm it is a kiosk order for
         // THIS store link — otherwise a payment for any other (cheaper) order
         // could be redeemed here — and read the authoritative paid amount from it.
+        // The floor the payment is checked against is the SUBSCRIBED base, not today's.
+        // An order placed at Rs. 50 moments before a shop's plan lapsed is a payment the
+        // customer genuinely made at a price we genuinely quoted; rejecting it at verify
+        // would take their money's worth away over a timing accident on our side.
+        int floorPaise = pricingService.kioskBaseSubscribedPaise();
         int paidPaise;
         try {
             Order order = razorpayClient.orders.fetch(req.getOrderId());
@@ -138,7 +149,7 @@ public class StoreKioskService {
             JSONObject notes = order.get("notes");
             String purpose = notes != null ? notes.optString("purpose", "") : "";
             String storeLinkId = notes != null ? notes.optString("storeLinkId", "") : "";
-            if (!ORDER_PURPOSE.equals(purpose) || !link.getId().equals(storeLinkId) || paidPaise < minPricePaise) {
+            if (!ORDER_PURPOSE.equals(purpose) || !link.getId().equals(storeLinkId) || paidPaise < floorPaise) {
                 log.warn("Store order mismatch: slug={} order={} amount={} purpose={} linkId={}",
                         slug, req.getOrderId(), paidPaise, purpose, storeLinkId);
                 throw new SecurityException("Payment verification failed.");
@@ -151,14 +162,20 @@ public class StoreKioskService {
         // Claim the payment FIRST (unique paymentId is the race-safe backstop for
         // two concurrent submits), then issue the code — so a lost race never
         // leaves an orphaned unpaid code behind.
+        // The platform's cut is settled against the base in force for THIS shop when the
+        // money arrived — a lapsed shop keeps a smaller share of the same payment. Clamped
+        // at zero so a payment below the current base (see the floor note above) can never
+        // produce a negative retailer share.
+        int platformFeePaise = Math.min(
+                paidPaise, pricingService.kioskBasePriceForShop(link.getOrganization().getId()));
         StorePayment payment = StorePayment.builder()
                 .storeLink(link)
                 .organization(link.getOrganization())
                 .paymentId(req.getPaymentId())
                 .orderId(req.getOrderId())
                 .amountPaise(paidPaise)
-                .platformFeePaise(minPricePaise)
-                .retailerSharePaise(paidPaise - minPricePaise)
+                .platformFeePaise(platformFeePaise)
+                .retailerSharePaise(paidPaise - platformFeePaise)
                 .build();
         try {
             payment = paymentRepository.saveAndFlush(payment);

@@ -46,6 +46,30 @@ public class ProjectResponse {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
+    // ─── Access ──────────────────────────────────────────────────────────────
+    // True when the viewer may look but not touch: the colours last applied are all
+    // here and render normally, but every write is refused. The studio uses this to
+    // disable the palette rather than letting the user paint and then fail on save.
+    private boolean readOnly;
+    // Why, in a sentence fit to show. Null when the project is fully open.
+    private String readOnlyReason;
+    // When this project's paid validity runs out. Null when it has no window of its
+    // own (covered by a plan or a shop's access code) or while that window is paused.
+    private LocalDateTime accessExpiresAt;
+    // What reopening a lapsed project costs, in paise — so the studio can name the
+    // price on the banner instead of sending the user off to find it.
+    private int reopenPricePaise;
+
+    /** Stamp the viewer's access onto an owner-view response. */
+    public ProjectResponse withAccess(boolean readOnly, String reason,
+                                      LocalDateTime accessExpiresAt, int reopenPricePaise) {
+        this.readOnly = readOnly;
+        this.readOnlyReason = reason;
+        this.accessExpiresAt = accessExpiresAt;
+        this.reopenPricePaise = reopenPricePaise;
+        return this;
+    }
+
     public static ProjectResponse from(Project project, String imageUrl) {
         List<RegionResponse> regions = project.getRegions().stream()
                 .map(RegionResponse::from)

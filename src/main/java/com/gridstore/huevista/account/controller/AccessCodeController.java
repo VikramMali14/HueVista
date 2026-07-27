@@ -3,6 +3,7 @@ package com.gridstore.huevista.account.controller;
 import com.gridstore.huevista.account.dto.AccessCodeResponse;
 import com.gridstore.huevista.account.dto.AssignedProductsResponse;
 import com.gridstore.huevista.account.dto.GenerateAccessCodeRequest;
+import com.gridstore.huevista.account.dto.GrantCodeProjectsRequest;
 import com.gridstore.huevista.account.dto.GuestRedeemResponse;
 import com.gridstore.huevista.account.dto.RedeemAccountResponse;
 import com.gridstore.huevista.account.dto.RedeemCodeRequest;
@@ -73,6 +74,34 @@ public class AccessCodeController {
             @PathVariable String codeId,
             @Valid @RequestBody GenerateAccessCodeRequest request) {
         return ResponseEntity.ok(accessCodeService.updateCode(userDetails.getUsername(), codeId, request));
+    }
+
+    @Operation(summary = "Add projects to a code already issued",
+            description = "Tops up a code the customer already holds with more projects, so they don't "
+                    + "need a second code. Works on redeemed codes — that is the point. Each added "
+                    + "project reserves one image credit, so an ACTIVE subscription is required "
+                    + "(402 SUBSCRIPTION_REQUIRED without one).")
+    @PostMapping("/api/organizations/{orgId}/access-codes/{codeId}/projects")
+    public ResponseEntity<AccessCodeResponse> grantExtraProjects(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String orgId,
+            @PathVariable String codeId,
+            @Valid @RequestBody GrantCodeProjectsRequest request) {
+        return ResponseEntity.ok(accessCodeService.grantExtraProjects(
+                userDetails.getUsername(), codeId, request.getProjects()));
+    }
+
+    @Operation(summary = "Give a code another 10 days",
+            description = "Resets the code's validity to a fresh 10 days from now (never more, however "
+                    + "often it is renewed) and moves the redeeming customer's access window with it. "
+                    + "Nothing is charged — the projects were already paid for. Requires an ACTIVE "
+                    + "subscription (402 SUBSCRIPTION_REQUIRED without one).")
+    @PostMapping("/api/organizations/{orgId}/access-codes/{codeId}/extend")
+    public ResponseEntity<AccessCodeResponse> extendValidity(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String orgId,
+            @PathVariable String codeId) {
+        return ResponseEntity.ok(accessCodeService.extendValidity(userDetails.getUsername(), codeId));
     }
 
     @Operation(summary = "Redeem access code",

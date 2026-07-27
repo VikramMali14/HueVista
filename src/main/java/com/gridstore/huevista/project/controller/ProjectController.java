@@ -28,6 +28,13 @@ public class ProjectController {
 
     private final ProjectService projectService;
 
+    /**
+     * Longest a share link may live. A share link is a repaint capability handed to
+     * someone with no account, exactly like a walk-in access code — so it gets the same
+     * 10-day ceiling rather than the old 14.
+     */
+    static final int SHARE_MAX_DAYS = 10;
+
     @Operation(summary = "Create a project", description = "Creates a new project from an uploaded image. The project starts in CREATED status — call /segment to run SAM 2.")
     @ApiResponse(responseCode = "201", description = "Project created")
     @ApiResponse(responseCode = "404", description = "Image not found or not owned by user")
@@ -270,7 +277,11 @@ public class ProjectController {
                     Creates a time-limited public share link for the project.
                     The shared view shows applied colors but **hides shade codes** from the end customer.
 
-                    Valid durations: `3`, `7`, or `14` days (defaults to 7).
+                    Valid durations: `3`, `7`, or `10` days (defaults to 10).
+
+                    A share link lets its holder repaint the room, so it is capped at the
+                    same 10 days a shop access code gets — the two hand out the same thing
+                    and should not outlive each other.
 
                     `brands` (optional, comma-separated brand names) limits which paint
                     companies the share viewer may repaint with; omit for all brands.
@@ -280,12 +291,15 @@ public class ProjectController {
     @PostMapping("/{id}/share")
     public ResponseEntity<ShareResponse> generateShareLink(
             @PathVariable String id,
-            @Parameter(description = "Validity in days: 3, 7, or 14") @RequestParam(defaultValue = "7") int days,
+            @Parameter(description = "Validity in days: 3, 7, or 10 (max 10)")
+            @RequestParam(defaultValue = "10") int days,
             @Parameter(description = "Comma-separated paint company names the viewer may repaint with (blank = all)")
             @RequestParam(required = false) String brands,
             Authentication auth
     ) {
-        if (days != 3 && days != 7 && days != 14) days = 7;
+        // Clamp rather than reject: an older client still asking for 14 gets the new
+        // maximum instead of a 400 it has no way to interpret.
+        if (days != 3 && days != 7) days = SHARE_MAX_DAYS;
         java.util.List<String> brandList = (brands == null || brands.isBlank())
                 ? java.util.List.of()
                 : java.util.Arrays.stream(brands.split(","))

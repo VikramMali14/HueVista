@@ -43,8 +43,9 @@ import static org.mockito.Mockito.when;
  */
 class StoreKioskServiceTest {
 
-    private static final int MIN_PRICE = 5000;   // Rs.50 platform base
-    private static final int LINK_PRICE = 7900;  // Rs.79 kiosk price
+    private static final int MIN_PRICE = 5000;         // Rs.50 platform base, plan live
+    private static final int LAPSED_MIN_PRICE = 9900;  // Rs.99 platform base, plan ended
+    private static final int LINK_PRICE = 7900;        // Rs.79 kiosk price
 
     private final Organization org = Organization.builder().id("org-1").name("Mehta Paints").build();
     private final StoreLink link = StoreLink.builder()
@@ -76,10 +77,33 @@ class StoreKioskServiceTest {
 
     private StoreKioskService service(RazorpayClient razorpay, StoreLinkRepository links,
                                       StorePaymentRepository payments, AccessCodeService codes) {
-        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes);
+        return service(razorpay, links, payments, codes, true);
+    }
+
+    /**
+     * @param shopSubscribed whether the shop's plan is live. The platform keeps the
+     *        subscribed base while it is, and the lapsed base once it isn't — the kiosk
+     *        stays open either way.
+     */
+    private StoreKioskService service(RazorpayClient razorpay, StoreLinkRepository links,
+                                      StorePaymentRepository payments, AccessCodeService codes,
+                                      boolean shopSubscribed) {
+        var billing = mock(com.gridstore.huevista.billing.service.BillingService.class);
+        when(billing.findEntitlingSubscription(any())).thenReturn(
+                shopSubscribed
+                        ? Optional.of(new com.gridstore.huevista.billing.model.Subscription())
+                        : Optional.empty());
+        var memberships = mock(com.gridstore.huevista.account.repository.OrgMembershipRepository.class);
+        when(memberships.findUserIdsByOrganizationIdAndRole(any(), any()))
+                .thenReturn(java.util.List.of("shop-owner"));
+
+        var pricing = new com.gridstore.huevista.billing.service.PricingService(billing, memberships);
+        ReflectionTestUtils.setField(pricing, "kioskBaseSubscribedPaise", MIN_PRICE);
+        ReflectionTestUtils.setField(pricing, "kioskBaseLapsedPaise", LAPSED_MIN_PRICE);
+
+        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing);
         ReflectionTestUtils.setField(svc, "keyId", "key");
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
-        ReflectionTestUtils.setField(svc, "minPricePaise", MIN_PRICE);
         ReflectionTestUtils.setField(svc, "currency", "INR");
         return svc;
     }
@@ -203,5 +227,80 @@ class StoreKioskServiceTest {
         assertThatThrownBy(() -> svc.createOrder("mehta-x7k2p9"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("paused");
+    }
+
+    /**
+     * The kiosk is the one thing that must never close when a shop's plan ends — a
+     * walk-in standing at the counter has nothing to do with the shop's billing. What
+     * changes is the split: the platform's base rises to Rs.99, so the same Rs.79 link
+     * now charges Rs.99 and the shop's share of it is nothing rather than Rs.29.
+     */
+    @Test
+    void lapsedShopStillSellsButAtTheHigherBase() throws Exception {
+        RazorpayClient razorpay = mock(RazorpayClient.class);
+        razorpay.orders = mock(OrderClient.class);
+        when(razorpay.orders.fetch("order_1"))
+                .thenReturn(order(LAPSED_MIN_PRICE, "store_kiosk", "link-1"));
+        StoreLinkRepository links = mock(StoreLinkRepository.class);
+        when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(link));
+        StorePaymentRepository payments = mock(StorePaymentRepository.class);
+        when(payments.findByPaymentId("pay_1")).thenReturn(Optional.empty());
+        when(payments.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        AccessCodeService codes = mock(AccessCodeService.class);
+        CustomerAccessCode code = CustomerAccessCode.builder().id("code-1").code("ABCD2345").organization(org)
+                .validDays(3).expiresAt(java.time.LocalDateTime.now().plusDays(3)).build();
+        when(codes.issueForStore(org, 3)).thenReturn(code);
+        when(codes.redeemAsGuest("ABCD2345")).thenReturn(guest("ABCD2345"));
+        StoreKioskService svc = service(razorpay, links, payments, codes, false);
+
+        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
+            utils.when(() -> Utils.verifyPaymentSignature(any(JSONObject.class), any())).thenReturn(true);
+
+            StoreCheckoutResponse res = svc.verifyAndIssue("mehta-x7k2p9", req("order_1", "pay_1"));
+            assertThat(res.getCode()).isEqualTo("ABCD2345");
+
+            ArgumentCaptor<StorePayment> saved = ArgumentCaptor.forClass(StorePayment.class);
+            verify(payments).saveAndFlush(saved.capture());
+            assertThat(saved.getValue().getAmountPaise()).isEqualTo(LAPSED_MIN_PRICE);
+            assertThat(saved.getValue().getPlatformFeePaise()).isEqualTo(LAPSED_MIN_PRICE);
+            assertThat(saved.getValue().getRetailerSharePaise()).isZero();
+        }
+    }
+
+    /**
+     * A payment placed at the old Rs.50 base moments before the plan lapsed is still
+     * honoured. Rejecting it would take the customer's money's worth away over a timing
+     * accident that is entirely ours.
+     */
+    @Test
+    void aPaymentAtTheSubscribedBaseIsHonouredAfterThePlanLapses() throws Exception {
+        RazorpayClient razorpay = mock(RazorpayClient.class);
+        razorpay.orders = mock(OrderClient.class);
+        when(razorpay.orders.fetch("order_1")).thenReturn(order(MIN_PRICE, "store_kiosk", "link-1"));
+        StoreLinkRepository links = mock(StoreLinkRepository.class);
+        when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(link));
+        StorePaymentRepository payments = mock(StorePaymentRepository.class);
+        when(payments.findByPaymentId("pay_1")).thenReturn(Optional.empty());
+        when(payments.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        AccessCodeService codes = mock(AccessCodeService.class);
+        CustomerAccessCode code = CustomerAccessCode.builder().id("code-1").code("ABCD2345").organization(org)
+                .validDays(3).expiresAt(java.time.LocalDateTime.now().plusDays(3)).build();
+        when(codes.issueForStore(org, 3)).thenReturn(code);
+        when(codes.redeemAsGuest("ABCD2345")).thenReturn(guest("ABCD2345"));
+        StoreKioskService svc = service(razorpay, links, payments, codes, false);
+
+        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
+            utils.when(() -> Utils.verifyPaymentSignature(any(JSONObject.class), any())).thenReturn(true);
+
+            StoreCheckoutResponse res = svc.verifyAndIssue("mehta-x7k2p9", req("order_1", "pay_1"));
+            assertThat(res.getCode()).isEqualTo("ABCD2345");
+
+            ArgumentCaptor<StorePayment> saved = ArgumentCaptor.forClass(StorePayment.class);
+            verify(payments).saveAndFlush(saved.capture());
+            // The whole Rs.50 goes to the platform; the share is floored at zero rather
+            // than going negative against the higher base now in force.
+            assertThat(saved.getValue().getPlatformFeePaise()).isEqualTo(MIN_PRICE);
+            assertThat(saved.getValue().getRetailerSharePaise()).isZero();
+        }
     }
 }

@@ -66,6 +66,16 @@ public class CustomerAccessCode {
     // the sweep is idempotent and a code can never be refunded twice.
     private LocalDateTime quotaReleasedAt;
 
+    // When the shop last pushed this code's expiry out, and how many times they have.
+    // Each extension replaces the window with a fresh 10 days from that moment, so the
+    // code can never carry more than 10 days ahead of it however often it is renewed —
+    // the count is here so the counter can see a code that keeps being propped up.
+    private LocalDateTime extendedAt;
+
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int extensionCount = 0;
+
     // Individual shop products (ShopProduct UUIDs) the retailer unlocked for this
     // customer, stored comma-separated. Combined with allowedBrands (whole companies):
     // the customer sees the UNION. Empty/null on both means "no restriction".

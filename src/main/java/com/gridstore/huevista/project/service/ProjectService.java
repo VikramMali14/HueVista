@@ -53,7 +53,10 @@ public class ProjectService {
     private final SegmentationService segmentationService;
     private final CustomerEntitlementService entitlementService;
     private final ProjectAccessPolicy projectAccessPolicy;
+    private final ProjectAccessService projectAccessService;
     private final ProjectBillingResolver billingResolver;
+    private final com.gridstore.huevista.billing.service.ProjectCreditLedger projectCreditLedger;
+    private final com.gridstore.huevista.billing.service.PricingService pricingService;
     private final com.gridstore.huevista.auth.service.JwtService jwtService;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final OrgMembershipRepository orgMembershipRepository;
@@ -71,24 +74,6 @@ public class ProjectService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
-        // Claim the customer's project slot ATOMICALLY (expiry + included/granted/purchased
-        // allowance). Previously this checked the allowance here and incremented after the
-        // insert, so two parallel requests could both pass on the last remaining slot.
-        // No-op for non-customer roles (retailers/distributors/admins).
-        entitlementService.claimProjectSlot(userId);
-
-        // Retailer funnel gate: email+mobile verified, and the free trial includes
-        // just one project (more require a paid plan). No-op for non-retailers.
-        projectAccessPolicy.assertCanCreateProject(user);
-
-        UploadedImage image = imageRepository.findByIdAndUserId(request.getImageId(), userId)
-                .orElseThrow(() -> new ResourceNotFoundException("Image not found: " + request.getImageId()));
-
-        String name = (request.getName() != null && !request.getName().isBlank())
-                ? request.getName()
-                // COUNT, not a full fetch — naming a project must not load every row the user owns.
-                : "Project " + (projectRepository.countByUserId(userId) + 1);
-
         // Access-code customers: link the project to the code they redeemed so the
         // issuing retailer keeps visibility of the customer's work (the counter reads
         // the real shades from it), mirroring the anonymous-guest link. The code link
@@ -98,40 +83,208 @@ public class ProjectService {
                         ? accessCodeRepository.findFirstByUsedByUserIdOrderByCreatedAtDesc(userId).orElse(null)
                         : null;
 
-        Project project = projectRepository.save(Project.builder()
-                .user(user)
-                .image(image)
-                .name(name)
-                .roomType(blankToNull(request.getRoomType()))
-                .notes(blankToNull(request.getNotes()))
-                .status(ProjectStatus.CREATED)
-                .accessCode(linkedCode)
-                .build());
+        // Which of the three ways this project is paid for?
+        //
+        //  a) A shop onboarded this customer — the entitlement they redeemed carries the
+        //     allowance, and the shop already reserved the image credit behind it.
+        //  b) A live subscription covers it.
+        //  c) Neither, so it has to be a project the account bought outright. That is the
+        //     ONLY route for a self-signed-up account (which holds no entitlement and
+        //     cannot buy a plan) and for a shop whose plan has lapsed.
+        boolean shopEntitled = entitlementService.hasEntitlement(userId);
+        boolean subscribed = pricingService.isSubscribed(userId);
+        com.gridstore.huevista.billing.model.ProjectCredit credit = null;
 
-        log.info("Project created: id={} user={}", project.getId(), userId);
-        return toResponse(project, image);
+        if (shopEntitled) {
+            // Claim the customer's project slot ATOMICALLY (expiry + included/granted/purchased
+            // allowance). Previously this checked the allowance here and incremented after the
+            // insert, so two parallel requests could both pass on the last remaining slot.
+            entitlementService.claimProjectSlot(userId);
+        } else if (!subscribed) {
+            credit = projectCreditLedger.claim(userId).orElseThrow(() -> noWayToPayFor(user));
+        }
+
+        try {
+            // Retailer funnel gate: email+mobile verified, and the free trial includes
+            // just one project (more require a paid plan, or a bought one). No-op for
+            // non-retailers.
+            projectAccessPolicy.assertCanCreateProject(user, credit != null);
+
+            UploadedImage image = imageRepository.findByIdAndUserId(request.getImageId(), userId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Image not found: " + request.getImageId()));
+
+            String name = (request.getName() != null && !request.getName().isBlank())
+                    ? request.getName()
+                    // COUNT, not a full fetch — naming a project must not load every row the user owns.
+                    : "Project " + (projectRepository.countByUserId(userId) + 1);
+
+            Project project = Project.builder()
+                    .user(user)
+                    .image(image)
+                    .name(name)
+                    .roomType(blankToNull(request.getRoomType()))
+                    .notes(blankToNull(request.getNotes()))
+                    .status(ProjectStatus.CREATED)
+                    .accessCode(linkedCode)
+                    .build();
+
+            // A bought project carries its own validity. Opened paused when the buyer is
+            // currently subscribed, so the days they paid for are banked rather than
+            // silently burnt down behind a plan that was already covering them.
+            if (credit != null) {
+                projectAccessService.openWindow(project, credit.getValidDays(),
+                        credit.getPricePaise(), subscribed);
+            }
+
+            project = projectRepository.save(project);
+            if (credit != null) {
+                projectCreditLedger.attach(credit.getId(), project.getId());
+            }
+
+            log.info("Project created: id={} user={} paidBy={}", project.getId(), userId,
+                    shopEntitled ? "shop-code" : credit != null ? "purchase" : "subscription");
+            return toResponse(project, image);
+        } catch (RuntimeException failed) {
+            // The credit is claimed BEFORE the project exists, because the compare-and-set
+            // that decides which of two parallel creations gets it needs a row to guard and
+            // a project id only exists after the insert. Hand it back explicitly if we never
+            // got that far. The enclosing rollback covers this too today — the ledger joins
+            // this transaction — so this is the belt to that braces: it keeps the paid-for
+            // credit safe if the ledger is ever made to commit independently, which is the
+            // shape these two-phase claims tend to drift towards.
+            if (credit != null) {
+                projectCreditLedger.release(credit.getId());
+            }
+            throw failed;
+        }
     }
 
-    @Transactional(readOnly = true)
+    /**
+     * Nothing covers this project: no plan, no shop code, no credit bought.
+     *
+     * A shop and a walk-in need different answers, and the exception TYPE is what routes
+     * them — SUBSCRIPTION_REQUIRED sends the studio to the plans page, which is where a
+     * lapsed shop belongs, while a plain quota refusal points at the one-off purchase,
+     * which is the only route a customer has (they cannot buy a plan at all). Both
+     * messages name the standalone price either way, so neither is a dead end.
+     */
+    private RuntimeException noWayToPayFor(User user) {
+        String buyOne = "Buy a single project for Rs. "
+                + rupees(pricingService.projectUnsubscribedPricePaise())
+                + " — it stays open for " + pricingService.projectValidDays() + " days.";
+        if (user.getRole() == com.gridstore.huevista.auth.model.UserRole.RETAILER) {
+            return new com.gridstore.huevista.common.exception.SubscriptionRequiredException(
+                    "Your subscription has ended. Subscribe to keep creating projects, or "
+                    + buyOne.substring(0, 1).toLowerCase() + buyOne.substring(1));
+        }
+        return new QuotaExceededException(
+                "You don't have a subscription, so each project is bought on its own. " + buyOne);
+    }
+
+    /** Paise → a rupee figure for a user-facing message ("99", "9", "50"). */
+    private static String rupees(int paise) {
+        return paise % 100 == 0 ? String.valueOf(paise / 100)
+                : String.format(java.util.Locale.ROOT, "%.2f", paise / 100.0);
+    }
+
+    /**
+     * The dashboard list. For a RETAILER this is their own rooms AND every room their
+     * customers created under a code the shop issued — the shop paid an image credit per
+     * assigned project, so that work belongs on their dashboard rather than only inside
+     * the customer portal. Each row is tagged {@code OWN} or {@code CUSTOMER} so the
+     * dashboard can filter between them.
+     */
+    @Transactional
     public List<ProjectSummaryResponse> getUserProjects(String userId, int page, int size) {
         entitlementService.assertAccessValid(userId);
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+        boolean subscribed = pricingService.isSubscribed(userId);
+
         // Clamp instead of rejecting: page >= 0, 1 <= size <= 200.
-        return projectRepository.findByUserIdWithImage(
-                        userId, org.springframework.data.domain.PageRequest.of(
-                                Math.max(0, page), Math.min(Math.max(1, size), 200))).stream()
-                .map(p -> ProjectSummaryResponse.from(
-                        p,
-                        storageService.getPublicUrl(p.getImage().getStorageKey()),
-                        p.getCleanedImageStorageKey() != null
-                                ? storageService.getPublicUrl(p.getCleanedImageStorageKey())
-                                : null))
+        int clampedSize = Math.min(Math.max(1, size), 200);
+        var pageable = org.springframework.data.domain.PageRequest.of(Math.max(0, page), clampedSize);
+
+        List<Project> own = projectRepository.findByUserIdWithImage(userId, pageable);
+        // Bring the stored windows in line with the subscription before reading them, so a
+        // plan that lapsed since the last visit resumes the paid days now rather than at
+        // the next nightly sweep.
+        projectAccessService.reconcileAll(own, subscribed);
+
+        List<ProjectSummaryResponse> rows = new java.util.ArrayList<>(own.stream()
+                .map(p -> summarize(p, user, subscribed))
+                .toList());
+
+        if (user.getRole() == com.gridstore.huevista.auth.model.UserRole.RETAILER) {
+            rows.addAll(customerRoomsFor(userId, pageable));
+        }
+        return rows;
+    }
+
+    /** Rooms created by this shop's customers, under codes the shop issued. */
+    private List<ProjectSummaryResponse> customerRoomsFor(String retailerUserId,
+                                                          org.springframework.data.domain.Pageable pageable) {
+        List<String> orgIds = orgMembershipRepository.findByUserId(retailerUserId).stream()
+                .map(m -> m.getOrganization().getId())
+                .distinct()
+                .toList();
+        if (orgIds.isEmpty()) return List.of();
+
+        return projectRepository.findByIssuingOrgIds(orgIds, retailerUserId, pageable).stream()
+                .map(p -> {
+                    CustomerAccessCode code = p.getAccessCode();
+                    return ProjectSummaryResponse.from(
+                                    p,
+                                    storageService.getPublicUrl(p.getImage().getStorageKey()),
+                                    p.getCleanedImageStorageKey() != null
+                                            ? storageService.getPublicUrl(p.getCleanedImageStorageKey())
+                                            : null)
+                            .asCustomerRoom(code.getCode(), code.getId(), code.getCustomerName())
+                            // The shop reads its customers' work; it never paints on it from
+                            // here. Editing happens in the customer's own session.
+                            .withReadOnly(true);
+                })
                 .toList();
     }
 
-    @Transactional(readOnly = true)
+    private ProjectSummaryResponse summarize(Project p, User owner, boolean subscribed) {
+        ProjectSummaryResponse row = ProjectSummaryResponse.from(
+                p,
+                storageService.getPublicUrl(p.getImage().getStorageKey()),
+                p.getCleanedImageStorageKey() != null
+                        ? storageService.getPublicUrl(p.getCleanedImageStorageKey())
+                        : null);
+        return row.withReadOnly(
+                !projectAccessService.evaluate(owner.getRole(), p, subscribed).editable());
+    }
+
+    @Transactional
     public ProjectResponse getProject(String userId, String projectId) {
         Project project = findOwned(userId, projectId);
-        return toResponse(project);
+        return withAccess(userId, project, toResponse(project));
+    }
+
+    /** Attach the viewer's access to an owner-view response. */
+    private ProjectResponse withAccess(String userId, Project project, ProjectResponse response) {
+        User user = userRepository.findById(userId).orElse(null);
+        if (user == null) return response;
+        ProjectAccessService.Access access =
+                projectAccessService.accessFor(userId, user.getRole(), project);
+        return response.withAccess(!access.editable(), access.reason(),
+                access.expiresAt(), access.reopenPricePaise());
+    }
+
+    /**
+     * Gate for anything that changes a project. Loads the project as its owner, then
+     * refuses the write when their access is view-only — a lapsed subscription, or a
+     * bought project whose validity ran out.
+     */
+    private Project findEditable(String userId, String projectId) {
+        Project project = findOwned(userId, projectId);
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+        projectAccessService.assertEditable(userId, user.getRole(), project);
+        return project;
     }
 
     /**
@@ -142,7 +295,11 @@ public class ProjectService {
      */
     @Transactional
     public void updateRegionColors(String userId, String projectId, List<RegionColorUpdate> updates) {
-        findOwned(userId, projectId); // ownership check
+        // Ownership AND access: a view-only project keeps showing the colours that were
+        // last applied, so the autosave has to be refused here rather than quietly
+        // overwriting them — otherwise the "last applied colour" the user is looking at
+        // is whatever they happened to click while locked out.
+        findEditable(userId, projectId);
 
         for (RegionColorUpdate update : updates) {
             regionRepository.updateAppliedColor(
@@ -231,7 +388,7 @@ public class ProjectService {
     @Transactional
     public ProjectResponse requestSegmentation(String userId, String projectId,
                                                com.gridstore.huevista.project.dto.SegmentRequest options) {
-        Project project = findOwned(userId, projectId);
+        Project project = findEditable(userId, projectId);
         if (options != null && options.getCleanImage() != null) {
             project.setSkipImageClean(!options.getCleanImage());
         }
@@ -299,16 +456,16 @@ public class ProjectService {
         return toResponse(project);
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public ProjectResponse getStatus(String userId, String projectId) {
         Project project = findOwned(userId, projectId);
-        return toResponse(project);
+        return withAccess(userId, project, toResponse(project));
     }
 
     @Transactional
     public ShareResponse generateShareLink(String userId, String projectId, int validDays,
                                            java.util.List<String> brands) {
-        Project project = findOwned(userId, projectId);
+        Project project = findEditable(userId, projectId);
 
         String token = UUID.randomUUID().toString().replace("-", "");
         LocalDateTime expiresAt = LocalDateTime.now().plusDays(validDays);
@@ -441,7 +598,7 @@ public class ProjectService {
     @Transactional
     public RegionResponse segmentPoint(String userId, String projectId,
                                        double x, double y, String label) {
-        Project project = findOwned(userId, projectId);
+        Project project = findEditable(userId, projectId);
         UploadedImage image = project.getImage();
         ensureDimensionsCached(image);
 
@@ -469,7 +626,7 @@ public class ProjectService {
      */
     @Transactional
     public RegionResponse createCustomMaskRegion(String userId, String projectId, CustomMaskRequest request) {
-        findOwned(userId, projectId);
+        findEditable(userId, projectId);
         return persistCustomMask(userId, projectId, request);
     }
 
@@ -483,7 +640,7 @@ public class ProjectService {
      */
     @Transactional
     public RegionResponse updateRegionMask(String userId, String projectId, Long regionId, CustomMaskRequest request) {
-        findOwned(userId, projectId);
+        findEditable(userId, projectId);
         return replaceRegionMask(userId, projectId, regionId, request);
     }
 
@@ -492,7 +649,7 @@ public class ProjectService {
      *  stored mask; the row delete is what matters. */
     @Transactional
     public void deleteRegion(String userId, String projectId, Long regionId) {
-        findOwned(userId, projectId);
+        findEditable(userId, projectId);
         deleteManualRegion(projectId, regionId);
     }
 
