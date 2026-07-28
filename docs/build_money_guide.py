@@ -546,7 +546,7 @@ closing = [
     Spacer(1, 5),
     Paragraph(
         "Use the support chat in the app &mdash; it knows who you are, so billing questions "
-        "get answered faster. Or write to <b>payments@huevista.com</b>, or call "
+        "get answered faster. Or write to <b>payments@huevista.org</b>, or call "
         "<b>+91 63784 82381</b> (Mon&ndash;Sat, 10am&ndash;7pm). The full rules live at "
         "<b>huevista.com/legal/refunds</b> and <b>/legal/terms</b> &mdash; this guide explains "
         "them, those pages are the ones that count.", NOTE),

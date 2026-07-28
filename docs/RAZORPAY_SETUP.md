@@ -254,19 +254,22 @@ Razorpay application exactly:
 - **Phone** — +91 63784 82381
 - **Business category** — SaaS / Software
 
-### 5c. Move the billing mail onto the .com domain
+### 5c. Mail: the site is .com, the mailboxes are .org
 
-The site is on `huevista.com`; the backend still defaults to sending receipts
-from `payments@huevista.org`:
+That split is deliberate and already settled in code — the site runs on
+`huevista.com`, and every address the product sends from or publishes lives on
+`huevista.org` (`src/lib/config.ts` on the frontend, `MAIL_FROM` /
+`MAIL_BILLING_FROM` here). One authenticated domain for mail is what keeps a
+provider from rewriting the From header or dropping the message.
 
-```
-MAIL_BILLING_FROM=payments@huevista.com
-```
+What you still have to do:
 
-Set that in production and make the mailbox real, because `/legal/refunds` and
-`/legal/delivery` both tell customers to write to it. Receipts arriving from a
-domain other than the one on your application is a review flag, and a policy
-page quoting an address that bounces is worse.
+- make `payments@huevista.org` a **real mailbox** — `/legal/refunds`,
+  `/legal/delivery` and the money guide all tell customers to write to it, and a
+  published address that bounces is worse than none
+- set SPF, DKIM and DMARC on `huevista.org`
+- give Razorpay `huevista.com` as the website and `huevista.org` addresses for
+  contact, and say plainly that the two belong to the same proprietorship
 
 ### 5d. The kiosk is a plain B2C sale — keep it that way
 
