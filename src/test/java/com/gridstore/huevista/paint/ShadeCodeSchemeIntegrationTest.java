@@ -12,6 +12,11 @@ import com.gridstore.huevista.auth.dto.AuthResponse;
 import com.gridstore.huevista.auth.model.AuthProvider;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.image.model.ImageType;
+import com.gridstore.huevista.image.model.UploadedImage;
+import com.gridstore.huevista.image.repository.ImageRepository;
+import com.gridstore.huevista.project.model.Project;
+import com.gridstore.huevista.project.repository.ProjectRepository;
 import com.razorpay.RazorpayClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,11 +59,14 @@ class ShadeCodeSchemeIntegrationTest {
     @Autowired OrgMembershipRepository membershipRepository;
     @Autowired CustomerAccessCodeRepository codeRepository;
     @Autowired PasswordEncoder passwordEncoder;
+    @Autowired ImageRepository imageRepository;
+    @Autowired ProjectRepository projectRepository;
 
     private static final String CODE = "SCHEMEA1";
 
     private String orgId;
     private String retailerToken;
+    private User shopOwner;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -66,6 +74,7 @@ class ShadeCodeSchemeIntegrationTest {
                 .name("Shop Owner").email("shop-scheme@example.com")
                 .password(passwordEncoder.encode("password123"))
                 .provider(AuthProvider.LOCAL).emailVerified(true).build());
+        shopOwner = retailer;
 
         Organization org = orgRepository.save(Organization.builder()
                 .name("Sharda Paints").slug("sharda-paints-schemetest")
@@ -279,6 +288,63 @@ class ShadeCodeSchemeIntegrationTest {
                         .header("Authorization", "Bearer " + retailerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.showNames").value(true));
+    }
+
+    /**
+     * A share link is opened by someone with no account at all, so nothing about
+     * the shop can be resolved from the caller — the shop's presentation has to
+     * travel with the project. Without it, the one screen the shop least controls
+     * (a link forwarded to a spouse, a builder, a group chat) was the one screen
+     * still naming the paint company's colours.
+     */
+    @Test
+    void aShareLinkCarriesTheShopsPresentation() throws Exception {
+        mockMvc.perform(put("/api/organizations/" + orgId + "/shade-code-scheme")
+                        .header("Authorization", "Bearer " + retailerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"prefix\":\"AB\",\"infix\":\"XY\",\"suffix\":\"CD\",\"showNames\":false}"))
+                .andExpect(status().isOk());
+
+        String token = sharedProjectToken();
+
+        mockMvc.perform(get("/api/share/" + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.shadeCodeScheme.prefix").value("AB"))
+                .andExpect(jsonPath("$.shadeCodeScheme.infix").value("XY"))
+                .andExpect(jsonPath("$.shadeCodeScheme.suffix").value("CD"))
+                .andExpect(jsonPath("$.shadeCodeScheme.showNames").value(false));
+    }
+
+    /** A shop that has decided nothing shows names and runs no pattern. */
+    @Test
+    void aShareLinkFromAShopWithNoSchemeIsUnchanged() throws Exception {
+        String token = sharedProjectToken();
+
+        mockMvc.perform(get("/api/share/" + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.shadeCodeScheme.prefix").value(""))
+                .andExpect(jsonPath("$.shadeCodeScheme.showNames").value(true));
+    }
+
+    /** A room owned by the shop, shared. Built directly: this test is about what
+     *  the share view says, not about the quota rules for creating a room. */
+    private String sharedProjectToken() {
+        UploadedImage image = imageRepository.save(UploadedImage.builder()
+                .user(shopOwner)
+                .originalFilename("room.jpg")
+                .storageKey("test/scheme-share-room.jpg")
+                .contentType("image/jpeg")
+                .fileSize(1024L)
+                .imageType(ImageType.INDOOR)
+                .build());
+        Project project = projectRepository.save(Project.builder()
+                .user(shopOwner)
+                .image(image)
+                .name("Shared room")
+                .shareToken("scheme-share-token")
+                .shareExpiresAt(LocalDateTime.now().plusDays(10))
+                .build());
+        return project.getShareToken();
     }
 
     private String login(String email, String password) throws Exception {

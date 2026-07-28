@@ -118,6 +118,39 @@ public class ShadeCodeSchemeService {
         return describe(orgId);
     }
 
+    /**
+     * How the shop behind a SHARED project presents a colour, for the anonymous
+     * viewer of a share link.
+     *
+     * A share link is handed out by someone under a shop, so the page it opens is
+     * still that shop's shopfront: if the shop hides paint names, the share page
+     * must hide them too, and if it runs its own numbering, that is the numbering
+     * to show. Without this the one screen the shop has least control over — the
+     * link forwarded to a spouse, a builder, a WhatsApp group — was the one screen
+     * still naming the paint company's colours.
+     *
+     * The viewer has no session, so nothing here can be resolved from the caller;
+     * it is resolved from the project's owner instead — the user who made it, or
+     * the access code a guest made it under.
+     *
+     * @param userId       the project's owner, or null for a guest's project
+     * @param accessCodeId the code it was made under, or null
+     */
+    @Transactional(readOnly = true)
+    public ShadeCodeSchemeResponse forSharedProject(String userId, String accessCodeId) {
+        String orgId = userId != null ? orgForUser(userId) : null;
+        if (orgId == null && accessCodeId != null) {
+            // Deliberately not the expiry-filtered lookup below: a share link can
+            // outlive the code that created the room, and an expired code must not
+            // quietly turn the shop's presentation back into the manufacturer's.
+            orgId = accessCodeRepository.findById(accessCodeId)
+                    .map(code -> code.getOrganization().getId())
+                    .orElse(null);
+        }
+        if (orgId == null) return ShadeCodeSchemeResponse.empty();
+        return describe(orgId);
+    }
+
     /** Guest principal = the redeemed access code's id; its shop owns the scheme. */
     private String orgForGuest(String accessCodeId) {
         return accessCodeRepository.findById(accessCodeId)

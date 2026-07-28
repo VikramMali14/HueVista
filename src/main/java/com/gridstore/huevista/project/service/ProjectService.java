@@ -61,6 +61,7 @@ public class ProjectService {
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final OrgMembershipRepository orgMembershipRepository;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
+    private final com.gridstore.huevista.paint.service.ShadeCodeSchemeService shadeCodeSchemeService;
     private final com.gridstore.huevista.notification.EmailSender emailSender;
 
     @Autowired(required = false)
@@ -505,6 +506,12 @@ public class ProjectService {
                 : null;
         ProjectResponse r = ProjectResponse.fromPublic(project, originalUrl);
         r.setCleanedImageUrl(cleanedUrl);
+        // The share page is still the issuing shop's shopfront: it hides paint names
+        // where the shop hides them, and uses the shop's own numbering where it has
+        // one. The viewer has no session to resolve that from, so it travels here.
+        r.setShadeCodeScheme(shadeCodeSchemeService.forSharedProject(
+                project.getUser() != null ? project.getUser().getId() : null,
+                project.getAccessCode() != null ? project.getAccessCode().getId() : null));
         refreshMaskUrls(r);
         // Masks too: local-storage mode leaves them as relative, owner-authenticated
         // paths an anonymous share viewer can't fetch — point those at the public,

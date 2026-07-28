@@ -41,6 +41,11 @@ public class ProjectResponse {
     // Shared/public view only: brand names the retailer opened for the share
     // viewer's repaint palette. Empty = every brand. Null on the owner view.
     private List<String> sharedBrands;
+    // Shared/public view only: how the issuing shop presents a colour — its code
+    // pattern, and whether paint names are shown at all. The share viewer has no
+    // session, so this travels with the project rather than being asked for.
+    // Null on the owner view, which reads /api/me/shade-code-scheme instead.
+    private com.gridstore.huevista.paint.dto.ShadeCodeSchemeResponse shadeCodeScheme;
     // When the customer sent the project to the issuing shop; null until then.
     private LocalDateTime sentToShopAt;
     private LocalDateTime createdAt;
