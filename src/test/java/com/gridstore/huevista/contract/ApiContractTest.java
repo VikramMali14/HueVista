@@ -82,6 +82,9 @@ class ApiContractTest {
                 "cleanedImageUrl", "rawMaskUrl", "failureReason", "maskMode", "regions",
                 "hasShareLink", "shareExpiresAt", "sharedBrands", "sentToShopAt",
                 "createdAt", "updatedAt",
+                // Shared view only: how the issuing shop presents a colour. The share
+                // viewer has no session, so it travels with the project.
+                "shadeCodeScheme",
                 // Access: the studio disables the palette on readOnly rather than letting
                 // the user paint and then fail on autosave.
                 "readOnly", "readOnlyReason", "accessExpiresAt", "reopenPricePaise");
