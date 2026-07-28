@@ -69,7 +69,8 @@ class PainterFlowIntegrationTest {
         retailerOwnerToken = registerAndLogin("retailer-owner@example.com", "Retailer Owner");
         retailerOwnerId = userRepository.findByEmail("retailer-owner@example.com").orElseThrow().getId();
 
-        painterToken = registerAndLogin("painter@example.com", "Suresh Painter");
+        // A painter who signed themselves up — a CUSTOMER until they redeem an invitation.
+        painterToken = registerAndLogin("painter@example.com", "Suresh Painter", UserRole.CUSTOMER);
         painterId = userRepository.findByEmail("painter@example.com").orElseThrow().getId();
 
         User customer = userRepository.save(User.builder()
@@ -137,7 +138,7 @@ class PainterFlowIntegrationTest {
         String code = objectMapper.readTree(genResult.getResponse().getContentAsString())
                 .get("code").asText();
 
-        // Painter (currently role=CUSTOMER from registerAndLogin) redeems
+        // Painter (role=CUSTOMER until they redeem) redeems
         RedeemPainterInvitationRequest redeem = new RedeemPainterInvitationRequest();
         redeem.setCode(code);
         mockMvc.perform(post("/api/painter-invitations/redeem")
@@ -159,6 +160,50 @@ class PainterFlowIntegrationTest {
         // Painter role was upgraded
         User painter = userRepository.findById(painterId).orElseThrow();
         org.assertj.core.api.Assertions.assertThat(painter.getRole()).isEqualTo(UserRole.PAINTER);
+    }
+
+    /**
+     * A painter invitation must never overwrite the role of an account that has one.
+     *
+     * {@code PainterService#ensureProfile} flips the caller to PAINTER, and this endpoint
+     * is open to any authenticated user. A shop owner who pasted a painter code therefore
+     * became a PAINTER while still owning their shop org — the exact role/membership
+     * split-brain {@code AdminController#changeRole} refuses to create, and unrecoverable
+     * once made, because changeRole will not put the role back while the account owns an
+     * organization.
+     */
+    @Test
+    void a_shop_account_cannot_redeem_a_painter_invitation() throws Exception {
+        GeneratePainterInvitationRequest gen = new GeneratePainterInvitationRequest();
+        gen.setValidDays(7);
+        MvcResult genResult = mockMvc.perform(
+                        post("/api/organizations/{retailerOrgId}/painter-invitations", retailerOrgId)
+                                .header("Authorization", "Bearer " + retailerOwnerToken)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(objectMapper.writeValueAsString(gen)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String code = objectMapper.readTree(genResult.getResponse().getContentAsString())
+                .get("code").asText();
+
+        RedeemPainterInvitationRequest redeem = new RedeemPainterInvitationRequest();
+        redeem.setCode(code);
+        // The retailer owner redeeming their own painter code — refused.
+        mockMvc.perform(post("/api/painter-invitations/redeem")
+                        .header("Authorization", "Bearer " + retailerOwnerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(redeem)))
+                .andExpect(status().isForbidden());
+
+        // Their role is untouched, and the code is still there for the actual painter.
+        User shopOwner = userRepository.findById(retailerOwnerId).orElseThrow();
+        org.assertj.core.api.Assertions.assertThat(shopOwner.getRole()).isEqualTo(UserRole.RETAILER);
+
+        mockMvc.perform(post("/api/painter-invitations/redeem")
+                        .header("Authorization", "Bearer " + painterToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(redeem)))
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -320,7 +365,7 @@ class PainterFlowIntegrationTest {
         String jobId = createJob();
 
         // Register a SECOND painter who hasn't been assigned this job
-        String otherToken = registerAndLogin("other-painter@example.com", "Other Painter");
+        String otherToken = registerAndLogin("other-painter@example.com", "Other Painter", UserRole.CUSTOMER);
 
         AcceptPaintJobRequest accept = new AcceptPaintJobRequest();
         accept.setQuotedAmountInr(new BigDecimal("9500.00"));
@@ -398,12 +443,26 @@ class PainterFlowIntegrationTest {
     }
 
     private String registerAndLogin(String email, String name) throws Exception {
+        return registerAndLogin(email, name, UserRole.RETAILER);
+    }
+
+    /**
+     * Seed an account and sign in as it.
+     *
+     * The role is explicit because it matters to what follows: a painter who signs
+     * themselves up is a CUSTOMER (that is what public registration creates — see
+     * AuthService#register), and redeeming an invitation is what turns them into a
+     * PAINTER. This helper used to make EVERY account a RETAILER, which quietly gave the
+     * painter fixtures a shop owner's role and hid the fact that redeeming an invitation
+     * would demote a real shop.
+     */
+    private String registerAndLogin(String email, String name, UserRole role) throws Exception {
         userRepository.save(User.builder()
                 .name(name)
                 .email(email)
                 .password(passwordEncoder.encode("password123"))
                 .provider(AuthProvider.LOCAL)
-                .role(UserRole.RETAILER)
+                .role(role)
                 .emailVerified(false)
                 .build());
         return loginAs(email);

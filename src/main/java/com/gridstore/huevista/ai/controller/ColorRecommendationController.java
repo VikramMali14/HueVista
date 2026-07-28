@@ -1,5 +1,7 @@
 package com.gridstore.huevista.ai.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.ai.dto.RecommendationResponse;
 import com.gridstore.huevista.ai.service.ColorRecommendationService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -16,6 +18,10 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/projects")
 @RequiredArgsConstructor
 @Tag(name = "AI Color Recommendations", description = "Claude-powered color palette suggestions for a project")
+// Palette suggestions for an open project — this is the Studio's "AI Suggest" tab, not
+// the Colour finder page (which matches colours in the browser against the catalogue it
+// was served, and has no endpoint of its own to gate).
+@RequiresFeature(AppFeature.STUDIO)
 public class ColorRecommendationController {
 
     private final ColorRecommendationService recommendationService;

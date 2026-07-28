@@ -1,5 +1,7 @@
 package com.gridstore.huevista.paint.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.paint.dto.CreateRetailerComboRequest;
 import com.gridstore.huevista.paint.dto.RetailerComboResponse;
 import com.gridstore.huevista.paint.service.RetailerComboService;
@@ -25,6 +27,7 @@ import java.util.List;
 @RestController
 @RequiredArgsConstructor
 @Tag(name = "Retailer combos", description = "A shop's suggested three-shade combinations")
+@RequiresFeature(AppFeature.CUSTOMER_PORTAL)
 public class RetailerComboController {
 
     private final RetailerComboService comboService;

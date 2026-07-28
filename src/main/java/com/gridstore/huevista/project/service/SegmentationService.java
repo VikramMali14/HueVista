@@ -561,6 +561,14 @@ public class SegmentationService {
             log.warn("Segmentation succeeded but no billable account was resolved — not charging");
             return;
         }
+        // The walk-in paid for this at the kiosk. The shop's plan was never part of that
+        // transaction, so it is not charged — spending the shop's credits on a stranger's
+        // paid-for project is billing the same work twice, to two different people.
+        if (billing.selfFunded()) {
+            log.info("Run under self-funded code {} — no subscription charged (customer paid at the kiosk)",
+                    billing.accessCodeId());
+            return;
+        }
         try {
             boolean spentHeldCredit = false;
             if (billing.coveredByCode()) {

@@ -1,9 +1,13 @@
 package com.gridstore.huevista.account.service;
 
+import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.model.Organization;
+import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.account.repository.RetailerBrandAssignmentRepository;
+import com.gridstore.huevista.paint.model.Brand;
+import com.gridstore.huevista.paint.repository.BrandRepository;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
@@ -43,6 +47,8 @@ public class BrandAccessService {
     private final OrganizationRepository orgRepository;
     private final RetailerBrandAssignmentRepository brandAssignmentRepository;
     private final UserRepository userRepository;
+    private final CustomerAccessCodeRepository codeRepository;
+    private final BrandRepository brandRepository;
 
     /**
      * The brand display names a shop may offer.
@@ -89,23 +95,73 @@ public class BrandAccessService {
     }
 
     /**
-     * The brand slugs a signed-in user's shop may offer, or empty when they are not
-     * a restricted retailer.
+     * The brand slugs a signed-in caller may browse.
      *
-     * Anyone who is not a RETAILER browses the whole catalogue: this is a
-     * distributor→shop constraint, and applying it to an admin or a distributor
-     * (who has no shop org of their own) would hide the catalogue from the very
-     * people who curate it.
+     * Two different restrictions meet here, and both have to bite:
+     *
+     * <ul>
+     *   <li>A RETAILER is limited to the companies their distributor assigned them.</li>
+     *   <li>A CUSTOMER is limited to the companies their shop unlocked on the access code
+     *       they redeemed — which was, until now, enforced nowhere at all. The shop picks
+     *       companies (and individual products) when issuing the code, and for a customer
+     *       who redeemed into an ACCOUNT — the primary walk-in route — none of it reached
+     *       the catalogue they were served: they saw the entire platform. Only the
+     *       anonymous-guest path applied it, and only through a cookie in the guest's own
+     *       browser, which is a suggestion rather than a restriction.</li>
+     * </ul>
+     *
+     * Everyone else browses whole: admins and distributors curate the catalogue, and
+     * painters work across whatever their shop stocks.
      */
     @Transactional(readOnly = true)
     public Optional<Set<String>> allowedBrandSlugsForUser(String userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
+        User user = userRepository.findById(userId).orElse(null);
+        if (user == null) {
+            // Not a user id — a guest principal is their access code's id. Answering
+            // "unrestricted" for an unknown principal is the one wrong answer here.
+            return allowedBrandSlugsForGuest(userId);
+        }
+        if (user.getRole() == UserRole.CUSTOMER) {
+            return codeRepository.findFirstByUsedByUserIdOrderByCreatedAtDesc(userId)
+                    .flatMap(this::brandSlugsOnCode);
+        }
         if (user.getRole() != UserRole.RETAILER) {
             return Optional.empty();
         }
         return orgRepository.findByOwnerIdAndType(userId, OrgType.RETAILER).stream().findFirst()
                 .flatMap(org -> allowedBrandSlugs(org.getId()));
+    }
+
+    /**
+     * The brand slugs an anonymous guest may browse — the companies their access code
+     * unlocked, intersected with what the issuing shop itself carries.
+     *
+     * The intersection matters: a code can outlive its shop's own grant, and a shop whose
+     * distributor has since revoked a company must not keep handing it out through codes
+     * printed earlier.
+     */
+    @Transactional(readOnly = true)
+    public Optional<Set<String>> allowedBrandSlugsForGuest(String accessCodeId) {
+        return codeRepository.findById(accessCodeId).flatMap(this::brandSlugsOnCode);
+    }
+
+    /** A code's own company restriction, narrowed by the issuing shop's. */
+    private Optional<Set<String>> brandSlugsOnCode(CustomerAccessCode code) {
+        Optional<Set<String>> shopSlugs = allowedBrandSlugs(code.getOrganization().getId());
+        List<String> onCode = code.getAllowedBrandList();
+        if (onCode.isEmpty()) {
+            return shopSlugs; // no per-customer filter; the shop's own limit still applies
+        }
+        Set<String> wanted = onCode.stream()
+                .map(name -> name.trim().toLowerCase(java.util.Locale.ROOT))
+                .collect(java.util.stream.Collectors.toSet());
+        Set<String> slugs = brandRepository.findAllByOrderByNameAsc().stream()
+                .filter(b -> b.getName() != null
+                        && wanted.contains(b.getName().trim().toLowerCase(java.util.Locale.ROOT)))
+                .map(Brand::getSlug)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        shopSlugs.ifPresent(slugs::retainAll);
+        return Optional.of(slugs);
     }
 
     /**

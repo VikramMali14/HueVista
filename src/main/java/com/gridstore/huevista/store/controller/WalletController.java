@@ -1,5 +1,7 @@
 package com.gridstore.huevista.store.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.store.dto.WalletSummaryResponse;
 import com.gridstore.huevista.store.service.WalletService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -16,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 @Tag(name = "Retailer Kiosk Points",
         description = "What the shop's kiosk sold and the reward points it earned")
+@RequiresFeature(AppFeature.CUSTOMER_PORTAL)
 public class WalletController {
 
     private final WalletService walletService;
@@ -23,8 +26,8 @@ public class WalletController {
     @Operation(summary = "Kiosk points statement",
             description = "Spendable point balance, lifetime points earned, and the recent kiosk "
                     + "sales that earned them. Points are spent on HueVista services — extra "
-                    + "images, auto-masks, projects — through the billing wallet endpoints under "
-                    + "/api/billing/wallet, and are never withdrawable as cash. Owners/managers only.")
+                    + "images, auto-masks, projects — through the reward-point endpoints under "
+                    + "/api/billing/points, and are never withdrawable as cash. Owners/managers only.")
     @GetMapping("/api/organizations/{orgId}/wallet")
     public ResponseEntity<WalletSummaryResponse> wallet(
             @AuthenticationPrincipal UserDetails userDetails,

@@ -45,12 +45,21 @@ public class ProjectBillingResolver {
     private final CustomerAccessCodeRepository accessCodeRepository;
     private final OrgMembershipRepository orgMembershipRepository;
 
+    /** True when this code was bought by the walk-in themselves (kiosk) — nobody is billed. */
+    @Transactional(readOnly = true)
+    public boolean isSelfFunded(String accessCodeId) {
+        return accessCodeId != null
+                && accessCodeRepository.findSelfFundedById(accessCodeId).orElse(false);
+    }
+
     /**
      * @param billedUserId the account whose subscription pays
      * @param accessCodeId non-null when this run is covered by an access code, and should
      *                     therefore spend that code's held credit before charging a new one
+     * @param selfFunded   the END CUSTOMER already paid for this work directly (a kiosk
+     *                     code), so no subscription is charged and none is required
      */
-    public record Target(String billedUserId, String accessCodeId) {
+    public record Target(String billedUserId, String accessCodeId, boolean selfFunded) {
         public boolean coveredByCode() {
             return accessCodeId != null;
         }
@@ -60,14 +69,24 @@ public class ProjectBillingResolver {
      * Resolve the paying account for a project. Empty when nothing can be billed (an
      * orphaned project, or a shop whose owner account is gone) — callers treat that as
      * "cannot run AI" rather than silently doing free work.
+     *
+     * <p>A SELF-FUNDED code is the exception to "empty means cannot run": the walk-in
+     * paid at the kiosk, so the work is already covered and resolves even when the shop
+     * has no owner or no plan at all. {@code billedUserId} may legitimately be null
+     * there — nobody is being billed.
      */
     @Transactional(readOnly = true)
     public Optional<Target> resolve(String projectId) {
         String accessCodeId = projectRepository.findAccessCodeIdById(projectId).orElse(null);
         if (accessCodeId != null) {
-            return shopOwnerOf(accessCodeId).map(ownerId -> new Target(ownerId, accessCodeId));
+            boolean selfFunded = accessCodeRepository.findSelfFundedById(accessCodeId).orElse(false);
+            String ownerId = shopOwnerOf(accessCodeId).orElse(null);
+            if (selfFunded) {
+                return Optional.of(new Target(ownerId, accessCodeId, true));
+            }
+            return Optional.ofNullable(ownerId).map(id -> new Target(id, accessCodeId, false));
         }
-        return projectRepository.findUserIdById(projectId).map(userId -> new Target(userId, null));
+        return projectRepository.findUserIdById(projectId).map(userId -> new Target(userId, null, false));
     }
 
     /** The OWNER account of the organization that issued a code — the account billed for it. */

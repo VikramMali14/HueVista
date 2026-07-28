@@ -239,6 +239,55 @@ class ProjectFlowIntegrationTest {
                 .andExpect(jsonPath("$.id").value(projectId));
     }
 
+    /**
+     * Sharing twice must not kill the link already sent.
+     *
+     * A share URL is forwarded — to a spouse, a builder, a WhatsApp group. Minting a
+     * fresh token on every call meant pressing Share again (to change the companies, or
+     * simply because the dialog was reopened) silently invalidated the URL that was
+     * already out there, and the recipient saw nothing but "this link has expired".
+     */
+    @Test
+    void sharing_again_keeps_the_link_that_was_already_sent() throws Exception {
+        String projectId = createProject();
+
+        String first = shareToken(projectId, "{\"validDays\": 7}");
+        String second = shareToken(projectId, "{\"validDays\": 10}");
+
+        assertThat(second).isEqualTo(first);
+        mockMvc.perform(get("/api/share/" + first))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(projectId));
+    }
+
+    /** …and withdrawing one is a deliberate act, not a side effect of re-sharing. */
+    @Test
+    void a_share_link_can_be_withdrawn_on_purpose() throws Exception {
+        String projectId = createProject();
+        String token = shareToken(projectId, "{\"validDays\": 7}");
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .delete("/api/projects/" + projectId + "/share")
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(get("/api/share/" + token))
+                .andExpect(status().isNotFound());
+
+        // Sharing again mints a genuinely new link.
+        assertThat(shareToken(projectId, "{\"validDays\": 7}")).isNotEqualTo(token);
+    }
+
+    private String shareToken(String projectId, String body) throws Exception {
+        MvcResult res = mockMvc.perform(post("/api/projects/" + projectId + "/share")
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readTree(res.getResponse().getContentAsString()).get("shareToken").asText();
+    }
+
     @Test
     void shared_project_image_is_publicly_streamable() throws Exception {
         // Store a real file so the public, token-scoped share-image endpoint can read it.

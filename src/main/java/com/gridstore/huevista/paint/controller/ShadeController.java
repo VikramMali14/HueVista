@@ -158,6 +158,8 @@ public class ShadeController {
     )
     @ApiResponse(responseCode = "200", description = "Shade list, limited to the shop's brands")
     @PreAuthorize("isAuthenticated()")
+    @com.gridstore.huevista.account.security.RequiresFeature(
+            com.gridstore.huevista.account.model.AppFeature.CATALOGUE)
     @GetMapping("/api/shades/mine")
     public List<ShadeSummaryResponse> getMyShades(
             @Parameter(description = "Brand slug, e.g. asian-paints") @RequestParam(required = false) String brand,
@@ -185,6 +187,8 @@ public class ShadeController {
     )
     @ApiResponse(responseCode = "200", description = "Companies with shade counts, limited to the shop's brands")
     @PreAuthorize("isAuthenticated()")
+    @com.gridstore.huevista.account.security.RequiresFeature(
+            com.gridstore.huevista.account.model.AppFeature.CATALOGUE)
     @GetMapping("/api/shades/mine/brands")
     public List<ShadeBrandSummaryResponse> getMyShadeBrands(Authentication auth) {
         Optional<Set<String>> allowed = brandAccessService.allowedBrandSlugsForUser(auth.getName());

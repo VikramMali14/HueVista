@@ -2,6 +2,7 @@ package com.gridstore.huevista.account;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.CustomerEntitlement;
 import com.gridstore.huevista.account.repository.CustomerEntitlementRepository;
 import com.gridstore.huevista.account.repository.ProjectGrantRepository;
@@ -64,6 +65,7 @@ class ProjectGrantIntegrationTest {
     @Autowired CustomerEntitlementRepository entitlementRepository;
     @Autowired ProjectGrantRepository grantRepository;
     @Autowired com.gridstore.huevista.account.repository.OrganizationRepository organizationRepository;
+    @Autowired com.gridstore.huevista.account.repository.CustomerAccessCodeRepository codeRepository;
 
     private static final String SHOP_EMAIL = "grant-shop@example.com";
     private static final String CUSTOMER_EMAIL = "grant-customer@example.com";
@@ -197,6 +199,76 @@ class ProjectGrantIntegrationTest {
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    /**
+     * A customer who redeems a SECOND shop's code must not vanish from the first.
+     *
+     * {@code CustomerEntitlement.retailerOrg} is one pointer and redeeming moves it. So a
+     * shop that onboarded a customer and paid for their projects lost them entirely the
+     * moment they redeemed somewhere else: gone from the portal list, and refused by
+     * grant-project with "not managed by your organization" — while that shop's
+     * paid-for allowance was still on the row. Both shops have a real relationship with
+     * the customer, and the code each issued is the evidence of it.
+     */
+    @Test
+    void aShopKeepsItsCustomerAfterTheyRedeemSomewhereElse() throws Exception {
+        // The customer holds a code this shop issued…
+        codeRepository.saveAndFlush(CustomerAccessCode.builder()
+                .organization(organizationRepository.findById(orgId).orElseThrow())
+                .code("SHOPAAA1")
+                .validDays(10)
+                .expiresAt(LocalDateTime.now().plusDays(10))
+                .customerName("Walk-in")
+                .usedByUser(userRepository.findById(customerId).orElseThrow())
+                .usedAt(LocalDateTime.now())
+                .build());
+
+        // …then redeems a different shop's, which moves "managed by" away.
+        String otherToken = registerAndLogin("other-shop@example.com", "Other Shop", UserRole.RETAILER);
+        String otherOrgId = createOrgAs(otherToken, "Other Paints", "other-paints");
+        var entitlement = entitlementRepository.findByCustomerId(customerId).orElseThrow();
+        entitlement.setRetailerOrg(organizationRepository.findById(otherOrgId).orElseThrow());
+        entitlementRepository.saveAndFlush(entitlement);
+
+        // The first shop still sees them…
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/api/organizations/{orgId}/customers", orgId)
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].customerId").value(customerId));
+
+        // …and can still give them a project.
+        grant(1).andExpect(status().isOk());
+    }
+
+    /** A shop with no relationship to the customer at all is still refused. */
+    @Test
+    void anUnrelatedShopStillCannotGrantToSomeoneElsesCustomer() throws Exception {
+        String otherToken = registerAndLogin("stranger-shop@example.com", "Stranger", UserRole.RETAILER);
+        String otherOrgId = createOrgAs(otherToken, "Stranger Paints", "stranger-paints");
+
+        mockMvc.perform(post("/api/organizations/{orgId}/customers/{customerId}/grant-project",
+                        otherOrgId, customerId)
+                        .header("Authorization", "Bearer " + otherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"projects\":1}"))
+                .andExpect(status().isForbidden());
+    }
+
+    private String createOrgAs(String token, String name, String slug) throws Exception {
+        CreateOrgRequest req = new CreateOrgRequest();
+        req.setName(name);
+        req.setSlug(slug);
+        req.setType(OrgType.RETAILER);
+        MvcResult result = mockMvc.perform(post("/api/organizations")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asText();
+    }
 
     private org.springframework.test.web.servlet.ResultActions grant(int projects) throws Exception {
         return mockMvc.perform(post("/api/organizations/{orgId}/customers/{customerId}/grant-project",

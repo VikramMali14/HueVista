@@ -76,6 +76,8 @@ public class HierarchyController {
             description = "RETAILER only. Provisions a PAINTER user with a profile, already linked (ACTIVE) "
                     + "to the caller's shop.")
     @PreAuthorize("hasRole('RETAILER')")
+    @com.gridstore.huevista.account.security.RequiresFeature(
+            com.gridstore.huevista.account.model.AppFeature.NETWORK)
     @PostMapping("/painters")
     public ResponseEntity<AdminUserResponse> createPainter(
             @Valid @RequestBody CreatePainterRequest request,
@@ -90,7 +92,11 @@ public class HierarchyController {
             description = "Role-scoped downline tree with rollup counts. ADMIN sees every distributor, "
                     + "retailer and painter; a DISTRIBUTOR sees their retailers (and those shops' painters); "
                     + "a RETAILER sees their painters.")
+    // Gated for a RETAILER only — the guard resolves the CALLER's shop, so an admin or a
+    // distributor (who is the one doing the granting) is never limited by it.
     @PreAuthorize("hasAnyRole('ADMIN','DISTRIBUTOR','RETAILER')")
+    @com.gridstore.huevista.account.security.RequiresFeature(
+            com.gridstore.huevista.account.model.AppFeature.NETWORK)
     @GetMapping("/network")
     public ResponseEntity<NetworkReportResponse> network(Authentication auth) {
         return ResponseEntity.ok(hierarchyService.network(auth.getName()));

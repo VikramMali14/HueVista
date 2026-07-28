@@ -1,5 +1,7 @@
 package com.gridstore.huevista.project.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.project.dto.*;
 import com.gridstore.huevista.project.service.ProjectService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -24,6 +26,7 @@ import java.util.Map;
 @RequestMapping("/api/projects")
 @RequiredArgsConstructor
 @Tag(name = "Projects", description = "Create and manage paint visualization projects")
+@RequiresFeature(AppFeature.STUDIO)
 public class ProjectController {
 
     private final ProjectService projectService;
@@ -284,7 +287,12 @@ public class ProjectController {
                     and should not outlive each other.
 
                     `brands` (optional, comma-separated brand names) limits which paint
-                    companies the share viewer may repaint with; omit for all brands.
+                    companies the share viewer may repaint with; omit for all brands. A
+                    shop may only name companies its distributor assigned it.
+
+                    Calling this again REUSES the project's existing token and refreshes
+                    its window — a link already forwarded keeps working. Use
+                    `DELETE /{id}/share` to withdraw one deliberately.
                     """
     )
     @ApiResponse(responseCode = "200", description = "Share link with token and expiry")
@@ -305,6 +313,16 @@ public class ProjectController {
                 : java.util.Arrays.stream(brands.split(","))
                         .map(String::trim).filter(s -> !s.isEmpty()).toList();
         return ResponseEntity.ok(projectService.generateShareLink(userId(auth), id, days, brandList));
+    }
+
+    @Operation(summary = "Withdraw the project's share link",
+            description = "Invalidates the public link immediately. Sharing again mints a new "
+                    + "token; until then the old URL answers 404.")
+    @ApiResponse(responseCode = "204", description = "Share link withdrawn")
+    @DeleteMapping("/{id}/share")
+    public ResponseEntity<Void> revokeShareLink(@PathVariable String id, Authentication auth) {
+        projectService.revokeShareLink(userId(auth), id);
+        return ResponseEntity.noContent().build();
     }
 
     @Operation(

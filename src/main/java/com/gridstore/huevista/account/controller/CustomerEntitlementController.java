@@ -1,5 +1,7 @@
 package com.gridstore.huevista.account.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.account.dto.CustomerEntitlementResponse;
 import com.gridstore.huevista.account.dto.GrantCodeProjectsRequest;
 import com.gridstore.huevista.account.dto.ProjectGrantResponse;
@@ -19,6 +21,7 @@ import java.util.List;
 @RestController
 @RequiredArgsConstructor
 @Tag(name = "Customer Entitlements", description = "Per-customer project allowance + validity, managed by retailers")
+@RequiresFeature(AppFeature.CUSTOMER_PORTAL)
 public class CustomerEntitlementController {
 
     private final CustomerEntitlementService entitlementService;
