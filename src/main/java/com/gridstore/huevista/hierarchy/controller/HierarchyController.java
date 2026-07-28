@@ -57,6 +57,21 @@ public class HierarchyController {
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
+    @Operation(summary = "Put a shop on the free tier",
+            description = "ADMIN, or a DISTRIBUTOR for a shop in their own network. Grants the free tier "
+                    + "(7 days, 3 projects: 2 AI-masked and 1 by hand). A no-op for a shop that already "
+                    + "holds a live plan — a free tier must never supersede one they paid for.")
+    @PreAuthorize("hasAnyRole('ADMIN','DISTRIBUTOR')")
+    @PostMapping("/retailers/{retailerUserId}/free-tier")
+    public ResponseEntity<com.gridstore.huevista.billing.dto.SubscriptionResponse> grantFreeTier(
+            @PathVariable String retailerUserId,
+            Authentication auth) {
+        var sub = hierarchyService.grantFreeTier(auth.getName(), retailerUserId);
+        auditService.record(auth.getName(), "FREE_TIER_GRANTED", "USER", retailerUserId,
+                "free tier assigned via hierarchy");
+        return ResponseEntity.ok(sub);
+    }
+
     @Operation(summary = "Create a painter account",
             description = "RETAILER only. Provisions a PAINTER user with a profile, already linked (ACTIVE) "
                     + "to the caller's shop.")

@@ -30,4 +30,11 @@ public class UpdateShadeCodeSchemeRequest {
     @Size(max = 4, message = "Suffix can be at most 4 characters.")
     @Pattern(regexp = "[A-Za-z0-9]*", message = "Suffix can only use letters and digits.")
     private String suffix;
+
+    /**
+     * Whether paint names are shown anywhere under this shop. Null leaves it as it is,
+     * so a client editing only the pattern cannot silently flip it back on — which
+     * matters because clearing the pattern deletes its row but must not restore names.
+     */
+    private Boolean showNames;
 }

@@ -91,9 +91,18 @@ class TrialSignupIntegrationTest {
         Subscription sub = subs.get(0);
         assertThat(sub.isTrial()).isTrue();
         assertThat(sub.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
-        assertThat(sub.getPlan()).isEqualTo(Plan.PROFESSIONAL);
+        // Every new shop starts on the FREE tier, whatever tier the request named — the
+        // requested tier is a sales note. Handing out a month of Professional quota for
+        // nothing made the subscribe decision look like a downgrade.
+        assertThat(sub.getPlan()).isEqualTo(Plan.FREE);
         assertThat(sub.getRazorpaySubscriptionId()).isNull();
-        assertThat(sub.getAiGenerationsLimit()).isEqualTo(Plan.PROFESSIONAL.getMonthlyImageLimit());
+        assertThat(sub.getAiGenerationsLimit()).isEqualTo(Plan.FREE.getMonthlyImageLimit());
+        assertThat(sub.getAiGenerationsLimit()).isEqualTo(3);
+        assertThat(sub.getAutoMasksLimit()).isEqualTo(2);
+        // Seven days, so the decision arrives while the product is still fresh.
+        assertThat(sub.getCurrentPeriodEnd())
+                .isAfter(sub.getCurrentPeriodStart().plusDays(6))
+                .isBefore(sub.getCurrentPeriodStart().plusDays(8));
     }
 
     /** Public signup creates a plain CUSTOMER — no shop, no subscription. */

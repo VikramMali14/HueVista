@@ -36,7 +36,13 @@ public class AuthService {
     private final com.gridstore.huevista.notification.EmailSender emailSender;
     private final com.gridstore.huevista.billing.service.BillingWalletService billingWalletService;
 
-    private static final int TRIAL_DAYS = 14;
+    /**
+     * How long a new shop's free trial runs. Seven days with three projects on it: long
+     * enough to photograph a real room, mask it and show a customer, short enough that the
+     * subscribe decision arrives while the product is still fresh. The quota that goes
+     * with it lives on {@link com.gridstore.huevista.billing.model.Plan#FREE}.
+     */
+    private static final int TRIAL_DAYS = 7;
 
     public AuthService(UserRepository userRepository,
                        RefreshTokenRepository refreshTokenRepository,
@@ -133,7 +139,10 @@ public class AuthService {
                 .build();
         userRepository.save(user);
         accountService.provisionRetailerOrg(user.getId(), request.getShopName(), request.getCity(), request.getState());
-        billingService.grantTrial(user.getId(), planFromTier(request.getTier()), TRIAL_DAYS);
+        // Every new shop starts on the free tier regardless of the tier they asked for —
+        // the requested tier is a sales note, not an entitlement. An admin can grant a paid
+        // plan outright (adminGrantSubscription) when a shop has actually bought one.
+        billingService.grantTrial(user.getId(), com.gridstore.huevista.billing.model.Plan.FREE, TRIAL_DAYS);
         sendShopWelcomeEmail(user, request);
         log.info("Admin created RETAILER {} (shop: {})", user.getEmail(), request.getShopName());
         return AdminUserResponse.from(user);
@@ -177,14 +186,6 @@ public class AuthService {
         return "http://localhost:3000";
     }
 
-    private static com.gridstore.huevista.billing.model.Plan planFromTier(String tier) {
-        if (tier == null) return com.gridstore.huevista.billing.model.Plan.PROFESSIONAL;
-        return switch (tier.trim().toLowerCase()) {
-            case "starter" -> com.gridstore.huevista.billing.model.Plan.STARTER;
-            case "business" -> com.gridstore.huevista.billing.model.Plan.BUSINESS;
-            default -> com.gridstore.huevista.billing.model.Plan.PROFESSIONAL; // "pro"/"professional"/blank
-        };
-    }
 
     private static String blankToNull(String s) {
         return (s == null || s.isBlank()) ? null : s.trim();

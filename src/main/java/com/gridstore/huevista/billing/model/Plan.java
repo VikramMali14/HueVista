@@ -30,7 +30,14 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public enum Plan {
 
-    // Order matters: ordinal is the upgrade rank (see isUpgradeFrom).
+    // Order matters: ordinal is the upgrade rank (see isUpgradeFrom). FREE sits at the
+    // bottom so every paid tier reads as an upgrade from it.
+    //
+    // FREE is what a new shop starts on: three projects to try the whole pipeline end to
+    // end — two with AI wall detection, one masked by hand — over a short window. It is
+    // sized to be a real trial of the product rather than a usable month of business, so
+    // the shop reaches the subscribe decision with the thing actually understood.
+    FREE(0, 3, 2, 4, 5, "Free trial"),
     STARTER(99900, 20, 5, 4, 25, "Starter"),
     PROFESSIONAL(249900, 60, 40, 8, 100, "Professional"),
     BUSINESS(499900, 120, 90, 12, 300, "Business"),
@@ -97,5 +104,10 @@ public enum Plan {
     /** True when this tier includes AI auto-masking at all. */
     public boolean autoMaskIncluded() {
         return monthlyAutoMaskLimit > 0;
+    }
+
+    /** The starter-for-nothing tier: granted, never sold. */
+    public boolean isFree() {
+        return this == FREE;
     }
 }

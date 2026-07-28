@@ -111,6 +111,17 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).body(body);
     }
 
+    @ExceptionHandler(RetailerActionRequiredException.class)
+    public ResponseEntity<Map<String, Object>> handleRetailerAction(RetailerActionRequiredException ex) {
+        // 402 like the other allowance refusals, but tagged so the frontend offers "ask
+        // your retailer" instead of a Checkout button. A shop-onboarded customer's
+        // projects are the shop's to add — selling them one direct would cut the counter
+        // out of a relationship it already paid for.
+        Map<String, Object> body = baseError(HttpStatus.PAYMENT_REQUIRED, ex.getMessage());
+        body.put("code", "ASK_RETAILER");
+        return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).body(body);
+    }
+
     @ExceptionHandler(QuotaExceededException.class)
     public ResponseEntity<Map<String, Object>> handleQuota(QuotaExceededException ex) {
         // No active subscription / AI limit reached, or a customer's project allowance is used up.

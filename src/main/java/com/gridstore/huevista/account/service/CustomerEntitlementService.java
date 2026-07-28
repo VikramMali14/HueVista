@@ -50,6 +50,8 @@ public class CustomerEntitlementService {
     private final CustomerEntitlementRepository entitlementRepository;
     private final UserRepository userRepository;
     private final OrgMembershipRepository membershipRepository;
+    private final ProjectGrantService grantService;
+    private final com.gridstore.huevista.notification.EmailSender emailSender;
 
     private static final int DEFAULT_INCLUDED_PROJECTS = 1;
 
@@ -224,8 +226,7 @@ public class CustomerEntitlementService {
                     "Your access has ended. Ask your retailer for a new access code.");
         }
         if (entitlementRepository.claimProjectSlot(userId, LocalDateTime.now()) == 0) {
-            throw new QuotaExceededException(
-                    "You've used your included project. Pay once for another, or ask your retailer to add one.");
+            throw outOfProjects(ent);
         }
     }
 
@@ -239,8 +240,7 @@ public class CustomerEntitlementService {
                     "Your access has ended. Ask your retailer for a new access code.");
         }
         if (ent.getProjectsCreated() >= ent.getProjectAllowance()) {
-            throw new QuotaExceededException(
-                    "You've used your included project. Pay once for another, or ask your retailer to add one.");
+            throw outOfProjects(ent);
         }
     }
 
@@ -286,6 +286,47 @@ public class CustomerEntitlementService {
         });
     }
 
+    /**
+     * The customer asking their shop for another project.
+     *
+     * This is the whole point of refusing the sale: a shop-onboarded customer who has run
+     * out is one message away from the counter that already manages them, so the app
+     * carries the message instead of a payment form. The shop adds a project in one click
+     * (grant-project) and the customer carries on.
+     *
+     * Rate-limited by nothing beyond the customer's own patience, deliberately: the mail
+     * is addressed to a shop that chose to onboard them, it names one customer, and a
+     * duplicate is a nudge rather than an incident.
+     */
+    @Transactional(readOnly = true)
+    public void requestMoreProjects(String userId) {
+        CustomerEntitlement ent = entitlementRepository.findByCustomerId(userId)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "No shop manages this account, so there's nobody to ask."));
+        Organization shop = ent.getRetailerOrg();
+        if (shop == null) {
+            throw new ResourceNotFoundException("No shop manages this account, so there's nobody to ask.");
+        }
+        String customerName = ent.getCustomer().getName();
+        membershipRepository.findUserIdsByOrganizationIdAndRole(shop.getId(), OrgMemberRole.OWNER)
+                .stream().findFirst()
+                .flatMap(userRepository::findById)
+                .ifPresentOrElse(owner -> {
+                    emailSender.send(owner.getEmail(),
+                            customerName + " is asking for another project",
+                            "Hi,\n\n"
+                                    + customerName + " has used all "
+                                    + ent.getProjectAllowance() + " project"
+                                    + (ent.getProjectAllowance() == 1 ? "" : "s")
+                                    + " you assigned them, and has asked for another.\n\n"
+                                    + "Open your Customer portal and press \"Grant project\" on their row "
+                                    + "— it takes one image credit from your plan.\n\n"
+                                    + "— HueVista");
+                    log.info("Customer {} asked shop {} for another project", userId, shop.getId());
+                }, () -> log.warn("Customer {} asked shop {} for a project, but the shop has no owner "
+                        + "account to notify", userId, shop.getId()));
+    }
+
     /** The customer's own status (for the UI to show remaining projects / expiry). Null if none. */
     @Transactional(readOnly = true)
     public CustomerEntitlementResponse getMyEntitlement(String userId) {
@@ -303,20 +344,38 @@ public class CustomerEntitlementService {
                 .toList();
     }
 
-    /** Retailer: grant one more project to a customer they manage. */
+    /**
+     * Retailer: give a customer they manage more projects.
+     *
+     * Goes through {@link ProjectGrantService}, which reserves an image credit per project
+     * against the shop's plan and records the grant so it can be taken back. This used to
+     * be a bare {@code allowance + 1} that reserved nothing — a shop could hand out
+     * unlimited projects and its subscription never noticed, while issuing a CODE for the
+     * same projects charged properly. The two now cost the same thing.
+     */
     @Transactional
-    public CustomerEntitlementResponse grantExtraProject(String requestingUserId, String retailerOrgId, String customerUserId) {
-        requireOwnerOrManager(requestingUserId, retailerOrgId);
-        CustomerEntitlement ent = entitlementRepository.findByCustomerId(customerUserId)
+    public CustomerEntitlementResponse grantExtraProjects(String requestingUserId, String retailerOrgId,
+                                                          String customerUserId, int projects) {
+        grantService.grantToCustomer(requestingUserId, retailerOrgId, customerUserId, projects);
+        return entitlementRepository.findByCustomerId(customerUserId)
+                .map(CustomerEntitlementResponse::from)
                 .orElseThrow(() -> new ResourceNotFoundException("Customer entitlement not found"));
-        if (ent.getRetailerOrg() == null || !ent.getRetailerOrg().getId().equals(retailerOrgId)) {
-            throw new SecurityException("This customer is not managed by your organization.");
-        }
-        ent.setProjectAllowance(ent.getProjectAllowance() + 1);
-        entitlementRepository.save(ent);
-        log.info("Retailer org {} granted +1 project to customer {} (allowance now {})",
-                retailerOrgId, customerUserId, ent.getProjectAllowance());
-        return CustomerEntitlementResponse.from(ent);
+    }
+
+    /**
+     * The refusal a shop-onboarded customer gets when their projects are used up.
+     *
+     * Deliberately NOT an offer to buy. This customer's projects were assigned by a shop
+     * and paid for out of that shop's quota; the shop can add more in one click, and the
+     * customer can ask for it from the app. Selling them a project direct would take
+     * money for something their shop is already responsible for.
+     */
+    private RuntimeException outOfProjects(CustomerEntitlement ent) {
+        String shop = ent.getRetailerOrg() != null ? ent.getRetailerOrg().getName() : "your shop";
+        return new com.gridstore.huevista.common.exception.RetailerActionRequiredException(
+                "You've used all " + ent.getProjectAllowance() + " project"
+                + (ent.getProjectAllowance() == 1 ? "" : "s") + " on your code. "
+                + "Ask " + shop + " to add another — they can do it from their counter.");
     }
 
     // --- helpers ---

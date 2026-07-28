@@ -38,17 +38,17 @@ public class PricingService {
     @Value("${app.project-credit.valid-days:30}")
     private int projectValidDays;
 
-    /** Platform base per kiosk order while the shop is subscribed. */
-    @Value("${app.store.min-price-paise:5000}")
-    private int kioskBaseSubscribedPaise;
-
     /**
-     * Platform base per kiosk order once the shop's subscription has ended. The kiosk
-     * itself never closes — a walk-in customer at the counter must always be able to
-     * pay and start — the platform's cut simply rises.
+     * The platform's cut of every kiosk order — flat, whatever the shop's plan is doing.
+     *
+     * The kiosk is the counter, not the subscription: a walk-in pays the shop's printed
+     * price, the platform keeps this base, and the excess accrues to the shop's wallet.
+     * Tying it to subscription state was tried and taken back out — it silently changed
+     * the price on a printed URL and wiped the shop's margin on a payment they had already
+     * advertised, which is not a lever that belongs on a public payment page.
      */
-    @Value("${app.store.lapsed-min-price-paise:9900}")
-    private int kioskBaseLapsedPaise;
+    @Value("${app.store.min-price-paise:5000}")
+    private int kioskBasePaise;
 
     @Value("${app.project-credit.currency:INR}")
     private String currency;
@@ -82,24 +82,16 @@ public class PricingService {
         return projectValidDays;
     }
 
-    /** The platform's cut of one kiosk order for a shop in the given subscription state. */
-    public int kioskBasePricePaise(boolean subscribed) {
-        return subscribed ? kioskBaseSubscribedPaise : kioskBaseLapsedPaise;
-    }
-
-    public int kioskBaseSubscribedPaise() {
-        return kioskBaseSubscribedPaise;
-    }
-
-    public int kioskBaseLapsedPaise() {
-        return kioskBaseLapsedPaise;
+    /** The platform's cut of one kiosk order. Flat, whatever the shop's plan is doing. */
+    public int kioskBasePaise() {
+        return kioskBasePaise;
     }
 
     /**
      * Is this shop covered by a plan? A shop is billed through its OWNER account
      * everywhere else in the product, so that is what is asked here too. A shop with no
      * owner account reads as unsubscribed — the safe direction, since the alternative is
-     * giving away the subscribed rate to an org nobody can be billed for.
+     * giving away a subscribed rate to an org nobody can be billed for.
      */
     public boolean isShopSubscribed(String orgId) {
         return membershipRepository
@@ -108,23 +100,6 @@ public class PricingService {
                 .stream().findFirst()
                 .map(this::isSubscribed)
                 .orElse(false);
-    }
-
-    /** The platform's cut of one kiosk order at this shop, given its plan today. */
-    public int kioskBasePriceForShop(String orgId) {
-        return kioskBasePricePaise(isShopSubscribed(orgId));
-    }
-
-    /**
-     * What a walk-in actually pays at this shop's kiosk.
-     *
-     * The kiosk NEVER closes when a plan lapses — a customer standing at the counter must
-     * always be able to pay and start. What changes is the platform's cut, and a shop
-     * whose printed price sits below the lapsed base would otherwise be selling at a
-     * loss to us, so the price rises to meet the base rather than the kiosk shutting.
-     */
-    public int kioskChargePaise(int listedPricePaise, String orgId) {
-        return Math.max(listedPricePaise, kioskBasePriceForShop(orgId));
     }
 
     public String currency() {

@@ -90,7 +90,12 @@ public class BillingController {
                     + "limits and the pay-per-image overage price.")
     @GetMapping("/plans")
     public ResponseEntity<List<Map<String, Object>>> getPlans() {
+        // FREE is granted with a new shop, never sold — listing it here would put a
+        // "₹0/mo" card on the pricing page whose button can only ever answer "there's
+        // nothing to pay". ENTERPRISE stays listed because it IS a plan you can have,
+        // just not one you buy through Checkout.
         var plans = java.util.Arrays.stream(com.gridstore.huevista.billing.model.Plan.values())
+            .filter(p -> !p.isFree())
             .map(p -> {
                 Map<String, Object> m = new java.util.LinkedHashMap<>();
                 m.put("plan", p.name());

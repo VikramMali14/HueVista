@@ -100,24 +100,9 @@ public class StoreLinkService {
         return describe(link);
     }
 
-    /**
-     * A link plus the pricing that actually applies to it today.
-     *
-     * The retailer's stored price is what they typed; what a customer is charged is that
-     * or the platform base, whichever is higher. Since the base doubles when a plan
-     * lapses, the two can differ without the retailer having changed anything — so both
-     * numbers, and the base at each end, are reported rather than leaving the shop to
-     * discover the difference from a settlement.
-     */
+    /** A link plus the flat platform base, so the shop can see its own margin per order. */
     private StoreLinkResponse describe(StoreLink link) {
-        String orgId = link.getOrganization().getId();
-        boolean subscribed = pricingService.isShopSubscribed(orgId);
-        return StoreLinkResponse.from(link).withPlatformBase(
-                subscribed,
-                pricingService.kioskBasePricePaise(subscribed),
-                pricingService.kioskBaseSubscribedPaise(),
-                pricingService.kioskBaseLapsedPaise(),
-                pricingService.kioskChargePaise(link.getPricePaise(), orgId));
+        return StoreLinkResponse.from(link).withPlatformBase(pricingService.kioskBasePaise());
     }
 
     /** Anonymous kiosk view of a link. 404 when the slug doesn't exist; an inactive
@@ -126,14 +111,10 @@ public class StoreLinkService {
     public StorePublicInfoResponse getPublicInfo(String slug) {
         StoreLink link = linkRepository.findBySlug(slug)
                 .orElseThrow(() -> new ResourceNotFoundException("Store not found"));
-        // The kiosk quotes what will actually be charged, which is the shop's price or the
-        // platform base, whichever is higher. Showing the shop's stored price and then
-        // opening Checkout for more is the one thing a payment page must never do.
         return StorePublicInfoResponse.builder()
                 .slug(link.getSlug())
                 .shopName(link.getOrganization().getName())
-                .pricePaise(pricingService.kioskChargePaise(
-                        link.getPricePaise(), link.getOrganization().getId()))
+                .pricePaise(link.getPricePaise())
                 .currency("INR")
                 .validDays(link.getValidDays())
                 .active(link.isActive())
@@ -141,14 +122,9 @@ public class StoreLinkService {
                 .build();
     }
 
-    /**
-     * The floor a retailer may TYPE is always the subscribed base, never the lapsed one.
-     * Holding a lapsed shop to Rs. 99 here would force them to re-price the kiosk on the
-     * day their plan ended and again the day it came back; instead their price stands and
-     * the charge simply rises to meet the base while they are lapsed.
-     */
+    /** The shop may price anywhere at or above the platform base; the excess is theirs. */
     private void requireMinPrice(int pricePaise) {
-        int floor = pricingService.kioskBaseSubscribedPaise();
+        int floor = pricingService.kioskBasePaise();
         if (pricePaise < floor) {
             throw new IllegalArgumentException(
                     "The price must be at least Rs." + (floor / 100) + " per image");
