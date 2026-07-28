@@ -40,6 +40,21 @@ public class GlobalExceptionHandler {
         return errorResponse(HttpStatus.BAD_GATEWAY, ex.getMessage());
     }
 
+    // SMTP refused the message (bad credentials, host unreachable, quota). This
+    // reaches here only from the flows where delivery IS the feature — admin 2FA
+    // codes, password resets, verification codes; best-effort mails are caught at
+    // their call site. Those flows must fail closed: reporting success would mean
+    // an admin 2FA code that never arrives, or worse, a login that skips the second
+    // factor because SMTP happens to be down. 503 (not 500) says "our side, retry
+    // later", and we log the message without the stack — a broken mail account
+    // repeats this on every attempt and the trace adds nothing after the first.
+    @ExceptionHandler(org.springframework.mail.MailException.class)
+    public ResponseEntity<Map<String, Object>> handleMail(org.springframework.mail.MailException ex) {
+        log.error("Email delivery failed: {}", ex.getMessage());
+        return errorResponse(HttpStatus.SERVICE_UNAVAILABLE,
+                "We couldn't send that email right now. Please try again in a few minutes.");
+    }
+
     @ExceptionHandler(ProcessingInterruptedException.class)
     public ResponseEntity<Map<String, Object>> handleProcessingInterrupted(ProcessingInterruptedException ex) {
         // A blocking step (e.g. SAM 2 polling) was interrupted, likely during

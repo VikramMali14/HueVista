@@ -77,8 +77,17 @@ services:
       RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
       RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      # SMTP: the credentials matter as much as the host — without USERNAME and
+      # PASSWORD the container authenticates as nobody and every send fails with
+      # "535 Username and Password not accepted". Gmail needs an App Password
+      # (a Google account password is always rejected).
       MAIL_ENABLED: ${MAIL_ENABLED:-false}
       MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-no-reply@huevista.org}
+      MAIL_BILLING_FROM: ${MAIL_BILLING_FROM:-payments@huevista.org}
       SMS_ENABLED: ${SMS_ENABLED:-false}
     ports:
       - "8080:8080"
