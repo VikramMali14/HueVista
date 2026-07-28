@@ -51,7 +51,7 @@ public class WalletService {
     @Value("${app.store.min-redemption-paise:5000}")
     private int minRedemptionPaise;
 
-    @Value("${app.store.redemption-email:redemeamount@huevista.org}")
+    @Value("${app.store.redemption-email:payouts@huevista.org}")
     private String redemptionInbox;
 
     @Transactional(readOnly = true)

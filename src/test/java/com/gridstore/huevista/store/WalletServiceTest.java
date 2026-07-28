@@ -65,7 +65,7 @@ class WalletServiceTest {
         svc = new WalletService(payments, redemptions, orgs, memberships, users, email, audit);
         ReflectionTestUtils.setField(svc, "minPricePaise", 5000);
         ReflectionTestUtils.setField(svc, "minRedemptionPaise", 5000);
-        ReflectionTestUtils.setField(svc, "redemptionInbox", "redemeamount@huevista.org");
+        ReflectionTestUtils.setField(svc, "redemptionInbox", "payouts@huevista.org");
         // The requester owns the org.
         when(memberships.existsByUserIdAndOrganizationIdAndRole(USER, ORG, OrgMemberRole.OWNER)).thenReturn(true);
         when(orgs.findByIdForUpdate(ORG)).thenReturn(Optional.of(org));
@@ -107,7 +107,7 @@ class WalletServiceTest {
         assertThat(res.getAmountPaise()).isEqualTo(8_000);
         assertThat(res.getUpiId()).isEqualTo("mehta@okhdfcbank");
         // The manual-payout inbox hears about it.
-        verify(email).send(eq("redemeamount@huevista.org"), anyString(), anyString());
+        verify(email).send(eq("payouts@huevista.org"), anyString(), anyString());
         verify(audit).record(eq(USER), eq("WALLET_REDEMPTION_REQUESTED"), eq("WALLET_REDEMPTION"),
                 any(), anyString());
     }

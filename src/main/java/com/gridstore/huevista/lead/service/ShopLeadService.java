@@ -23,8 +23,24 @@ public class ShopLeadService {
     private final ShopLeadRepository leadRepository;
     private final EmailSender emailSender;
 
+    /**
+     * The inbox that reads shop-account requests.
+     *
+     * Separate from {@code app.admin.email}, which is the platform admin's LOGIN
+     * identity. The two shared one value, so the credentials used to sign into the admin
+     * console had to be a mailbox the whole sales side could read. Falls back to the
+     * admin address when unset, so a deployment that has not set LEADS_EMAIL yet still
+     * gets its leads.
+     */
+    @Value("${app.leads.email:}")
+    private String leadsEmail;
+
     @Value("${app.admin.email:}")
     private String adminEmail;
+
+    private String leadInbox() {
+        return (leadsEmail != null && !leadsEmail.isBlank()) ? leadsEmail : adminEmail;
+    }
 
     @Transactional
     public ShopLeadResponse submit(ShopLeadRequest request) {
@@ -39,15 +55,16 @@ public class ShopLeadService {
                 .notes(blankToNull(request.getNotes()))
                 .build());
         log.info("Shop lead received: id={} shop={} city={}", lead.getId(), lead.getShopName(), lead.getCity());
-        notifyAdmin(lead);
+        notifyLeadsInbox(lead);
         return ShopLeadResponse.from(lead);
     }
 
-    /** Best-effort heads-up to the admin inbox — a failure never loses the lead. */
-    private void notifyAdmin(ShopLead lead) {
-        if (adminEmail == null || adminEmail.isBlank()) return;
+    /** Best-effort heads-up to the leads inbox — a failure never loses the lead. */
+    private void notifyLeadsInbox(ShopLead lead) {
+        String inbox = leadInbox();
+        if (inbox == null || inbox.isBlank()) return;
         try {
-            emailSender.send(adminEmail,
+            emailSender.send(inbox,
                     "New shop account request: " + lead.getShopName(),
                     "A shop asked for a HueVista account.\n\n"
                             + "Shop:   " + lead.getShopName() + "\n"
@@ -60,7 +77,7 @@ public class ShopLeadService {
                             + (lead.getNotes() != null ? "\nNotes:\n" + lead.getNotes() + "\n" : "")
                             + "\nProvision the account from the admin page, then mark the lead contacted.");
         } catch (Exception e) {
-            log.warn("Admin notification for lead {} failed: {}", lead.getId(), e.getMessage());
+            log.warn("Leads-inbox notification for lead {} failed: {}", lead.getId(), e.getMessage());
         }
     }
 
