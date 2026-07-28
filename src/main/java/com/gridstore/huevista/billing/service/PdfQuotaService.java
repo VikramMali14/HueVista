@@ -44,6 +44,10 @@ public class PdfQuotaService {
 
     @Transactional(readOnly = true)
     public PdfAllowanceResponse allowanceForGuest(String accessCodeId) {
+        CustomerAccessCode code = requireCode(accessCodeId);
+        if (code.isSelfFunded()) {
+            return selfFundedAllowance(code);
+        }
         return PdfAllowanceResponse.from(billableSubscriptionForGuest(accessCodeId));
     }
 
@@ -53,10 +57,51 @@ public class PdfQuotaService {
         return reserve(billableSubscriptionForUser(userId));
     }
 
-    /** Reserve one download for a guest, charged to the issuing shop's plan. */
+    /**
+     * Reserve one download for a guest.
+     *
+     * Charged to the issuing shop's plan for a shop-issued code — the shop onboarded that
+     * customer and the board is part of the service it is selling them. A SELF-FUNDED
+     * (kiosk) code is the other transaction: the walk-in paid for the project and its
+     * board at the store link, so it comes out of the code's own allowance and the shop's
+     * monthly PDF limit is neither spent nor consulted.
+     */
     @Transactional
     public PdfAllowanceResponse reserveForGuest(String accessCodeId) {
+        CustomerAccessCode code = requireCode(accessCodeId);
+        if (code.isSelfFunded()) {
+            if (accessCodeRepository.consumeSelfFundedPdf(accessCodeId) == 0) {
+                throw new QuotaExceededException(
+                        "You've downloaded the colour board for what you paid for. "
+                        + "Buy another visit at the kiosk for more.");
+            }
+            return selfFundedAllowance(requireCode(accessCodeId));
+        }
         return reserve(billableSubscriptionForGuest(accessCodeId));
+    }
+
+    /**
+     * A self-funded code's own board allowance: one per project the customer paid for.
+     *
+     * The per-document image cap comes from the FREE plan rather than the shop's, because
+     * the shop's plan is deliberately not part of this transaction — reading it here would
+     * reintroduce the coupling the self-funded flag exists to remove, and a kiosk board
+     * should not get bigger or smaller because the shop changed its own subscription.
+     */
+    private static PdfAllowanceResponse selfFundedAllowance(CustomerAccessCode code) {
+        int limit = Math.max(1, code.getProjectQuota());
+        return PdfAllowanceResponse.builder()
+                .imagesPerPdf(com.gridstore.huevista.billing.model.Plan.FREE.getPdfImageLimit())
+                .monthlyLimit(limit)
+                .used(code.getPdfDownloadsUsed())
+                .remaining(Math.max(0, limit - code.getPdfDownloadsUsed()))
+                .unlimited(false)
+                .build();
+    }
+
+    private CustomerAccessCode requireCode(String accessCodeId) {
+        return accessCodeRepository.findById(accessCodeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found"));
     }
 
     private PdfAllowanceResponse reserve(Subscription sub) {

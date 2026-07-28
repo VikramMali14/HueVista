@@ -372,9 +372,23 @@ public class AccessCodeService {
     }
 
     /**
-     * Daily sweep: hand back the image credits held by codes that expired without anyone
-     * redeeming them. A shop pays a credit per assigned project the moment it prints a
-     * code; when the customer never walks back in, that credit used to stay held forever.
+     * Daily sweep: hand back the image credits still held by EXPIRED codes.
+     *
+     * A shop pays a credit per assigned project the moment it prints a code. Two ways
+     * that credit becomes dead money, and this covers both:
+     *
+     * <ul>
+     *   <li>Nobody ever redeemed the code — the customer never walked back in.</li>
+     *   <li>The code WAS redeemed, but the customer created fewer projects than the shop
+     *       assigned. This was the bigger leak and had no path back at all: revoking is
+     *       refused once a code is redeemed, the sweep used to skip redeemed codes, and
+     *       {@code reservedImages} deliberately survives a renewal — so the unspent
+     *       credits were subtracted from the shop's quota in every period thereafter,
+     *       forever. A shop issuing codes at any steady rate eventually had none left.</li>
+     * </ul>
+     *
+     * Past expiry a code can neither create a project nor be billed against, so anything
+     * still held is a project that will never exist.
      *
      * Runs an hour after the subscription expiry job so the two never interleave on the
      * same rows. Each code is refunded in its own transaction — one bad row must not
@@ -383,7 +397,7 @@ public class AccessCodeService {
     @org.springframework.scheduling.annotation.Scheduled(cron = "0 0 2 * * *")
     public void releaseExpiredCodeQuota() {
         List<CustomerAccessCode> stale =
-                codeRepository.findExpiredUnredeemedWithHolds(LocalDateTime.now());
+                codeRepository.findExpiredWithHolds(LocalDateTime.now());
         if (stale.isEmpty()) return;
         int refunded = 0;
         for (CustomerAccessCode code : stale) {
@@ -713,6 +727,13 @@ public class AccessCodeService {
      * here. Kiosk codes carry no brand restriction (the customer paid; they browse
      * everything). The kiosk immediately guest-redeems the code; the shop later reads
      * the real shade codes from it exactly like a counter-issued guest code.
+     *
+     * <p>Marked SELF-FUNDED, which is the whole difference from a counter-issued code:
+     * the walk-in bought this project at the store link, so the shop's subscription is
+     * not consulted in either direction. It reserves no image credit (there is nothing
+     * of the shop's to reserve) and runs under it are neither charged to the shop nor
+     * gated on it — the kiosk used to take the money and only then discover the SHOP's
+     * plan had lapsed, refusing work that was already paid for with no refund behind it.
      */
     @Transactional
     public CustomerAccessCode issueForStore(Organization org, int validDays) {
@@ -722,9 +743,11 @@ public class AccessCodeService {
                 .code(code)
                 .validDays(validDays)
                 .expiresAt(LocalDateTime.now().plusDays(validDays))
+                .selfFunded(true)
                 .build();
         accessCode = codeRepository.save(accessCode);
-        log.info("Store kiosk code issued: org={} code={} validDays={}", org.getId(), code, validDays);
+        log.info("Store kiosk code issued (self-funded): org={} code={} validDays={}",
+                org.getId(), code, validDays);
         return accessCode;
     }
 

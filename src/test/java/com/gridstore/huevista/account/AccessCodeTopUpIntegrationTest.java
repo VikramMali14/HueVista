@@ -62,6 +62,7 @@ class AccessCodeTopUpIntegrationTest {
     @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired CustomerAccessCodeRepository codeRepository;
     @Autowired CustomerEntitlementRepository entitlementRepository;
+    @Autowired com.gridstore.huevista.account.service.AccessCodeService accessCodeService;
 
     private static final String SHOP_EMAIL = "topup-shop@example.com";
 
@@ -234,6 +235,67 @@ class AccessCodeTopUpIntegrationTest {
                         .header("Authorization", "Bearer " + shopToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].customerEmail").doesNotExist());
+    }
+
+    /**
+     * The expiry sweep must reclaim holds from a code that WAS redeemed.
+     *
+     * This was the larger half of a permanent quota leak. A shop issuing a code for five
+     * projects reserves five image credits; a customer who creates two leaves three held.
+     * Revoking is refused once a code is redeemed, the sweep only looked at UNREDEEMED
+     * codes, and {@code reservedImages} deliberately survives a renewal — so those three
+     * credits were subtracted from the shop's effective allowance in every future billing
+     * period, forever. A shop issuing codes at any steady rate eventually had none left.
+     */
+    @Test
+    void expirySweepReturnsHoldsFromARedeemedCodeTheCustomerDidNotFullyUse() throws Exception {
+        JsonNode code = generateCode(5);
+        String codeId = code.get("id").asText();
+        String shopUserId = userRepository.findByEmail(SHOP_EMAIL).orElseThrow().getId();
+
+        // Issuing held five credits against the shop's plan.
+        assertThat(heldImagesFor(shopUserId)).isEqualTo(5);
+
+        // The customer redeems it — from here revoking is refused, by design.
+        redeemIntoNewAccount(code.get("code").asText());
+        assertThat(codeRepository.findById(codeId).orElseThrow().isUsed()).isTrue();
+
+        // …and then their ten days run out with projects still unused.
+        var expired = codeRepository.findById(codeId).orElseThrow();
+        expired.setExpiresAt(LocalDateTime.now().minusDays(1));
+        codeRepository.saveAndFlush(expired);
+
+        accessCodeService.releaseExpiredCodeQuota();
+
+        // The unspent holds are back on the shop's quota, and the code is stamped so a
+        // second sweep can never refund it twice.
+        assertThat(heldImagesFor(shopUserId)).isZero();
+        var swept = codeRepository.findById(codeId).orElseThrow();
+        assertThat(swept.getReservedImages()).isZero();
+        assertThat(swept.getQuotaReleasedAt()).isNotNull();
+
+        // Idempotent: running it again changes nothing.
+        accessCodeService.releaseExpiredCodeQuota();
+        assertThat(heldImagesFor(shopUserId)).isZero();
+    }
+
+    /** A code that is still live keeps its holds — the customer may yet use them. */
+    @Test
+    void expirySweepLeavesALiveRedeemedCodeAlone() throws Exception {
+        JsonNode code = generateCode(3);
+        String shopUserId = userRepository.findByEmail(SHOP_EMAIL).orElseThrow().getId();
+        redeemIntoNewAccount(code.get("code").asText());
+
+        accessCodeService.releaseExpiredCodeQuota();
+
+        assertThat(heldImagesFor(shopUserId)).isEqualTo(3);
+        assertThat(codeRepository.findById(code.get("id").asText()).orElseThrow()
+                .getQuotaReleasedAt()).isNull();
+    }
+
+    private int heldImagesFor(String userId) {
+        return subscriptionRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
+                .findFirst().map(Subscription::getReservedImages).orElse(0);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

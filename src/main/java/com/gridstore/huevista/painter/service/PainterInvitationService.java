@@ -4,6 +4,7 @@ import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.auth.model.User;
+import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.painter.dto.GeneratePainterInvitationRequest;
@@ -89,6 +90,26 @@ public class PainterInvitationService {
 
         User painter = userRepository.findById(painterUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + painterUserId));
+
+        // Redeeming flips the account to PAINTER (see PainterService#ensureProfile).
+        // For a shop, distributor or admin account that silently destroys their real
+        // role — and this endpoint is open to ANY authenticated caller, so a retailer
+        // owner who pastes a painter code becomes a PAINTER while still owning their
+        // shop org: exactly the role/membership split-brain AdminController#changeRole
+        // refuses to create. Worse, it is then unrecoverable, because changeRole will
+        // not put the role back while the account owns an organization.
+        //
+        // The sibling guard in AccessCodeService#redeemCode is the model. A CUSTOMER
+        // legitimately becomes a painter (that is the self-signup route), and an
+        // existing PAINTER re-linking to a second shop is the ordinary case.
+        UserRole role = painter.getRole();
+        if (role != null && role != UserRole.PAINTER && role != UserRole.CUSTOMER) {
+            throw new SecurityException(
+                    "This account is a " + role.name().toLowerCase()
+                    + " account — painter invitations are for painters. Redeeming it here "
+                    + "would replace that role. Ask the painter to redeem it on their own "
+                    + "account, or open it in a private window.");
+        }
 
         // Atomically claim the invitation. The isUsed() pre-check above is only a
         // fast path — two concurrent redeems can both pass it, and this CAS update

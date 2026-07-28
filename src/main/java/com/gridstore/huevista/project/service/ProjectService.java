@@ -413,15 +413,20 @@ public class ProjectService {
         ProjectBillingResolver.Target target = billingResolver.resolve(projectId)
                 .orElseThrow(() -> new QuotaExceededException(
                         "This project has no account to bill. Contact support."));
-        boolean holdsReservation = target.coveredByCode()
-                && accessCodeRepository.findById(target.accessCodeId())
-                        .map(c -> c.getReservedImages() > 0).orElse(false);
-        billingService.assertAiQuotaAvailable(target.billedUserId(), holdsReservation);
-        // AUTO mask mode additionally needs an auto-mask credit — rejected up-front with
-        // a 402 AUTO_MASK_UNAVAILABLE the frontend turns into "mark walls yourself (free)
-        // or upgrade", instead of burning the clean-up on a run that can't finish.
-        if (!"MANUAL".equalsIgnoreCase(project.getMaskMode())) {
-            billingService.assertAutoMaskQuotaAvailable(target.billedUserId());
+        // A kiosk walk-in bought this project outright, so no subscription is consulted —
+        // in EITHER direction. Gating it on the shop's plan is what let the kiosk take a
+        // payment and then refuse the work when the shop's own plan had lapsed.
+        if (!target.selfFunded()) {
+            boolean holdsReservation = target.coveredByCode()
+                    && accessCodeRepository.findById(target.accessCodeId())
+                            .map(c -> c.getReservedImages() > 0).orElse(false);
+            billingService.assertAiQuotaAvailable(target.billedUserId(), holdsReservation);
+            // AUTO mask mode additionally needs an auto-mask credit — rejected up-front with
+            // a 402 AUTO_MASK_UNAVAILABLE the frontend turns into "mark walls yourself (free)
+            // or upgrade", instead of burning the clean-up on a run that can't finish.
+            if (!"MANUAL".equalsIgnoreCase(project.getMaskMode())) {
+                billingService.assertAutoMaskQuotaAvailable(target.billedUserId());
+            }
         }
 
         // Allow re-triggering if the previous run never finished (e.g. it
@@ -777,15 +782,31 @@ public class ProjectService {
     // ─────────────────────────────────────────────────────────────────────────
     //  GUEST (anonymous, access-code-scoped) FLOWS
     //
-    //  A walk-in customer who redeemed a shop code (no account) owns a SINGLE
-    //  project by their access code. Responses are the PUBLIC projection, so the
-    //  guest never sees real shade codes — the issuing shop resolves those from
-    //  the code. Guests can run AI wall-detection, but the Replicate cost is billed
-    //  to the issuing shop's monthly AI quota; when the shop is out of credits the
-    //  guest is blocked and falls back to marking walls by hand.
+    //  A walk-in customer who redeemed a shop code (no account) owns their projects
+    //  by that access code. Responses are the PUBLIC projection, so the guest never
+    //  sees real shade codes — the issuing shop resolves those from the code. Guests
+    //  can run AI wall-detection, billed as the code dictates (see
+    //  ProjectBillingResolver); when the payer is out of credits the guest is blocked
+    //  and falls back to marking walls by hand.
     // ─────────────────────────────────────────────────────────────────────────
 
-    private static final int GUEST_PROJECT_LIMIT = 1;
+    /** A code that carries no quota of its own (legacy rows) still gets one project. */
+    private static final int MIN_GUEST_PROJECTS = 1;
+
+    /**
+     * How many projects this code's holder may create.
+     *
+     * The code's OWN quota, not a constant. It was hardcoded to 1, which quietly broke
+     * the thing the shop had already paid for: issuing a code for five projects reserves
+     * five image credits, and if that customer arrived by the guest route they could
+     * create exactly one — the other four credits sat held against the shop's plan for
+     * nothing. Topping the same code up (grantExtraProjects, which exists precisely to
+     * add projects to a code already in a customer's hand) reserved yet more credits and
+     * still changed nothing the guest could do.
+     */
+    private static int guestProjectLimit(CustomerAccessCode code) {
+        return Math.max(MIN_GUEST_PROJECTS, code.getProjectQuota());
+    }
 
     @Transactional
     public ProjectResponse createGuestProject(String accessCodeId, CreateProjectRequest request) {
@@ -794,9 +815,13 @@ public class ProjectService {
         if (code.isExpired()) {
             throw new AccessExpiredException("Your access has ended. Ask the shop for a new code.");
         }
-        if (projectRepository.countByAccessCodeId(accessCodeId) >= GUEST_PROJECT_LIMIT) {
-            throw new QuotaExceededException(
-                    "Your guest access includes one project. Sign up to keep going and create more.");
+        int limit = guestProjectLimit(code);
+        if (projectRepository.countByAccessCodeId(accessCodeId) >= limit) {
+            throw new QuotaExceededException(limit == 1
+                    ? "Your access includes one project. Ask the shop to add another, "
+                      + "or sign up to keep going."
+                    : "You've used all " + limit + " projects on your code. "
+                      + "Ask the shop to add another.");
         }
 
         UploadedImage image = imageRepository.findByIdAndAccessCodeId(request.getImageId(), accessCodeId)
@@ -883,19 +908,27 @@ public class ProjectService {
             throw new AccessExpiredException("Your access has ended. Ask the shop for a new code.");
         }
 
-        // Gate on the shop's quota WITHOUT charging yet: throws 402 when the owning
-        // retailer has no active subscription or has hit their limit — the guest then
-        // falls back to manual. A code still holding a reserved credit passes the
-        // allowance half of the gate: the shop already paid for this project when it
-        // generated the code, so re-checking the limit would block work already bought.
-        // The credit is only charged once the AI actually produces walls
+        // A KIOSK code was paid for by this customer at the store link, so the shop's plan
+        // is not consulted at all — they bought the project, and the shop is neither the
+        // payer nor a gate. Gating it here is what allowed the kiosk to take money and
+        // then refuse the work because the SHOP's subscription had lapsed, with no refund
+        // path behind it.
+        //
+        // For a shop-issued code the shop IS the payer, so gate on their quota WITHOUT
+        // charging yet: 402 when the owning retailer has no active subscription or has hit
+        // their limit, and the guest falls back to manual. A code still holding a reserved
+        // credit passes the allowance half of the gate — the shop already paid for this
+        // project when it generated the code, so re-checking the limit would block work
+        // already bought. The credit is only charged once the AI actually produces walls
         // (SegmentationService bills on success), so a failed run is free.
-        String shopOwnerUserId = resolveShopOwnerUserId(code);
-        billingService.assertAiQuotaAvailable(shopOwnerUserId, code.getReservedImages() > 0);
-        // Guest runs are always fully automatic (clean-up + AI wall detection), so the
-        // shop's plan must also cover an auto-mask credit; when it doesn't the guest
-        // falls back to marking walls by hand exactly like on an image-quota 402.
-        billingService.assertAutoMaskQuotaAvailable(shopOwnerUserId);
+        if (!code.isSelfFunded()) {
+            String shopOwnerUserId = resolveShopOwnerUserId(code);
+            billingService.assertAiQuotaAvailable(shopOwnerUserId, code.getReservedImages() > 0);
+            // Guest runs are always fully automatic (clean-up + AI wall detection), so the
+            // shop's plan must also cover an auto-mask credit; when it doesn't the guest
+            // falls back to marking walls by hand exactly like on an image-quota 402.
+            billingService.assertAutoMaskQuotaAvailable(shopOwnerUserId);
+        }
 
         // Re-trigger guard mirrors requestSegmentation: a run stuck >5 min is treated as stale.
         if (project.getStatus() == ProjectStatus.SEGMENTING) {
@@ -917,8 +950,8 @@ public class ProjectService {
             segmentationService.segmentAsync(projectId, imageUrl);
         }
 
-        log.info("Guest segmentation requested: project={} accessCode={} billedShopOwner={}",
-                projectId, accessCodeId, shopOwnerUserId);
+        log.info("Guest segmentation requested: project={} accessCode={} paidBy={}",
+                projectId, accessCodeId, code.isSelfFunded() ? "customer (kiosk)" : "issuing shop");
         return toPublicResponse(project);
     }
 
