@@ -11,16 +11,14 @@ wired into [`application.properties`](../src/main/resources/application.properti
 
 ## 0. What the code already expects
 
-Six money flows are implemented. Five use one-time **Orders**, one uses
-**Subscriptions**:
+Three money flows are implemented. Two use one-time **Orders**, one uses
+**Subscriptions**. Everything else a shop can buy — extra images, auto-masks,
+projects, reopens — is paid for in **points** and touches Razorpay not at all:
 
 | Flow | Razorpay product | Backend endpoint | Where in the UI |
 |---|---|---|---|
 | Monthly plan (Starter / Professional / Business) | Subscriptions | `POST /api/billing/subscriptions` → `.../verify` | `/pricing`, `/subscription` |
-| Wallet top-up | Orders | `POST /api/billing/wallet/topup/order` → `.../verify` | `/subscription` |
-| One extra image (₹50) | Orders | `POST /api/billing/image-credits/order` → `.../verify` | in-app quota prompt |
-| Buy a project | Orders | `POST /api/projects/credits/order` → `.../verify` | project create |
-| Reopen an expired project | Orders | same controller, reopen variant | project list |
+| Buy points (₹1 = 1 point) | Orders | `POST /api/billing/points/order` → `.../verify` | `/subscription` |
 | In-store kiosk (walk-in customer pays ₹99) | Orders | `POST /api/store/{slug}/order` → `.../verify` | `/store/{slug}` (public) |
 
 All of them verify the Checkout signature server-side before granting anything,
@@ -38,9 +36,9 @@ RAZORPAY_PLAN_PROFESSIONAL=
 RAZORPAY_PLAN_BUSINESS=
 ```
 
-Reward points involve no Razorpay object at all — no plan, no order, no webhook.
-They are earned and spent entirely inside HueVista, priced in points, and never
-touch money. Their settings live in `app.points.*` (see
+SPENDING points involves no Razorpay object at all — no plan, no order, no
+webhook. BUYING them is an ordinary one-time order, which is why it is in the
+table above. Prices, the purchase rate and the expiry live in `app.points.*` (see
 `application.properties`), not here.
 
 ---
@@ -192,8 +190,10 @@ product; cards are the reliable recurring-payment path in test mode.
 3. **Cancel** — `/subscription` → cancel. Access must continue until period end.
 4. **Upgrade** — Starter → Professional. The old subscription must be superseded,
    not doubled.
-5. **Wallet top-up** — a small amount, then check the balance and statement row.
-6. **Overage** — spend the image quota, buy one extra image at ₹50, confirm the
+5. **Buy points** — buy 100 points for ₹100 and confirm the balance, the statement
+   row and the expiry date one year out. Then try an order for 50 points (below the
+   minimum) and confirm it is refused.
+6. **Overage** — spend the image quota, spend 40 points on an extra image, confirm the
    quota went up by exactly one. Then **replay the same verify call** (resend it
    in Postman) and confirm it does *not* grant a second image.
 7. **Buy a project / reopen a project** — check the validity window.

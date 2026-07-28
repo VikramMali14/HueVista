@@ -178,9 +178,8 @@ s.append(box([
     Paragraph(
         "A <b>paint shop</b> pays HueVista a small amount every month, like a phone recharge. "
         "That monthly pack gives the shop a set number of <b>photo makeovers</b> to use up. "
-        "If the shop runs out before the month ends, it can buy a few more, one at a time. "
-        "And when a walk-in customer pays at the shop's counter link, the shop collects "
-        "<b>reward points</b> it can spend later instead of money.", NOTE),
+        "Anything beyond that pack is paid for in <b>points</b> &mdash; which the shop either "
+        "earns free when a walk-in pays at its counter link, or buys at one rupee a point.", NOTE),
 ], bg=colors.white, border=RULE, pad=12))
 
 s += [
@@ -207,7 +206,7 @@ s += [
          "Someone who walks into that shop wanting to see a colour on their wall."],
         ["What they pay", "A monthly plan &mdash; and extras when they want more.",
          "Nothing, usually. The shop covers it. Or a one-off &#8377;99 at the shop's counter link."],
-        ["What they get", "Photo makeovers, colour boards, a counter link, reward points.",
+        ["What they get", "Photo makeovers, colour boards, a counter link, and points.",
          "A picture of their own room in the colour they picked."],
     ], [26 * mm, W / 2 - 13 * mm, W / 2 - 13 * mm]),
     Spacer(1, 10),
@@ -328,47 +327,88 @@ s += [
     Paragraph("What happens when you run out", H1),
     Paragraph(
         "It is the 22nd, your 20 photos are gone, and a customer is standing at the counter. "
-        "Nothing breaks. You have three ways to get one more, and they all end in the same "
-        "place &mdash; one extra photo added to your account, straight away.", BODY),
+        "Nothing breaks. You spend <b>points</b> &mdash; and points are the only thing you ever "
+        "spend on HueVista besides the monthly plan itself.", BODY),
     Spacer(1, 4),
     table([
-        ["Way", "How it works", "One extra photo", "One extra auto-mask"],
-        ["Pay right now", "A card or UPI payment, there and then.", "&#8377;50", "&#8377;25"],
-        ["From your wallet", "Money you topped up earlier. One tap, no payment screen.",
-         "&#8377;50", "&#8377;25"],
-        ["With reward points", "Points your counter link earned you. No money at all.",
-         "40 points", "20 points"],
-    ], [28 * mm, W - 28 * mm - 62 * mm, 31 * mm, 31 * mm], align_right=(2, 3)),
+        ["What you want", "What it costs"],
+        ["One extra photo", "40 points"],
+        ["One extra AI auto-mask", "20 points"],
+        ["One whole project", "80 points"],
+        ["Reopening an expired project", "9 points"],
+    ], [W - 40 * mm, 40 * mm], align_right=(1,)),
     Spacer(1, 8),
 ]
 
 s.append(box([
     Paragraph(
         "<b>Extras never expire.</b> A photo you bought in June is still sitting there in "
-        "September. Only your <i>monthly</i> allowance resets &mdash; things you paid extra "
-        "for stay until you use them.", NOTE),
+        "September. Only your <i>monthly</i> allowance resets &mdash; things you spent points "
+        "on stay until you use them.", NOTE),
 ], bg=GREEN_BG, border=colors.HexColor("#c6e6d2")))
 
-# ── 5. Wallet ───────────────────────────────────────────────────────────────
+# ── 5. Points ───────────────────────────────────────────────────────────────
 s += [
-    Paragraph("The wallet — your piggy bank", H2),
+    Paragraph("PART FIVE", H1_NUM),
+    Paragraph("Points", H1),
     Paragraph(
-        "Instead of tapping through a payment screen every single time, you can put money in "
-        "once and spend it whenever. That is the wallet.", BODY),
+        "Points are the one balance on your account. There is no separate wallet of money "
+        "sitting beside them &mdash; that used to exist and was taken away, because having "
+        "two balances meant every purchase had two prices and you had to think about which "
+        "one to use.", BODY),
+    Paragraph("There are two ways to get points.", H2),
 ]
+
 s += bullets([
-    "Add anything from <b>&#8377;100</b> to <b>&#8377;1,00,000</b> at a time.",
-    "It <b>never expires</b>.",
-    "It buys extra photos (&#8377;50), extra auto-masks (&#8377;25), whole projects and reopens.",
-    "You need a live plan to <i>add</i> money to it &mdash; the wallet tops up a plan.",
-    "It cannot be turned back into cash or sent to your bank. It is credit for using HueVista.",
+    "<b>Earn them.</b> Every time a customer pays at your counter link, you get "
+    "<b>30 points</b>, free.",
+    "<b>Buy them.</b> <b>&#8377;1 buys 1 point.</b> So &#8377;100 is 100 points, "
+    "&#8377;500 is 500. Minimum purchase is 100 points.",
 ])
 
-s.append(PageBreak())
+s.append(Spacer(1, 8))
+s.append(box([
+    Paragraph("Earned and bought points are exactly the same", NOTE_B),
+    Spacer(1, 5),
+    Paragraph(
+        "Once they are on your account there is no difference between a point you earned and "
+        "a point you paid for. Same expiry, same prices, and when you spend, the oldest ones "
+        "go first whichever kind they are. Nothing has to remember where a point came from.", NOTE),
+]))
+
+s += [
+    Paragraph("Points expire after one year", H2),
+    Paragraph(
+        "Every batch of points has its own birthday. Points that arrive today are good for "
+        "<b>365 days</b> and then they are gone &mdash; earned or bought, the same rule.", BODY),
+]
+
+s += bullets([
+    "<b>The oldest points get used first</b>, automatically. You never have to think about "
+    "it, and you never lose points that you could have spent.",
+    "We email you <b>10 days before</b> a batch is due to expire.",
+    "We email you again <b>on the day itself</b>, so there is no quiet surprise.",
+    "The app shows the exact date the next batch runs out, and turns it red in the last 10 days.",
+]
+
+)
+
+s += [
+    Spacer(1, 6),
+    Paragraph("Three more rules", H2),
+]
+s += bullets([
+    "<b>Points are for shops only.</b> A customer account cannot earn, buy or spend them.",
+    "<b>Points are not money.</b> They cannot be cashed out, transferred to another shop, or "
+    "refunded once they are on your account and ready to use.",
+    "<b>If a customer gets a refund, the points from that sale go back too.</b> If you already "
+    "spent them, your balance goes below zero and the next points you get quietly fill the hole. "
+    "Nothing is taken from you twice.",
+])
 
 # ── 6. Projects ─────────────────────────────────────────────────────────────
 s += [
-    Paragraph("PART FIVE", H1_NUM),
+    Paragraph("PART SIX", H1_NUM),
     Paragraph("Projects", H1),
     Paragraph(
         "A <b>project</b> is one customer's job: their room, their photos, the colours they are "
@@ -403,7 +443,7 @@ s += [
 
 # ── 7. Kiosk ────────────────────────────────────────────────────────────────
 s += [
-    Paragraph("PART SIX", H1_NUM),
+    Paragraph("PART SEVEN", H1_NUM),
     Paragraph("The counter link", H1),
     Paragraph(
         "Every shop gets its own web link, something like <b>huevista.com/store/mehta-x7k2p9</b>. "
@@ -434,65 +474,7 @@ s.append(box([
 
 s.append(PageBreak())
 
-# ── 8. Points ───────────────────────────────────────────────────────────────
-s += [
-    Paragraph("PART SEVEN", H1_NUM),
-    Paragraph("Reward points", H1),
-    Paragraph(
-        "Points are like the stamps on a coffee-shop loyalty card. You collect them for free by "
-        "using your counter link, and you spend them on HueVista things. They are <b>not money</b>: "
-        "you cannot buy them, sell them, give them away, or take them out as cash.", BODY),
-    Spacer(1, 4),
-    table([
-        ["What you spend points on", "Points", "The same thing in cash"],
-        ["One extra photo", "40", "&#8377;50"],
-        ["One extra auto-mask", "20", "&#8377;25"],
-        ["One whole project", "80", "&#8377;50 &ndash; &#8377;99"],
-        ["Reopening a project", "9", "&#8377;9"],
-    ], [W - 60 * mm, 25 * mm, 35 * mm], align_right=(1, 2)),
-    Spacer(1, 8),
-]
-
-s.append(box([
-    Paragraph("Points are worth a little more than the cash price", NOTE_B),
-    Spacer(1, 5),
-    Paragraph(
-        "An extra photo costs &#8377;50 in money but only 40 points. That gap is the reward &mdash; "
-        "it is why using your counter link is worth doing. Because of that, points have their own "
-        "price list and are counted separately from your wallet money. <b>You will see two "
-        "balances in the app, and that is on purpose.</b>", NOTE),
-]))
-
-s += [
-    Paragraph("Points expire after one year", H2),
-    Paragraph(
-        "Every batch of points has its own birthday. Points you earn today are good for "
-        "<b>365 days</b> and then they are gone.", BODY),
-]
-
-s += bullets([
-    "<b>The oldest points get used first</b>, automatically. You never have to think about it, "
-    "and you never lose points that you could have spent.",
-    "We email you <b>10 days before</b> a batch is due to expire.",
-    "We email you again <b>on the day itself</b>, so there is no quiet surprise.",
-    "The app shows the exact date the next batch runs out, and turns it red in the last 10 days.",
-])
-
-s += [
-    Spacer(1, 6),
-    Paragraph("Two more rules", H2),
-]
-s += bullets([
-    "<b>Points are for shops only.</b> A customer account cannot earn or spend them &mdash; "
-    "everything they buy belongs to a shop.",
-    "<b>If a customer gets a refund, the points from that sale go back too.</b> If you already "
-    "spent them, your balance goes below zero and the next points you earn quietly fill the hole. "
-    "Nothing is taken from you twice.",
-])
-
-s.append(PageBreak())
-
-# ── 9. Everything on one page ───────────────────────────────────────────────
+# ── 8. Everything on one page ───────────────────────────────────────────────
 s += [
     Paragraph("PART EIGHT", H1_NUM),
     Paragraph("Every price, on one page", H1),
@@ -514,29 +496,27 @@ s.append(KeepTogether([
 
 s.append(Spacer(1, 4))
 s.append(KeepTogether([
-    Paragraph("One-off things", H2),
+    Paragraph("What points buy", H2),
     table([
-        ["What", "In cash", "In points"],
-        ["One extra photo", "&#8377;50", "40"],
-        ["One extra auto-mask", "&#8377;25", "20"],
-        ["One project (on a plan or trial)", "&#8377;50", "80"],
-        ["One project (no plan)", "&#8377;99", "80"],
-        ["Reopen a project for 30 more days", "&#8377;9", "9"],
-        ["Customer pays at your counter link", "&#8377;99", "&mdash; (you earn 30)"],
-    ], [W - 66 * mm, 28 * mm, 38 * mm], align_right=(1, 2)),
+        ["What", "Points"],
+        ["One extra photo", "40"],
+        ["One extra AI auto-mask", "20"],
+        ["One whole project", "80"],
+        ["Reopen a project for 30 more days", "9"],
+    ], [W - 34 * mm, 34 * mm], align_right=(1,)),
 ]))
 
 s.append(Spacer(1, 4))
 s.append(KeepTogether([
-    Paragraph("The two balances", H2),
+    Paragraph("Where points come from", H2),
     table([
-        ["", "Wallet", "Reward points"],
-        ["What it is", "Rupees you topped up", "Points you earned"],
-        ["How you get it", "You pay for it", "Free, from counter-link sales"],
-        ["Does it expire?", "No, never", "Yes &mdash; one year per batch"],
+        ["", "Earned", "Bought"],
+        ["How", "A customer pays at your counter link", "You buy them in the app"],
+        ["Rate", "30 points per sale", "&#8377;1 = 1 point (min 100)"],
+        ["What it costs you", "Nothing", "&#8377;1 per point"],
+        ["Expires?", "One year from the day earned", "One year from the day bought"],
         ["Can it become cash?", "No", "No"],
-        ["Who can hold it", "Any shop account", "Shops only"],
-    ], [42 * mm, (W - 42 * mm) / 2, (W - 42 * mm) / 2]),
+    ], [40 * mm, (W - 40 * mm) / 2, (W - 40 * mm) / 2]),
 ]))
 
 closing = [

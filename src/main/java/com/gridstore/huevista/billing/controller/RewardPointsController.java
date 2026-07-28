@@ -77,6 +77,16 @@ public class RewardPointsController {
                 .build());
     }
 
+    @Operation(summary = "What a project costs in points",
+            description = "The point price of a project and a reopen, the caller's balance to "
+                    + "weigh them against, how long a bought project stays open, and any "
+                    + "already-paid-for projects waiting to be created.")
+    @GetMapping("/project-options")
+    public ResponseEntity<ProjectPurchaseOptionsResponse> projectOptions(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.ok(projectCreditService.getOptions(userDetails.getUsername()));
+    }
+
     @Operation(summary = "Buy points (order)",
             description = "Creates a Razorpay order for the requested number of points. The "
                     + "amount is derived server-side from the count at the configured rate, so "
