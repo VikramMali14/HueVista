@@ -309,13 +309,19 @@ public class AccessCodeService {
     }
 
     /**
-     * Give a code another 10 days.
+     * Give a code another window.
      *
-     * Each extension REPLACES the window with a fresh 10 days from now rather than adding
-     * to whatever is left, so a code can never carry more than 10 days ahead of it however
-     * often it is renewed. That keeps the promise the customer was made when they were
-     * handed it ("valid for 10 days") true at every point in its life, and stops a code
+     * Each extension REPLACES the window with a fresh one measured from now rather than
+     * adding to whatever is left, so a code can never carry more than its own validity
+     * ahead of it however often it is renewed. That keeps the promise the customer was
+     * made when they were handed it true at every point in its life, and stops a code
      * quietly becoming a permanent credential through repeated top-ups.
+     *
+     * The window is the CODE's own {@code validDays}, not a flat ten. A kiosk code is
+     * sold with its shop's chosen validity — often much longer — and hardcoding ten here
+     * meant "extend" silently cut a 30-day code the customer had paid for down to ten.
+     * For the same reason it never moves the expiry backwards: an extension that shortens
+     * access is not an extension.
      *
      * Requires a LIVE subscription: extending access is extending the shop's service to
      * that customer, and a shop with no plan has no service to extend. Nothing is charged
@@ -331,13 +337,18 @@ public class AccessCodeService {
         if (code.isRevoked()) {
             throw new IllegalStateException("This code was cancelled — issue a new one instead.");
         }
+        int window = code.getValidDays() > 0 ? code.getValidDays() : FIXED_VALID_DAYS;
         requireActiveSubscription(orgId,
                 "Your subscription has ended, so you can't extend a customer's access. "
-                + "Renew your plan to give this code another " + FIXED_VALID_DAYS + " days.");
+                + "Renew your plan to give this code another " + window + " days.");
 
-        LocalDateTime newExpiry = LocalDateTime.now().plusDays(FIXED_VALID_DAYS);
+        LocalDateTime newExpiry = LocalDateTime.now().plusDays(window);
+        // Never backwards: a code with longer left than the window it was sold with keeps
+        // what it has. Extending must not be a way to take access away.
+        if (code.getExpiresAt() != null && code.getExpiresAt().isAfter(newExpiry)) {
+            newExpiry = code.getExpiresAt();
+        }
         code.setExpiresAt(newExpiry);
-        code.setValidDays(FIXED_VALID_DAYS);
         code.setExtendedAt(LocalDateTime.now());
         code.setExtensionCount(code.getExtensionCount() + 1);
         codeRepository.save(code);

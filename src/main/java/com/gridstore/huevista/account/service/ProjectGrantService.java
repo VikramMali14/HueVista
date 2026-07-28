@@ -66,7 +66,12 @@ public class ProjectGrantService {
 
         CustomerEntitlement ent = entitlementRepository.findByCustomerId(customerUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("Customer entitlement not found"));
-        if (ent.getRetailerOrg() == null || !ent.getRetailerOrg().getId().equals(orgId)) {
+        // "Managed by" is the shop the customer most recently redeemed with, and that
+        // pointer moves. A shop that issued a code this customer is holding still has a
+        // real relationship with them — refusing it here meant a customer who redeemed a
+        // second shop's code could no longer be given projects by the first, which had
+        // already paid for theirs.
+        if (!entitlementRepository.isManagedBy(customerUserId, orgId)) {
             throw new SecurityException("This customer is not managed by your organization.");
         }
 

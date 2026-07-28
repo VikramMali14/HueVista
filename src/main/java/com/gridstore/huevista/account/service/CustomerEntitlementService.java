@@ -335,11 +335,19 @@ public class CustomerEntitlementService {
                 .orElse(null);
     }
 
-    /** Retailer: list the customers (and their entitlement) onboarded by an org. */
+    /**
+     * Retailer: the customers this org is responsible for.
+     *
+     * Includes anyone holding a code this shop issued, not only those it currently
+     * "manages". {@code retailerOrg} is one pointer and it moves to whichever shop
+     * onboarded the customer most recently — so a customer who redeemed a second shop's
+     * code disappeared from the first shop's portal entirely, taking with them the
+     * projects that shop had paid for.
+     */
     @Transactional(readOnly = true)
     public List<CustomerEntitlementResponse> listCustomers(String requestingUserId, String retailerOrgId) {
         requireOwnerOrManager(requestingUserId, retailerOrgId);
-        return entitlementRepository.findByRetailerOrgIdOrderByUpdatedAtDesc(retailerOrgId).stream()
+        return entitlementRepository.findManagedByOrCodedFrom(retailerOrgId).stream()
                 .map(CustomerEntitlementResponse::from)
                 .toList();
     }

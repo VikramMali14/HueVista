@@ -63,6 +63,8 @@ public class ProjectService {
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final com.gridstore.huevista.paint.service.ShadeCodeSchemeService shadeCodeSchemeService;
     private final com.gridstore.huevista.notification.EmailSender emailSender;
+    private final com.gridstore.huevista.account.service.BrandAccessService brandAccessService;
+    private final com.gridstore.huevista.account.service.FeatureAccessService featureAccessService;
 
     @Autowired(required = false)
     private SegmentationJobQueue segmentationJobQueue;
@@ -468,12 +470,30 @@ public class ProjectService {
         return withAccess(userId, project, toResponse(project));
     }
 
+    /**
+     * The public link for a project — created on first use, REUSED afterwards.
+     *
+     * Minting a fresh token on every call silently killed the link already sent. Sharing
+     * is a WhatsApp-shaped action: the customer forwards it to a spouse, a builder, a
+     * group. Pressing Share a second time (to change the companies, or just because the
+     * dialog was reopened) invalidated the URL that was already out there, with no
+     * warning and nothing to tell the recipient apart from a link that had "expired".
+     * The same token is kept and its window refreshed instead; {@link #revokeShareLink}
+     * is how a link is deliberately withdrawn.
+     */
     @Transactional
     public ShareResponse generateShareLink(String userId, String projectId, int validDays,
                                            java.util.List<String> brands) {
         Project project = findEditable(userId, projectId);
 
-        String token = UUID.randomUUID().toString().replace("-", "");
+        // A shop may only open up companies it actually carries — the same rule access
+        // codes are held to. Without it the share page was a way around the distributor's
+        // grant: hand out a link, and the viewer repaints with the whole catalogue.
+        assertShareBrandsOfferable(userId, brands);
+
+        String token = project.getShareToken() != null && !project.getShareToken().isBlank()
+                ? project.getShareToken()
+                : UUID.randomUUID().toString().replace("-", "");
         LocalDateTime expiresAt = LocalDateTime.now().plusDays(validDays);
 
         project.setShareToken(token);
@@ -483,13 +503,37 @@ public class ProjectService {
         projectRepository.save(project);
 
         String shareUrl = baseUrl + "/api/share/" + token;
-        log.info("Share link generated: project={} expires={}", projectId, expiresAt);
+        log.info("Share link {} for project={} expires={}",
+                project.getShareToken().equals(token) ? "refreshed" : "generated", projectId, expiresAt);
 
         return ShareResponse.builder()
                 .shareToken(token)
                 .shareUrl(shareUrl)
                 .expiresAt(expiresAt)
                 .build();
+    }
+
+    /**
+     * Withdraw a project's public link.
+     *
+     * The deliberate counterpart to reusing the token above: a link that was forwarded to
+     * the wrong person is now revocable on purpose, rather than by the side effect of
+     * pressing Share again.
+     */
+    @Transactional
+    public void revokeShareLink(String userId, String projectId) {
+        Project project = findOwned(userId, projectId);
+        project.setShareToken(null);
+        project.setShareExpiresAt(null);
+        projectRepository.save(project);
+        log.info("Share link revoked: project={}", projectId);
+    }
+
+    /** A shop can only share companies its distributor assigned it. */
+    private void assertShareBrandsOfferable(String userId, java.util.List<String> brands) {
+        if (brands == null || brands.isEmpty()) return;
+        featureAccessService.retailerOrgOf(userId)
+                .ifPresent(org -> brandAccessService.assertBrandsOfferable(org.getId(), brands));
     }
 
     @Transactional(readOnly = true)

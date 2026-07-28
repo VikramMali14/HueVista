@@ -293,6 +293,54 @@ class AccessCodeTopUpIntegrationTest {
                 .getQuotaReleasedAt()).isNull();
     }
 
+    /**
+     * "Extend" must never shorten a code that was sold with a longer window.
+     *
+     * The extension was hardcoded to ten days AND overwrote the code's own validDays, so
+     * a kiosk code sold with (say) thirty days was cut to ten the moment a shop pressed
+     * Extend — taking away access the walk-in had already paid for, under a button
+     * labelled as giving them more.
+     */
+    @Test
+    void extendingALongerCodeNeverShortensIt() throws Exception {
+        JsonNode issued = generateCode(1);
+        String codeId = issued.get("id").asText();
+
+        // Stand this code up as a kiosk-style 30-day one.
+        var code = codeRepository.findById(codeId).orElseThrow();
+        code.setValidDays(30);
+        code.setExpiresAt(LocalDateTime.now().plusDays(30));
+        codeRepository.saveAndFlush(code);
+        LocalDateTime before = code.getExpiresAt();
+
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isOk());
+
+        var extended = codeRepository.findById(codeId).orElseThrow();
+        assertThat(extended.getExpiresAt()).isAfterOrEqualTo(before);
+        assertThat(extended.getValidDays()).isEqualTo(30);
+    }
+
+    /** A code near the end of its window is pushed out by its OWN validity, not a flat ten. */
+    @Test
+    void extendingUsesTheCodesOwnWindow() throws Exception {
+        JsonNode issued = generateCode(1);
+        String codeId = issued.get("id").asText();
+
+        var code = codeRepository.findById(codeId).orElseThrow();
+        code.setValidDays(30);
+        code.setExpiresAt(LocalDateTime.now().plusHours(1)); // almost out of time
+        codeRepository.saveAndFlush(code);
+
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isOk());
+
+        assertThat(codeRepository.findById(codeId).orElseThrow().getExpiresAt())
+                .isAfter(LocalDateTime.now().plusDays(29));
+    }
+
     private int heldImagesFor(String userId) {
         return subscriptionRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
                 .findFirst().map(Subscription::getReservedImages).orElse(0);
