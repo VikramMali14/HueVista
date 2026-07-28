@@ -239,11 +239,28 @@ bite if skipped:
    drive the retailer verification gate: a channel is only required-verified
    before project creation when it can actually deliver a code, so leaving them
    off silently weakens onboarding verification.
+
+   The product sends from two addresses and the SMTP account must be authorised
+   for **both**, on one domain with SPF/DKIM/DMARC set — a provider asked to send
+   as an address it cannot authenticate rewrites the From or drops the message:
+
+   | Env var | Default | Carries |
+   |---|---|---|
+   | `MAIL_FROM` | `no-reply@huevista.org` | Verification codes, password resets, welcome mails, admin 2FA codes, customer/shop notifications, payout notices |
+   | `MAIL_BILLING_FROM` | `payments@huevista.org` | Payment + subscription receipts, renewal notices |
+
+   Three inboxes RECEIVE: `LEADS_EMAIL` (public shop-account requests),
+   `STORE_REDEMPTION_EMAIL` (retailer kiosk payout requests), and `ADMIN_EMAIL`
+   (below). The public site additionally points visitors at `team@` (general),
+   `support@` (product help) and `payments@` (billing) — see the frontend's
+   `src/lib/config.ts`.
 2. **Admin bootstrap** — set `ADMIN_EMAIL` / `ADMIN_PASSWORD` (shops are
-   admin-provisioned; shop-lead notifications go to this address). Change the
-   password after first sign-in. With mail enabled, admin logins require a
-   6-digit emailed code (2FA) — another reason to configure SMTP before launch;
-   without mail the step-up is skipped so the admin can never be locked out.
+   admin-provisioned). This is a **login identity, not a shared inbox**: shop-lead
+   notifications go to `LEADS_EMAIL`, so the console credentials need not be a
+   mailbox several people can read. Change the password after first sign-in. With
+   mail enabled, admin logins require a 6-digit emailed code (2FA) — another
+   reason to configure SMTP before launch; without mail the step-up is skipped so
+   the admin can never be locked out.
 3. **Razorpay** — create the three plans in the dashboard, set the plan IDs, and
    point a webhook at `POST {APP_BASE_URL}/api/billing/webhooks/razorpay` with
    `RAZORPAY_WEBHOOK_SECRET`. Renewals depend on the webhook.

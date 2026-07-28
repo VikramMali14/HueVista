@@ -1,5 +1,7 @@
 package com.gridstore.huevista.store.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.store.dto.CreateStoreLinkRequest;
 import com.gridstore.huevista.store.dto.StoreLinkResponse;
 import com.gridstore.huevista.store.dto.UpdateStoreLinkRequest;
@@ -19,6 +21,7 @@ import java.util.List;
 @RestController
 @RequiredArgsConstructor
 @Tag(name = "Store Links", description = "Retailer-managed public kiosk links (price per image, min Rs.50)")
+@RequiresFeature(AppFeature.CUSTOMER_PORTAL)
 public class StoreLinkController {
 
     private final StoreLinkService storeLinkService;

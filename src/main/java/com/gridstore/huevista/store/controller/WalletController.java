@@ -1,5 +1,7 @@
 package com.gridstore.huevista.store.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.store.dto.RequestRedemptionRequest;
 import com.gridstore.huevista.store.dto.WalletRedemptionResponse;
 import com.gridstore.huevista.store.dto.WalletSummaryResponse;
@@ -19,6 +21,7 @@ import java.util.List;
 @RestController
 @RequiredArgsConstructor
 @Tag(name = "Retailer Wallet", description = "Kiosk earnings wallet: balance, activity, manual UPI payout requests")
+@RequiresFeature(AppFeature.CUSTOMER_PORTAL)
 public class WalletController {
 
     private final WalletService walletService;

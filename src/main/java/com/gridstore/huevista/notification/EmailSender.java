@@ -23,7 +23,7 @@ public class EmailSender {
     @Value("${app.mail.enabled:false}")
     private boolean enabled;
 
-    @Value("${app.mail.from:no-reply@huevista.app}")
+    @Value("${app.mail.from:no-reply@huevista.org}")
     private String from;
 
     public EmailSender(ObjectProvider<JavaMailSender> mailSenderProvider) {

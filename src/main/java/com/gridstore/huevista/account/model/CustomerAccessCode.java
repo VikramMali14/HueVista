@@ -95,6 +95,23 @@ public class CustomerAccessCode {
     @Builder.Default
     private boolean guestRedeemed = false;
 
+    // True when the END CUSTOMER paid for this code, not the shop — today that means a
+    // kiosk code bought at the public store link. The shop's plan is not part of that
+    // transaction, so runs under this code neither draw on the shop's monthly quota nor
+    // are gated by it. Both halves matter: charging the shop spends credits it never
+    // agreed to spend on a walk-in, and GATING on the shop meant a customer could pay at
+    // the kiosk and then be refused because the shop's own subscription had lapsed.
+    @Column(nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean selfFunded = false;
+
+    // Colour-board PDFs taken under a self-funded code, counted here rather than against
+    // the shop's monthly PDF limit — the customer already paid for the board along with
+    // the project. Unused (and left at zero) for ordinary shop-issued codes.
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int pdfDownloadsUsed = 0;
+
     // Paint companies (brand display names) the shop has unlocked for this guest, stored
     // comma-separated. Empty/null means "no restriction" — the guest may browse every brand.
     // The guest only ever sees these brands in the studio; real shade codes stay hidden.

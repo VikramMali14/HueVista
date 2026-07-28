@@ -1,5 +1,7 @@
 package com.gridstore.huevista.account.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.account.dto.AccessCodeResponse;
 import com.gridstore.huevista.account.dto.AssignedProductsResponse;
 import com.gridstore.huevista.account.dto.GenerateAccessCodeRequest;
@@ -27,6 +29,7 @@ import java.util.List;
 @RestController
 @RequiredArgsConstructor
 @Tag(name = "Customer Access Codes", description = "Retailer-issued temporary access codes for walk-in customers")
+@RequiresFeature(AppFeature.CUSTOMER_PORTAL)
 public class AccessCodeController {
 
     private final AccessCodeService accessCodeService;
@@ -60,7 +63,7 @@ public class AccessCodeController {
             @AuthenticationPrincipal UserDetails userDetails,
             @PathVariable String orgId,
             @PathVariable String codeId) {
-        return ResponseEntity.ok(accessCodeService.revokeCode(userDetails.getUsername(), codeId));
+        return ResponseEntity.ok(accessCodeService.revokeCode(userDetails.getUsername(), orgId, codeId));
     }
 
     @Operation(summary = "Edit an unredeemed access code",
@@ -73,7 +76,7 @@ public class AccessCodeController {
             @PathVariable String orgId,
             @PathVariable String codeId,
             @Valid @RequestBody GenerateAccessCodeRequest request) {
-        return ResponseEntity.ok(accessCodeService.updateCode(userDetails.getUsername(), codeId, request));
+        return ResponseEntity.ok(accessCodeService.updateCode(userDetails.getUsername(), orgId, codeId, request));
     }
 
     @Operation(summary = "Add projects to a code already issued",
@@ -88,7 +91,7 @@ public class AccessCodeController {
             @PathVariable String codeId,
             @Valid @RequestBody GrantCodeProjectsRequest request) {
         return ResponseEntity.ok(accessCodeService.grantExtraProjects(
-                userDetails.getUsername(), codeId, request.getProjects()));
+                userDetails.getUsername(), orgId, codeId, request.getProjects()));
     }
 
     @Operation(summary = "Give a code another 10 days",
@@ -101,7 +104,7 @@ public class AccessCodeController {
             @AuthenticationPrincipal UserDetails userDetails,
             @PathVariable String orgId,
             @PathVariable String codeId) {
-        return ResponseEntity.ok(accessCodeService.extendValidity(userDetails.getUsername(), codeId));
+        return ResponseEntity.ok(accessCodeService.extendValidity(userDetails.getUsername(), orgId, codeId));
     }
 
     @Operation(summary = "Redeem access code",

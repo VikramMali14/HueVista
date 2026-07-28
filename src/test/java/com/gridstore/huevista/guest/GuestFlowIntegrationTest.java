@@ -125,6 +125,55 @@ class GuestFlowIntegrationTest {
                 .andExpect(status().isPaymentRequired());
     }
 
+    /**
+     * A kiosk walk-in paid for their own project, so the shop's plan gates nothing.
+     *
+     * The shop here has no subscription at all — the same state that (correctly) blocks
+     * the shop-issued code in the test above. A kiosk code must still run: the customer
+     * paid at the store link, the money is already taken, and refusing the work because
+     * the SHOP's plan lapsed left them out of pocket with no refund path behind it
+     * (StorePayment.reversed is never set on that route).
+     */
+    @Test
+    void kiosk_paid_guest_can_segment_even_when_the_shop_has_no_plan() throws Exception {
+        CustomerAccessCode kioskCode = codeRepository.findById(codeId).orElseThrow();
+        kioskCode.setSelfFunded(true);
+        codeRepository.saveAndFlush(kioskCode);
+
+        String guestToken = redeemAsGuest();
+        String projectId = guestCreateProject(guestToken, guestUpload(guestToken));
+
+        mockMvc.perform(post("/api/guest/projects/" + projectId + "/segment")
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SEGMENTING"));
+    }
+
+    /** …and the colour board they paid for comes off the code, not the shop's PDF limit. */
+    @Test
+    void kiosk_paid_guest_gets_a_colour_board_without_touching_the_shops_pdf_quota() throws Exception {
+        CustomerAccessCode kioskCode = codeRepository.findById(codeId).orElseThrow();
+        kioskCode.setSelfFunded(true);
+        codeRepository.saveAndFlush(kioskCode);
+        String guestToken = redeemAsGuest();
+
+        mockMvc.perform(get("/api/guest/pdf-allowance")
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.remaining").value(1));
+
+        mockMvc.perform(post("/api/guest/pdf-downloads")
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.used").value(1))
+                .andExpect(jsonPath("$.remaining").value(0));
+
+        // Spent — the code paid for one board, not an unlimited supply.
+        mockMvc.perform(post("/api/guest/pdf-downloads")
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isPaymentRequired());
+    }
+
     @Test
     void guest_segmentation_is_allowed_and_not_charged_upfront_when_shop_has_credits() throws Exception {
         // Give the shop owner an active subscription with image AND auto-mask quota —
@@ -172,6 +221,71 @@ class GuestFlowIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.allowedBrands.length()").value(2))
                 .andExpect(jsonPath("$.allowedBrands[0]").value("Asian Paints"));
+    }
+
+    /**
+     * A guest gets every project the shop PAID FOR, not a hardcoded one.
+     *
+     * The limit was pinned at 1 regardless of the code. Issuing a code for three projects
+     * reserves three image credits against the shop's plan, so a customer arriving by the
+     * guest route could create one project while the shop had been charged for three — and
+     * the two spare credits then sat held with nothing to spend them on.
+     */
+    @Test
+    void guest_gets_as_many_projects_as_the_code_paid_for() throws Exception {
+        CustomerAccessCode multi = codeRepository.findById(codeId).orElseThrow();
+        multi.setProjectQuota(3);
+        multi.setReservedImages(3);
+        codeRepository.saveAndFlush(multi);
+
+        String guestToken = redeemAsGuest();
+        for (int i = 0; i < 3; i++) {
+            guestCreateProject(guestToken, guestUpload(guestToken));
+        }
+
+        // The fourth is refused — three is what the shop assigned.
+        String extraImage = guestUpload(guestToken);
+        mockMvc.perform(post("/api/guest/projects")
+                        .header("Authorization", "Bearer " + guestToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"imageId\":\"" + extraImage + "\"}"))
+                .andExpect(status().isPaymentRequired());
+
+        // …and the shop sees all three rooms against the code, not just the first.
+        mockMvc.perform(get("/api/access-codes/" + codeId + "/projects")
+                        .header("Authorization", "Bearer " + retailerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(3));
+    }
+
+    /**
+     * Re-entry closes once the customer has handed their room to the shop.
+     *
+     * Re-entry exists for the customer whose phone died mid-visit, and it costs
+     * something: the code is 8 characters on a printed slip, and anyone who reads one
+     * gets a session into that customer's room — able to see and overwrite the colours
+     * they chose — for the code's whole life. "Send to shop" is the customer saying they
+     * are done, so it is the natural end of that window.
+     */
+    @Test
+    void guest_reentry_ends_once_the_room_is_sent_to_the_shop() throws Exception {
+        String guestToken = redeemAsGuest();
+        String projectId = guestCreateProject(guestToken, guestUpload(guestToken));
+
+        // Before handover, re-entry is fine — this is the dead-phone case.
+        mockMvc.perform(post("/api/access-codes/redeem-guest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + CODE + "\"}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/guest/projects/" + projectId + "/send-to-shop")
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/access-codes/redeem-guest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + CODE + "\"}"))
+                .andExpect(status().isConflict());
     }
 
     @Test

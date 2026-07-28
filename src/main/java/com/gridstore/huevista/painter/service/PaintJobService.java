@@ -1,5 +1,6 @@
 package com.gridstore.huevista.painter.service;
 
+import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.auth.model.User;
@@ -47,9 +48,7 @@ public class PaintJobService {
         Organization retailer = organizationRepository.findById(req.getRetailerId())
                 .orElseThrow(() -> new ResourceNotFoundException("Retailer org not found: " + req.getRetailerId()));
 
-        if (!retailer.getOwner().getId().equals(requesterUserId)) {
-            throw new SecurityException("Only the retailer owner may create paint jobs.");
-        }
+        requireOwnerOrManager(requesterUserId, retailer.getId());
 
         Project project = projectRepository.findById(req.getProjectId())
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + req.getProjectId()));
@@ -131,9 +130,7 @@ public class PaintJobService {
     public List<PaintJobResponse> listForRetailer(String requesterUserId, String retailerOrgId, int page, int size) {
         Organization retailer = organizationRepository.findById(retailerOrgId)
                 .orElseThrow(() -> new ResourceNotFoundException("Retailer org not found: " + retailerOrgId));
-        if (!retailer.getOwner().getId().equals(requesterUserId)) {
-            throw new SecurityException("Only the retailer owner may list jobs for this retailer.");
-        }
+        requireOwnerOrManager(requesterUserId, retailerOrgId);
         return jobRepository.findForRetailerWithDetails(retailerOrgId, pageOf(page, size))
                 .stream().map(PaintJobResponse::from).toList();
     }
@@ -265,5 +262,30 @@ public class PaintJobService {
         throw new SecurityException(
                 "That room doesn't belong to your shop — you can only create jobs for your own "
                 + "rooms or for customers who used one of your access codes.");
+    }
+
+    /**
+     * Owner OR manager, matching every other shop tool.
+     *
+     * Painter management alone tested {@code retailer.getOwner()} directly, so a shop
+     * MANAGER — who can issue customer access codes, grant projects and run the portal —
+     * could not invite a painter or see the shop's jobs. One role check, one answer.
+     */
+    private void requireOwnerOrManager(String userId, String retailerOrgId) {
+        // The org's own owner field OR a membership row. Both, because they are two
+        // records of the same fact and they can disagree: every org provisioned through
+        // AccountService gets an OWNER membership, but one created directly carries only
+        // the owner pointer. Checking membership alone would lock the actual owner out of
+        // their own shop.
+        boolean ok = organizationRepository.findById(retailerOrgId)
+                        .map(o -> o.getOwner() != null && o.getOwner().getId().equals(userId))
+                        .orElse(false)
+                || orgMembershipRepository.existsByUserIdAndOrganizationIdAndRole(
+                        userId, retailerOrgId, OrgMemberRole.OWNER)
+                || orgMembershipRepository.existsByUserIdAndOrganizationIdAndRole(
+                        userId, retailerOrgId, OrgMemberRole.MANAGER);
+        if (!ok) {
+            throw new SecurityException("Only the shop owner or a manager can do that.");
+        }
     }
 }

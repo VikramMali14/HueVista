@@ -27,6 +27,27 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
     Optional<String> findOrganizationIdById(@Param("id") String id);
 
     /**
+     * Whether the end customer paid for this code themselves (a kiosk code), as a scalar
+     * so the billing resolver can answer "does anyone's subscription pay for this run?"
+     * without loading the row.
+     */
+    @Query("SELECT c.selfFunded FROM CustomerAccessCode c WHERE c.id = :id")
+    Optional<Boolean> findSelfFundedById(@Param("id") String id);
+
+    /**
+     * Atomically take one colour-board PDF from a self-funded code's own allowance —
+     * one board per project it paid for. Returns 1 when charged, 0 when spent. Kiosk
+     * boards must not come out of the shop's monthly PDF limit: the walk-in already
+     * paid for the board along with the project.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            UPDATE CustomerAccessCode c SET c.pdfDownloadsUsed = c.pdfDownloadsUsed + 1
+             WHERE c.id = :id AND c.pdfDownloadsUsed < c.projectQuota
+            """)
+    int consumeSelfFundedPdf(@Param("id") String id);
+
+    /**
      * Per-org access-code totals for the network report: [orgId, issued, redeemed].
      * COUNT(c.usedAt) only counts non-null values, i.e. consumed codes. Callers must
      * guard against an empty collection (JPQL IN () is invalid).
@@ -109,14 +130,26 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
     int revokeIfUnused(@Param("id") String id, @Param("now") LocalDateTime now);
 
     /**
-     * Codes whose holds are dead money: expired, never redeemed, never revoked, and not
-     * yet refunded. The daily sweep hands these holds back to the issuing shop — without
-     * it, quota reserved for a customer who never walked in is lost forever.
+     * Codes whose holds are dead money: expired, never revoked, not yet refunded, and
+     * still holding image credits. The daily sweep hands these holds back to the issuing
+     * shop — without it, quota reserved for projects nobody created is lost forever.
+     *
+     * <p>Deliberately NOT limited to unredeemed codes. It once was, and that was the
+     * larger half of the leak: a code redeemed for five projects whose customer created
+     * two left THREE credits held on the shop's subscription with no path back. Revoking
+     * refuses on a redeemed code (the customer may have work under it), the old sweep
+     * skipped it, and {@code reservedImages} deliberately survives a renewal — so those
+     * credits were subtracted from the shop's effective quota in every future billing
+     * period, forever. A shop issuing codes at a steady rate simply ran out.
+     *
+     * <p>Expiry is the safe moment to reclaim either way: past it no project can be
+     * created against the code and no run can be billed to it, so a remaining hold can
+     * only ever be a project that will never exist.
      */
     @Query("""
             SELECT c FROM CustomerAccessCode c
-             WHERE c.expiresAt < :cutoff AND c.usedAt IS NULL AND c.usedByUser IS NULL
+             WHERE c.expiresAt < :cutoff
                AND c.revokedAt IS NULL AND c.quotaReleasedAt IS NULL AND c.reservedImages > 0
             """)
-    List<CustomerAccessCode> findExpiredUnredeemedWithHolds(@Param("cutoff") LocalDateTime cutoff);
+    List<CustomerAccessCode> findExpiredWithHolds(@Param("cutoff") LocalDateTime cutoff);
 }

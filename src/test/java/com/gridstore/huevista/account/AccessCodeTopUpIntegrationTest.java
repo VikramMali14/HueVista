@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gridstore.huevista.account.dto.CreateOrgRequest;
 import com.gridstore.huevista.account.dto.GenerateAccessCodeRequest;
 import com.gridstore.huevista.account.dto.GrantCodeProjectsRequest;
+import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.repository.CustomerEntitlementRepository;
@@ -62,6 +63,7 @@ class AccessCodeTopUpIntegrationTest {
     @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired CustomerAccessCodeRepository codeRepository;
     @Autowired CustomerEntitlementRepository entitlementRepository;
+    @Autowired com.gridstore.huevista.account.service.AccessCodeService accessCodeService;
 
     private static final String SHOP_EMAIL = "topup-shop@example.com";
 
@@ -234,6 +236,150 @@ class AccessCodeTopUpIntegrationTest {
                         .header("Authorization", "Bearer " + shopToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].customerEmail").doesNotExist());
+    }
+
+    /**
+     * The expiry sweep must reclaim holds from a code that WAS redeemed.
+     *
+     * This was the larger half of a permanent quota leak. A shop issuing a code for five
+     * projects reserves five image credits; a customer who creates two leaves three held.
+     * Revoking is refused once a code is redeemed, the sweep only looked at UNREDEEMED
+     * codes, and {@code reservedImages} deliberately survives a renewal — so those three
+     * credits were subtracted from the shop's effective allowance in every future billing
+     * period, forever. A shop issuing codes at any steady rate eventually had none left.
+     *
+     * <p>Asserted on the sweep's SELECTION rather than by running it end to end: each
+     * code is refunded in its own REQUIRES_NEW transaction, which by design cannot see
+     * this test's uncommitted rows. What changed is precisely which codes the sweep
+     * picks up, so that is what is pinned here; the release accounting itself is covered
+     * by {@code ImageHoldAccountingTest} and by the revoke path below.
+     */
+    @Test
+    void expirySweepPicksUpARedeemedCodeTheCustomerDidNotFullyUse() throws Exception {
+        JsonNode code = generateCode(5);
+        String codeId = code.get("id").asText();
+        String shopUserId = userRepository.findByEmail(SHOP_EMAIL).orElseThrow().getId();
+
+        // Issuing held five credits against the shop's plan.
+        assertThat(heldImagesFor(shopUserId)).isEqualTo(5);
+
+        // The customer redeems it — from here revoking is refused, by design.
+        redeemIntoNewAccount(code.get("code").asText());
+        assertThat(codeRepository.findById(codeId).orElseThrow().isUsed()).isTrue();
+
+        // While it is live, the sweep leaves it alone: the customer may yet use it.
+        assertThat(codeRepository.findExpiredWithHolds(LocalDateTime.now()))
+                .extracting(CustomerAccessCode::getId)
+                .doesNotContain(codeId);
+
+        // …and then their ten days run out with projects still unused.
+        var expired = codeRepository.findById(codeId).orElseThrow();
+        expired.setExpiresAt(LocalDateTime.now().minusDays(1));
+        codeRepository.saveAndFlush(expired);
+
+        // Now it is dead money and the sweep must claim it. It used to be skipped
+        // entirely for having been redeemed, which is how the credits were lost.
+        assertThat(codeRepository.findExpiredWithHolds(LocalDateTime.now()))
+                .extracting(CustomerAccessCode::getId)
+                .contains(codeId);
+    }
+
+    /** Already refunded, or deliberately cancelled: never swept a second time. */
+    @Test
+    void expirySweepSkipsCodesAlreadySettled() throws Exception {
+        JsonNode code = generateCode(3);
+        String codeId = code.get("id").asText();
+
+        var settled = codeRepository.findById(codeId).orElseThrow();
+        settled.setExpiresAt(LocalDateTime.now().minusDays(1));
+        settled.setQuotaReleasedAt(LocalDateTime.now());
+        codeRepository.saveAndFlush(settled);
+
+        assertThat(codeRepository.findExpiredWithHolds(LocalDateTime.now()))
+                .extracting(CustomerAccessCode::getId)
+                .doesNotContain(codeId);
+    }
+
+    /**
+     * "Extend" must never shorten a code that was sold with a longer window.
+     *
+     * The extension was hardcoded to ten days AND overwrote the code's own validDays, so
+     * a kiosk code sold with (say) thirty days was cut to ten the moment a shop pressed
+     * Extend — taking away access the walk-in had already paid for, under a button
+     * labelled as giving them more.
+     */
+    @Test
+    void extendingALongerCodeNeverShortensIt() throws Exception {
+        JsonNode issued = generateCode(1);
+        String codeId = issued.get("id").asText();
+
+        // Stand this code up as a kiosk-style 30-day one.
+        var code = codeRepository.findById(codeId).orElseThrow();
+        code.setValidDays(30);
+        code.setExpiresAt(LocalDateTime.now().plusDays(30));
+        codeRepository.saveAndFlush(code);
+        LocalDateTime before = code.getExpiresAt();
+
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isOk());
+
+        var extended = codeRepository.findById(codeId).orElseThrow();
+        assertThat(extended.getExpiresAt()).isAfterOrEqualTo(before);
+        assertThat(extended.getValidDays()).isEqualTo(30);
+    }
+
+    /** A code near the end of its window is pushed out by its OWN validity, not a flat ten. */
+    @Test
+    void extendingUsesTheCodesOwnWindow() throws Exception {
+        JsonNode issued = generateCode(1);
+        String codeId = issued.get("id").asText();
+
+        var code = codeRepository.findById(codeId).orElseThrow();
+        code.setValidDays(30);
+        code.setExpiresAt(LocalDateTime.now().plusHours(1)); // almost out of time
+        codeRepository.saveAndFlush(code);
+
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isOk());
+
+        assertThat(codeRepository.findById(codeId).orElseThrow().getExpiresAt())
+                .isAfter(LocalDateTime.now().plusDays(29));
+    }
+
+    /**
+     * The {@code {orgId}} in the URL has to match the code's own shop.
+     *
+     * These endpoints authorise on the code's organization, which is what makes them
+     * safe — but the path segment was simply ignored, so a member of two shops could
+     * reach one shop's code through the other shop's URL and act on it. Not exploitable
+     * as it stood; a URL that lies is a trap for whoever changes this next.
+     */
+    @Test
+    void aCodeCannotBeReachedThroughAnotherShopsUrl() throws Exception {
+        JsonNode code = generateCode(1);
+        String codeId = code.get("id").asText();
+        String otherOrgId = createOrg(shopToken, "Top-up Paints Two", "topup-paints-two");
+
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", otherOrgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .delete("/api/organizations/{orgId}/access-codes/{codeId}", otherOrgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isNotFound());
+
+        // …and still works through its own shop's URL.
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isOk());
+    }
+
+    private int heldImagesFor(String userId) {
+        return subscriptionRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
+                .findFirst().map(Subscription::getReservedImages).orElse(0);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

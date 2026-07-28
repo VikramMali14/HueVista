@@ -241,6 +241,108 @@ class DistributorAccessControlIntegrationTest {
         assertThat(slugsIn(distView, "brandSlug")).contains("testco-paints", "rivalco-paints");
     }
 
+    /**
+     * The companies a shop unlocks ON A CODE must limit what that customer is served.
+     *
+     * This was enforced nowhere. A shop picks companies when issuing a code, and for a
+     * customer who redeemed into an ACCOUNT — the primary walk-in route through /redeem —
+     * the catalogue they got back was the WHOLE platform: {@code allowedBrandSlugsForUser}
+     * answered "unrestricted" for every non-retailer, and the only filtering that existed
+     * lived in a cookie in the anonymous guest's own browser.
+     */
+    @Test
+    void a_customers_catalogue_is_limited_to_the_companies_on_their_code() throws Exception {
+        Brand[] brands = seedCatalogue();
+        String distToken = seedDistributor();
+        // The shop carries both companies…
+        mockMvc.perform(post("/api/hierarchy/retailers")
+                        .header("Authorization", "Bearer " + distToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Priya","email":"shop@example.com","password":"password123",
+                                 "shopName":"Mehta Paint House",
+                                 "brandIds":[%d,%d],"brandsUnrestricted":false}"""
+                                .formatted(brands[0].getId(), brands[1].getId())))
+                .andExpect(status().isCreated());
+        String shopToken = tokenFor("shop@example.com", "password123");
+        String orgId = shopOrgId("shop@example.com");
+
+        // …but unlocks only ONE of them for this customer.
+        MvcResult issued = mockMvc.perform(post("/api/organizations/" + orgId + "/access-codes")
+                        .header("Authorization", "Bearer " + shopToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"customerName":"Anjali","projectQuota":1,
+                                 "allowedBrands":["Testco Paints"]}"""))
+                .andExpect(status().isCreated()).andReturn();
+        String code = objectMapper.readTree(issued.getResponse().getContentAsString())
+                .path("code").asText();
+
+        // Redeeming into an account and asking for "my" catalogue.
+        MvcResult redeemed = mockMvc.perform(post("/api/access-codes/redeem-account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + code + "\"}"))
+                .andExpect(status().isOk()).andReturn();
+        String customerToken = objectMapper.readTree(redeemed.getResponse().getContentAsString())
+                .path("accessToken").asText();
+
+        MvcResult customerView = mockMvc.perform(get("/api/shades/mine")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(slugsIn(customerView, "brandSlug")).containsOnly("testco-paints");
+    }
+
+    /**
+     * A code cannot outlive its shop's own grant. If the distributor later revokes a
+     * company, codes printed while the shop still carried it stop offering it too —
+     * otherwise a revocation is undone by every code issued before it.
+     */
+    @Test
+    void a_code_cannot_offer_a_company_the_shop_has_since_lost() throws Exception {
+        Brand[] brands = seedCatalogue();
+        String distToken = seedDistributor();
+        mockMvc.perform(post("/api/hierarchy/retailers")
+                        .header("Authorization", "Bearer " + distToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Priya","email":"shop@example.com","password":"password123",
+                                 "shopName":"Mehta Paint House",
+                                 "brandIds":[%d,%d],"brandsUnrestricted":false}"""
+                                .formatted(brands[0].getId(), brands[1].getId())))
+                .andExpect(status().isCreated());
+        String shopToken = tokenFor("shop@example.com", "password123");
+        String orgId = shopOrgId("shop@example.com");
+
+        MvcResult issued = mockMvc.perform(post("/api/organizations/" + orgId + "/access-codes")
+                        .header("Authorization", "Bearer " + shopToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"customerName":"Anjali","projectQuota":1,
+                                 "allowedBrands":["Testco Paints","Rivalco Paints"]}"""))
+                .andExpect(status().isCreated()).andReturn();
+        String code = objectMapper.readTree(issued.getResponse().getContentAsString())
+                .path("code").asText();
+
+        // The distributor now pulls one company back.
+        mockMvc.perform(put("/api/hierarchy/retailers/" + orgId + "/brands")
+                        .header("Authorization", "Bearer " + distToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"brandIds\":[%d],\"unrestricted\":false}".formatted(brands[0].getId())))
+                .andExpect(status().isOk());
+
+        MvcResult redeemed = mockMvc.perform(post("/api/access-codes/redeem-account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + code + "\"}"))
+                .andExpect(status().isOk()).andReturn();
+        String customerToken = objectMapper.readTree(redeemed.getResponse().getContentAsString())
+                .path("accessToken").asText();
+
+        MvcResult customerView = mockMvc.perform(get("/api/shades/mine")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(slugsIn(customerView, "brandSlug")).containsOnly("testco-paints");
+    }
+
     // ── The three-state contract ──────────────────────────────────────────
 
     @Test
@@ -388,5 +490,85 @@ class DistributorAccessControlIntegrationTest {
                         .content("""
                                 {"features":[],"unrestricted":true}"""))
                 .andExpect(status().isForbidden());
+    }
+
+    // ── The grant is enforced by the API, not only by the navigation ──────
+
+    /**
+     * A revoked page must actually close the endpoints behind it.
+     *
+     * The grant was written, stored, read back and used to hide navigation tabs — and
+     * enforced nowhere. {@code FeatureAccessService.assertFeature} had no callers at all,
+     * so a shop whose distributor had switched the Customer portal off could still POST
+     * an access code straight to the API and issue codes all day; revoking the page hid a
+     * tab and nothing more. The frontend's own comment claimed the backend enforced this
+     * on every endpoint, which made the gap easy to keep believing.
+     */
+    @Test
+    void a_revoked_page_closes_its_endpoints_not_just_its_nav_tab() throws Exception {
+        seedCatalogue();
+        String distToken = seedDistributor();
+        // A shop granted the Studio only — no Customer portal, no Products.
+        mockMvc.perform(post("/api/hierarchy/retailers")
+                        .header("Authorization", "Bearer " + distToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Priya","email":"shop@example.com","password":"password123",
+                                 "shopName":"Mehta Paint House",
+                                 "features":["STUDIO"],"featuresUnrestricted":false}"""))
+                .andExpect(status().isCreated());
+        String orgId = shopOrgId("shop@example.com");
+        String shopToken = tokenFor("shop@example.com", "password123");
+
+        // Issuing a customer code is the Customer portal, which they were not granted.
+        mockMvc.perform(post("/api/organizations/" + orgId + "/access-codes")
+                        .header("Authorization", "Bearer " + shopToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerName\":\"Walk-in\",\"projectQuota\":1}"))
+                .andExpect(status().isForbidden());
+
+        // So is listing them, and the shop's product listings are their own page.
+        mockMvc.perform(get("/api/organizations/" + orgId + "/access-codes")
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/organizations/" + orgId + "/products")
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isForbidden());
+
+        // …while the page they WERE granted still answers, and so does the account's own
+        // access lookup — the call the navigation is built from must never be gated, or a
+        // restricted shop cannot render a nav at all.
+        mockMvc.perform(get("/api/hierarchy/my-access")
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.featuresRestricted").value(true));
+        mockMvc.perform(get("/api/projects")
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isOk());
+    }
+
+    /** An unrestricted shop is untouched by the guard, and so is the distributor above it. */
+    @Test
+    void the_page_guard_does_not_bite_an_unrestricted_shop_or_its_distributor() throws Exception {
+        seedCatalogue();
+        String distToken = seedDistributor();
+        mockMvc.perform(post("/api/hierarchy/retailers")
+                        .header("Authorization", "Bearer " + distToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Priya","email":"shop@example.com","password":"password123",
+                                 "shopName":"Mehta Paint House","featuresUnrestricted":true}"""))
+                .andExpect(status().isCreated());
+        String orgId = shopOrgId("shop@example.com");
+
+        mockMvc.perform(get("/api/organizations/" + orgId + "/access-codes")
+                        .header("Authorization", "Bearer " + tokenFor("shop@example.com", "password123")))
+                .andExpect(status().isOk());
+
+        // The distributor holds no shop org of their own, so the guard is a no-op for
+        // them — they are the one doing the granting.
+        mockMvc.perform(get("/api/hierarchy/network")
+                        .header("Authorization", "Bearer " + distToken))
+                .andExpect(status().isOk());
     }
 }

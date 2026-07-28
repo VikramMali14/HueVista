@@ -199,22 +199,27 @@ public class HierarchyService {
         retailerUser.setCreatedById(creatorUserId);
         userRepository.save(retailerUser);
 
+        Organization retailerOrg = firstOrgOf(retailerUser.getId(), OrgType.RETAILER)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Shop organization was not provisioned for " + retailerUser.getEmail()));
         if (distributorOrg != null) {
-            Organization retailerOrg = firstOrgOf(retailerUser.getId(), OrgType.RETAILER)
-                    .orElseThrow(() -> new IllegalStateException(
-                            "Shop organization was not provisioned for " + retailerUser.getEmail()));
             distributorLinkRepository.save(DistributorRetailerLink.builder()
                     .distributor(distributorOrg)
                     .retailer(retailerOrg)
                     .build());
-            applyBrandGrant(distributorOrg, retailerOrg,
-                    request.getBrandIds(), request.isBrandsUnrestricted());
-            applyFeatureGrant(distributorOrg, retailerOrg,
-                    request.getFeatures(), request.isFeaturesUnrestricted());
-            log.info("Distributor {} created and linked RETAILER {} (brandsUnrestricted={}, featuresUnrestricted={})",
-                    creatorUserId, retailerUser.getEmail(),
-                    request.isBrandsUnrestricted(), request.isFeaturesUnrestricted());
         }
+        // Applied whether or not a distributor is behind them. Skipping the grants for an
+        // admin-created shop left it not merely unrestricted but UNRESTRICTABLE: this was
+        // the only place they were set at creation, and the editors refused afterwards for
+        // want of a distributor to attribute them to. A null distributor now just means
+        // "granted by the platform".
+        applyBrandGrant(distributorOrg, retailerOrg,
+                request.getBrandIds(), request.isBrandsUnrestricted());
+        applyFeatureGrant(distributorOrg, retailerOrg,
+                request.getFeatures(), request.isFeaturesUnrestricted());
+        log.info("{} created RETAILER {} (linked={}, brandsUnrestricted={}, featuresUnrestricted={})",
+                creator.getRole(), retailerUser.getEmail(), distributorOrg != null,
+                request.isBrandsUnrestricted(), request.isFeaturesUnrestricted());
         return created;
     }
 
@@ -321,12 +326,11 @@ public class HierarchyService {
     public List<RetailerBrandOption> assignBrands(String callerUserId, String retailerOrgId,
                                                   List<Long> brandIds, boolean unrestricted) {
         ManageableShop shop = resolveManageableShop(callerUserId, retailerOrgId);
-        Organization distributor = shop.distributor();
-        if (distributor == null) {
-            throw new IllegalStateException(
-                    "This shop is not linked to a distributor, so brands can't be assigned.");
-        }
-        int count = applyBrandGrant(distributor, shop.retailer(), brandIds, unrestricted);
+        // A null distributor means an admin is granting directly — the assignment simply
+        // records no distributor. This used to refuse outright, which made every
+        // admin-created shop permanently unrestrictable: creation skips the grant when
+        // there is no distributor to attribute it to, and this was the only other way in.
+        int count = applyBrandGrant(shop.distributor(), shop.retailer(), brandIds, unrestricted);
         log.info("{} set brands for shop {}: unrestricted={} count={}",
                 callerUserId, retailerOrgId, unrestricted, count);
         return retailerBrandOptions(callerUserId, retailerOrgId);
@@ -413,12 +417,8 @@ public class HierarchyService {
     public List<RetailerFeatureOption> assignFeatures(String callerUserId, String retailerOrgId,
                                                       List<String> features, boolean unrestricted) {
         ManageableShop shop = resolveManageableShop(callerUserId, retailerOrgId);
-        Organization distributor = shop.distributor();
-        if (distributor == null) {
-            throw new IllegalStateException(
-                    "This shop is not linked to a distributor, so pages can't be assigned.");
-        }
-        int count = applyFeatureGrant(distributor, shop.retailer(), features, unrestricted);
+        // Null distributor = granted by an admin directly; see assignBrands.
+        int count = applyFeatureGrant(shop.distributor(), shop.retailer(), features, unrestricted);
         log.info("{} set pages for shop {}: unrestricted={} count={}",
                 callerUserId, retailerOrgId, unrestricted, count);
         return retailerFeatureOptions(callerUserId, retailerOrgId);
@@ -506,11 +506,9 @@ public class HierarchyService {
                     .add(a.getBrand().getName());
         }
         Map<String, List<String>> featuresByOrg = new HashMap<>();
-        for (String orgId : orgIds) {
-            for (RetailerFeatureAssignment a : featureAssignmentRepository.findByRetailerId(orgId)) {
-                featuresByOrg.computeIfAbsent(orgId, k -> new java.util.ArrayList<>())
-                        .add(a.getFeature().getLabel());
-            }
+        for (RetailerFeatureAssignment a : featureAssignmentRepository.findByRetailerIdIn(orgIds)) {
+            featuresByOrg.computeIfAbsent(a.getRetailer().getId(), k -> new java.util.ArrayList<>())
+                    .add(a.getFeature().getLabel());
         }
 
         for (NetworkNodeResponse node : retailerNodes) {

@@ -1,9 +1,11 @@
 package com.gridstore.huevista.painter.service;
 
 import com.gridstore.huevista.account.model.Organization;
+import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.auth.model.User;
+import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.painter.dto.GeneratePainterInvitationRequest;
@@ -38,6 +40,7 @@ public class PainterInvitationService {
     private final OrganizationRepository organizationRepository;
     private final UserRepository userRepository;
     private final PainterService painterService;
+    private final com.gridstore.huevista.account.repository.OrgMembershipRepository orgMembershipRepository;
 
     @Transactional
     public PainterInvitationResponse generate(String requesterUserId,
@@ -48,9 +51,7 @@ public class PainterInvitationService {
         if (retailer.getType() != OrgType.RETAILER) {
             throw new IllegalArgumentException("Painter invitations are only for RETAILER organizations.");
         }
-        if (!retailer.getOwner().getId().equals(requesterUserId)) {
-            throw new SecurityException("Only the retailer owner may generate painter invitations.");
-        }
+        requireOwnerOrManager(requesterUserId, retailerOrgId);
 
         PainterInvitation invitation = PainterInvitation.builder()
                 .code(generateUniqueCode())
@@ -67,9 +68,7 @@ public class PainterInvitationService {
     public List<PainterInvitationResponse> listForRetailer(String requesterUserId, String retailerOrgId) {
         Organization retailer = organizationRepository.findById(retailerOrgId)
                 .orElseThrow(() -> new ResourceNotFoundException("Retailer org not found: " + retailerOrgId));
-        if (!retailer.getOwner().getId().equals(requesterUserId)) {
-            throw new SecurityException("Only the retailer owner may list painter invitations.");
-        }
+        requireOwnerOrManager(requesterUserId, retailerOrgId);
         return invitationRepository.findByRetailerIdOrderByCreatedAtDesc(retailerOrgId)
                 .stream()
                 .map(PainterInvitationResponse::from)
@@ -89,6 +88,26 @@ public class PainterInvitationService {
 
         User painter = userRepository.findById(painterUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + painterUserId));
+
+        // Redeeming flips the account to PAINTER (see PainterService#ensureProfile).
+        // For a shop, distributor or admin account that silently destroys their real
+        // role — and this endpoint is open to ANY authenticated caller, so a retailer
+        // owner who pastes a painter code becomes a PAINTER while still owning their
+        // shop org: exactly the role/membership split-brain AdminController#changeRole
+        // refuses to create. Worse, it is then unrecoverable, because changeRole will
+        // not put the role back while the account owns an organization.
+        //
+        // The sibling guard in AccessCodeService#redeemCode is the model. A CUSTOMER
+        // legitimately becomes a painter (that is the self-signup route), and an
+        // existing PAINTER re-linking to a second shop is the ordinary case.
+        UserRole role = painter.getRole();
+        if (role != null && role != UserRole.PAINTER && role != UserRole.CUSTOMER) {
+            throw new SecurityException(
+                    "This account is a " + role.name().toLowerCase()
+                    + " account — painter invitations are for painters. Redeeming it here "
+                    + "would replace that role. Ask the painter to redeem it on their own "
+                    + "account, or open it in a private window.");
+        }
 
         // Atomically claim the invitation. The isUsed() pre-check above is only a
         // fast path — two concurrent redeems can both pass it, and this CAS update
@@ -120,6 +139,31 @@ public class PainterInvitationService {
         log.info("Painter {} redeemed invitation {} from retailer {}",
                 painter.getId(), code, invitation.getRetailer().getId());
         return PainterRetailerLinkResponse.from(link);
+    }
+
+    /**
+     * Owner OR manager, matching every other shop tool.
+     *
+     * Painter management alone tested {@code retailer.getOwner()} directly, so a shop
+     * MANAGER — who can issue customer access codes, grant projects and run the portal —
+     * could not invite a painter or see the shop's jobs. One role check, one answer.
+     */
+    private void requireOwnerOrManager(String userId, String retailerOrgId) {
+        // The org's own owner field OR a membership row. Both, because they are two
+        // records of the same fact and they can disagree: every org provisioned through
+        // AccountService gets an OWNER membership, but one created directly carries only
+        // the owner pointer. Checking membership alone would lock the actual owner out of
+        // their own shop.
+        boolean ok = organizationRepository.findById(retailerOrgId)
+                        .map(o -> o.getOwner() != null && o.getOwner().getId().equals(userId))
+                        .orElse(false)
+                || orgMembershipRepository.existsByUserIdAndOrganizationIdAndRole(
+                        userId, retailerOrgId, OrgMemberRole.OWNER)
+                || orgMembershipRepository.existsByUserIdAndOrganizationIdAndRole(
+                        userId, retailerOrgId, OrgMemberRole.MANAGER);
+        if (!ok) {
+            throw new SecurityException("Only the shop owner or a manager can do that.");
+        }
     }
 
     private String generateUniqueCode() {
