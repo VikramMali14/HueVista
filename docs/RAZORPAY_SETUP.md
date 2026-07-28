@@ -38,6 +38,11 @@ RAZORPAY_PLAN_PROFESSIONAL=
 RAZORPAY_PLAN_BUSINESS=
 ```
 
+Reward points involve no Razorpay object at all — no plan, no order, no webhook.
+They are earned and spent entirely inside HueVista, priced in points, and never
+touch money. Their settings live in `app.points.*` (see
+`application.properties`), not here.
+
 ---
 
 ## 1. Create the account and get test keys
@@ -194,11 +199,12 @@ product; cards are the reliable recurring-payment path in test mode.
 7. **Buy a project / reopen a project** — check the validity window.
 8. **Kiosk** — open `/store/{slug}` in an incognito window (it is public, no
    login), pay ₹99 with UPI `success@razorpay`, confirm an access code is issued
-   and the shop earned 39 points (kiosk panel, and a `KIOSK_BONUS` row in the
-   wallet statement).
-9. **Spend the points** — with no active plan, buy a project from the balance and
-   confirm it debits ₹50/₹99 and issues a project credit. With a plan, buy an
-   extra image from the balance instead.
+   and the shop earned **30 points** (kiosk panel, and a `KIOSK_EARNED` row in the
+   points statement dated one year out).
+9. **Spend the points** — with no active plan, buy a project for **80 points** and
+   confirm the project credit appears. With a plan, buy an extra image for **40
+   points** and an auto-mask for **20 points**. Check a non-retailer account gets
+   403 from `/api/billing/points`.
 10. **Refund** — refund the kiosk payment from the dashboard and confirm the
     points are clawed back (`refund.processed` →
     `WalletService.reverseKioskPayment`). Spend the points *first* on one run to
@@ -236,24 +242,31 @@ and your business category — pick **SaaS / Software** for HueVista.
 | Terms & Conditions | `/legal/terms` ✅ |
 | Privacy Policy | `/legal/privacy` ✅ |
 | Refund / Cancellation Policy | `/legal/refunds` ✅ |
-| **Contact Us page** — email **and** phone **and** business address | ❌ **missing** — the footer only has a `mailto:` link |
-| **Shipping / Delivery Policy** | ❌ **missing** — for a digital service, state that access is delivered electronically and instantly to the account, with no physical shipment |
-| Legal entity name shown on the site | verify it matches your Razorpay application |
+| **Contact Us page** — email **and** phone **and** business address | `/legal/contact` ✅ |
+| **Shipping / Delivery Policy** | `/legal/delivery` ✅ |
+| Legal entity name shown on the site | footer + `/legal/contact` ✅ — "HueVista, Proprietor: Vikram Mali" |
 
-**Fix the two ❌ rows before submitting.** A missing Contact Us page with a
-working phone number is the single most common rejection reason.
+Everything the reviewer looks for is now on the site. What must match your
+Razorpay application exactly:
 
-### 5c. Fix the email domain mismatch
+- **Legal name** — Vikram Mali (sole proprietorship trading as HueVista)
+- **Address** — Mount Road, Manpur, Abu Road, Sirohi, Rajasthan 307026
+- **Phone** — +91 63784 82381
+- **Business category** — SaaS / Software
 
-The site and the backend currently disagree about your domain:
+### 5c. Move the billing mail onto the .com domain
 
-- Frontend footer + legal pages: `hello@huevista.com`
-- Backend `app.mail.billing-from`: `payments@huevista.org`
-- Backend `app.store.redemption-email`: `redemeamount@huevista.org`
+The site is on `huevista.com`; the backend still defaults to sending receipts
+from `payments@huevista.org`:
 
-Pick one domain, make every address live on it, and make sure it is the same
-domain you submit to Razorpay. Receipts arriving from a domain that isn't the
-one on the application is a review flag.
+```
+MAIL_BILLING_FROM=payments@huevista.com
+```
+
+Set that in production and make the mailbox real, because `/legal/refunds` and
+`/legal/delivery` both tell customers to write to it. Receipts arriving from a
+domain other than the one on your application is a review flag, and a policy
+page quoting an address that bounces is worse.
 
 ### 5d. The kiosk is a plain B2C sale — keep it that way
 
@@ -268,6 +281,12 @@ withdraw it as cash.
 
 So on your application the kiosk is simply "customers buy a room visualisation
 from us at a fixed price", and there is no third-party settlement to explain.
+
+**Points are a loyalty benefit, not a payment instrument.** They are granted
+free, have no cash value, cannot be bought or transferred, expire after a year,
+and buy only HueVista's own services at a price list quoted in points. That is
+what `/legal/terms` §5 and `/legal/refunds` §6 say, and it is what makes them
+uninteresting to a payments reviewer.
 
 **Do not add a cash-out path for points.** Paying a shop's balance to a bank
 account or UPI id would turn every kiosk sale back into a payment collected on
