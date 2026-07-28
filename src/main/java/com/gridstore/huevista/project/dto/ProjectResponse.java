@@ -63,15 +63,16 @@ public class ProjectResponse {
     private LocalDateTime accessExpiresAt;
     // What reopening a lapsed project costs, in paise — so the studio can name the
     // price on the banner instead of sending the user off to find it.
-    private int reopenPricePaise;
+    /** What reopening this project costs, in POINTS. */
+    private int reopenPricePoints;
 
     /** Stamp the viewer's access onto an owner-view response. */
     public ProjectResponse withAccess(boolean readOnly, String reason,
-                                      LocalDateTime accessExpiresAt, int reopenPricePaise) {
+                                      LocalDateTime accessExpiresAt, int reopenPricePoints) {
         this.readOnly = readOnly;
         this.readOnlyReason = reason;
         this.accessExpiresAt = accessExpiresAt;
-        this.reopenPricePaise = reopenPricePaise;
+        this.reopenPricePoints = reopenPricePoints;
         return this;
     }
 

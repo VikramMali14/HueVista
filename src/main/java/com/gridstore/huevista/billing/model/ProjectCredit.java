@@ -31,6 +31,13 @@ public class ProjectCredit {
     public enum Source {
         /** Bought by the account holder through Razorpay Checkout. */
         PURCHASE,
+        /**
+         * Bought from the prepaid rupee wallet. The money was already collected when it
+         * entered the wallet, so there is no payment id on this one.
+         */
+        WALLET,
+        /** Bought with kiosk reward points — no money moved for this one at all. */
+        POINTS,
         /** Issued by an administrator without a payment (support, goodwill, testing). */
         GRANT
     }
@@ -44,7 +51,7 @@ public class ProjectCredit {
 
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default
-    private int pricePaise = 0;
+    private int pointsSpent = 0;
 
     /** Days of access this credit opens on the project it becomes. */
     @Column(nullable = false, columnDefinition = "integer not null default 30")

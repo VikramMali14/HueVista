@@ -63,7 +63,7 @@ public class ProjectAccessService {
     }
 
     /** Why a project is view-only, and what it would take to unlock it. */
-    public record Access(Mode mode, String reason, LocalDateTime expiresAt, int reopenPricePaise) {
+    public record Access(Mode mode, String reason, LocalDateTime expiresAt, int reopenPricePoints) {
         public boolean editable() {
             return mode == Mode.FULL;
         }
@@ -116,18 +116,18 @@ public class ProjectAccessService {
         }
         if (project.isAccessWindowOpen()) {
             return new Access(Mode.FULL, null, project.getAccessExpiresAt(),
-                    pricingService.projectReopenPricePaise());
+                    pricingService.pointsPriceReopen());
         }
         // A project that never carried a window at all belongs to an account that used to
         // be covered by a plan. It reads as subscription-lapsed rather than expired,
         // because buying a reopen would not be the right advice — resubscribing is.
         String reason = project.hasAccessWindow() ? windowLapsedMessage() : NO_SUBSCRIPTION;
         return new Access(Mode.VIEW_ONLY, reason, project.getAccessExpiresAt(),
-                pricingService.projectReopenPricePaise());
+                pricingService.pointsPriceReopen());
     }
 
     private Access full() {
-        return new Access(Mode.FULL, null, null, pricingService.projectReopenPricePaise());
+        return new Access(Mode.FULL, null, null, pricingService.pointsPriceReopen());
     }
 
     /**
@@ -154,10 +154,10 @@ public class ProjectAccessService {
      * for are banked, and the moment the subscription lapses they get all of them rather
      * than discovering the project they bought last month has silently expired.
      */
-    public void openWindow(Project project, int validDays, int pricePaise, boolean subscribed) {
+    public void openWindow(Project project, int validDays, int pointsSpent, boolean subscribed) {
         LocalDateTime now = LocalDateTime.now();
         project.setPurchasedAt(now);
-        project.setPurchasePricePaise(pricePaise);
+        project.setPurchasePoints(pointsSpent);
         if (subscribed) {
             project.setAccessExpiresAt(null);
             project.setAccessPausedAt(now);

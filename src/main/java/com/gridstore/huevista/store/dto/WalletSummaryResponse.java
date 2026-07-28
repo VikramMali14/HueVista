@@ -6,31 +6,39 @@ import lombok.Data;
 import java.time.LocalDateTime;
 import java.util.List;
 
-/** The retailer's kiosk wallet: derived balance plus the recent activity feed. */
+/**
+ * The shop's kiosk statement: what the link sold, and the reward points those sales
+ * earned. Points are spending power inside HueVista (1 point = 1 paise) and are never
+ * paid out as cash, so there is no payout balance or redemption history here.
+ */
 @Data
 @Builder
 public class WalletSummaryResponse {
     private String organizationId;
     private String currency;
-    /** Available right now = lifetimeEarned - pending - redeemed. */
-    private long balancePaise;
-    /** Every retailer share ever accrued from kiosk payments. */
-    private long lifetimeEarnedPaise;
-    /** Held by redemption requests awaiting an admin decision. */
-    private long pendingRedemptionPaise;
-    /** Paid out (approved redemptions). */
-    private long redeemedPaise;
-    /** The platform base kept from every kiosk payment (context for the UI). */
-    private int platformFeePaise;
+    /**
+     * Points available to spend right now, read from the OWNER's point ledger. Lower than
+     * the lifetime figure whenever a batch has expired or been spent.
+     */
+    private int pointsBalance;
+    /** Every point this shop's kiosk has ever earned, refunded sales excluded. */
+    private long lifetimePointsEarned;
+    /** What one kiosk sale earns the shop right now (context for the UI). */
+    private int pointsPerSale;
+    /** What a walk-in pays at the kiosk right now (context for the UI). */
+    private int kioskPricePaise;
     private List<PaymentRow> recentPayments;
-    private List<WalletRedemptionResponse> redemptions;
 
     @Data
     @Builder
     public static class PaymentRow {
         private String id;
+        /** What the walk-in paid. All of it is HueVista's — the shop earns points, not a share. */
         private int amountPaise;
-        private int retailerSharePaise;
+        /** Points this sale earned the shop. */
+        private int bonusPoints;
+        /** Refunded or charged back — the points were taken back. */
+        private boolean reversed;
         /** The pickup code this payment bought (the shop redeems colours from it). */
         private String code;
         private LocalDateTime createdAt;

@@ -3,21 +3,14 @@ package com.gridstore.huevista.store;
 import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.repository.OrgMembershipRepository;
-import com.gridstore.huevista.account.repository.OrganizationRepository;
-import com.gridstore.huevista.auth.repository.UserRepository;
-import com.gridstore.huevista.common.audit.AuditService;
-import com.gridstore.huevista.notification.EmailSender;
-import com.gridstore.huevista.store.dto.RequestRedemptionRequest;
-import com.gridstore.huevista.store.dto.WalletRedemptionResponse;
+import com.gridstore.huevista.billing.service.RewardPointsService;
+import com.gridstore.huevista.billing.service.PricingService;
 import com.gridstore.huevista.store.dto.WalletSummaryResponse;
-import com.gridstore.huevista.store.model.WalletRedemption;
-import com.gridstore.huevista.store.model.WalletRedemptionStatus;
+import com.gridstore.huevista.store.model.StorePayment;
 import com.gridstore.huevista.store.repository.StorePaymentRepository;
-import com.gridstore.huevista.store.repository.WalletRedemptionRepository;
 import com.gridstore.huevista.store.service.WalletService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Optional;
@@ -25,6 +18,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -33,22 +27,20 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Verifies the wallet's derived-balance math and the payout guardrails: a
- * request can never exceed the available balance (PENDING holds funds), the
- * redemption inbox is notified, and only PENDING requests can be decided.
+ * The kiosk statement after the revenue share was replaced by closed-loop points: the
+ * balance shown is the owner's spendable wallet (not a second ledger), a refund claws the
+ * points back, and there is no payout path left to guard.
  */
 class WalletServiceTest {
 
     private static final String ORG = "org-1";
     private static final String USER = "user-1";
+    private static final String OWNER = "owner-1";
 
     private StorePaymentRepository payments;
-    private WalletRedemptionRepository redemptions;
-    private OrganizationRepository orgs;
     private OrgMembershipRepository memberships;
-    private UserRepository users;
-    private EmailSender email;
-    private AuditService audit;
+    private RewardPointsService points;
+    private PricingService pricing;
     private WalletService svc;
 
     private final Organization org = Organization.builder().id(ORG).name("Mehta Paints").build();
@@ -56,107 +48,88 @@ class WalletServiceTest {
     @BeforeEach
     void setUp() {
         payments = mock(StorePaymentRepository.class);
-        redemptions = mock(WalletRedemptionRepository.class);
-        orgs = mock(OrganizationRepository.class);
         memberships = mock(OrgMembershipRepository.class);
-        users = mock(UserRepository.class);
-        email = mock(EmailSender.class);
-        audit = mock(AuditService.class);
-        svc = new WalletService(payments, redemptions, orgs, memberships, users, email, audit);
-        ReflectionTestUtils.setField(svc, "minPricePaise", 5000);
-        ReflectionTestUtils.setField(svc, "minRedemptionPaise", 5000);
-        ReflectionTestUtils.setField(svc, "redemptionInbox", "payouts@huevista.org");
-        // The requester owns the org.
-        when(memberships.existsByUserIdAndOrganizationIdAndRole(USER, ORG, OrgMemberRole.OWNER)).thenReturn(true);
-        when(orgs.findByIdForUpdate(ORG)).thenReturn(Optional.of(org));
-        when(users.findById(USER)).thenReturn(Optional.empty());
-    }
+        points = mock(RewardPointsService.class);
+        pricing = mock(PricingService.class);
+        svc = new WalletService(payments, memberships, points, pricing);
 
-    private RequestRedemptionRequest request(int amountPaise) {
-        RequestRedemptionRequest r = new RequestRedemptionRequest();
-        r.setAmountPaise(amountPaise);
-        r.setUpiId("mehta@okhdfcbank");
-        return r;
+        when(memberships.existsByUserIdAndOrganizationIdAndRole(USER, ORG, OrgMemberRole.OWNER)).thenReturn(true);
+        when(pricing.shopOwnerUserId(ORG)).thenReturn(Optional.of(OWNER));
+        when(pricing.kioskPricePaise()).thenReturn(9_900);
+        when(pricing.kioskBonusPoints()).thenReturn(30);
     }
 
     @Test
-    void balanceIsEarnedMinusPendingAndRedeemed() {
-        when(payments.sumRetailerShareByOrganizationId(ORG)).thenReturn(10_000L);
-        when(redemptions.sumByOrganizationIdAndStatus(ORG, WalletRedemptionStatus.PENDING)).thenReturn(2_000L);
-        when(redemptions.sumByOrganizationIdAndStatus(ORG, WalletRedemptionStatus.APPROVED)).thenReturn(3_000L);
+    void balanceIsTheOwnersSpendableWalletNotASecondLedger() {
+        // Lifetime earned and spendable balance differ on purpose: points expire a year
+        // after they are earned, so a lifetime total always runs ahead of what is usable.
+        when(payments.sumBonusPointsByOrganizationId(ORG)).thenReturn(300L);
+        when(points.balance(OWNER)).thenReturn(120);
         when(payments.findTop50ByOrganizationIdOrderByCreatedAtDesc(ORG)).thenReturn(List.of());
-        when(redemptions.findByOrganizationIdOrderByCreatedAtDesc(ORG)).thenReturn(List.of());
 
         WalletSummaryResponse wallet = svc.getWallet(USER, ORG);
 
-        assertThat(wallet.getBalancePaise()).isEqualTo(5_000L);
-        assertThat(wallet.getLifetimeEarnedPaise()).isEqualTo(10_000L);
-        assertThat(wallet.getPendingRedemptionPaise()).isEqualTo(2_000L);
-        assertThat(wallet.getRedeemedPaise()).isEqualTo(3_000L);
+        assertThat(wallet.getPointsBalance()).isEqualTo(120);
+        assertThat(wallet.getLifetimePointsEarned()).isEqualTo(300L);
+        assertThat(wallet.getPointsPerSale()).isEqualTo(30);
+        assertThat(wallet.getKioskPricePaise()).isEqualTo(9_900);
     }
 
     @Test
-    void redemptionWithinBalanceIsQueuedAndInboxNotified() {
-        when(payments.sumRetailerShareByOrganizationId(ORG)).thenReturn(10_000L);
-        when(redemptions.sumHeldByOrganizationId(ORG)).thenReturn(2_000L); // 8_000 available
-        when(redemptions.save(any())).thenAnswer(inv -> inv.getArgument(0));
+    void aShopWithNoOwnerAccountShowsNoSpendableBalance() {
+        when(pricing.shopOwnerUserId(ORG)).thenReturn(Optional.empty());
+        when(payments.sumBonusPointsByOrganizationId(ORG)).thenReturn(300L);
+        when(payments.findTop50ByOrganizationIdOrderByCreatedAtDesc(ORG)).thenReturn(List.of());
 
-        WalletRedemptionResponse res = svc.requestRedemption(USER, ORG, request(8_000));
-
-        assertThat(res.getStatus()).isEqualTo("PENDING");
-        assertThat(res.getAmountPaise()).isEqualTo(8_000);
-        assertThat(res.getUpiId()).isEqualTo("mehta@okhdfcbank");
-        // The manual-payout inbox hears about it.
-        verify(email).send(eq("payouts@huevista.org"), anyString(), anyString());
-        verify(audit).record(eq(USER), eq("WALLET_REDEMPTION_REQUESTED"), eq("WALLET_REDEMPTION"),
-                any(), anyString());
+        assertThat(svc.getWallet(USER, ORG).getPointsBalance()).isZero();
     }
 
     @Test
-    void redemptionBeyondAvailableBalanceIsRejected() {
-        when(payments.sumRetailerShareByOrganizationId(ORG)).thenReturn(10_000L);
-        when(redemptions.sumHeldByOrganizationId(ORG)).thenReturn(2_000L); // 8_000 available
+    void refundReversesThePaymentAndClawsBackItsPoints() {
+        StorePayment payment = StorePayment.builder()
+                .id("pay-1").organization(org)
+                .paymentId("pay_rzp_1").orderId("order_1")
+                .amountPaise(9_900).platformFeePaise(9_900).bonusPoints(30)
+                .build();
+        when(payments.findByPaymentIdForUpdate("pay_rzp_1")).thenReturn(Optional.of(payment));
 
-        assertThatThrownBy(() -> svc.requestRedemption(USER, ORG, request(8_001)))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("balance");
-        verify(redemptions, never()).save(any());
-        verify(email, never()).send(anyString(), anyString(), anyString());
+        svc.reverseKioskPayment("pay_rzp_1", 9_900);
+
+        assertThat(payment.isReversed()).isTrue();
+        assertThat(payment.getRefundedPaise()).isEqualTo(9_900);
+        verify(points).reverseKioskPoints(OWNER, 30, "pay_rzp_1");
     }
 
     @Test
-    void redemptionBelowMinimumIsRejected() {
-        assertThatThrownBy(() -> svc.requestRedemption(USER, ORG, request(4_999)))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("minimum");
-        verify(redemptions, never()).save(any());
+    void aSecondRefundWebhookForTheSamePaymentClawsBackNothingMore() {
+        StorePayment already = StorePayment.builder()
+                .id("pay-1").organization(org)
+                .paymentId("pay_rzp_1").orderId("order_1")
+                .amountPaise(9_900).bonusPoints(30)
+                .reversedAt(java.time.LocalDateTime.now())
+                .build();
+        when(payments.findByPaymentIdForUpdate("pay_rzp_1")).thenReturn(Optional.of(already));
+
+        svc.reverseKioskPayment("pay_rzp_1", 9_900);
+
+        verify(points, never()).reverseKioskPoints(anyString(), anyInt(), anyString());
     }
 
     @Test
-    void adminDecisionFlipsPendingOnceOnly() {
-        WalletRedemption pending = WalletRedemption.builder()
-                .id("red-1").organization(org).amountPaise(8_000)
-                .upiId("mehta@okhdfcbank").requestedByUserId(USER).build();
-        when(redemptions.findByIdForUpdate("red-1")).thenReturn(Optional.of(pending));
-        when(redemptions.save(any())).thenAnswer(inv -> inv.getArgument(0));
+    void anUnknownPaymentIdIsIgnored() {
+        // The same merchant account also takes subscription and top-up payments.
+        when(payments.findByPaymentIdForUpdate("pay_not_ours")).thenReturn(Optional.empty());
 
-        WalletRedemptionResponse approved = svc.decideRedemption("admin-1", "red-1", true, "paid via UPI");
-        assertThat(approved.getStatus()).isEqualTo("APPROVED");
-        assertThat(approved.getAdminNote()).isEqualTo("paid via UPI");
-        verify(audit).record(eq("admin-1"), eq("WALLET_REDEMPTION_APPROVED"), eq("WALLET_REDEMPTION"),
-                eq("red-1"), anyString());
+        svc.reverseKioskPayment("pay_not_ours", 5_000);
 
-        // Already decided — the second decision must not double-pay or flip it back.
-        assertThatThrownBy(() -> svc.decideRedemption("admin-1", "red-1", false, null))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("already");
+        verify(payments, never()).save(any());
+        verify(points, never()).reverseKioskPoints(anyString(), anyInt(), anyString());
     }
 
     @Test
-    void nonMembersCannotTouchTheWallet() {
+    void nonMembersCannotReadTheStatement() {
         assertThatThrownBy(() -> svc.getWallet("stranger", ORG))
                 .isInstanceOf(SecurityException.class);
-        assertThatThrownBy(() -> svc.requestRedemption("stranger", ORG, request(5_000)))
-                .isInstanceOf(SecurityException.class);
+        verify(points, never()).balance(eq(OWNER));
     }
 }

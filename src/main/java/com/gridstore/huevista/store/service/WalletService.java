@@ -1,36 +1,33 @@
 package com.gridstore.huevista.store.service;
 
 import com.gridstore.huevista.account.model.OrgMemberRole;
-import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.repository.OrgMembershipRepository;
-import com.gridstore.huevista.account.repository.OrganizationRepository;
-import com.gridstore.huevista.auth.model.User;
-import com.gridstore.huevista.auth.repository.UserRepository;
-import com.gridstore.huevista.common.audit.AuditService;
-import com.gridstore.huevista.common.exception.ResourceNotFoundException;
-import com.gridstore.huevista.notification.EmailSender;
-import com.gridstore.huevista.store.dto.RequestRedemptionRequest;
-import com.gridstore.huevista.store.dto.WalletRedemptionResponse;
+import com.gridstore.huevista.billing.service.RewardPointsService;
+import com.gridstore.huevista.billing.service.PricingService;
 import com.gridstore.huevista.store.dto.WalletSummaryResponse;
-import com.gridstore.huevista.store.model.WalletRedemption;
-import com.gridstore.huevista.store.model.WalletRedemptionStatus;
 import com.gridstore.huevista.store.repository.StorePaymentRepository;
-import com.gridstore.huevista.store.repository.WalletRedemptionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * The retailer's kiosk-earnings wallet. There is no balance column anywhere —
- * the balance is always derived (kiosk shares earned minus non-rejected
- * redemptions), so it can never drift from the money records. Payouts are
- * manual: a request emails the redemption inbox with the shop's UPI id, an
- * admin approves (after actually sending the money) or rejects.
+ * The shop's kiosk statement: what its link sold and what those sales earned in reward
+ * points.
+ *
+ * <p><b>There is no payout path here, by design.</b> This service used to derive a cash
+ * balance from each sale's retailer share and queue manual UPI transfers against it,
+ * which made every kiosk payment a collection on the shop's behalf — a regulated pattern
+ * that needs Razorpay Route and would not clear an activation review. The kiosk now sells
+ * at one flat platform price that is entirely HueVista's, and the shop is rewarded in
+ * closed-loop points instead.
+ *
+ * The points themselves live in the owner's point ledger ({@link RewardPointsService}),
+ * spendable on images, auto-masks, projects and reopens at their own point prices, and
+ * expiring a year after they are earned. This class only reports: the balance shown here
+ * is read from that ledger so the shop sees one number, not a second that can drift.
  */
 @Slf4j
 @Service
@@ -38,190 +35,49 @@ import java.util.List;
 public class WalletService {
 
     private final StorePaymentRepository paymentRepository;
-    private final WalletRedemptionRepository redemptionRepository;
-    private final OrganizationRepository orgRepository;
     private final OrgMembershipRepository membershipRepository;
-    private final UserRepository userRepository;
-    private final EmailSender emailSender;
-    private final AuditService auditService;
-
-    @Value("${app.store.min-price-paise:5000}")
-    private int minPricePaise;
-
-    @Value("${app.store.min-redemption-paise:5000}")
-    private int minRedemptionPaise;
-
-    @Value("${app.store.redemption-email:payouts@huevista.org}")
-    private String redemptionInbox;
+    private final RewardPointsService rewardPointsService;
+    private final PricingService pricingService;
 
     @Transactional(readOnly = true)
     public WalletSummaryResponse getWallet(String requestingUserId, String orgId) {
         requireOwnerOrManager(requestingUserId, orgId);
-        long earned = paymentRepository.sumRetailerShareByOrganizationId(orgId);
-        long pending = redemptionRepository.sumByOrganizationIdAndStatus(orgId, WalletRedemptionStatus.PENDING);
-        long redeemed = redemptionRepository.sumByOrganizationIdAndStatus(orgId, WalletRedemptionStatus.APPROVED);
+
+        long earned = paymentRepository.sumBonusPointsByOrganizationId(orgId);
+        // Spendable balance is the owner's point ledger, not a per-org total: points are
+        // earned by the shop but spent by the account that pays for it. Reporting a
+        // lifetime sum here instead would show the shop a number it cannot actually spend,
+        // since points expire a year after they are earned.
+        int balance = pricingService.shopOwnerUserId(orgId)
+                .map(rewardPointsService::balance)
+                .orElse(0);
 
         List<WalletSummaryResponse.PaymentRow> payments = paymentRepository
                 .findTop50ByOrganizationIdOrderByCreatedAtDesc(orgId).stream()
                 .map(p -> WalletSummaryResponse.PaymentRow.builder()
                         .id(p.getId())
                         .amountPaise(p.getAmountPaise())
-                        .retailerSharePaise(p.getRetailerSharePaise())
+                        .bonusPoints(p.getBonusPoints())
+                        .reversed(p.isReversed())
                         .code(p.getAccessCode() != null ? p.getAccessCode().getCode() : null)
                         .createdAt(p.getCreatedAt())
                         .build())
-                .toList();
-        List<WalletRedemptionResponse> redemptions = redemptionRepository
-                .findByOrganizationIdOrderByCreatedAtDesc(orgId).stream()
-                .map(WalletRedemptionResponse::from)
                 .toList();
 
         return WalletSummaryResponse.builder()
                 .organizationId(orgId)
                 .currency("INR")
-                .balancePaise(earned - pending - redeemed)
-                .lifetimeEarnedPaise(earned)
-                .pendingRedemptionPaise(pending)
-                .redeemedPaise(redeemed)
-                .platformFeePaise(minPricePaise)
+                .pointsBalance(balance)
+                .lifetimePointsEarned(earned)
+                .pointsPerSale(pricingService.kioskBonusPoints())
+                .kioskPricePaise(pricingService.kioskPricePaise())
                 .recentPayments(payments)
-                .redemptions(redemptions)
                 .build();
     }
 
     /**
-     * Requests a payout. The org row is pessimistically locked so the balance
-     * check and the PENDING insert are atomic — two concurrent requests can't
-     * both spend the same rupees. The redemption inbox gets a best-effort email;
-     * the request stands even if SMTP is down (the admin queue still shows it).
-     */
-    @Transactional
-    public WalletRedemptionResponse requestRedemption(String requestingUserId, String orgId,
-                                                      RequestRedemptionRequest request) {
-        requireOwnerOrManager(requestingUserId, orgId);
-        Organization org = orgRepository.findByIdForUpdate(orgId)
-                .orElseThrow(() -> new ResourceNotFoundException("Organization not found: " + orgId));
-
-        int amount = request.getAmountPaise();
-        if (amount < minRedemptionPaise) {
-            throw new IllegalArgumentException(
-                    "The minimum redemption is Rs." + (minRedemptionPaise / 100));
-        }
-        long earned = paymentRepository.sumRetailerShareByOrganizationId(orgId);
-        long held = redemptionRepository.sumHeldByOrganizationId(orgId);
-        long available = earned - held;
-        if (amount > available) {
-            throw new IllegalStateException(
-                    "Your available balance is Rs." + (available / 100.0) + " — you can't redeem more than that.");
-        }
-
-        WalletRedemption redemption = redemptionRepository.save(WalletRedemption.builder()
-                .organization(org)
-                .amountPaise(amount)
-                .upiId(request.getUpiId().trim())
-                .requestedByUserId(requestingUserId)
-                .build());
-
-        auditService.record(requestingUserId, "WALLET_REDEMPTION_REQUESTED", "WALLET_REDEMPTION",
-                redemption.getId(), "org=" + orgId + " amountPaise=" + amount);
-        notifyInbox(redemption, org, requestingUserId);
-
-        log.info("Wallet redemption requested: org={} amountPaise={} redemption={}",
-                orgId, amount, redemption.getId());
-        return WalletRedemptionResponse.from(redemption);
-    }
-
-    @Transactional(readOnly = true)
-    public List<WalletRedemptionResponse> listRedemptions(String requestingUserId, String orgId) {
-        requireOwnerOrManager(requestingUserId, orgId);
-        return redemptionRepository.findByOrganizationIdOrderByCreatedAtDesc(orgId).stream()
-                .map(WalletRedemptionResponse::from)
-                .toList();
-    }
-
-    // ── Admin side ────────────────────────────────────────────────────────────
-
-    @Transactional(readOnly = true)
-    public List<WalletRedemptionResponse> adminListRedemptions(WalletRedemptionStatus status) {
-        List<WalletRedemption> rows = status != null
-                ? redemptionRepository.findByStatusWithOrganization(status)
-                : redemptionRepository.findAllWithOrganization();
-        return rows.stream().map(WalletRedemptionResponse::from).toList();
-    }
-
-    /**
-     * Admin decision on a PENDING request. Approving records that the admin has
-     * (manually) paid the UPI id — the amount leaves the balance for good;
-     * rejecting returns it. Either way the requester gets a best-effort email.
-     * The row is locked so two admins deciding simultaneously can't both
-     * "succeed" — the second sees the already-decided status.
-     */
-    @Transactional
-    public WalletRedemptionResponse decideRedemption(String adminUserId, String redemptionId,
-                                                     boolean approve, String note) {
-        WalletRedemption redemption = redemptionRepository.findByIdForUpdate(redemptionId)
-                .orElseThrow(() -> new ResourceNotFoundException("Redemption not found: " + redemptionId));
-        if (redemption.getStatus() != WalletRedemptionStatus.PENDING) {
-            throw new IllegalStateException("This redemption was already " + redemption.getStatus().name().toLowerCase() + ".");
-        }
-        redemption.setStatus(approve ? WalletRedemptionStatus.APPROVED : WalletRedemptionStatus.REJECTED);
-        redemption.setDecidedByUserId(adminUserId);
-        redemption.setDecidedAt(LocalDateTime.now());
-        if (note != null && !note.isBlank()) {
-            redemption.setAdminNote(note.trim());
-        }
-        redemption = redemptionRepository.save(redemption);
-
-        auditService.record(adminUserId,
-                approve ? "WALLET_REDEMPTION_APPROVED" : "WALLET_REDEMPTION_REJECTED",
-                "WALLET_REDEMPTION", redemptionId,
-                "org=" + redemption.getOrganization().getId() + " amountPaise=" + redemption.getAmountPaise());
-        notifyRequester(redemption, approve);
-
-        log.info("Wallet redemption {}: id={} org={} amountPaise={}",
-                approve ? "approved" : "rejected", redemptionId,
-                redemption.getOrganization().getId(), redemption.getAmountPaise());
-        return WalletRedemptionResponse.from(redemption);
-    }
-
-    /**
-     * Reverse a redemption that was APPROVED but never actually reached the shop — the
-     * UPI transfer bounced, the id was wrong, or the approval was a misclick.
-     *
-     * Approving used to be terminal: the only transitions were PENDING → APPROVED /
-     * REJECTED, so a failed payout could only be undone with hand-written SQL while the
-     * shop's balance stayed permanently short. Reversing returns the amount to the
-     * balance exactly like a rejection, and says why.
-     */
-    @Transactional
-    public WalletRedemptionResponse reverseRedemption(String adminUserId, String redemptionId, String note) {
-        WalletRedemption redemption = redemptionRepository.findByIdForUpdate(redemptionId)
-                .orElseThrow(() -> new ResourceNotFoundException("Redemption not found: " + redemptionId));
-        if (redemption.getStatus() != WalletRedemptionStatus.APPROVED) {
-            throw new IllegalStateException(
-                    "Only an approved payout can be reversed (this one is "
-                    + redemption.getStatus().name().toLowerCase() + ").");
-        }
-        if (note == null || note.isBlank()) {
-            throw new IllegalArgumentException("Say why the payout is being reversed.");
-        }
-        redemption.setStatus(WalletRedemptionStatus.REJECTED);
-        redemption.setDecidedByUserId(adminUserId);
-        redemption.setDecidedAt(LocalDateTime.now());
-        redemption.setAdminNote("Reversed: " + note.trim());
-        redemption = redemptionRepository.save(redemption);
-
-        auditService.record(adminUserId, "WALLET_REDEMPTION_REVERSED", "WALLET_REDEMPTION", redemptionId,
-                "org=" + redemption.getOrganization().getId() + " amountPaise=" + redemption.getAmountPaise());
-        notifyRequester(redemption, false);
-        log.warn("Wallet redemption reversed: id={} org={} amountPaise={}",
-                redemptionId, redemption.getOrganization().getId(), redemption.getAmountPaise());
-        return WalletRedemptionResponse.from(redemption);
-    }
-
-    /**
-     * Mark a kiosk payment reversed after Razorpay refunded or charged it back, so the
-     * retailer's share stops counting toward their redeemable balance.
+     * Mark a kiosk payment reversed after Razorpay refunded or charged it back, and take
+     * the points it earned back out of the shop's wallet.
      *
      * Called from the webhook path and deliberately tolerant: an unknown payment id is
      * simply not ours (the same merchant account also takes subscription and top-up
@@ -233,65 +89,20 @@ public class WalletService {
             if (payment.isReversed()) {
                 return; // already handled — refund webhooks retry
             }
-            payment.setReversedAt(LocalDateTime.now());
+            payment.setReversedAt(java.time.LocalDateTime.now());
             payment.setRefundedPaise(Math.max(0, refundedPaise));
             paymentRepository.save(payment);
-            long balance = balanceOf(payment.getOrganization().getId());
-            log.warn("Kiosk payment reversed: payment={} org={} share={} balanceNow={}",
-                    razorpayPaymentId, payment.getOrganization().getId(),
-                    payment.getRetailerSharePaise(), balance);
-            if (balance < 0) {
-                // The share was already paid out before the refund landed. Nothing to claw
-                // back automatically — flag it loudly so it is settled against future
-                // earnings rather than discovered months later.
-                log.error("Shop {} now has a NEGATIVE wallet balance ({} paise) after a refund on "
-                        + "payment {} — the share was redeemed before the reversal arrived.",
-                        payment.getOrganization().getId(), balance, razorpayPaymentId);
-            }
+
+            String orgId = payment.getOrganization().getId();
+            pricingService.shopOwnerUserId(orgId).ifPresentOrElse(
+                    ownerUserId -> rewardPointsService.reverseKioskPoints(
+                            ownerUserId, payment.getBonusPoints(), razorpayPaymentId),
+                    () -> log.warn("Refunded kiosk payment {} for org {} has no owner account — "
+                            + "no points to take back.", razorpayPaymentId, orgId));
+
+            log.warn("Kiosk payment reversed: payment={} org={} pointsClawedBack={}",
+                    razorpayPaymentId, orgId, payment.getBonusPoints());
         });
-    }
-
-    private long balanceOf(String orgId) {
-        return paymentRepository.sumRetailerShareByOrganizationId(orgId)
-                - redemptionRepository.sumHeldByOrganizationId(orgId);
-    }
-
-    private void notifyInbox(WalletRedemption redemption, Organization org, String requestingUserId) {
-        try {
-            String requesterEmail = userRepository.findById(requestingUserId)
-                    .map(User::getEmail).orElse("(unknown)");
-            emailSender.send(redemptionInbox,
-                    "Wallet redemption request — " + org.getName() + " — Rs." + (redemption.getAmountPaise() / 100.0),
-                    "A retailer has requested a wallet payout.\n\n"
-                            + "Shop: " + org.getName() + " (org " + org.getId() + ")\n"
-                            + "Amount: Rs." + (redemption.getAmountPaise() / 100.0) + "\n"
-                            + "UPI id: " + redemption.getUpiId() + "\n"
-                            + "Requested by: " + requesterEmail + "\n"
-                            + "Redemption id: " + redemption.getId() + "\n\n"
-                            + "Review and approve/reject it from the admin console. Approving means you "
-                            + "have actually sent the money to the UPI id above.");
-        } catch (Exception e) {
-            log.warn("Redemption inbox email failed for {}: {}", redemption.getId(), e.getMessage());
-        }
-    }
-
-    private void notifyRequester(WalletRedemption redemption, boolean approved) {
-        try {
-            String email = userRepository.findById(redemption.getRequestedByUserId())
-                    .map(User::getEmail).orElse(null);
-            if (email == null) return;
-            String rupees = "Rs." + (redemption.getAmountPaise() / 100.0);
-            emailSender.send(email,
-                    "Your HueVista payout of " + rupees + (approved ? " is on its way" : " was declined"),
-                    approved
-                            ? "Your redemption of " + rupees + " has been approved and sent to "
-                              + redemption.getUpiId() + ". It should reflect in your account shortly."
-                            : "Your redemption of " + rupees + " was declined"
-                              + (redemption.getAdminNote() != null ? ": " + redemption.getAdminNote() : ".")
-                              + " The amount is back in your wallet balance.");
-        } catch (Exception e) {
-            log.warn("Redemption decision email failed for {}: {}", redemption.getId(), e.getMessage());
-        }
     }
 
     private void requireOwnerOrManager(String userId, String orgId) {

@@ -19,8 +19,8 @@ public class StoreLinkResponse {
     private boolean active;
     private LocalDateTime createdAt;
 
-    /** The platform's flat cut per kiosk order — the rest of `pricePaise` is the shop's. */
-    private int platformBasePaise;
+    /** Points the shop earns per kiosk sale — its reward, in place of a share of the price. */
+    private int bonusPoints;
 
     public static StoreLinkResponse from(StoreLink link) {
         return StoreLinkResponse.builder()
@@ -28,7 +28,6 @@ public class StoreLinkResponse {
                 .slug(link.getSlug())
                 .organizationId(link.getOrganization().getId())
                 .organizationName(link.getOrganization().getName())
-                .pricePaise(link.getPricePaise())
                 .currency("INR")
                 .validDays(link.getValidDays())
                 .active(link.isActive())
@@ -36,8 +35,10 @@ public class StoreLinkResponse {
                 .build();
     }
 
-    public StoreLinkResponse withPlatformBase(int basePaise) {
-        this.platformBasePaise = basePaise;
+    /** Stamp the platform-wide numbers the shop needs to read its own link. */
+    public StoreLinkResponse withPlatformPricing(int kioskPricePaise, int bonusPoints) {
+        this.pricePaise = kioskPricePaise;
+        this.bonusPoints = bonusPoints;
         return this;
     }
 }

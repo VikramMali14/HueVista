@@ -36,6 +36,15 @@ public class BillingService {
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final BillingEmailService billingEmailService;
 
+    // Read straight from configuration rather than through PricingService: that class
+    // depends on THIS one to answer "is this account subscribed", so injecting it back
+    // would close a cycle. These two are only used to phrase a quota message.
+    @Value("${app.points.image:40}")
+    private int pointsPriceImage;
+
+    @Value("${app.points.auto-mask:20}")
+    private int pointsPriceAutoMask;
+
     @Value("${razorpay.plan.starter:}")
     private String planIdStarter;
 
@@ -530,9 +539,9 @@ public class BillingService {
         }
         if (sub.getAiGenerationsUsed() + sub.getReservedImages() >= effectiveImageAllowance(sub)) {
             throw new com.gridstore.huevista.common.exception.ImageLimitReachedException(
-                    "Monthly image limit reached (" + sub.getAiGenerationsLimit() + "). " +
-                    "Buy an extra image for Rs. " + (Plan.imageOveragePriceWithTaxInPaise() / 100)
-                    + ", upgrade your plan, or wait for the next billing cycle.");
+                    "Monthly image limit reached (" + sub.getAiGenerationsLimit() + "). "
+                    + "Spend " + pointsPriceImage + " points on an extra image, "
+                    + "upgrade your plan, or wait for the next billing cycle.");
         }
     }
 
@@ -588,10 +597,9 @@ public class BillingService {
         if (sub.getAutoMasksUsed() >= allowance) {
             throw new com.gridstore.huevista.common.exception.AutoMaskUnavailableException(
                     "Monthly AI wall-detection limit reached (" + sub.getAutoMasksLimit() + "). "
-                    + "Pay Rs. " + (Plan.autoMaskOveragePriceWithTaxInPaise() / 100.0)
-                    + " from your wallet for one more, mark walls yourself with "
-                    + "click-to-segment (free, unlimited), upgrade your plan, or wait for "
-                    + "the next billing cycle.");
+                    + "Spend " + pointsPriceAutoMask + " points on one more, mark "
+                    + "walls yourself with click-to-segment (free, unlimited), upgrade your plan, "
+                    + "or wait for the next billing cycle.");
         }
     }
 

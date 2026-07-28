@@ -35,6 +35,15 @@ public class BillingEmailService {
     @Value("${app.mail.billing-from:payments@huevista.org}")
     private String billingFrom;
 
+    // Read directly rather than through PricingService: this class is on the callback path
+    // of nearly every billing service, and taking a dependency on one of them to phrase an
+    // e-mail is how a cycle gets introduced later.
+    @Value("${app.points.image:40}")
+    private int pointsPriceImage;
+
+    @Value("${app.points.auto-mask:20}")
+    private int pointsPriceAutoMask;
+
     /** First payment confirmed — the plan is live. */
     public void sendSubscriptionActivated(Subscription sub) {
         deliver(sub.getUser(), "Your HueVista " + planName(sub) + " plan is active",
@@ -127,54 +136,110 @@ public class BillingEmailService {
                 """.formatted(firstName(sub.getUser()), planName(sub)));
     }
 
-    /** One-time extra-project purchase receipt. */
-    public void sendProjectCreditPurchased(String userId, int amountPaise) {
+    /** Extra-project purchase receipt. Paid in points, so no invoice follows. */
+    public void sendProjectCreditPurchased(String userId, int points) {
         userRepository.findById(userId).ifPresent(user -> deliver(user,
-                "Payment received — 1 extra HueVista project",
+                "1 extra HueVista project added",
                 """
                 Hi %s,
 
-                Thank you — your payment of Rs. %.2f was received and one extra project has
-                been added to your account. It's ready to use right away.
+                %d points have been spent and one extra project added to your account. It's
+                ready to use right away.
 
-                Razorpay will email you the tax invoice separately.
+                No invoice follows this one — points were paid for (or earned) when they were
+                added, and spending them is not a fresh charge.
 
                 — The HueVista team
-                """.formatted(firstName(user), amountPaise / 100.0)));
+                """.formatted(firstName(user), points)));
     }
 
-    /** One-time pay-per-image overage purchase receipt. */
-    public void sendImageCreditPurchased(String userId, int amountPaise) {
+    // ── Reward points ────────────────────────────────────────────────────────
+
+    /** Receipt for a points purchase. Names the expiry date, because they do expire. */
+    public void sendPointsPurchased(String userId, int points, int amountPaise, int validityDays) {
         userRepository.findById(userId).ifPresent(user -> deliver(user,
-                "Payment received — 1 extra HueVista image",
+                points + " HueVista points added",
                 """
                 Hi %s,
 
-                Thank you — your payment of Rs. %.2f (incl. 18%% GST) was received and one
-                extra image has been added to your plan. It's ready to use right away and
-                never expires.
+                Thank you — %d points have been added to your HueVista account for Rs. %.2f.
+
+                %s
+
+                Points last %d days from today, so these are good until %s. Spending always
+                uses your oldest points first, so you never lose ones you could have used.
 
                 Razorpay will email you the tax invoice separately.
 
                 — The HueVista team
-                """.formatted(firstName(user), amountPaise / 100.0)));
+                """.formatted(firstName(user), points, amountPaise / 100.0,
+                        whatPointsBuy(points), validityDays,
+                        DATE.format(LocalDateTime.now().plusDays(validityDays)))));
     }
 
-    /** Wallet top-up receipt. */
-    public void sendWalletTopUp(String userId, long amountPaise) {
+    /**
+     * Points are a year old in {@code daysLeft} days. Says the number, the date and what
+     * that many points would actually buy — "1,200 points expiring" means nothing to a
+     * shop that has never counted in points.
+     */
+    public void sendPointsExpiringSoon(String userId, int points, LocalDateTime expiresAt, int daysLeft) {
         userRepository.findById(userId).ifPresent(user -> deliver(user,
-                "Payment received — HueVista wallet top-up",
+                points + " HueVista points expire in " + daysLeft + " days",
                 """
                 Hi %s,
 
-                Thank you — Rs. %.2f has been added to your HueVista wallet. It's ready to
-                spend on extra images and AI auto-masks whenever your monthly allowance runs
-                out, and it never expires.
+                %d of your HueVista reward points expire on %s — that's %d days from now.
 
-                Razorpay will email you the tax invoice separately.
+                Points last one year from the day you earn them, and these are the oldest
+                batch on your account. Spending always uses the oldest points first, so
+                anything you buy between now and then comes out of this batch.
+
+                %s
+
+                Spend them from the Points panel in your dashboard.
 
                 — The HueVista team
-                """.formatted(firstName(user), amountPaise / 100.0)));
+                """.formatted(firstName(user), points, DATE.format(expiresAt), daysLeft,
+                        whatPointsBuy(points))));
+    }
+
+    /** Last day — same facts, no softening. */
+    public void sendPointsExpiringToday(String userId, int points, LocalDateTime expiresAt) {
+        userRepository.findById(userId).ifPresent(user -> deliver(user,
+                points + " HueVista points expire today",
+                """
+                Hi %s,
+
+                This is the last day to use %d of your HueVista reward points — they expire
+                at the end of today, %s.
+
+                %s
+
+                Spend them from the Points panel in your dashboard. Points you don't use
+                today are gone; the rest of your balance is unaffected.
+
+                — The HueVista team
+                """.formatted(firstName(user), points, DATE.format(expiresAt),
+                        whatPointsBuy(points))));
+    }
+
+    /**
+     * Turn a point total into the things it buys, so the number means something. Prices
+     * are the point prices, not rupees — quoting rupees here would invite the shop to
+     * treat points as cash, which they are not.
+     */
+    private String whatPointsBuy(int points) {
+        int images = points / pointsPriceImage;
+        int masks = points / pointsPriceAutoMask;
+        if (images >= 1) {
+            return "That's enough for %d extra image%s, or %d AI auto-mask%s."
+                    .formatted(images, images == 1 ? "" : "s", masks, masks == 1 ? "" : "s");
+        }
+        if (masks >= 1) {
+            return "That's enough for %d AI auto-mask%s.".formatted(masks, masks == 1 ? "" : "s");
+        }
+        return "On their own they won't cover a purchase yet, but they top up whatever you "
+                + "buy next.";
     }
 
     // ── internals ────────────────────────────────────────────────────────────

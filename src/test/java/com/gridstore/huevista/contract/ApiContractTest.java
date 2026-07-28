@@ -87,7 +87,7 @@ class ApiContractTest {
                 "shadeCodeScheme",
                 // Access: the studio disables the palette on readOnly rather than letting
                 // the user paint and then fail on autosave.
-                "readOnly", "readOnlyReason", "accessExpiresAt", "reopenPricePaise");
+                "readOnly", "readOnlyReason", "accessExpiresAt", "reopenPricePoints");
     }
 
     @Test
@@ -102,10 +102,11 @@ class ApiContractTest {
 
     @Test
     void project_purchase_options_match_frontend() {
+        // One price, in points, plus the balance to weigh it against. The subscribed /
+        // unsubscribed pair went with the rupee prices: points do not move with a plan.
         assertThat(propsOf("ProjectPurchaseOptionsResponse")).containsExactlyInAnyOrder(
-                "subscribed", "projectPricePaise", "subscribedProjectPricePaise",
-                "unsubscribedProjectPricePaise", "reopenPricePaise", "validDays",
-                "currency", "availableCredits");
+                "subscribed", "projectPricePoints", "reopenPricePoints", "pointsBalance",
+                "validDays", "availableCredits");
     }
 
     @Test

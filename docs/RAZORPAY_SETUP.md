@@ -11,17 +11,15 @@ wired into [`application.properties`](../src/main/resources/application.properti
 
 ## 0. What the code already expects
 
-Six money flows are implemented. Five use one-time **Orders**, one uses
-**Subscriptions**:
+Three money flows are implemented. Two use one-time **Orders**, one uses
+**Subscriptions**. Everything else a shop can buy — extra images, auto-masks,
+projects, reopens — is paid for in **points** and touches Razorpay not at all:
 
 | Flow | Razorpay product | Backend endpoint | Where in the UI |
 |---|---|---|---|
 | Monthly plan (Starter / Professional / Business) | Subscriptions | `POST /api/billing/subscriptions` → `.../verify` | `/pricing`, `/subscription` |
-| Wallet top-up | Orders | `POST /api/billing/wallet/topup/order` → `.../verify` | `/subscription` |
-| One extra image (₹50) | Orders | `POST /api/billing/image-credits/order` → `.../verify` | in-app quota prompt |
-| Buy a project | Orders | `POST /api/projects/credits/order` → `.../verify` | project create |
-| Reopen an expired project | Orders | same controller, reopen variant | project list |
-| In-store kiosk (walk-in customer pays) | Orders | `POST /api/store/{slug}/order` → `.../verify` | `/store/{slug}` (public) |
+| Buy points (₹1 = 1 point) | Orders | `POST /api/billing/points/order` → `.../verify` | `/subscription` |
+| In-store kiosk (walk-in customer pays ₹99) | Orders | `POST /api/store/{slug}/order` → `.../verify` | `/store/{slug}` (public) |
 
 All of them verify the Checkout signature server-side before granting anything,
 and the webhook receiver at `POST /api/billing/webhooks/razorpay` handles the
@@ -37,6 +35,11 @@ RAZORPAY_PLAN_STARTER=
 RAZORPAY_PLAN_PROFESSIONAL=
 RAZORPAY_PLAN_BUSINESS=
 ```
+
+SPENDING points involves no Razorpay object at all — no plan, no order, no
+webhook. BUYING them is an ordinary one-time order, which is why it is in the
+table above. Prices, the purchase rate and the expiry live in `app.points.*` (see
+`application.properties`), not here.
 
 ---
 
@@ -187,18 +190,27 @@ product; cards are the reliable recurring-payment path in test mode.
 3. **Cancel** — `/subscription` → cancel. Access must continue until period end.
 4. **Upgrade** — Starter → Professional. The old subscription must be superseded,
    not doubled.
-5. **Wallet top-up** — a small amount, then check the balance and statement row.
-6. **Overage** — spend the image quota, buy one extra image at ₹50, confirm the
+5. **Buy points** — buy 100 points for ₹100 and confirm the balance, the statement
+   row and the expiry date one year out. Then try an order for 50 points (below the
+   minimum) and confirm it is refused.
+6. **Overage** — spend the image quota, spend 40 points on an extra image, confirm the
    quota went up by exactly one. Then **replay the same verify call** (resend it
    in Postman) and confirm it does *not* grant a second image.
 7. **Buy a project / reopen a project** — check the validity window.
 8. **Kiosk** — open `/store/{slug}` in an incognito window (it is public, no
-   login), pay with UPI `success@razorpay`, confirm an access code is issued and
-   the retailer's wallet share is recorded.
-9. **Refund** — refund the kiosk payment from the dashboard and confirm the
-   retailer's redeemable balance drops (`refund.processed` →
-   `WalletService.reverseKioskPayment`).
-10. **Failed payment** — pay a subscription with the Failure option and confirm
+   login), pay ₹99 with UPI `success@razorpay`, confirm an access code is issued
+   and the shop earned **30 points** (kiosk panel, and a `KIOSK_EARNED` row in the
+   points statement dated one year out).
+9. **Spend the points** — with no active plan, buy a project for **80 points** and
+   confirm the project credit appears. With a plan, buy an extra image for **40
+   points** and an auto-mask for **20 points**. Check a non-retailer account gets
+   403 from `/api/billing/points`.
+10. **Refund** — refund the kiosk payment from the dashboard and confirm the
+    points are clawed back (`refund.processed` →
+    `WalletService.reverseKioskPayment`). Spend the points *first* on one run to
+    confirm the balance is allowed to go negative rather than silently keeping
+    the reward for a refunded sale.
+11. **Failed payment** — pay a subscription with the Failure option and confirm
     the plan does not activate.
 
 Watch **Dashboard → Webhooks → the webhook → Logs** for delivery status; a
@@ -230,41 +242,66 @@ and your business category — pick **SaaS / Software** for HueVista.
 | Terms & Conditions | `/legal/terms` ✅ |
 | Privacy Policy | `/legal/privacy` ✅ |
 | Refund / Cancellation Policy | `/legal/refunds` ✅ |
-| **Contact Us page** — email **and** phone **and** business address | ❌ **missing** — the footer only has a `mailto:` link |
-| **Shipping / Delivery Policy** | ❌ **missing** — for a digital service, state that access is delivered electronically and instantly to the account, with no physical shipment |
-| Legal entity name shown on the site | verify it matches your Razorpay application |
+| **Contact Us page** — email **and** phone **and** business address | `/legal/contact` ✅ |
+| **Shipping / Delivery Policy** | `/legal/delivery` ✅ |
+| Legal entity name shown on the site | footer + `/legal/contact` ✅ — "HueVista, Proprietor: Vikram Mali" |
 
-**Fix the two ❌ rows before submitting.** A missing Contact Us page with a
-working phone number is the single most common rejection reason.
+Everything the reviewer looks for is now on the site. What must match your
+Razorpay application exactly:
 
-### 5c. Fix the email domain mismatch
+- **Legal name** — Vikram Mali (sole proprietorship trading as HueVista)
+- **Address** — Mount Road, Manpur, Abu Road, Sirohi, Rajasthan 307026
+- **Phone** — +91 63784 82381
+- **Business category** — SaaS / Software
 
-The site and the backend currently disagree about your domain:
+### 5c. Mail: the site is .com, the mailboxes are .org
 
-- Frontend footer + legal pages: `hello@huevista.com`
-- Backend `app.mail.billing-from`: `payments@huevista.org`
-- Backend `app.store.redemption-email`: `redemeamount@huevista.org`
+That split is deliberate and already settled in code — the site runs on
+`huevista.com`, and every address the product sends from or publishes lives on
+`huevista.org` (`src/lib/config.ts` on the frontend, `MAIL_FROM` /
+`MAIL_BILLING_FROM` here). One authenticated domain for mail is what keeps a
+provider from rewriting the From header or dropping the message.
 
-Pick one domain, make every address live on it, and make sure it is the same
-domain you submit to Razorpay. Receipts arriving from a domain that isn't the
-one on the application is a review flag.
+What you still have to do:
 
-### 5d. Declare the kiosk model honestly
+- make `payments@huevista.org` a **real mailbox** — `/legal/refunds`,
+  `/legal/delivery` and the money guide all tell customers to write to it, and a
+  published address that bounces is worse than none
+- set SPF, DKIM and DMARC on `huevista.org`
+- give Razorpay `huevista.com` as the website and `huevista.org` addresses for
+  contact, and say plainly that the two belong to the same proprietorship
 
-The in-store kiosk collects money from a walk-in customer at a price the
-*retailer* sets, keeps a ₹50 platform base, and credits the rest to the
-retailer's wallet, which is later paid out by manual bank transfer after an
-email request.
+### 5d. The kiosk is a plain B2C sale — keep it that way
 
-Collecting on behalf of third parties is a regulated pattern. Before you go
-live, either:
+Worth knowing what you are declaring, because this was deliberately changed to
+be answerable in one line.
 
-- describe it in your application and ask Razorpay support to confirm your
-  account is allowed to run it as-is; **or**
-- move the split onto **Razorpay Route** (linked accounts + transfers), which is
-  the supported way to settle a share to a third party.
+A walk-in at `/store/{slug}` pays a **flat ₹99 that is entirely HueVista's**, for
+a HueVista visualisation. The shop does not set that price and takes no share of
+it. What the shop earns is **30 points**, spendable on extra images, AI auto-masks
+and projects, with no way to withdraw them as cash.
 
-Do not skip this. Discovering it after go-live risks a settlement hold.
+So on your application the kiosk is simply "customers buy a room visualisation
+from us at a fixed price", and there is no third-party settlement to explain.
+
+**Points are prepaid credit for our own services, not a payment instrument.**
+Describe them that way, because they can now be bought as well as earned, and
+"loyalty points" would understate what a shop is buying. What keeps them
+uninteresting to a reviewer is what they cannot do: no cash value, not
+transferable between accounts, not withdrawable, not spendable anywhere but on
+HueVista's own services, and expiring after a year. That is what `/legal/terms`
+§5 and `/legal/refunds` §§5–6 say.
+
+Buying points is an ordinary prepaid purchase of digital services, delivered
+instantly — the same shape as topping up any SaaS account. It is `/legal/delivery`
+§4 that covers it for the review.
+
+**Do not add a cash-out path for points.** Paying a shop's balance to a bank
+account or UPI id would turn every kiosk sale back into a payment collected on
+that shop's behalf — which needs **Razorpay Route** (linked accounts + transfers)
+rather than a plain merchant account, and is the kind of thing that surfaces as a
+settlement hold rather than a rejection letter. The earlier revenue-share model
+did exactly this; it was removed for this reason.
 
 ### 5e. Redo every test-mode object in live mode
 

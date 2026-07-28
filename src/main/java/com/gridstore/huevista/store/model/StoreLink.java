@@ -10,10 +10,13 @@ import java.time.LocalDateTime;
 
 /**
  * A retailer's public in-store kiosk link ("order at the counter"). Anyone who
- * opens /store/{slug} can pay {@code pricePaise} for one image upload; the
- * platform keeps the configured base amount and the excess accrues to the
- * retailer's wallet. The price is set by the retailer at creation (and can be
- * changed later) but never below the platform base.
+ * opens /store/{slug} pays the flat platform kiosk price for one image upload.
+ *
+ * The shop chooses the slug and the code validity, NOT the price: the walk-in is
+ * HueVista's own customer and the whole payment is HueVista's, with the shop rewarded in
+ * closed-loop points instead of a share. The price therefore lives in configuration
+ * ({@code app.store.price-paise}), not on this row — a printed link keeps working when
+ * the platform price changes, and there is no per-shop price to reconcile.
  */
 @Entity
 @Table(name = "store_links")
@@ -35,10 +38,6 @@ public class StoreLink {
     /** URL token the shop prints/shares: huevista.com/store/{slug}. */
     @Column(unique = true, nullable = false, length = 80)
     private String slug;
-
-    /** What one image upload costs the walk-in customer, in paise (>= platform base). */
-    @Column(nullable = false)
-    private int pricePaise;
 
     /** How long each purchased access code (and the guest session it opens) lasts. */
     @Column(nullable = false)

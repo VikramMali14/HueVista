@@ -10,9 +10,12 @@ import java.time.LocalDateTime;
 
 /**
  * A verified kiosk payment. The unique {@code paymentId} column is the replay
- * backstop — one Razorpay payment buys exactly one access code — and the split
- * columns are the wallet's source of truth: the retailer's balance is
- * SUM(retailerSharePaise) minus their non-rejected redemptions.
+ * backstop — one Razorpay payment buys exactly one access code.
+ *
+ * The whole {@code amountPaise} is HueVista's revenue; the shop takes no share of it.
+ * {@code bonusPoints} records the reward points the sale earned, which live in the
+ * owner's point ledger — this row is the audit trail for why those points exist, not a
+ * balance anyone draws from.
  */
 @Entity
 @Table(name = "store_payments")
@@ -47,13 +50,17 @@ public class StorePayment {
     @Column(nullable = false)
     private int amountPaise;
 
-    /** The platform's base share (Rs.50 by default), in paise. */
+    /** What HueVista keeps in cash — the whole amount; points are awarded on top, not deducted. */
     @Column(nullable = false)
     private int platformFeePaise;
 
-    /** What accrues to the retailer's wallet: amount minus the platform base. */
-    @Column(nullable = false)
-    private int retailerSharePaise;
+    /**
+     * Reward points this sale earned the shop. Credited to the owner's point ledger at
+     * verify time; recorded here so a refund knows how many to take back and so the
+     * shop's kiosk statement can show what each sale earned.
+     */
+    @Column(name = "bonus_points", nullable = false)
+    private int bonusPoints;
 
     /** The access code this payment bought (set right after the payment row is safe). */
     @ManyToOne(fetch = FetchType.LAZY)
