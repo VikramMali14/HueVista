@@ -29,6 +29,7 @@ public class BillingController {
     private final PdfQuotaService pdfQuotaService;
     private final com.gridstore.huevista.billing.service.ImageCreditService imageCreditService;
     private final com.gridstore.huevista.billing.service.BillingWalletService walletService;
+    private final com.gridstore.huevista.billing.service.ProjectCreditService projectCreditService;
 
     @Operation(summary = "Create subscription",
             description = "Creates a Razorpay subscription and returns a payment URL for checkout.")
@@ -199,6 +200,28 @@ public class BillingController {
     public ResponseEntity<SubscriptionResponse> walletPayAutoMaskCredit(
             @AuthenticationPrincipal UserDetails userDetails) {
         return ResponseEntity.ok(walletService.payForAutoMaskCredit(userDetails.getUsername()));
+    }
+
+    @Operation(summary = "Buy one project from the wallet",
+            description = "Atomically debits the project price (Rs. 50 while subscribed, Rs. 99 "
+                    + "without) from the wallet and issues one project credit. This is what gives "
+                    + "kiosk reward points their value to a shop with no active plan. 402 when the "
+                    + "balance is insufficient.")
+    @PostMapping("/wallet/pay/project-credit")
+    public ResponseEntity<com.gridstore.huevista.billing.dto.ProjectPurchaseOptionsResponse> walletPayProjectCredit(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.ok(projectCreditService.payWithWallet(userDetails.getUsername()));
+    }
+
+    @Operation(summary = "Reopen a project from the wallet",
+            description = "Atomically debits the reopen price (Rs. 9) from the wallet and gives the "
+                    + "project another validity window. 402 when the balance is insufficient.")
+    @PostMapping("/wallet/pay/project-reopen/{projectId}")
+    public ResponseEntity<com.gridstore.huevista.billing.dto.ProjectReopenResponse> walletPayProjectReopen(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String projectId) {
+        return ResponseEntity.ok(
+                projectCreditService.reopenWithWallet(userDetails.getUsername(), projectId));
     }
 
     @Operation(summary = "Get my colour-board PDF allowance",

@@ -28,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -36,19 +37,22 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Verifies the kiosk money path: a verified payment buys exactly one access
- * code with the correct platform/retailer split, a replayed payment re-issues
- * the SAME code (kiosk customers must never lose what they paid for), and a
+ * Verifies the kiosk money path: a verified payment buys exactly one access code and
+ * credits the shop its reward points (never a share of the cash), a replayed payment
+ * re-issues the SAME code (kiosk customers must never lose what they paid for), and a
  * bad signature or a payment for some other order issues nothing.
  */
 class StoreKioskServiceTest {
 
-    private static final int MIN_PRICE = 5000;   // Rs.50 platform base
-    private static final int LINK_PRICE = 7900;  // Rs.79 kiosk price
+    private static final int KIOSK_PRICE = 9900;   // Rs.99 flat, platform-wide
+    private static final int BONUS_POINTS = 3900;  // Rs.39 of points to the shop
+    private static final String OWNER = "owner-1";
 
     private final Organization org = Organization.builder().id("org-1").name("Mehta Paints").build();
     private final StoreLink link = StoreLink.builder()
-            .id("link-1").organization(org).slug("mehta-x7k2p9").pricePaise(LINK_PRICE).validDays(3).build();
+            .id("link-1").organization(org).slug("mehta-x7k2p9").validDays(3).build();
+
+    private com.gridstore.huevista.billing.service.BillingWalletService wallet;
 
     private VerifyStoreOrderRequest req(String order, String payment) {
         VerifyStoreOrderRequest r = new VerifyStoreOrderRequest();
@@ -79,9 +83,14 @@ class StoreKioskServiceTest {
         var billing = mock(com.gridstore.huevista.billing.service.BillingService.class);
         var memberships = mock(com.gridstore.huevista.account.repository.OrgMembershipRepository.class);
         var pricing = new com.gridstore.huevista.billing.service.PricingService(billing, memberships);
-        ReflectionTestUtils.setField(pricing, "kioskBasePaise", MIN_PRICE);
+        ReflectionTestUtils.setField(pricing, "kioskPricePaise", KIOSK_PRICE);
+        ReflectionTestUtils.setField(pricing, "kioskBonusPointsPaise", BONUS_POINTS);
+        when(memberships.findUserIdsByOrganizationIdAndRole(
+                "org-1", com.gridstore.huevista.account.model.OrgMemberRole.OWNER))
+                .thenReturn(java.util.List.of(OWNER));
 
-        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing);
+        wallet = mock(com.gridstore.huevista.billing.service.BillingWalletService.class);
+        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing, wallet);
         ReflectionTestUtils.setField(svc, "keyId", "key");
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
         ReflectionTestUtils.setField(svc, "currency", "INR");
@@ -89,10 +98,10 @@ class StoreKioskServiceTest {
     }
 
     @Test
-    void verifiedPaymentIssuesCodeWithCorrectSplit() throws Exception {
+    void verifiedPaymentIssuesCodeAndCreditsPointsNotACashShare() throws Exception {
         RazorpayClient razorpay = mock(RazorpayClient.class);
         razorpay.orders = mock(OrderClient.class);
-        when(razorpay.orders.fetch("order_1")).thenReturn(order(LINK_PRICE, "store_kiosk", "link-1"));
+        when(razorpay.orders.fetch("order_1")).thenReturn(order(KIOSK_PRICE, "store_kiosk", "link-1"));
         StoreLinkRepository links = mock(StoreLinkRepository.class);
         when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(link));
         StorePaymentRepository payments = mock(StorePaymentRepository.class);
@@ -112,14 +121,15 @@ class StoreKioskServiceTest {
 
             assertThat(res.getCode()).isEqualTo("ABCD2345");
             assertThat(res.getGuestToken()).isEqualTo("guest-token");
-            assertThat(res.getAmountPaise()).isEqualTo(LINK_PRICE);
+            assertThat(res.getAmountPaise()).isEqualTo(KIOSK_PRICE);
 
             ArgumentCaptor<StorePayment> saved = ArgumentCaptor.forClass(StorePayment.class);
             verify(payments).saveAndFlush(saved.capture());
-            assertThat(saved.getValue().getAmountPaise()).isEqualTo(LINK_PRICE);
-            assertThat(saved.getValue().getPlatformFeePaise()).isEqualTo(MIN_PRICE);
-            // The excess over the Rs.50 base is the retailer's wallet share.
-            assertThat(saved.getValue().getRetailerSharePaise()).isEqualTo(LINK_PRICE - MIN_PRICE);
+            assertThat(saved.getValue().getAmountPaise()).isEqualTo(KIOSK_PRICE);
+            // All of the cash is the platform's; the shop's reward is points.
+            assertThat(saved.getValue().getPlatformFeePaise()).isEqualTo(KIOSK_PRICE - BONUS_POINTS);
+            assertThat(saved.getValue().getBonusPointsPaise()).isEqualTo(BONUS_POINTS);
+            verify(wallet).creditKioskBonus(OWNER, BONUS_POINTS, "pay_1");
         }
     }
 
@@ -133,8 +143,8 @@ class StoreKioskServiceTest {
                 .validDays(3).expiresAt(java.time.LocalDateTime.now().plusDays(3)).build();
         StorePayment prior = StorePayment.builder()
                 .storeLink(link).organization(org).paymentId("pay_1").orderId("order_1")
-                .amountPaise(LINK_PRICE).platformFeePaise(MIN_PRICE)
-                .retailerSharePaise(LINK_PRICE - MIN_PRICE).accessCode(code).build();
+                .amountPaise(KIOSK_PRICE).platformFeePaise(KIOSK_PRICE - BONUS_POINTS)
+                .bonusPointsPaise(BONUS_POINTS).accessCode(code).build();
         when(payments.findByPaymentId("pay_1")).thenReturn(Optional.of(prior));
         AccessCodeService codes = mock(AccessCodeService.class);
         when(codes.redeemAsGuest("ABCD2345")).thenReturn(guest("ABCD2345"));
@@ -149,6 +159,8 @@ class StoreKioskServiceTest {
             assertThat(res.getCode()).isEqualTo("ABCD2345");
             verify(codes, never()).issueForStore(any(), anyInt());
             verify(payments, never()).saveAndFlush(any());
+            // And no second helping of points for the same sale.
+            verify(wallet, never()).creditKioskBonus(anyString(), anyLong(), anyString());
         }
     }
 
@@ -197,7 +209,7 @@ class StoreKioskServiceTest {
     @Test
     void pausedLinkRefusesNewOrders() {
         StoreLink paused = StoreLink.builder()
-                .id("link-1").organization(org).slug("mehta-x7k2p9").pricePaise(LINK_PRICE)
+                .id("link-1").organization(org).slug("mehta-x7k2p9")
                 .validDays(3).active(false).build();
         StoreLinkRepository links = mock(StoreLinkRepository.class);
         when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(paused));
@@ -210,15 +222,14 @@ class StoreKioskServiceTest {
     }
 
     /**
-     * The platform's cut does not move with the shop's billing. A kiosk price is printed
-     * on a URL and quoted to someone standing at a counter; repricing it because a
-     * subscription lapsed changes a public payment page under the person paying.
+     * A shop with no owner account earns nothing — and the walk-in still gets what they
+     * paid for. Their access must never hinge on the shop having finished its own setup.
      */
     @Test
-    void theSplitIsTheSameWhateverTheShopsPlanIsDoing() throws Exception {
+    void aSaleForAnOwnerlessShopStillIssuesTheCode() throws Exception {
         RazorpayClient razorpay = mock(RazorpayClient.class);
         razorpay.orders = mock(OrderClient.class);
-        when(razorpay.orders.fetch("order_1")).thenReturn(order(LINK_PRICE, "store_kiosk", "link-1"));
+        when(razorpay.orders.fetch("order_1")).thenReturn(order(KIOSK_PRICE, "store_kiosk", "link-1"));
         StoreLinkRepository links = mock(StoreLinkRepository.class);
         when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(link));
         StorePaymentRepository payments = mock(StorePaymentRepository.class);
@@ -229,18 +240,28 @@ class StoreKioskServiceTest {
                 .validDays(3).expiresAt(java.time.LocalDateTime.now().plusDays(3)).build();
         when(codes.issueForStore(org, 3)).thenReturn(code);
         when(codes.redeemAsGuest("ABCD2345")).thenReturn(guest("ABCD2345"));
-        StoreKioskService svc = service(razorpay, links, payments, codes);
+
+        var billing = mock(com.gridstore.huevista.billing.service.BillingService.class);
+        var memberships = mock(com.gridstore.huevista.account.repository.OrgMembershipRepository.class);
+        var pricing = new com.gridstore.huevista.billing.service.PricingService(billing, memberships);
+        ReflectionTestUtils.setField(pricing, "kioskPricePaise", KIOSK_PRICE);
+        ReflectionTestUtils.setField(pricing, "kioskBonusPointsPaise", BONUS_POINTS);
+        when(memberships.findUserIdsByOrganizationIdAndRole(
+                "org-1", com.gridstore.huevista.account.model.OrgMemberRole.OWNER))
+                .thenReturn(java.util.List.of());   // nobody to pay points to
+        var ownerless = mock(com.gridstore.huevista.billing.service.BillingWalletService.class);
+        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing, ownerless);
+        ReflectionTestUtils.setField(svc, "keyId", "key");
+        ReflectionTestUtils.setField(svc, "keySecret", "secret");
+        ReflectionTestUtils.setField(svc, "currency", "INR");
 
         try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
             utils.when(() -> Utils.verifyPaymentSignature(any(JSONObject.class), any())).thenReturn(true);
 
             StoreCheckoutResponse res = svc.verifyAndIssue("mehta-x7k2p9", req("order_1", "pay_1"));
-            assertThat(res.getAmountPaise()).isEqualTo(LINK_PRICE);
 
-            ArgumentCaptor<StorePayment> saved = ArgumentCaptor.forClass(StorePayment.class);
-            verify(payments).saveAndFlush(saved.capture());
-            assertThat(saved.getValue().getPlatformFeePaise()).isEqualTo(MIN_PRICE);
-            assertThat(saved.getValue().getRetailerSharePaise()).isEqualTo(LINK_PRICE - MIN_PRICE);
+            assertThat(res.getCode()).isEqualTo("ABCD2345");
+            verify(ownerless, never()).creditKioskBonus(anyString(), anyLong(), anyString());
         }
     }
 }

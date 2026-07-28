@@ -125,4 +125,55 @@ class BillingWalletServiceTest {
                 .isInstanceOf(QuotaExceededException.class)
                 .hasMessageContaining("No active subscription");
     }
+
+    // ── Kiosk reward points ──────────────────────────────────────────────────
+
+    /**
+     * Earning points must NOT require a plan. The shops the kiosk is meant to convert are
+     * exactly the ones without one, and gating the credit would hand them a balance they
+     * could never have earned in the first place.
+     */
+    @Test
+    void kioskPointsAreCreditedWithoutRequiringASubscription() {
+        walletExists(0);
+        when(subs.existsByUserIdAndStatus(eq(USER), any())).thenReturn(false);
+
+        service().creditKioskBonus(USER, 3900, "pay_rzp_1");
+
+        verify(wallets).credit(USER, 3900);
+        ArgumentCaptor<BillingWalletTransaction> txn = ArgumentCaptor.forClass(BillingWalletTransaction.class);
+        verify(txns).save(txn.capture());
+        assertThat(txn.getValue().getAmountPaise()).isEqualTo(3900);
+        assertThat(txn.getValue().getType()).isEqualTo(BillingWalletTransaction.Type.KIOSK_BONUS);
+        assertThat(txn.getValue().getReference()).isEqualTo("pay_rzp_1");
+    }
+
+    /**
+     * A refund claws the points back even when they have already been spent. Refusing the
+     * debit would leave a refunded sale permanently paid for; going negative makes the
+     * shortfall settle against future earnings.
+     */
+    @Test
+    void refundClawsPointsBackEvenPastAZeroBalance() {
+        walletExists(500);   // most of the 3,900 already spent
+
+        service().reverseKioskBonus(USER, 3900, "pay_rzp_1");
+
+        verify(wallets).debitAllowingNegative(USER, 3900);
+        verify(wallets, never()).debitIfSufficient(eq(USER), anyLong());
+        ArgumentCaptor<BillingWalletTransaction> txn = ArgumentCaptor.forClass(BillingWalletTransaction.class);
+        verify(txns).save(txn.capture());
+        assertThat(txn.getValue().getAmountPaise()).isEqualTo(-3900);
+        assertThat(txn.getValue().getType()).isEqualTo(BillingWalletTransaction.Type.KIOSK_BONUS_REVERSAL);
+    }
+
+    @Test
+    void zeroPointMovementsAreNoOps() {
+        service().creditKioskBonus(USER, 0, "pay_rzp_1");
+        service().reverseKioskBonus(USER, 0, "pay_rzp_1");
+
+        verify(wallets, never()).credit(eq(USER), anyLong());
+        verify(wallets, never()).debitAllowingNegative(eq(USER), anyLong());
+        verify(txns, never()).save(any());
+    }
 }

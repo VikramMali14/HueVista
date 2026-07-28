@@ -22,9 +22,13 @@ import java.security.SecureRandom;
 import java.util.List;
 
 /**
- * Retailer-managed public kiosk links. The retailer picks the price per image
- * (never below the platform base of Rs.50) and shares/prints the URL; walk-in
- * customers open it, pay, and land straight in the guest studio.
+ * Retailer-managed public kiosk links. The retailer chooses how long a purchased code
+ * lasts and shares/prints the URL; walk-in customers open it, pay the flat platform
+ * kiosk price, and land straight in the guest studio.
+ *
+ * The retailer does NOT price the link. That was removed with the retailer revenue
+ * share: the walk-in is HueVista's customer, the whole payment is HueVista's, and the
+ * shop earns closed-loop points per sale instead (see {@link StoreKioskService}).
  */
 @Slf4j
 @Service
@@ -55,19 +59,16 @@ public class StoreLinkService {
             throw new IllegalArgumentException("Store links can only be created by retailer organizations");
         }
         requireOwnerOrManager(requestingUserId, orgId);
-        requireMinPrice(request.getPricePaise());
 
         int validDays = request.getValidDays() != null ? request.getValidDays() : DEFAULT_VALID_DAYS;
         StoreLink link = StoreLink.builder()
                 .organization(org)
                 .slug(generateUniqueSlug(org))
-                .pricePaise(request.getPricePaise())
                 .validDays(validDays)
                 .build();
         link = linkRepository.save(link);
 
-        log.info("Store link created: org={} slug={} pricePaise={} validDays={}",
-                orgId, link.getSlug(), link.getPricePaise(), validDays);
+        log.info("Store link created: org={} slug={} validDays={}", orgId, link.getSlug(), validDays);
         return describe(link);
     }
 
@@ -85,10 +86,6 @@ public class StoreLinkService {
                 .orElseThrow(() -> new ResourceNotFoundException("Store link not found: " + linkId));
         requireOwnerOrManager(requestingUserId, link.getOrganization().getId());
 
-        if (request.getPricePaise() != null) {
-            requireMinPrice(request.getPricePaise());
-            link.setPricePaise(request.getPricePaise());
-        }
         if (request.getValidDays() != null) {
             link.setValidDays(request.getValidDays());
         }
@@ -96,13 +93,14 @@ public class StoreLinkService {
             link.setActive(request.getActive());
         }
         link = linkRepository.save(link);
-        log.info("Store link updated: id={} pricePaise={} active={}", linkId, link.getPricePaise(), link.isActive());
+        log.info("Store link updated: id={} validDays={} active={}", linkId, link.getValidDays(), link.isActive());
         return describe(link);
     }
 
-    /** A link plus the flat platform base, so the shop can see its own margin per order. */
+    /** A link plus the platform price and what each sale earns the shop. */
     private StoreLinkResponse describe(StoreLink link) {
-        return StoreLinkResponse.from(link).withPlatformBase(pricingService.kioskBasePaise());
+        return StoreLinkResponse.from(link)
+                .withPlatformPricing(pricingService.kioskPricePaise(), pricingService.kioskBonusPointsPaise());
     }
 
     /** Anonymous kiosk view of a link. 404 when the slug doesn't exist; an inactive
@@ -114,21 +112,12 @@ public class StoreLinkService {
         return StorePublicInfoResponse.builder()
                 .slug(link.getSlug())
                 .shopName(link.getOrganization().getName())
-                .pricePaise(link.getPricePaise())
+                .pricePaise(pricingService.kioskPricePaise())
                 .currency("INR")
                 .validDays(link.getValidDays())
                 .active(link.isActive())
                 .paymentsConfigured(!razorpayKeyId.isBlank() && !razorpayKeySecret.isBlank())
                 .build();
-    }
-
-    /** The shop may price anywhere at or above the platform base; the excess is theirs. */
-    private void requireMinPrice(int pricePaise) {
-        int floor = pricingService.kioskBasePaise();
-        if (pricePaise < floor) {
-            throw new IllegalArgumentException(
-                    "The price must be at least Rs." + (floor / 100) + " per image");
-        }
     }
 
     /** URL token like "mehta-paint-house-x7k2p9" — recognizable but unguessable enough. */

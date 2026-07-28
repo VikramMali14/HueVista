@@ -27,12 +27,22 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * The prepaid billing wallet: the retailer adds money via a one-time Razorpay
- * order, then spends it on pay-per-use overage — one extra image (Rs. 50 + GST)
- * or one extra AI auto-mask run (Rs. 25 + GST) — without going through a
- * checkout each time. Direct per-item Razorpay payment remains available
- * alongside (see {@link ImageCreditService}); the wallet is the convenience
- * path.
+ * The prepaid billing wallet — also the shop's reward-point balance, because the two are
+ * deliberately the same pot of spending power.
+ *
+ * Balance arrives two ways: the retailer tops up through a one-time Razorpay order, or
+ * earns points because a walk-in bought a visualisation through their kiosk link
+ * ({@link #creditKioskBonus}). Both are spent the same way — extra images, extra
+ * auto-masks, whole projects, project reopens — so a shop is never left holding a
+ * balance with nothing to buy. Direct per-item Razorpay payment remains available
+ * alongside (see {@link ImageCreditService}); the wallet is the convenience path.
+ *
+ * <p><b>The balance never leaves as cash.</b> There is no payout path here, and there
+ * must not be one: points are earned on money HueVista collected for its own service,
+ * and converting them to a bank transfer would turn every kiosk sale into a collection
+ * made on the shop's behalf — a regulated pattern the flat-price kiosk exists to avoid.
+ * The one exception is {@link #refundWallet}, which an ADMIN uses to return money a
+ * retailer actually paid in, and which is manual on purpose.
  *
  * Money-safety rules, same as the other payment services: signatures verified
  * server-side, the order is fetched and matched (purpose + user + amount)
@@ -186,6 +196,71 @@ public class BillingWalletService {
         return getWalletAfterWrite(userId);
     }
 
+    // ── Kiosk reward points ─────────────────────────────────────────────────
+
+    /**
+     * Credit the points a shop earned because a walk-in paid at its kiosk.
+     *
+     * Not replay-protected here on purpose: the caller
+     * ({@link com.gridstore.huevista.store.service.StoreKioskService}) only reaches this
+     * after winning the unique-paymentId insert on the kiosk payment row, so one payment
+     * can only ever get this far once. Doing it again here would mean two competing
+     * claims on the same fact.
+     *
+     * <p>Points do NOT require a subscription — an unsubscribed shop can still earn, and
+     * spends them on projects rather than on plan overage. Gating the credit on a plan
+     * would strand exactly the shops the kiosk is meant to convert.
+     */
+    @Transactional
+    public void creditKioskBonus(String userId, long pointsPaise, String reference) {
+        if (pointsPaise <= 0) {
+            return;
+        }
+        ensureWallet(userId);
+        walletRepository.credit(userId, pointsPaise);
+        transactionRepository.save(BillingWalletTransaction.builder()
+                .userId(userId)
+                .amountPaise(pointsPaise)
+                .type(BillingWalletTransaction.Type.KIOSK_BONUS)
+                .reference(reference)
+                .build());
+        log.info("Kiosk bonus points credited: user={} points={} payment={}",
+                userId, pointsPaise, reference);
+    }
+
+    /**
+     * Take back the points from a kiosk payment that was refunded.
+     *
+     * Debits even when the balance no longer covers it — see
+     * {@link com.gridstore.huevista.billing.repository.BillingWalletRepository#debitAllowingNegative}.
+     * A shop that spent the points before the refund landed goes negative and earns its
+     * way back, which is the honest outcome; the alternative is a refunded sale that
+     * still paid out.
+     */
+    @Transactional
+    public void reverseKioskBonus(String userId, long pointsPaise, String reference) {
+        if (pointsPaise <= 0) {
+            return;
+        }
+        ensureWallet(userId);
+        walletRepository.debitAllowingNegative(userId, pointsPaise);
+        transactionRepository.save(BillingWalletTransaction.builder()
+                .userId(userId)
+                .amountPaise(-pointsPaise)
+                .type(BillingWalletTransaction.Type.KIOSK_BONUS_REVERSAL)
+                .reference(reference)
+                .build());
+        long balance = balancePaise(userId);
+        if (balance < 0) {
+            log.warn("Kiosk bonus reversed into a negative balance: user={} points={} balanceNow={} "
+                    + "payment={} — the points were spent before the refund arrived; it settles "
+                    + "against future earnings.", userId, pointsPaise, balance, reference);
+        } else {
+            log.info("Kiosk bonus points reversed: user={} points={} payment={}",
+                    userId, pointsPaise, reference);
+        }
+    }
+
     // ── Spend ───────────────────────────────────────────────────────────────
 
     /**
@@ -248,6 +323,21 @@ public class BillingWalletService {
     @Transactional(readOnly = true)
     public long balancePaise(String userId) {
         return walletRepository.findByUserId(userId).map(BillingWallet::getBalancePaise).orElse(0L);
+    }
+
+    /**
+     * Spend from the balance for a purchase this service does not itself own.
+     *
+     * The image and auto-mask paths above debit and credit in one method because the
+     * thing being bought is a counter on the subscription. Projects are not: their
+     * ledger, validity window and ownership checks live in
+     * {@link ProjectCreditService}, so that service drives the purchase and calls here
+     * for the money. Runs in the CALLER's transaction — a failure after the debit rolls
+     * the money back with it.
+     */
+    @Transactional
+    public void spend(String userId, long amountPaise, BillingWalletTransaction.Type type) {
+        debitOrThrow(userId, amountPaise, type);
     }
 
     private void debitOrThrow(String userId, long amountPaise, BillingWalletTransaction.Type type) {

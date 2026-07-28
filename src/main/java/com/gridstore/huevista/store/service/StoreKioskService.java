@@ -24,13 +24,22 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * The anonymous kiosk money path: Razorpay order for the link's price →
+ * The anonymous kiosk money path: Razorpay order for the platform kiosk price →
  * Checkout (UPI / QR) → server-side signature verification → one access code,
- * auto guest-redeemed so the customer lands straight in the studio. The
- * platform keeps the configured base (Rs.50); the excess is the retailer's share,
- * recorded on the payment row that the wallet balance is derived from. The base is
- * flat whatever the shop's subscription is doing — the kiosk is the counter, and a
- * printed price must not change under a walk-in because of the shop's billing.
+ * auto guest-redeemed so the customer lands straight in the studio.
+ *
+ * <p><b>The whole payment is HueVista's.</b> The walk-in is buying a HueVista
+ * visualisation at one flat platform-wide price; the shop neither sets that price nor
+ * takes a share of it. What the shop gets is reward POINTS credited to its owner's
+ * billing wallet ({@code app.store.bonus-points-paise}), spendable only on HueVista
+ * services and never withdrawable.
+ *
+ * That split is the point of the design, not an accounting detail. Letting the shop
+ * price the link and keep the excess made every kiosk sale a payment collected on a
+ * third party's behalf and settled out by manual bank transfer — a regulated pattern
+ * that needs Razorpay Route and would not survive an activation review. Points keep the
+ * shop's incentive while leaving the money flow a plain B2C sale. Do not reintroduce a
+ * retailer share or a cash-out path here.
  *
  * Mirrors {@link com.gridstore.huevista.billing.service.ProjectCreditService}
  * with one deliberate difference: replaying an already-redeemed payment is NOT
@@ -48,6 +57,7 @@ public class StoreKioskService {
     private final StorePaymentRepository paymentRepository;
     private final AccessCodeService accessCodeService;
     private final com.gridstore.huevista.billing.service.PricingService pricingService;
+    private final com.gridstore.huevista.billing.service.BillingWalletService billingWalletService;
 
     @Value("${razorpay.key-id:}")
     private String keyId;
@@ -69,7 +79,9 @@ public class StoreKioskService {
         if (keyId.isBlank() || keySecret.isBlank()) {
             throw new IllegalStateException("Online payment is not configured. Please pay at the counter.");
         }
-        int chargePaise = link.getPricePaise();
+        // Priced here, not from the link row: the price is a platform decision and a link
+        // created before it last changed must not keep charging the old amount.
+        int chargePaise = pricingService.kioskPricePaise();
         try {
             JSONObject req = new JSONObject();
             req.put("amount", chargePaise);
@@ -132,7 +144,12 @@ public class StoreKioskService {
         // merchant account. Fetch the order and confirm it is a kiosk order for
         // THIS store link — otherwise a payment for any other (cheaper) order
         // could be redeemed here — and read the authoritative paid amount from it.
-        int floorPaise = pricingService.kioskBasePaise();
+        //
+        // The amount itself is NOT required to equal today's price. It is set server-side
+        // at order time and bound to this link by the notes, so there is nothing for a
+        // payer to choose; demanding an exact match would instead reject a customer who
+        // opened Checkout moments before the platform price changed and take their money
+        // for nothing.
         int paidPaise;
         try {
             Order order = razorpayClient.orders.fetch(req.getOrderId());
@@ -140,7 +157,7 @@ public class StoreKioskService {
             JSONObject notes = order.get("notes");
             String purpose = notes != null ? notes.optString("purpose", "") : "";
             String storeLinkId = notes != null ? notes.optString("storeLinkId", "") : "";
-            if (!ORDER_PURPOSE.equals(purpose) || !link.getId().equals(storeLinkId) || paidPaise < floorPaise) {
+            if (!ORDER_PURPOSE.equals(purpose) || !link.getId().equals(storeLinkId) || paidPaise <= 0) {
                 log.warn("Store order mismatch: slug={} order={} amount={} purpose={} linkId={}",
                         slug, req.getOrderId(), paidPaise, purpose, storeLinkId);
                 throw new SecurityException("Payment verification failed.");
@@ -153,17 +170,19 @@ public class StoreKioskService {
         // Claim the payment FIRST (unique paymentId is the race-safe backstop for
         // two concurrent submits), then issue the code — so a lost race never
         // leaves an orphaned unpaid code behind.
-        // The platform keeps its flat base; the rest is the shop's. Clamped so a payment
-        // that somehow came in under the base can never produce a negative retailer share.
-        int platformFeePaise = Math.min(paidPaise, pricingService.kioskBasePaise());
+        //
+        // The cash is entirely ours; the shop's reward is points. Clamped to the amount
+        // paid so a sale at a stale, lower price can never award more points than it
+        // brought in.
+        int bonusPointsPaise = Math.min(paidPaise, pricingService.kioskBonusPointsPaise());
         StorePayment payment = StorePayment.builder()
                 .storeLink(link)
                 .organization(link.getOrganization())
                 .paymentId(req.getPaymentId())
                 .orderId(req.getOrderId())
                 .amountPaise(paidPaise)
-                .platformFeePaise(platformFeePaise)
-                .retailerSharePaise(paidPaise - platformFeePaise)
+                .platformFeePaise(paidPaise - bonusPointsPaise)
+                .bonusPointsPaise(bonusPointsPaise)
                 .build();
         try {
             payment = paymentRepository.saveAndFlush(payment);
@@ -176,8 +195,20 @@ public class StoreKioskService {
         CustomerAccessCode code = accessCodeService.issueForStore(link.getOrganization(), link.getValidDays());
         payment.setAccessCode(code);
 
-        log.info("Store kiosk payment verified: slug={} order={} payment={} amount={} share={}",
-                slug, req.getOrderId(), req.getPaymentId(), paidPaise, payment.getRetailerSharePaise());
+        // Reward the shop whose link made the sale. Shares this transaction with the
+        // payment row, so points and the record of why they exist land together or not at
+        // all. A shop with no owner account earns nothing and the sale still completes —
+        // the walk-in has paid, and their access must not hinge on the shop's setup.
+        String ownerUserId = pricingService.shopOwnerUserId(link.getOrganization().getId()).orElse(null);
+        if (ownerUserId != null) {
+            billingWalletService.creditKioskBonus(ownerUserId, bonusPointsPaise, req.getPaymentId());
+        } else {
+            log.warn("Kiosk sale earned no points: org={} has no owner account (payment={})",
+                    link.getOrganization().getId(), req.getPaymentId());
+        }
+
+        log.info("Store kiosk payment verified: slug={} order={} payment={} amount={} points={}",
+                slug, req.getOrderId(), req.getPaymentId(), paidPaise, bonusPointsPaise);
 
         GuestRedeemResponse guest = accessCodeService.redeemAsGuest(code.getCode());
         return toResponse(guest, paidPaise);

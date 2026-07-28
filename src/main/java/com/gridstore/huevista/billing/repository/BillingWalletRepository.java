@@ -23,9 +23,21 @@ public interface BillingWalletRepository extends JpaRepository<BillingWallet, St
            "WHERE w.userId = :userId AND w.balancePaise >= :amountPaise")
     int debitIfSufficient(@Param("userId") String userId, @Param("amountPaise") long amountPaise);
 
-    /** Atomically add a verified top-up to the balance. */
+    /** Atomically add a verified top-up (or earned points) to the balance. */
     @Modifying(clearAutomatically = true)
     @Query("UPDATE BillingWallet w SET w.balancePaise = w.balancePaise + :amountPaise " +
            "WHERE w.userId = :userId")
     int credit(@Param("userId") String userId, @Param("amountPaise") long amountPaise);
+
+    /**
+     * Debit unconditionally, even into a negative balance. ONLY for clawing back points
+     * whose underlying kiosk payment was refunded: the shop may already have spent them,
+     * and refusing the debit would leave a refunded sale permanently paid for. A negative
+     * balance blocks further spending until it is earned back, which is the intended
+     * outcome. Every ordinary purchase uses {@link #debitIfSufficient} instead.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE BillingWallet w SET w.balancePaise = w.balancePaise - :amountPaise " +
+           "WHERE w.userId = :userId")
+    int debitAllowingNegative(@Param("userId") String userId, @Param("amountPaise") long amountPaise);
 }

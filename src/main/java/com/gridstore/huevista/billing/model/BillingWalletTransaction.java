@@ -25,10 +25,27 @@ public class BillingWalletTransaction {
     public enum Type {
         /** Razorpay top-up credited to the wallet. */
         TOPUP,
+        /**
+         * Reward points earned because a walk-in bought a visualisation through this
+         * shop's kiosk link. Credited, never bought — the shop takes no share of the
+         * kiosk payment itself.
+         */
+        KIOSK_BONUS,
+        /**
+         * The points from a kiosk sale taken back because that payment was refunded.
+         * Allowed to push the balance negative: the shop may already have spent them,
+         * and the shortfall has to settle against future earnings rather than quietly
+         * become a gift for a refunded sale.
+         */
+        KIOSK_BONUS_REVERSAL,
         /** One extra image bought once the monthly image quota was spent. */
         EXTRA_IMAGE,
         /** One extra AI auto-mask run bought once the monthly allowance was spent. */
         EXTRA_AUTO_MASK,
+        /** One project bought from the balance instead of through Checkout. */
+        PROJECT_CREDIT,
+        /** Another validity window on an expired project, bought from the balance. */
+        PROJECT_REOPEN,
         /**
          * Balance written off back to the retailer by an admin (the money movement itself
          * is manual). Without this the prepaid balance of a retailer who cancelled or

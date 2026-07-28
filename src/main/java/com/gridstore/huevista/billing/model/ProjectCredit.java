@@ -31,6 +31,12 @@ public class ProjectCredit {
     public enum Source {
         /** Bought by the account holder through Razorpay Checkout. */
         PURCHASE,
+        /**
+         * Bought from the billing wallet — prepaid balance, kiosk reward points, or a
+         * mix of the two. The money was already collected when it entered the wallet,
+         * so there is no payment id on this one.
+         */
+        WALLET,
         /** Issued by an administrator without a payment (support, goodwill, testing). */
         GRANT
     }

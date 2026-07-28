@@ -4,6 +4,7 @@ import com.gridstore.huevista.billing.dto.ProjectCreditOrderResponse;
 import com.gridstore.huevista.billing.dto.ProjectPurchaseOptionsResponse;
 import com.gridstore.huevista.billing.dto.ProjectReopenResponse;
 import com.gridstore.huevista.billing.dto.VerifyProjectCreditRequest;
+import com.gridstore.huevista.billing.model.BillingWalletTransaction;
 import com.gridstore.huevista.billing.model.ProjectCredit;
 import com.gridstore.huevista.billing.model.ProjectCreditPayment;
 import com.gridstore.huevista.billing.repository.ProjectCreditPaymentRepository;
@@ -46,6 +47,7 @@ public class ProjectCreditService {
     private final ProjectAccessService projectAccessService;
     private final PricingService pricingService;
     private final BillingEmailService billingEmailService;
+    private final BillingWalletService walletService;
 
     @Value("${razorpay.key-id:}")
     private String keyId;
@@ -186,6 +188,60 @@ public class ProjectCreditService {
                 .accessExpiresAt(project.getAccessExpiresAt())
                 .paused(project.getAccessPausedAt() != null)
                 .amountPaise(order.amountPaise())
+                .daysAdded(pricingService.projectValidDays())
+                .build();
+    }
+
+    // ── Paid from the wallet (prepaid balance / kiosk reward points) ─────────
+
+    /**
+     * Buy one project out of the billing wallet instead of opening Checkout.
+     *
+     * This is the redemption that gives kiosk points their value to a shop with no plan:
+     * a subscribed shop already creates projects freely and spends points on image and
+     * auto-mask overage, while a lapsed one has no quota to top up and would otherwise
+     * hold points it could never use.
+     *
+     * The price is read here, server-side, from the same {@link PricingService} that
+     * quotes Checkout — the caller never names an amount.
+     */
+    @Transactional
+    public ProjectPurchaseOptionsResponse payWithWallet(String userId) {
+        int pricePaise = pricingService.projectPricePaise(userId);
+        walletService.spend(userId, pricePaise, BillingWalletTransaction.Type.PROJECT_CREDIT);
+        creditLedger.issue(userId, pricePaise, pricingService.projectValidDays(),
+                ProjectCredit.Source.WALLET);
+        log.info("Project credit bought from wallet: user={} pricePaise={}", userId, pricePaise);
+        billingEmailService.sendProjectCreditPurchased(userId, pricePaise);
+        return getOptions(userId);
+    }
+
+    /**
+     * Give a project another validity window, paid from the wallet.
+     *
+     * Unlike the Checkout path there is no order to read the project id from, so it comes
+     * from the request — safe here because the lookup is scoped to the caller
+     * ({@code findByIdAndUserId}) and the money is their own balance either way.
+     */
+    @Transactional
+    public ProjectReopenResponse reopenWithWallet(String userId, String projectId) {
+        Project project = projectRepository.findByIdAndUserId(projectId, userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+
+        int pricePaise = pricingService.projectReopenPricePaise();
+        walletService.spend(userId, pricePaise, BillingWalletTransaction.Type.PROJECT_REOPEN);
+
+        projectAccessService.extendWindow(project, pricingService.projectValidDays());
+        projectRepository.save(project);
+        log.info("Project reopened from wallet: user={} project={} until={} pricePaise={}",
+                userId, project.getId(), project.getAccessExpiresAt(), pricePaise);
+        billingEmailService.sendProjectCreditPurchased(userId, pricePaise);
+
+        return ProjectReopenResponse.builder()
+                .projectId(project.getId())
+                .accessExpiresAt(project.getAccessExpiresAt())
+                .paused(project.getAccessPausedAt() != null)
+                .amountPaise(pricePaise)
                 .daysAdded(pricingService.projectValidDays())
                 .build();
     }

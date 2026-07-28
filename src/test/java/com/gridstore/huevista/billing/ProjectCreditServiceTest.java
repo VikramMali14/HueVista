@@ -30,7 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -63,6 +65,7 @@ class ProjectCreditServiceTest {
     private BillingService billing;
     private PricingService pricing;
     private ProjectAccessService access;
+    private com.gridstore.huevista.billing.service.BillingWalletService wallet;
     private ProjectCreditService svc;
 
     @BeforeEach
@@ -82,8 +85,9 @@ class ProjectCreditServiceTest {
         ReflectionTestUtils.setField(pricing, "currency", "INR");
 
         access = new ProjectAccessService(projects, billing, pricing);
+        wallet = mock(com.gridstore.huevista.billing.service.BillingWalletService.class);
         svc = new ProjectCreditService(razorpay, payments, ledger, projects, access, pricing,
-                mock(BillingEmailService.class));
+                mock(BillingEmailService.class), wallet);
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
         ReflectionTestUtils.setField(svc, "keyId", "key");
 
@@ -271,5 +275,56 @@ class ProjectCreditServiceTest {
         assertThat(options.getUnsubscribedProjectPricePaise()).isEqualTo(UNSUBSCRIBED_PAISE);
         assertThat(options.getReopenPricePaise()).isEqualTo(REOPEN_PAISE);
         assertThat(options.getValidDays()).isEqualTo(VALID_DAYS);
+    }
+
+    // ── Paid from the wallet (this is what kiosk reward points buy) ──────────
+
+    /**
+     * The redemption that makes points worth having to a shop with no plan: no Checkout,
+     * no payment id, and the price still read server-side rather than named by the caller.
+     */
+    @Test
+    void aProjectCanBeBoughtFromTheWalletAtTheUnsubscribedPrice() {
+        svc.payWithWallet("user-1");
+
+        verify(wallet).spend("user-1", UNSUBSCRIBED_PAISE,
+                com.gridstore.huevista.billing.model.BillingWalletTransaction.Type.PROJECT_CREDIT);
+        verify(ledger).issue("user-1", UNSUBSCRIBED_PAISE, VALID_DAYS,
+                com.gridstore.huevista.billing.model.ProjectCredit.Source.WALLET);
+        // Nothing here goes through the payment ledger — there is no Razorpay payment.
+        verify(payments, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aSubscribedBuyerPaysTheSubscribedPriceFromTheWallet() {
+        when(billing.findEntitlingSubscription("user-1"))
+                .thenReturn(Optional.of(new com.gridstore.huevista.billing.model.Subscription()));
+
+        svc.payWithWallet("user-1");
+
+        verify(wallet).spend("user-1", SUBSCRIBED_PAISE,
+                com.gridstore.huevista.billing.model.BillingWalletTransaction.Type.PROJECT_CREDIT);
+        verify(ledger).issue("user-1", SUBSCRIBED_PAISE, VALID_DAYS,
+                com.gridstore.huevista.billing.model.ProjectCredit.Source.WALLET);
+    }
+
+    /** An insufficient balance must leave no credit behind — the debit is the gate. */
+    @Test
+    void anInsufficientBalanceIssuesNoProjectCredit() {
+        doThrow(new com.gridstore.huevista.common.exception.QuotaExceededException("Not enough wallet balance"))
+                .when(wallet).spend(any(), anyLong(), any());
+
+        assertThatThrownBy(() -> svc.payWithWallet("user-1"))
+                .isInstanceOf(com.gridstore.huevista.common.exception.QuotaExceededException.class);
+        verify(ledger, never()).issue(any(), anyInt(), anyInt(), any());
+    }
+
+    @Test
+    void reopeningFromTheWalletOnlyEverTouchesTheCallersOwnProject() {
+        when(projects.findByIdAndUserId("proj-not-theirs", "user-1")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> svc.reopenWithWallet("user-1", "proj-not-theirs"))
+                .isInstanceOf(com.gridstore.huevista.common.exception.ResourceNotFoundException.class);
+        verify(wallet, never()).spend(any(), anyLong(), any());
     }
 }
