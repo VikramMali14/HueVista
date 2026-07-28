@@ -88,6 +88,10 @@ public class HierarchyService {
     private final PainterService painterService;
     private final PasswordEncoder passwordEncoder;
     private final EmailSender emailSender;
+    private final com.gridstore.huevista.billing.service.BillingService billingService;
+
+    /** The free tier runs for a week — same window a new shop gets. */
+    private static final int FREE_TIER_DAYS = 7;
 
     @Value("${app.cors.allowed-origins:http://localhost:3000}")
     private String allowedOrigins;
@@ -131,6 +135,50 @@ public class HierarchyService {
      * grant them (an admin creating an unlinked shop) and both default to
      * unrestricted, so callers that don't send them are unaffected.
      */
+    /**
+     * Put an existing shop back on the free tier: seven days, three projects.
+     *
+     * A distributor onboarding shops needs a way to restart the trial for one that let it
+     * lapse before deciding — that conversation happens at the distributor, not at
+     * support. Scoped to shops the distributor actually manages; admins can do it for any.
+     *
+     * Deliberately a no-op when the shop already holds a live plan (grantTrial returns the
+     * existing one): handing a paying shop a free tier would supersede what they bought.
+     */
+    @Transactional
+    public com.gridstore.huevista.billing.dto.SubscriptionResponse grantFreeTier(
+            String actorUserId, String retailerUserId) {
+        User actor = userRepository.findById(actorUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + actorUserId));
+        User retailer = userRepository.findById(retailerUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("Shop not found: " + retailerUserId));
+        if (retailer.getRole() != UserRole.RETAILER) {
+            throw new IllegalArgumentException("The free tier is a shop plan.");
+        }
+        if (actor.getRole() == UserRole.DISTRIBUTOR) {
+            requireManagedShop(actorUserId, retailerUserId);
+        } else if (actor.getRole() != UserRole.ADMIN) {
+            throw new SecurityException("Only admins and distributors can assign the free tier.");
+        }
+        return billingService.grantTrial(retailerUserId,
+                com.gridstore.huevista.billing.model.Plan.FREE, FREE_TIER_DAYS);
+    }
+
+    /** The shop must sit under this distributor's org, or it is not theirs to change. */
+    private void requireManagedShop(String distributorUserId, String retailerUserId) {
+        Organization distributorOrg = firstOrgOf(distributorUserId, OrgType.DISTRIBUTOR)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Your distributor organization was not found — contact the administrator."));
+        Organization retailerOrg = firstOrgOf(retailerUserId, OrgType.RETAILER)
+                .orElseThrow(() -> new ResourceNotFoundException("That shop has no organization."));
+        boolean managed = distributorLinkRepository
+                .findByDistributorId(distributorOrg.getId()).stream()
+                .anyMatch(link -> link.getRetailer().getId().equals(retailerOrg.getId()));
+        if (!managed) {
+            throw new SecurityException("That shop is not in your network.");
+        }
+    }
+
     @Transactional
     public AdminUserResponse createRetailer(String creatorUserId, CreateRetailerRequest request) {
         User creator = userRepository.findById(creatorUserId)

@@ -259,4 +259,47 @@ class ProjectGrantIntegrationTest {
         return objectMapper.readValue(
                 loginResult.getResponse().getContentAsString(), AuthResponse.class).getAccessToken();
     }
+
+    /**
+     * A shop-onboarded customer who runs out is NOT offered a purchase.
+     *
+     * Their projects were assigned by a shop and paid for out of that shop's quota. The
+     * refusal carries its own code so the studio asks the shop rather than opening
+     * Checkout — selling them one direct would take money for something the shop already
+     * owns, and quietly move the relationship off the counter.
+     */
+    @Test
+    void aCustomerOutOfProjectsIsSentToTheirShopNotToCheckout() throws Exception {
+        CustomerEntitlement ent = entitlementRepository.findByCustomerId(customerId).orElseThrow();
+        ent.setProjectsCreated(ent.getProjectAllowance());
+        entitlementRepository.saveAndFlush(ent);
+
+        String customerToken = login(CUSTOMER_EMAIL);
+        mockMvc.perform(post("/api/projects")
+                        .header("Authorization", "Bearer " + customerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"imageId\":\"whatever\"}"))
+                .andExpect(status().isPaymentRequired())
+                .andExpect(jsonPath("$.code").value("ASK_RETAILER"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("Ask ")));
+    }
+
+    /** And they can send that ask from the app — the shop grants in one click. */
+    @Test
+    void theCustomerCanAskTheirShopForAnother() throws Exception {
+        String customerToken = login(CUSTOMER_EMAIL);
+        mockMvc.perform(post("/api/me/request-more-projects")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isAccepted());
+    }
+
+    private String login(String email) throws Exception {
+        MvcResult r = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"" + email + "\",\"password\":\"password123\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readValue(
+                r.getResponse().getContentAsString(), AuthResponse.class).getAccessToken();
+    }
 }

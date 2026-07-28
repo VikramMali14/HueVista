@@ -74,6 +74,16 @@ public class CustomerEntitlementController {
         return ResponseEntity.ok(ProjectGrantResponse.from(grant, false));
     }
 
+    @Operation(summary = "Ask my shop for another project",
+            description = "For a customer a shop onboarded: emails the shop's owner asking them to add "
+                    + "a project. This is what a customer gets instead of a buy button — their projects "
+                    + "were assigned and paid for by the shop, which can add another in one click.")
+    @PostMapping("/api/me/request-more-projects")
+    public ResponseEntity<Void> requestMoreProjects(@AuthenticationPrincipal UserDetails userDetails) {
+        entitlementService.requestMoreProjects(userDetails.getUsername());
+        return ResponseEntity.accepted().build();
+    }
+
     @Operation(summary = "My entitlement",
             description = "Returns the calling customer's project allowance, usage, and access expiry (null if they are not a customer).")
     @GetMapping("/api/me/entitlement")
