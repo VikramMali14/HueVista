@@ -28,7 +28,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -44,15 +43,15 @@ import static org.mockito.Mockito.when;
  */
 class StoreKioskServiceTest {
 
-    private static final int KIOSK_PRICE = 9900;   // Rs.99 flat, platform-wide
-    private static final int BONUS_POINTS = 3900;  // Rs.39 of points to the shop
+    private static final int KIOSK_PRICE = 9900;  // Rs.99 flat, platform-wide
+    private static final int BONUS_POINTS = 30;   // reward points to the shop
     private static final String OWNER = "owner-1";
 
     private final Organization org = Organization.builder().id("org-1").name("Mehta Paints").build();
     private final StoreLink link = StoreLink.builder()
             .id("link-1").organization(org).slug("mehta-x7k2p9").validDays(3).build();
 
-    private com.gridstore.huevista.billing.service.BillingWalletService wallet;
+    private com.gridstore.huevista.billing.service.RewardPointsService points;
 
     private VerifyStoreOrderRequest req(String order, String payment) {
         VerifyStoreOrderRequest r = new VerifyStoreOrderRequest();
@@ -84,13 +83,13 @@ class StoreKioskServiceTest {
         var memberships = mock(com.gridstore.huevista.account.repository.OrgMembershipRepository.class);
         var pricing = new com.gridstore.huevista.billing.service.PricingService(billing, memberships);
         ReflectionTestUtils.setField(pricing, "kioskPricePaise", KIOSK_PRICE);
-        ReflectionTestUtils.setField(pricing, "kioskBonusPointsPaise", BONUS_POINTS);
+        ReflectionTestUtils.setField(pricing, "kioskBonusPoints", BONUS_POINTS);
         when(memberships.findUserIdsByOrganizationIdAndRole(
                 "org-1", com.gridstore.huevista.account.model.OrgMemberRole.OWNER))
                 .thenReturn(java.util.List.of(OWNER));
 
-        wallet = mock(com.gridstore.huevista.billing.service.BillingWalletService.class);
-        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing, wallet);
+        points = mock(com.gridstore.huevista.billing.service.RewardPointsService.class);
+        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing, points);
         ReflectionTestUtils.setField(svc, "keyId", "key");
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
         ReflectionTestUtils.setField(svc, "currency", "INR");
@@ -126,10 +125,10 @@ class StoreKioskServiceTest {
             ArgumentCaptor<StorePayment> saved = ArgumentCaptor.forClass(StorePayment.class);
             verify(payments).saveAndFlush(saved.capture());
             assertThat(saved.getValue().getAmountPaise()).isEqualTo(KIOSK_PRICE);
-            // All of the cash is the platform's; the shop's reward is points.
-            assertThat(saved.getValue().getPlatformFeePaise()).isEqualTo(KIOSK_PRICE - BONUS_POINTS);
-            assertThat(saved.getValue().getBonusPointsPaise()).isEqualTo(BONUS_POINTS);
-            verify(wallet).creditKioskBonus(OWNER, BONUS_POINTS, "pay_1");
+            // All of the cash is the platform's; points are awarded on top, not carved out.
+            assertThat(saved.getValue().getPlatformFeePaise()).isEqualTo(KIOSK_PRICE);
+            assertThat(saved.getValue().getBonusPoints()).isEqualTo(BONUS_POINTS);
+            verify(points).creditKioskPoints(OWNER, BONUS_POINTS, "pay_1");
         }
     }
 
@@ -143,8 +142,8 @@ class StoreKioskServiceTest {
                 .validDays(3).expiresAt(java.time.LocalDateTime.now().plusDays(3)).build();
         StorePayment prior = StorePayment.builder()
                 .storeLink(link).organization(org).paymentId("pay_1").orderId("order_1")
-                .amountPaise(KIOSK_PRICE).platformFeePaise(KIOSK_PRICE - BONUS_POINTS)
-                .bonusPointsPaise(BONUS_POINTS).accessCode(code).build();
+                .amountPaise(KIOSK_PRICE).platformFeePaise(KIOSK_PRICE)
+                .bonusPoints(BONUS_POINTS).accessCode(code).build();
         when(payments.findByPaymentId("pay_1")).thenReturn(Optional.of(prior));
         AccessCodeService codes = mock(AccessCodeService.class);
         when(codes.redeemAsGuest("ABCD2345")).thenReturn(guest("ABCD2345"));
@@ -160,7 +159,7 @@ class StoreKioskServiceTest {
             verify(codes, never()).issueForStore(any(), anyInt());
             verify(payments, never()).saveAndFlush(any());
             // And no second helping of points for the same sale.
-            verify(wallet, never()).creditKioskBonus(anyString(), anyLong(), anyString());
+            verify(points, never()).creditKioskPoints(anyString(), anyInt(), anyString());
         }
     }
 
@@ -245,11 +244,11 @@ class StoreKioskServiceTest {
         var memberships = mock(com.gridstore.huevista.account.repository.OrgMembershipRepository.class);
         var pricing = new com.gridstore.huevista.billing.service.PricingService(billing, memberships);
         ReflectionTestUtils.setField(pricing, "kioskPricePaise", KIOSK_PRICE);
-        ReflectionTestUtils.setField(pricing, "kioskBonusPointsPaise", BONUS_POINTS);
+        ReflectionTestUtils.setField(pricing, "kioskBonusPoints", BONUS_POINTS);
         when(memberships.findUserIdsByOrganizationIdAndRole(
                 "org-1", com.gridstore.huevista.account.model.OrgMemberRole.OWNER))
                 .thenReturn(java.util.List.of());   // nobody to pay points to
-        var ownerless = mock(com.gridstore.huevista.billing.service.BillingWalletService.class);
+        var ownerless = mock(com.gridstore.huevista.billing.service.RewardPointsService.class);
         StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing, ownerless);
         ReflectionTestUtils.setField(svc, "keyId", "key");
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
@@ -261,7 +260,7 @@ class StoreKioskServiceTest {
             StoreCheckoutResponse res = svc.verifyAndIssue("mehta-x7k2p9", req("order_1", "pay_1"));
 
             assertThat(res.getCode()).isEqualTo("ABCD2345");
-            verify(ownerless, never()).creditKioskBonus(anyString(), anyLong(), anyString());
+            verify(ownerless, never()).creditKioskPoints(anyString(), anyInt(), anyString());
         }
     }
 }

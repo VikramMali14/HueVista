@@ -28,6 +28,9 @@ public class ProjectReopenResponse {
     /** What was charged, in paise. */
     private int amountPaise;
 
+    /** Points spent instead, when the reopen was paid from the reward balance. */
+    private int pointsSpent;
+
     /** Days added by this reopen. */
     private int daysAdded;
 }

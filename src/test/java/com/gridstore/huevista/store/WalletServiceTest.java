@@ -3,7 +3,7 @@ package com.gridstore.huevista.store;
 import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.repository.OrgMembershipRepository;
-import com.gridstore.huevista.billing.service.BillingWalletService;
+import com.gridstore.huevista.billing.service.RewardPointsService;
 import com.gridstore.huevista.billing.service.PricingService;
 import com.gridstore.huevista.store.dto.WalletSummaryResponse;
 import com.gridstore.huevista.store.model.StorePayment;
@@ -18,7 +18,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -39,7 +39,7 @@ class WalletServiceTest {
 
     private StorePaymentRepository payments;
     private OrgMembershipRepository memberships;
-    private BillingWalletService billingWallet;
+    private RewardPointsService points;
     private PricingService pricing;
     private WalletService svc;
 
@@ -49,39 +49,39 @@ class WalletServiceTest {
     void setUp() {
         payments = mock(StorePaymentRepository.class);
         memberships = mock(OrgMembershipRepository.class);
-        billingWallet = mock(BillingWalletService.class);
+        points = mock(RewardPointsService.class);
         pricing = mock(PricingService.class);
-        svc = new WalletService(payments, memberships, billingWallet, pricing);
+        svc = new WalletService(payments, memberships, points, pricing);
 
         when(memberships.existsByUserIdAndOrganizationIdAndRole(USER, ORG, OrgMemberRole.OWNER)).thenReturn(true);
         when(pricing.shopOwnerUserId(ORG)).thenReturn(Optional.of(OWNER));
         when(pricing.kioskPricePaise()).thenReturn(9_900);
-        when(pricing.kioskBonusPointsPaise()).thenReturn(3_900);
+        when(pricing.kioskBonusPoints()).thenReturn(30);
     }
 
     @Test
     void balanceIsTheOwnersSpendableWalletNotASecondLedger() {
-        // Lifetime earned and spendable balance differ on purpose: the shop has earned
-        // 10,000 points over time and spent some, and the owner also topped up.
-        when(payments.sumBonusPointsByOrganizationId(ORG)).thenReturn(10_000L);
-        when(billingWallet.balancePaise(OWNER)).thenReturn(7_500L);
+        // Lifetime earned and spendable balance differ on purpose: points expire a year
+        // after they are earned, so a lifetime total always runs ahead of what is usable.
+        when(payments.sumBonusPointsByOrganizationId(ORG)).thenReturn(300L);
+        when(points.balance(OWNER)).thenReturn(120);
         when(payments.findTop50ByOrganizationIdOrderByCreatedAtDesc(ORG)).thenReturn(List.of());
 
         WalletSummaryResponse wallet = svc.getWallet(USER, ORG);
 
-        assertThat(wallet.getPointsBalancePaise()).isEqualTo(7_500L);
-        assertThat(wallet.getLifetimePointsEarnedPaise()).isEqualTo(10_000L);
-        assertThat(wallet.getPointsPerSalePaise()).isEqualTo(3_900);
+        assertThat(wallet.getPointsBalance()).isEqualTo(120);
+        assertThat(wallet.getLifetimePointsEarned()).isEqualTo(300L);
+        assertThat(wallet.getPointsPerSale()).isEqualTo(30);
         assertThat(wallet.getKioskPricePaise()).isEqualTo(9_900);
     }
 
     @Test
     void aShopWithNoOwnerAccountShowsNoSpendableBalance() {
         when(pricing.shopOwnerUserId(ORG)).thenReturn(Optional.empty());
-        when(payments.sumBonusPointsByOrganizationId(ORG)).thenReturn(10_000L);
+        when(payments.sumBonusPointsByOrganizationId(ORG)).thenReturn(300L);
         when(payments.findTop50ByOrganizationIdOrderByCreatedAtDesc(ORG)).thenReturn(List.of());
 
-        assertThat(svc.getWallet(USER, ORG).getPointsBalancePaise()).isZero();
+        assertThat(svc.getWallet(USER, ORG).getPointsBalance()).isZero();
     }
 
     @Test
@@ -89,7 +89,7 @@ class WalletServiceTest {
         StorePayment payment = StorePayment.builder()
                 .id("pay-1").organization(org)
                 .paymentId("pay_rzp_1").orderId("order_1")
-                .amountPaise(9_900).platformFeePaise(6_000).bonusPointsPaise(3_900)
+                .amountPaise(9_900).platformFeePaise(9_900).bonusPoints(30)
                 .build();
         when(payments.findByPaymentIdForUpdate("pay_rzp_1")).thenReturn(Optional.of(payment));
 
@@ -97,7 +97,7 @@ class WalletServiceTest {
 
         assertThat(payment.isReversed()).isTrue();
         assertThat(payment.getRefundedPaise()).isEqualTo(9_900);
-        verify(billingWallet).reverseKioskBonus(OWNER, 3_900, "pay_rzp_1");
+        verify(points).reverseKioskPoints(OWNER, 30, "pay_rzp_1");
     }
 
     @Test
@@ -105,14 +105,14 @@ class WalletServiceTest {
         StorePayment already = StorePayment.builder()
                 .id("pay-1").organization(org)
                 .paymentId("pay_rzp_1").orderId("order_1")
-                .amountPaise(9_900).bonusPointsPaise(3_900)
+                .amountPaise(9_900).bonusPoints(30)
                 .reversedAt(java.time.LocalDateTime.now())
                 .build();
         when(payments.findByPaymentIdForUpdate("pay_rzp_1")).thenReturn(Optional.of(already));
 
         svc.reverseKioskPayment("pay_rzp_1", 9_900);
 
-        verify(billingWallet, never()).reverseKioskBonus(anyString(), anyLong(), anyString());
+        verify(points, never()).reverseKioskPoints(anyString(), anyInt(), anyString());
     }
 
     @Test
@@ -123,13 +123,13 @@ class WalletServiceTest {
         svc.reverseKioskPayment("pay_not_ours", 5_000);
 
         verify(payments, never()).save(any());
-        verify(billingWallet, never()).reverseKioskBonus(anyString(), anyLong(), anyString());
+        verify(points, never()).reverseKioskPoints(anyString(), anyInt(), anyString());
     }
 
     @Test
     void nonMembersCannotReadTheStatement() {
         assertThatThrownBy(() -> svc.getWallet("stranger", ORG))
                 .isInstanceOf(SecurityException.class);
-        verify(billingWallet, never()).balancePaise(eq(OWNER));
+        verify(points, never()).balance(eq(OWNER));
     }
 }

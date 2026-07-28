@@ -13,9 +13,9 @@ import java.time.LocalDateTime;
  * backstop — one Razorpay payment buys exactly one access code.
  *
  * The whole {@code amountPaise} is HueVista's revenue; the shop takes no share of it.
- * {@code bonusPointsPaise} records the reward points the sale earned the shop, which
- * live in the owner's billing wallet — this row is the audit trail for why those points
- * exist, not a balance anyone draws from.
+ * {@code bonusPoints} records the reward points the sale earned, which live in the
+ * owner's point ledger — this row is the audit trail for why those points exist, not a
+ * balance anyone draws from.
  */
 @Entity
 @Table(name = "store_payments")
@@ -50,17 +50,17 @@ public class StorePayment {
     @Column(nullable = false)
     private int amountPaise;
 
-    /** What HueVista keeps in cash: the amount paid, less the value of the points awarded. */
+    /** What HueVista keeps in cash — the whole amount; points are awarded on top, not deducted. */
     @Column(nullable = false)
     private int platformFeePaise;
 
     /**
-     * Reward points this sale earned the shop, in paise of spending power. Credited to
-     * the owner's billing wallet at verify time; recorded here so a refund knows how many
-     * to take back and so the shop's kiosk statement can show what each sale earned.
+     * Reward points this sale earned the shop. Credited to the owner's point ledger at
+     * verify time; recorded here so a refund knows how many to take back and so the
+     * shop's kiosk statement can show what each sale earned.
      */
-    @Column(name = "bonus_points_paise", nullable = false)
-    private int bonusPointsPaise;
+    @Column(name = "bonus_points", nullable = false)
+    private int bonusPoints;
 
     /** The access code this payment bought (set right after the payment row is safe). */
     @ManyToOne(fetch = FetchType.LAZY)

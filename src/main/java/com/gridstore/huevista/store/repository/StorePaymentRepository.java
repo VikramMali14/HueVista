@@ -15,15 +15,16 @@ public interface StorePaymentRepository extends JpaRepository<StorePayment, Stri
     List<StorePayment> findTop50ByOrganizationIdOrderByCreatedAtDesc(String organizationId);
 
     /**
-     * Every reward point this shop's kiosk has ever earned, in paise of spending power.
+     * Every reward point this shop's kiosk has ever earned.
      * Reversed payments (refunded or charged back) are excluded — that money went back to
      * the customer, so the sale must stop counting as earned.
      *
-     * Reporting only: the spendable balance is the owner's billing wallet, which is
-     * debited directly when the points are clawed back.
+     * Reporting only, and NOT the spendable balance: points expire a year after they are
+     * earned, so a lifetime total always runs ahead of what the shop can actually use.
+     * The live figure comes from the point ledger.
      */
     @Query("""
-            SELECT COALESCE(SUM(p.bonusPointsPaise), 0) FROM StorePayment p
+            SELECT COALESCE(SUM(p.bonusPoints), 0) FROM StorePayment p
              WHERE p.organization.id = :orgId AND p.reversedAt IS NULL
             """)
     long sumBonusPointsByOrganizationId(@Param("orgId") String orgId);

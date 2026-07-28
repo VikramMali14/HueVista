@@ -2,7 +2,7 @@ package com.gridstore.huevista.store.service;
 
 import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.repository.OrgMembershipRepository;
-import com.gridstore.huevista.billing.service.BillingWalletService;
+import com.gridstore.huevista.billing.service.RewardPointsService;
 import com.gridstore.huevista.billing.service.PricingService;
 import com.gridstore.huevista.store.dto.WalletSummaryResponse;
 import com.gridstore.huevista.store.repository.StorePaymentRepository;
@@ -24,10 +24,10 @@ import java.util.List;
  * at one flat platform price that is entirely HueVista's, and the shop is rewarded in
  * closed-loop points instead.
  *
- * The points themselves live in the owner's billing wallet
- * ({@link BillingWalletService}), spendable on images, auto-masks, projects and reopens.
- * This class only reports: the balance shown here is read from that wallet so the shop
- * sees one number, not a second ledger that can drift from it.
+ * The points themselves live in the owner's point ledger ({@link RewardPointsService}),
+ * spendable on images, auto-masks, projects and reopens at their own point prices, and
+ * expiring a year after they are earned. This class only reports: the balance shown here
+ * is read from that ledger so the shop sees one number, not a second that can drift.
  */
 @Slf4j
 @Service
@@ -36,7 +36,7 @@ public class WalletService {
 
     private final StorePaymentRepository paymentRepository;
     private final OrgMembershipRepository membershipRepository;
-    private final BillingWalletService billingWalletService;
+    private final RewardPointsService rewardPointsService;
     private final PricingService pricingService;
 
     @Transactional(readOnly = true)
@@ -44,20 +44,20 @@ public class WalletService {
         requireOwnerOrManager(requestingUserId, orgId);
 
         long earned = paymentRepository.sumBonusPointsByOrganizationId(orgId);
-        // Spendable balance is the owner's wallet, not a per-org total: points are earned
-        // by the shop but spent by the account that pays for it, and that account may also
-        // hold prepaid top-ups. Reporting anything else here would show the shop a number
-        // it cannot actually spend.
-        long balance = pricingService.shopOwnerUserId(orgId)
-                .map(billingWalletService::balancePaise)
-                .orElse(0L);
+        // Spendable balance is the owner's point ledger, not a per-org total: points are
+        // earned by the shop but spent by the account that pays for it. Reporting a
+        // lifetime sum here instead would show the shop a number it cannot actually spend,
+        // since points expire a year after they are earned.
+        int balance = pricingService.shopOwnerUserId(orgId)
+                .map(rewardPointsService::balance)
+                .orElse(0);
 
         List<WalletSummaryResponse.PaymentRow> payments = paymentRepository
                 .findTop50ByOrganizationIdOrderByCreatedAtDesc(orgId).stream()
                 .map(p -> WalletSummaryResponse.PaymentRow.builder()
                         .id(p.getId())
                         .amountPaise(p.getAmountPaise())
-                        .bonusPointsPaise(p.getBonusPointsPaise())
+                        .bonusPoints(p.getBonusPoints())
                         .reversed(p.isReversed())
                         .code(p.getAccessCode() != null ? p.getAccessCode().getCode() : null)
                         .createdAt(p.getCreatedAt())
@@ -67,9 +67,9 @@ public class WalletService {
         return WalletSummaryResponse.builder()
                 .organizationId(orgId)
                 .currency("INR")
-                .pointsBalancePaise(balance)
-                .lifetimePointsEarnedPaise(earned)
-                .pointsPerSalePaise(pricingService.kioskBonusPointsPaise())
+                .pointsBalance(balance)
+                .lifetimePointsEarned(earned)
+                .pointsPerSale(pricingService.kioskBonusPoints())
                 .kioskPricePaise(pricingService.kioskPricePaise())
                 .recentPayments(payments)
                 .build();
@@ -95,13 +95,13 @@ public class WalletService {
 
             String orgId = payment.getOrganization().getId();
             pricingService.shopOwnerUserId(orgId).ifPresentOrElse(
-                    ownerUserId -> billingWalletService.reverseKioskBonus(
-                            ownerUserId, payment.getBonusPointsPaise(), razorpayPaymentId),
+                    ownerUserId -> rewardPointsService.reverseKioskPoints(
+                            ownerUserId, payment.getBonusPoints(), razorpayPaymentId),
                     () -> log.warn("Refunded kiosk payment {} for org {} has no owner account — "
                             + "no points to take back.", razorpayPaymentId, orgId));
 
             log.warn("Kiosk payment reversed: payment={} org={} pointsClawedBack={}",
-                    razorpayPaymentId, orgId, payment.getBonusPointsPaise());
+                    razorpayPaymentId, orgId, payment.getBonusPoints());
         });
     }
 

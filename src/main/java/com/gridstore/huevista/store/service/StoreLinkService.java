@@ -100,7 +100,7 @@ public class StoreLinkService {
     /** A link plus the platform price and what each sale earns the shop. */
     private StoreLinkResponse describe(StoreLink link) {
         return StoreLinkResponse.from(link)
-                .withPlatformPricing(pricingService.kioskPricePaise(), pricingService.kioskBonusPointsPaise());
+                .withPlatformPricing(pricingService.kioskPricePaise(), pricingService.kioskBonusPoints());
     }
 
     /** Anonymous kiosk view of a link. 404 when the slug doesn't exist; an inactive

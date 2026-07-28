@@ -5,6 +5,7 @@ import com.gridstore.huevista.billing.dto.ProjectPurchaseOptionsResponse;
 import com.gridstore.huevista.billing.dto.ProjectReopenResponse;
 import com.gridstore.huevista.billing.dto.VerifyProjectCreditRequest;
 import com.gridstore.huevista.billing.model.BillingWalletTransaction;
+import com.gridstore.huevista.billing.model.RewardPointsTransaction;
 import com.gridstore.huevista.billing.model.ProjectCredit;
 import com.gridstore.huevista.billing.model.ProjectCreditPayment;
 import com.gridstore.huevista.billing.repository.ProjectCreditPaymentRepository;
@@ -48,6 +49,7 @@ public class ProjectCreditService {
     private final PricingService pricingService;
     private final BillingEmailService billingEmailService;
     private final BillingWalletService walletService;
+    private final RewardPointsService rewardPointsService;
 
     @Value("${razorpay.key-id:}")
     private String keyId;
@@ -242,6 +244,52 @@ public class ProjectCreditService {
                 .accessExpiresAt(project.getAccessExpiresAt())
                 .paused(project.getAccessPausedAt() != null)
                 .amountPaise(pricePaise)
+                .daysAdded(pricingService.projectValidDays())
+                .build();
+    }
+
+    /**
+     * Buy one project with reward POINTS, at the point price rather than the rupee one.
+     *
+     * The point price is flat ({@code app.points.project}) where the cash price is not —
+     * a shop pays less for a project while subscribed. Points do not follow that split
+     * deliberately: they are a reward for kiosk sales, and making them worth less to a
+     * lapsed shop would blunt them exactly where they are meant to help.
+     */
+    @Transactional
+    public ProjectPurchaseOptionsResponse payWithPoints(String userId) {
+        int points = pricingService.pointsPriceProject();
+        rewardPointsService.spend(userId, points,
+                RewardPointsTransaction.Type.SPENT_ON_PROJECT, null);
+        // The credit records what it WOULD have cost in cash, so the ledger stays in one
+        // unit and a project bought with points is worth the same as any other.
+        creditLedger.issue(userId, pricingService.projectPricePaise(userId),
+                pricingService.projectValidDays(), ProjectCredit.Source.POINTS);
+        log.info("Project credit bought with points: user={} points={}", userId, points);
+        return getOptions(userId);
+    }
+
+    /** Give a project another validity window, paid in reward points. */
+    @Transactional
+    public ProjectReopenResponse reopenWithPoints(String userId, String projectId) {
+        Project project = projectRepository.findByIdAndUserId(projectId, userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+
+        int points = pricingService.pointsPriceReopen();
+        rewardPointsService.spend(userId, points,
+                RewardPointsTransaction.Type.SPENT_ON_PROJECT_REOPEN, project.getId());
+
+        projectAccessService.extendWindow(project, pricingService.projectValidDays());
+        projectRepository.save(project);
+        log.info("Project reopened with points: user={} project={} until={} points={}",
+                userId, project.getId(), project.getAccessExpiresAt(), points);
+
+        return ProjectReopenResponse.builder()
+                .projectId(project.getId())
+                .accessExpiresAt(project.getAccessExpiresAt())
+                .paused(project.getAccessPausedAt() != null)
+                .amountPaise(0)
+                .pointsSpent(points)
                 .daysAdded(pricingService.projectValidDays())
                 .build();
     }

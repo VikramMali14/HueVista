@@ -30,9 +30,9 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p><b>The whole payment is HueVista's.</b> The walk-in is buying a HueVista
  * visualisation at one flat platform-wide price; the shop neither sets that price nor
- * takes a share of it. What the shop gets is reward POINTS credited to its owner's
- * billing wallet ({@code app.store.bonus-points-paise}), spendable only on HueVista
- * services and never withdrawable.
+ * takes a share of it. What the shop gets is reward POINTS credited to its owner's point
+ * ledger ({@code app.store.bonus-points}), spendable only on HueVista services, expiring
+ * a year after they are earned, and never withdrawable.
  *
  * That split is the point of the design, not an accounting detail. Letting the shop
  * price the link and keep the excess made every kiosk sale a payment collected on a
@@ -57,7 +57,7 @@ public class StoreKioskService {
     private final StorePaymentRepository paymentRepository;
     private final AccessCodeService accessCodeService;
     private final com.gridstore.huevista.billing.service.PricingService pricingService;
-    private final com.gridstore.huevista.billing.service.BillingWalletService billingWalletService;
+    private final com.gridstore.huevista.billing.service.RewardPointsService rewardPointsService;
 
     @Value("${razorpay.key-id:}")
     private String keyId;
@@ -171,18 +171,17 @@ public class StoreKioskService {
         // two concurrent submits), then issue the code — so a lost race never
         // leaves an orphaned unpaid code behind.
         //
-        // The cash is entirely ours; the shop's reward is points. Clamped to the amount
-        // paid so a sale at a stale, lower price can never award more points than it
-        // brought in.
-        int bonusPointsPaise = Math.min(paidPaise, pricingService.kioskBonusPointsPaise());
+        // The cash is entirely ours; the shop's reward is points, awarded on top rather
+        // than carved out of the payment.
+        int bonusPoints = pricingService.kioskBonusPoints();
         StorePayment payment = StorePayment.builder()
                 .storeLink(link)
                 .organization(link.getOrganization())
                 .paymentId(req.getPaymentId())
                 .orderId(req.getOrderId())
                 .amountPaise(paidPaise)
-                .platformFeePaise(paidPaise - bonusPointsPaise)
-                .bonusPointsPaise(bonusPointsPaise)
+                .platformFeePaise(paidPaise)
+                .bonusPoints(bonusPoints)
                 .build();
         try {
             payment = paymentRepository.saveAndFlush(payment);
@@ -201,14 +200,14 @@ public class StoreKioskService {
         // the walk-in has paid, and their access must not hinge on the shop's setup.
         String ownerUserId = pricingService.shopOwnerUserId(link.getOrganization().getId()).orElse(null);
         if (ownerUserId != null) {
-            billingWalletService.creditKioskBonus(ownerUserId, bonusPointsPaise, req.getPaymentId());
+            rewardPointsService.creditKioskPoints(ownerUserId, bonusPoints, req.getPaymentId());
         } else {
             log.warn("Kiosk sale earned no points: org={} has no owner account (payment={})",
                     link.getOrganization().getId(), req.getPaymentId());
         }
 
         log.info("Store kiosk payment verified: slug={} order={} payment={} amount={} points={}",
-                slug, req.getOrderId(), req.getPaymentId(), paidPaise, bonusPointsPaise);
+                slug, req.getOrderId(), req.getPaymentId(), paidPaise, bonusPoints);
 
         GuestRedeemResponse guest = accessCodeService.redeemAsGuest(code.getCode());
         return toResponse(guest, paidPaise);

@@ -17,15 +17,14 @@ public class WalletSummaryResponse {
     private String organizationId;
     private String currency;
     /**
-     * Points available to spend right now. Read from the OWNER's billing wallet, so it
-     * also includes any prepaid top-up they made — it is one spendable balance, not a
-     * kiosk-only subtotal.
+     * Points available to spend right now, read from the OWNER's point ledger. Lower than
+     * the lifetime figure whenever a batch has expired or been spent.
      */
-    private long pointsBalancePaise;
+    private int pointsBalance;
     /** Every point this shop's kiosk has ever earned, refunded sales excluded. */
-    private long lifetimePointsEarnedPaise;
+    private long lifetimePointsEarned;
     /** What one kiosk sale earns the shop right now (context for the UI). */
-    private int pointsPerSalePaise;
+    private int pointsPerSale;
     /** What a walk-in pays at the kiosk right now (context for the UI). */
     private int kioskPricePaise;
     private List<PaymentRow> recentPayments;
@@ -37,7 +36,7 @@ public class WalletSummaryResponse {
         /** What the walk-in paid. All of it is HueVista's — the shop earns points, not a share. */
         private int amountPaise;
         /** Points this sale earned the shop. */
-        private int bonusPointsPaise;
+        private int bonusPoints;
         /** Refunded or charged back — the points were taken back. */
         private boolean reversed;
         /** The pickup code this payment bought (the shop redeems colours from it). */

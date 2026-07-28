@@ -57,6 +57,8 @@ class ProjectCreditServiceTest {
     private static final int UNSUBSCRIBED_PAISE = 9900;  // Rs. 99 without
     private static final int REOPEN_PAISE = 900;         // Rs. 9 to reopen
     private static final int VALID_DAYS = 30;
+    private static final int POINTS_PROJECT = 80;
+    private static final int POINTS_REOPEN = 9;
 
     private RazorpayClient razorpay;
     private ProjectCreditPaymentRepository payments;
@@ -66,6 +68,7 @@ class ProjectCreditServiceTest {
     private PricingService pricing;
     private ProjectAccessService access;
     private com.gridstore.huevista.billing.service.BillingWalletService wallet;
+    private com.gridstore.huevista.billing.service.RewardPointsService points;
     private ProjectCreditService svc;
 
     @BeforeEach
@@ -86,8 +89,11 @@ class ProjectCreditServiceTest {
 
         access = new ProjectAccessService(projects, billing, pricing);
         wallet = mock(com.gridstore.huevista.billing.service.BillingWalletService.class);
+        points = mock(com.gridstore.huevista.billing.service.RewardPointsService.class);
         svc = new ProjectCreditService(razorpay, payments, ledger, projects, access, pricing,
-                mock(BillingEmailService.class), wallet);
+                mock(BillingEmailService.class), wallet, points);
+        ReflectionTestUtils.setField(pricing, "pointsPriceProject", POINTS_PROJECT);
+        ReflectionTestUtils.setField(pricing, "pointsPriceReopen", POINTS_REOPEN);
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
         ReflectionTestUtils.setField(svc, "keyId", "key");
 
@@ -317,6 +323,56 @@ class ProjectCreditServiceTest {
         assertThatThrownBy(() -> svc.payWithWallet("user-1"))
                 .isInstanceOf(com.gridstore.huevista.common.exception.QuotaExceededException.class);
         verify(ledger, never()).issue(any(), anyInt(), anyInt(), any());
+    }
+
+    // ── Paid with reward points (their own price list, not a rupee conversion) ──
+
+    @Test
+    void aProjectBoughtWithPointsCostsTheFlatPointPrice() {
+        svc.payWithPoints("user-1");
+
+        verify(points).spend("user-1", POINTS_PROJECT,
+                com.gridstore.huevista.billing.model.RewardPointsTransaction.Type.SPENT_ON_PROJECT, null);
+        // The credit still records a rupee value so one project is worth the same however
+        // it was bought — the POINTS source is what says no money moved.
+        verify(ledger).issue("user-1", UNSUBSCRIBED_PAISE, VALID_DAYS,
+                com.gridstore.huevista.billing.model.ProjectCredit.Source.POINTS);
+        verify(wallet, never()).spend(any(), anyLong(), any());
+    }
+
+    /**
+     * The cash price of a project halves with a live plan; the POINT price does not move.
+     * Points are a kiosk reward, and making them worth less to a lapsed shop would blunt
+     * them exactly where they are supposed to help.
+     */
+    @Test
+    void thePointPriceOfAProjectIsFlatWhateverThePlanIsDoing() {
+        when(billing.findEntitlingSubscription("user-1"))
+                .thenReturn(Optional.of(new com.gridstore.huevista.billing.model.Subscription()));
+
+        svc.payWithPoints("user-1");
+
+        verify(points).spend("user-1", POINTS_PROJECT,
+                com.gridstore.huevista.billing.model.RewardPointsTransaction.Type.SPENT_ON_PROJECT, null);
+    }
+
+    @Test
+    void tooFewPointsIssuesNoProjectCredit() {
+        doThrow(new com.gridstore.huevista.common.exception.QuotaExceededException("Not enough points"))
+                .when(points).spend(any(), anyInt(), any(), any());
+
+        assertThatThrownBy(() -> svc.payWithPoints("user-1"))
+                .isInstanceOf(com.gridstore.huevista.common.exception.QuotaExceededException.class);
+        verify(ledger, never()).issue(any(), anyInt(), anyInt(), any());
+    }
+
+    @Test
+    void reopeningWithPointsOnlyEverTouchesTheCallersOwnProject() {
+        when(projects.findByIdAndUserId("proj-not-theirs", "user-1")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> svc.reopenWithPoints("user-1", "proj-not-theirs"))
+                .isInstanceOf(com.gridstore.huevista.common.exception.ResourceNotFoundException.class);
+        verify(points, never()).spend(any(), anyInt(), any(), any());
     }
 
     @Test

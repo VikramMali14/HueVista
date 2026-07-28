@@ -32,11 +32,12 @@ public class ProjectCredit {
         /** Bought by the account holder through Razorpay Checkout. */
         PURCHASE,
         /**
-         * Bought from the billing wallet — prepaid balance, kiosk reward points, or a
-         * mix of the two. The money was already collected when it entered the wallet,
-         * so there is no payment id on this one.
+         * Bought from the prepaid rupee wallet. The money was already collected when it
+         * entered the wallet, so there is no payment id on this one.
          */
         WALLET,
+        /** Bought with kiosk reward points — no money moved for this one at all. */
+        POINTS,
         /** Issued by an administrator without a payment (support, goodwill, testing). */
         GRANT
     }

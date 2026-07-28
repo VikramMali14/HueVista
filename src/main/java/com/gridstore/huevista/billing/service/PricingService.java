@@ -13,7 +13,9 @@ import org.springframework.stereotype.Service;
  * and the retailer panel is how the three drift apart and the customer is quoted one
  * number and charged another, so they all read from here.
  *
- * Prices are in paise (Rs. 1 = 100 paise) to match Razorpay.
+ * Cash prices are in paise (Rs. 1 = 100 paise) to match Razorpay. Reward-point prices
+ * are in whole points and are a SEPARATE list, not a conversion of the cash one — see
+ * {@link #pointsPriceImage()}.
  */
 @Service
 @RequiredArgsConstructor
@@ -44,19 +46,37 @@ public class PricingService {
      *
      * The shop does not set this and takes no share of it: the walk-in is HueVista's own
      * customer, so the whole amount is ours for our own service. The shop is rewarded in
-     * closed-loop points instead ({@link #kioskBonusPointsPaise()}). Letting the shop
+     * closed-loop points instead ({@link #kioskBonusPoints()}). Letting the shop
      * price the link and keep the excess is what made this a third-party collection, and
      * that is the thing this design removes.
      */
     @Value("${app.store.price-paise:9900}")
     private int kioskPricePaise;
 
-    /**
-     * Points awarded to the shop whose link made the sale. One point = one paise of
-     * spending power inside HueVista, never withdrawable.
-     */
-    @Value("${app.store.bonus-points-paise:3900}")
-    private int kioskBonusPointsPaise;
+    /** Reward points awarded to the shop whose link made the sale. */
+    @Value("${app.store.bonus-points:30}")
+    private int kioskBonusPoints;
+
+    // Reward-point prices. Their own list, NOT a rupee conversion — a point buys
+    // slightly more than its cash equivalent (40 points for a Rs. 50 image), which is
+    // the whole reward. Every quote of a point price in the product reads from here.
+    @Value("${app.points.image:40}")
+    private int pointsPriceImage;
+
+    @Value("${app.points.auto-mask:20}")
+    private int pointsPriceAutoMask;
+
+    @Value("${app.points.project:80}")
+    private int pointsPriceProject;
+
+    @Value("${app.points.reopen:9}")
+    private int pointsPriceReopen;
+
+    @Value("${app.points.validity-days:365}")
+    private int pointsValidityDays;
+
+    @Value("${app.points.expiry-warning-days:10}")
+    private int pointsExpiryWarningDays;
 
     @Value("${app.project-credit.currency:INR}")
     private String currency;
@@ -95,9 +115,33 @@ public class PricingService {
         return kioskPricePaise;
     }
 
-    /** Points the shop earns per kiosk sale (1 point = 1 paise of spending power). */
-    public int kioskBonusPointsPaise() {
-        return kioskBonusPointsPaise;
+    /** Reward points the shop earns per kiosk sale. */
+    public int kioskBonusPoints() {
+        return kioskBonusPoints;
+    }
+
+    public int pointsPriceImage() {
+        return pointsPriceImage;
+    }
+
+    public int pointsPriceAutoMask() {
+        return pointsPriceAutoMask;
+    }
+
+    public int pointsPriceProject() {
+        return pointsPriceProject;
+    }
+
+    public int pointsPriceReopen() {
+        return pointsPriceReopen;
+    }
+
+    public int pointsValidityDays() {
+        return pointsValidityDays;
+    }
+
+    public int pointsExpiryWarningDays() {
+        return pointsExpiryWarningDays;
     }
 
     /**

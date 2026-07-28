@@ -20,7 +20,7 @@ public class StoreLinkResponse {
     private LocalDateTime createdAt;
 
     /** Points the shop earns per kiosk sale — its reward, in place of a share of the price. */
-    private int bonusPointsPaise;
+    private int bonusPoints;
 
     public static StoreLinkResponse from(StoreLink link) {
         return StoreLinkResponse.builder()
@@ -36,9 +36,9 @@ public class StoreLinkResponse {
     }
 
     /** Stamp the platform-wide numbers the shop needs to read its own link. */
-    public StoreLinkResponse withPlatformPricing(int kioskPricePaise, int bonusPointsPaise) {
+    public StoreLinkResponse withPlatformPricing(int kioskPricePaise, int bonusPoints) {
         this.pricePaise = kioskPricePaise;
-        this.bonusPointsPaise = bonusPointsPaise;
+        this.bonusPoints = bonusPoints;
         return this;
     }
 }
