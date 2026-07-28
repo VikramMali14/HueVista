@@ -57,6 +57,17 @@ public class AccessCodeService {
     private final com.gridstore.huevista.project.repository.ProjectRepository projectRepository;
     private final ProjectGrantService projectGrantService;
 
+    /**
+     * This bean through its own proxy, for the expiry sweep's per-code REQUIRES_NEW.
+     *
+     * A self-reference has to be resolved lazily or the bean cannot be constructed at
+     * all. An {@code ObjectProvider} does that by construction — {@code @Lazy} would
+     * need Lombok told to copy the annotation onto the generated constructor parameter
+     * (a build-wide {@code lombok.config} change), and without that it is silently
+     * dropped and the context fails to start.
+     */
+    private final org.springframework.beans.factory.ObjectProvider<AccessCodeService> self;
+
     private static final String CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
     private static final int CODE_LENGTH = 8;
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -130,7 +141,7 @@ public class AccessCodeService {
      * has no active plan or not enough remaining quota — the retailer must top up or assign
      * fewer projects.
      */
-    private void reserveProjectQuota(String orgId, int projectQuota) {
+    private Subscription reserveProjectQuota(String orgId, int projectQuota) {
         String ownerId = resolveOrgOwnerUserId(orgId);
         Subscription sub = subscriptionRepository
                 .findEntitling(ownerId, SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED,
@@ -144,6 +155,7 @@ public class AccessCodeService {
                     + (projectQuota == 1 ? "" : "s") + ". Buy more images or assign fewer.");
         }
         log.info("Held {} image(s) on subscription {} for access-code assignment", projectQuota, sub.getId());
+        return sub;
     }
 
     /**
@@ -178,10 +190,8 @@ public class AccessCodeService {
      * the fact would strand them mid-visit at the counter.
      */
     @Transactional
-    public AccessCodeResponse revokeCode(String requestingUserId, String codeId) {
-        CustomerAccessCode code = codeRepository.findById(codeId)
-                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + codeId));
-        requireOwnerOrManager(requestingUserId, code.getOrganization().getId());
+    public AccessCodeResponse revokeCode(String requestingUserId, String orgId, String codeId) {
+        CustomerAccessCode code = requireCodeOfOrg(requestingUserId, orgId, codeId);
 
         if (code.isUsed()) {
             throw new IllegalStateException(
@@ -210,12 +220,9 @@ public class AccessCodeService {
      * benefit. To change the count, cancel the code (quota comes back) and issue a new one.
      */
     @Transactional
-    public AccessCodeResponse updateCode(String requestingUserId, String codeId,
+    public AccessCodeResponse updateCode(String requestingUserId, String orgId, String codeId,
                                          GenerateAccessCodeRequest request) {
-        CustomerAccessCode code = codeRepository.findById(codeId)
-                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + codeId));
-        String orgId = code.getOrganization().getId();
-        requireOwnerOrManager(requestingUserId, orgId);
+        CustomerAccessCode code = requireCodeOfOrg(requestingUserId, orgId, codeId);
 
         if (code.isUsed()) {
             throw new IllegalStateException(
@@ -262,15 +269,13 @@ public class AccessCodeService {
      * nobody has redeemed yet has no customer to give more projects to.
      */
     @Transactional
-    public AccessCodeResponse grantExtraProjects(String requestingUserId, String codeId, int projects) {
+    public AccessCodeResponse grantExtraProjects(String requestingUserId, String orgId,
+                                                 String codeId, int projects) {
         if (projects < 1 || projects > MAX_GRANT_PROJECTS) {
             throw new IllegalArgumentException(
                     "Add between 1 and " + MAX_GRANT_PROJECTS + " projects at a time.");
         }
-        CustomerAccessCode code = codeRepository.findById(codeId)
-                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + codeId));
-        String orgId = code.getOrganization().getId();
-        requireOwnerOrManager(requestingUserId, orgId);
+        CustomerAccessCode code = requireCodeOfOrg(requestingUserId, orgId, codeId);
 
         if (code.isRevoked()) {
             throw new IllegalStateException("This code was cancelled — issue a new one instead.");
@@ -279,12 +284,10 @@ public class AccessCodeService {
             throw new IllegalStateException(
                     "This code has expired. Add another 10 days to it first, then grant the projects.");
         }
-        Subscription funding = requireActiveSubscription(orgId,
-                "Your subscription has ended, so there's no image quota to draw from. "
-                + "Renew your plan to add projects to a customer's code.");
-
-        // Same all-or-nothing reservation as generation: one held image per project.
-        reserveProjectQuota(orgId, projects);
+        // One lookup, not two. This used to resolve the subscription once for the gate and
+        // again inside the reservation, through two different queries — so the grant could
+        // be recorded against a different row than the one actually charged.
+        Subscription funding = reserveProjectQuota(orgId, projects);
 
         // Recorded so the shop can take it back if nobody uses it — and only while the
         // billing period that paid for it is still running.
@@ -328,11 +331,8 @@ public class AccessCodeService {
      * — the projects on the code were already paid for; only their deadline moves.
      */
     @Transactional
-    public AccessCodeResponse extendValidity(String requestingUserId, String codeId) {
-        CustomerAccessCode code = codeRepository.findById(codeId)
-                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + codeId));
-        String orgId = code.getOrganization().getId();
-        requireOwnerOrManager(requestingUserId, orgId);
+    public AccessCodeResponse extendValidity(String requestingUserId, String orgId, String codeId) {
+        CustomerAccessCode code = requireCodeOfOrg(requestingUserId, orgId, codeId);
 
         if (code.isRevoked()) {
             throw new IllegalStateException("This code was cancelled — issue a new one instead.");
@@ -413,7 +413,13 @@ public class AccessCodeService {
         int refunded = 0;
         for (CustomerAccessCode code : stale) {
             try {
-                refunded += releaseHeldQuotaInNewTransaction(code.getId());
+                // Through the proxy, NOT this.release…() — a self-call bypasses Spring's
+                // transaction interceptor entirely, so REQUIRES_NEW was silently ignored
+                // and every code shared one transaction. The try/catch then read as
+                // isolation it did not have: one failing row marks the shared transaction
+                // rollback-only, and every refund after it fails at commit. Exactly the
+                // "one bad row must not abort the whole sweep" the comment promises.
+                refunded += self.getObject().releaseHeldQuotaInNewTransaction(code.getId());
             } catch (Exception e) {
                 log.warn("Could not release held quota for expired code {}: {}",
                         code.getId(), e.getMessage());
@@ -701,6 +707,17 @@ public class AccessCodeService {
         if (reEntry && (!accessCode.isGuestRedeemed() || accessCode.getUsedByUser() != null)) {
             throw new IllegalStateException("This access code has already been used");
         }
+        // Re-entry exists for the customer whose phone died mid-visit, and it costs
+        // something: the code is 8 characters on a printed slip, and anyone who reads one
+        // gets a fresh session into that customer's room — able to see and overwrite the
+        // colours they chose — for the code's whole life. Closing the loop at handover
+        // bounds that window to the visit it was meant for. After "send to shop" the
+        // customer is done and the counter has what it needs.
+        if (reEntry && projectRepository.countSentToShopByAccessCodeId(accessCode.getId()) > 0) {
+            throw new IllegalStateException(
+                    "This code's room has already been sent to the shop. "
+                    + "Ask at the counter if you'd like to change anything.");
+        }
 
         if (!reEntry) {
             // Same compare-and-set as redeemCode: only one concurrent redeemer flips the
@@ -769,6 +786,25 @@ public class AccessCodeService {
         CustomerAccessCode code = codeRepository.findById(codeId)
                 .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + codeId));
         requireOwnerOrManager(requestingUserId, code.getOrganization().getId());
+        return code;
+    }
+
+    /**
+     * Load a code and check it really belongs to the org named in the URL.
+     *
+     * Authorisation is on the code's OWN organization, which is what makes these
+     * endpoints safe — but the {@code {orgId}} path segment was simply ignored, so
+     * {@code /organizations/A/access-codes/{a-code-of-B}} authorised against B and, for a
+     * member of both, quietly acted on the wrong shop's code. Not exploitable as it
+     * stood; a URL that lies is a trap for the next change.
+     */
+    private CustomerAccessCode requireCodeOfOrg(String requestingUserId, String orgId, String codeId) {
+        CustomerAccessCode code = codeRepository.findById(codeId)
+                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + codeId));
+        if (!code.getOrganization().getId().equals(orgId)) {
+            throw new ResourceNotFoundException("Access code not found in this shop: " + codeId);
+        }
+        requireOwnerOrManager(requestingUserId, orgId);
         return code;
     }
 

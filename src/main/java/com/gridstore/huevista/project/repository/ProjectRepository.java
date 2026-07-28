@@ -75,6 +75,18 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
     long countByAccessCodeId(@Param("accessCodeId") String accessCodeId);
 
     /**
+     * Rooms under this code the customer has already handed to the shop. Non-zero means
+     * the visit is finished, which is where guest re-entry stops: the code is 8 characters
+     * on a printed slip, and re-entry hands whoever reads one a session into that
+     * customer's room for the code's whole life.
+     */
+    @Query("""
+            SELECT COUNT(p) FROM Project p
+             WHERE p.accessCode.id = :accessCodeId AND p.sentToShopAt IS NOT NULL
+            """)
+    long countSentToShopByAccessCodeId(@Param("accessCodeId") String accessCodeId);
+
+    /**
      * Rooms created per access code as [codeId, count] — one query for a whole
      * page of the shop's codes, so the "projects used" column doesn't cost an
      * extra COUNT per row. Callers must guard against an empty collection

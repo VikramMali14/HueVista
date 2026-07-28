@@ -258,6 +258,36 @@ class GuestFlowIntegrationTest {
                 .andExpect(jsonPath("$.length()").value(3));
     }
 
+    /**
+     * Re-entry closes once the customer has handed their room to the shop.
+     *
+     * Re-entry exists for the customer whose phone died mid-visit, and it costs
+     * something: the code is 8 characters on a printed slip, and anyone who reads one
+     * gets a session into that customer's room — able to see and overwrite the colours
+     * they chose — for the code's whole life. "Send to shop" is the customer saying they
+     * are done, so it is the natural end of that window.
+     */
+    @Test
+    void guest_reentry_ends_once_the_room_is_sent_to_the_shop() throws Exception {
+        String guestToken = redeemAsGuest();
+        String projectId = guestCreateProject(guestToken, guestUpload(guestToken));
+
+        // Before handover, re-entry is fine — this is the dead-phone case.
+        mockMvc.perform(post("/api/access-codes/redeem-guest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + CODE + "\"}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/guest/projects/" + projectId + "/send-to-shop")
+                        .header("Authorization", "Bearer " + guestToken))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/access-codes/redeem-guest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + CODE + "\"}"))
+                .andExpect(status().isConflict());
+    }
+
     @Test
     void guest_reentry_ends_when_the_code_expires() throws Exception {
         // Guest re-entry of a redeemed code is allowed only inside the validity

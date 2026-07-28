@@ -1,6 +1,7 @@
 package com.gridstore.huevista.painter.service;
 
 import com.gridstore.huevista.account.model.Organization;
+import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.auth.model.User;
@@ -34,6 +35,7 @@ public class PainterService {
     private final PainterProfileRepository profileRepository;
     private final PainterRetailerLinkRepository linkRepository;
     private final PaintJobRepository paintJobRepository;
+    private final com.gridstore.huevista.account.repository.OrgMembershipRepository orgMembershipRepository;
 
     @Transactional(readOnly = true)
     public PainterProfileResponse getMyProfile(String userId) {
@@ -112,9 +114,7 @@ public class PainterService {
     public void removePainterFromRetailer(String requesterUserId, String retailerOrgId, String painterUserId) {
         Organization retailer = organizationRepository.findById(retailerOrgId)
                 .orElseThrow(() -> new ResourceNotFoundException("Retailer org not found: " + retailerOrgId));
-        if (!retailer.getOwner().getId().equals(requesterUserId)) {
-            throw new SecurityException("Only the retailer owner may remove painters from their org.");
-        }
+        requireOwnerOrManager(requesterUserId, retailerOrgId);
         PainterRetailerLink link = linkRepository.findByPainterIdAndRetailerId(painterUserId, retailerOrgId)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "No link between painter " + painterUserId + " and retailer " + retailerOrgId));
@@ -128,5 +128,30 @@ public class PainterService {
                 "The shop ended its relationship with this painter.");
         log.info("Painter {} removed from retailer {} — {} open job(s) cancelled",
                 painterUserId, retailerOrgId, cancelled);
+    }
+
+    /**
+     * Owner OR manager, matching every other shop tool.
+     *
+     * Painter management alone tested {@code retailer.getOwner()} directly, so a shop
+     * MANAGER — who can issue customer access codes, grant projects and run the portal —
+     * could not invite a painter or see the shop's jobs. One role check, one answer.
+     */
+    private void requireOwnerOrManager(String userId, String retailerOrgId) {
+        // The org's own owner field OR a membership row. Both, because they are two
+        // records of the same fact and they can disagree: every org provisioned through
+        // AccountService gets an OWNER membership, but one created directly carries only
+        // the owner pointer. Checking membership alone would lock the actual owner out of
+        // their own shop.
+        boolean ok = organizationRepository.findById(retailerOrgId)
+                        .map(o -> o.getOwner() != null && o.getOwner().getId().equals(userId))
+                        .orElse(false)
+                || orgMembershipRepository.existsByUserIdAndOrganizationIdAndRole(
+                        userId, retailerOrgId, OrgMemberRole.OWNER)
+                || orgMembershipRepository.existsByUserIdAndOrganizationIdAndRole(
+                        userId, retailerOrgId, OrgMemberRole.MANAGER);
+        if (!ok) {
+            throw new SecurityException("Only the shop owner or a manager can do that.");
+        }
     }
 }

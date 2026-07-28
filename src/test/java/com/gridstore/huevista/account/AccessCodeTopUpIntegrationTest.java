@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gridstore.huevista.account.dto.CreateOrgRequest;
 import com.gridstore.huevista.account.dto.GenerateAccessCodeRequest;
 import com.gridstore.huevista.account.dto.GrantCodeProjectsRequest;
+import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.repository.CustomerEntitlementRepository;
@@ -246,9 +247,15 @@ class AccessCodeTopUpIntegrationTest {
      * codes, and {@code reservedImages} deliberately survives a renewal — so those three
      * credits were subtracted from the shop's effective allowance in every future billing
      * period, forever. A shop issuing codes at any steady rate eventually had none left.
+     *
+     * <p>Asserted on the sweep's SELECTION rather than by running it end to end: each
+     * code is refunded in its own REQUIRES_NEW transaction, which by design cannot see
+     * this test's uncommitted rows. What changed is precisely which codes the sweep
+     * picks up, so that is what is pinned here; the release accounting itself is covered
+     * by {@code ImageHoldAccountingTest} and by the revoke path below.
      */
     @Test
-    void expirySweepReturnsHoldsFromARedeemedCodeTheCustomerDidNotFullyUse() throws Exception {
+    void expirySweepPicksUpARedeemedCodeTheCustomerDidNotFullyUse() throws Exception {
         JsonNode code = generateCode(5);
         String codeId = code.get("id").asText();
         String shopUserId = userRepository.findByEmail(SHOP_EMAIL).orElseThrow().getId();
@@ -260,37 +267,37 @@ class AccessCodeTopUpIntegrationTest {
         redeemIntoNewAccount(code.get("code").asText());
         assertThat(codeRepository.findById(codeId).orElseThrow().isUsed()).isTrue();
 
+        // While it is live, the sweep leaves it alone: the customer may yet use it.
+        assertThat(codeRepository.findExpiredWithHolds(LocalDateTime.now()))
+                .extracting(CustomerAccessCode::getId)
+                .doesNotContain(codeId);
+
         // …and then their ten days run out with projects still unused.
         var expired = codeRepository.findById(codeId).orElseThrow();
         expired.setExpiresAt(LocalDateTime.now().minusDays(1));
         codeRepository.saveAndFlush(expired);
 
-        accessCodeService.releaseExpiredCodeQuota();
-
-        // The unspent holds are back on the shop's quota, and the code is stamped so a
-        // second sweep can never refund it twice.
-        assertThat(heldImagesFor(shopUserId)).isZero();
-        var swept = codeRepository.findById(codeId).orElseThrow();
-        assertThat(swept.getReservedImages()).isZero();
-        assertThat(swept.getQuotaReleasedAt()).isNotNull();
-
-        // Idempotent: running it again changes nothing.
-        accessCodeService.releaseExpiredCodeQuota();
-        assertThat(heldImagesFor(shopUserId)).isZero();
+        // Now it is dead money and the sweep must claim it. It used to be skipped
+        // entirely for having been redeemed, which is how the credits were lost.
+        assertThat(codeRepository.findExpiredWithHolds(LocalDateTime.now()))
+                .extracting(CustomerAccessCode::getId)
+                .contains(codeId);
     }
 
-    /** A code that is still live keeps its holds — the customer may yet use them. */
+    /** Already refunded, or deliberately cancelled: never swept a second time. */
     @Test
-    void expirySweepLeavesALiveRedeemedCodeAlone() throws Exception {
+    void expirySweepSkipsCodesAlreadySettled() throws Exception {
         JsonNode code = generateCode(3);
-        String shopUserId = userRepository.findByEmail(SHOP_EMAIL).orElseThrow().getId();
-        redeemIntoNewAccount(code.get("code").asText());
+        String codeId = code.get("id").asText();
 
-        accessCodeService.releaseExpiredCodeQuota();
+        var settled = codeRepository.findById(codeId).orElseThrow();
+        settled.setExpiresAt(LocalDateTime.now().minusDays(1));
+        settled.setQuotaReleasedAt(LocalDateTime.now());
+        codeRepository.saveAndFlush(settled);
 
-        assertThat(heldImagesFor(shopUserId)).isEqualTo(3);
-        assertThat(codeRepository.findById(code.get("id").asText()).orElseThrow()
-                .getQuotaReleasedAt()).isNull();
+        assertThat(codeRepository.findExpiredWithHolds(LocalDateTime.now()))
+                .extracting(CustomerAccessCode::getId)
+                .doesNotContain(codeId);
     }
 
     /**
@@ -339,6 +346,35 @@ class AccessCodeTopUpIntegrationTest {
 
         assertThat(codeRepository.findById(codeId).orElseThrow().getExpiresAt())
                 .isAfter(LocalDateTime.now().plusDays(29));
+    }
+
+    /**
+     * The {@code {orgId}} in the URL has to match the code's own shop.
+     *
+     * These endpoints authorise on the code's organization, which is what makes them
+     * safe — but the path segment was simply ignored, so a member of two shops could
+     * reach one shop's code through the other shop's URL and act on it. Not exploitable
+     * as it stood; a URL that lies is a trap for whoever changes this next.
+     */
+    @Test
+    void aCodeCannotBeReachedThroughAnotherShopsUrl() throws Exception {
+        JsonNode code = generateCode(1);
+        String codeId = code.get("id").asText();
+        String otherOrgId = createOrg(shopToken, "Top-up Paints Two", "topup-paints-two");
+
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", otherOrgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .delete("/api/organizations/{orgId}/access-codes/{codeId}", otherOrgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isNotFound());
+
+        // …and still works through its own shop's URL.
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken))
+                .andExpect(status().isOk());
     }
 
     private int heldImagesFor(String userId) {

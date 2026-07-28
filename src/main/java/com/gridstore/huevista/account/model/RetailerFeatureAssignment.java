@@ -34,9 +34,9 @@ public class RetailerFeatureAssignment {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    /** The distributor org that granted this page. */
+    /** The distributor org that granted this page — null when an admin granted it directly. */
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "distributor_id", nullable = false)
+    @JoinColumn(name = "distributor_id")
     private Organization distributor;
 
     /** The retailer (shop) org the page is granted to. */
