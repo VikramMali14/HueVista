@@ -278,18 +278,23 @@ be answerable in one line.
 
 A walk-in at `/store/{slug}` pays a **flat ₹99 that is entirely HueVista's**, for
 a HueVista visualisation. The shop does not set that price and takes no share of
-it. What the shop earns is **39 reward points** credited to its billing wallet —
-₹39 of spending power on extra images, AI auto-masks and projects, with no way to
-withdraw it as cash.
+it. What the shop earns is **30 points**, spendable on extra images, AI auto-masks
+and projects, with no way to withdraw them as cash.
 
 So on your application the kiosk is simply "customers buy a room visualisation
 from us at a fixed price", and there is no third-party settlement to explain.
 
-**Points are a loyalty benefit, not a payment instrument.** They are granted
-free, have no cash value, cannot be bought or transferred, expire after a year,
-and buy only HueVista's own services at a price list quoted in points. That is
-what `/legal/terms` §5 and `/legal/refunds` §6 say, and it is what makes them
-uninteresting to a payments reviewer.
+**Points are prepaid credit for our own services, not a payment instrument.**
+Describe them that way, because they can now be bought as well as earned, and
+"loyalty points" would understate what a shop is buying. What keeps them
+uninteresting to a reviewer is what they cannot do: no cash value, not
+transferable between accounts, not withdrawable, not spendable anywhere but on
+HueVista's own services, and expiring after a year. That is what `/legal/terms`
+§5 and `/legal/refunds` §§5–6 say.
+
+Buying points is an ordinary prepaid purchase of digital services, delivered
+instantly — the same shape as topping up any SaaS account. It is `/legal/delivery`
+§4 that covers it for the review.
 
 **Do not add a cash-out path for points.** Paying a shop's balance to a bank
 account or UPI id would turn every kiosk sale back into a payment collected on
