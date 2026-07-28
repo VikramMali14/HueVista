@@ -158,4 +158,24 @@ class AdminTwoFactorIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accessToken").isNotEmpty());
     }
+
+    /**
+     * SMTP configured but broken (wrong password, host down) is NOT the same as
+     * "no SMTP": delivery was promised, so the login fails closed with a 503 the
+     * UI can explain — never a 500, and never a token, because handing one out
+     * would let anyone able to break SMTP walk straight past the second factor.
+     */
+    @Test
+    void broken_smtp_fails_the_admin_login_closed_with_503() throws Exception {
+        when(emailSender.isDeliveryEnabled()).thenReturn(true);
+        org.mockito.Mockito.doThrow(new org.springframework.mail.MailAuthenticationException("535 bad credentials"))
+                .when(emailSender).send(anyString(), anyString(), anyString());
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(loginBody("admin2fa@huevista.com", "admin-pass")))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.accessToken").doesNotExist())
+                .andExpect(jsonPath("$.refreshToken").doesNotExist());
+    }
 }
