@@ -160,7 +160,7 @@ public class Project {
 
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default
-    private int purchasePricePaise = 0;
+    private int purchasePoints = 0;
 
     /** True when this project carries a paid window at all (running or paused). */
     public boolean hasAccessWindow() {

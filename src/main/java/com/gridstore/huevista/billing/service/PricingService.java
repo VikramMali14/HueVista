@@ -5,17 +5,16 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
- * One place that answers "what does this cost, for this account, right now?".
+ * One place that answers "what does this cost?".
  *
- * Every price in the product now has two faces — one for an account with a live
- * subscription and one for an account without — and the second is always the one a
- * lapsed shop hits. Scattering that pair across the kiosk, the project-credit checkout
- * and the retailer panel is how the three drift apart and the customer is quoted one
- * number and charged another, so they all read from here.
+ * There are exactly two prices denominated in money: a monthly plan, and buying points.
+ * Everything else a shop can spend on — extra images, auto-masks, projects, reopens —
+ * is priced in POINTS and nothing else. There is no prepaid rupee wallet and no
+ * per-item cash checkout, so a purchase has one price rather than a cash price and a
+ * points price that can drift apart.
  *
- * Cash prices are in paise (Rs. 1 = 100 paise) to match Razorpay. Reward-point prices
- * are in whole points and are a SEPARATE list, not a conversion of the cash one — see
- * {@link #pointsPriceImage()}.
+ * Cash amounts are in paise (Rs. 1 = 100 paise) to match Razorpay; point prices are in
+ * whole points.
  */
 @Service
 @RequiredArgsConstructor
@@ -23,18 +22,6 @@ public class PricingService {
 
     private final BillingService billingService;
     private final com.gridstore.huevista.account.repository.OrgMembershipRepository membershipRepository;
-
-    /** One extra project, bought while the account holds a live subscription. */
-    @Value("${app.project-credit.subscribed-paise:5000}")
-    private int projectSubscribedPaise;
-
-    /** One project, bought with no subscription — the standalone price. */
-    @Value("${app.project-credit.unsubscribed-paise:9900}")
-    private int projectUnsubscribedPaise;
-
-    /** Reopening a project whose paid window has run out. */
-    @Value("${app.project-credit.reopen-paise:900}")
-    private int projectReopenPaise;
 
     /** Days of access a purchased project (or a reopen) opens. */
     @Value("${app.project-credit.valid-days:30}")
@@ -57,9 +44,18 @@ public class PricingService {
     @Value("${app.store.bonus-points:30}")
     private int kioskBonusPoints;
 
-    // Reward-point prices. Their own list, NOT a rupee conversion — a point buys
-    // slightly more than its cash equivalent (40 points for a Rs. 50 image), which is
-    // the whole reward. Every quote of a point price in the product reads from here.
+    // The point price list — the only prices these things have. Every quote of one in
+    // the product reads from here.
+    /** Rupees per point when buying. One rupee, one point. */
+    @Value("${app.points.rupees-per-point:1}")
+    private int rupeesPerPoint;
+
+    @Value("${app.points.min-purchase:100}")
+    private int pointsMinPurchase;
+
+    @Value("${app.points.max-purchase:100000}")
+    private int pointsMaxPurchase;
+
     @Value("${app.points.image:40}")
     private int pointsPriceImage;
 
@@ -85,25 +81,24 @@ public class PricingService {
         return billingService.findEntitlingSubscription(userId).isPresent();
     }
 
-    /** What one more project costs {@code userId} today. */
-    public int projectPricePaise(String userId) {
-        return projectPricePaise(isSubscribed(userId));
+    /**
+     * What {@code points} cost in paise. The only arithmetic that converts between the
+     * two units, so a change to the rate lands everywhere at once.
+     */
+    public int pointsPricePaise(int points) {
+        return points * rupeesPerPoint * 100;
     }
 
-    public int projectPricePaise(boolean subscribed) {
-        return subscribed ? projectSubscribedPaise : projectUnsubscribedPaise;
+    public int rupeesPerPoint() {
+        return rupeesPerPoint;
     }
 
-    public int projectSubscribedPricePaise() {
-        return projectSubscribedPaise;
+    public int pointsMinPurchase() {
+        return pointsMinPurchase;
     }
 
-    public int projectUnsubscribedPricePaise() {
-        return projectUnsubscribedPaise;
-    }
-
-    public int projectReopenPricePaise() {
-        return projectReopenPaise;
+    public int pointsMaxPurchase() {
+        return pointsMaxPurchase;
     }
 
     public int projectValidDays() {

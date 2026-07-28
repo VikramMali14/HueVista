@@ -12,9 +12,9 @@ import java.util.List;
  * A shop's reward-point standing: what it can spend, what each thing costs in points,
  * and — because points expire — exactly which batch dies when.
  *
- * Deliberately carries no rupee figure. Points buy at their own prices, and putting a
- * "worth ₹X" next to them would invite the shop to treat them as cash, which is the one
- * thing they are not.
+ * The only rupee figure here is what points COST to buy. There is deliberately no
+ * "your balance is worth ₹X" — points are spent at point prices, and pricing the balance
+ * in money invites treating it as money, which is the one thing it is not.
  */
 @Data
 @Builder
@@ -25,6 +25,11 @@ public class RewardPointsSummaryResponse {
 
     /** Points the shop earns per kiosk sale. */
     private int pointsPerSale;
+
+    /** What buying costs: rupees per point, and the bounds on one purchase. */
+    private int rupeesPerPoint;
+    private int minPurchase;
+    private int maxPurchase;
 
     /** How long a batch lasts from the day it is earned. */
     private int validityDays;

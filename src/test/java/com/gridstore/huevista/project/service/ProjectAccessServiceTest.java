@@ -34,7 +34,7 @@ import static org.mockito.Mockito.when;
  */
 class ProjectAccessServiceTest {
 
-    private static final int REOPEN_PAISE = 900;
+    private static final int REOPEN_POINTS = 9;
 
     private BillingService billing;
     private PricingService pricing;
@@ -44,7 +44,7 @@ class ProjectAccessServiceTest {
     void setUp() {
         billing = mock(BillingService.class);
         pricing = new PricingService(billing, mock(OrgMembershipRepository.class));
-        ReflectionTestUtils.setField(pricing, "projectReopenPaise", REOPEN_PAISE);
+        ReflectionTestUtils.setField(pricing, "pointsPriceReopen", REOPEN_POINTS);
         ReflectionTestUtils.setField(pricing, "projectValidDays", 30);
         access = new ProjectAccessService(mock(ProjectRepository.class), billing, pricing);
         when(billing.findEntitlingSubscription(any())).thenReturn(Optional.empty());
@@ -117,7 +117,7 @@ class ProjectAccessServiceTest {
 
         assertThat(result.editable()).isFalse();
         assertThat(result.reason()).contains("validity has ended");
-        assertThat(result.reopenPricePaise()).isEqualTo(REOPEN_PAISE);
+        assertThat(result.reopenPricePoints()).isEqualTo(REOPEN_POINTS);
     }
 
     // ─── Pause / resume ──────────────────────────────────────────────────────
@@ -198,22 +198,22 @@ class ProjectAccessServiceTest {
     @Test
     void buyingWhileSubscribedBanksTheDaysInsteadOfBurningThem() {
         Project bought = Project.builder().id("p").build();
-        access.openWindow(bought, 30, 5000, true);
+        access.openWindow(bought, 30, 80, true);
 
         assertThat(bought.getAccessPausedAt()).isNotNull();
         assertThat(bought.getAccessExpiresAt()).isNull();
         assertThat(bought.getAccessRemainingSeconds()).isEqualTo(Duration.ofDays(30).toSeconds());
-        assertThat(bought.getPurchasePricePaise()).isEqualTo(5000);
+        assertThat(bought.getPurchasePoints()).isEqualTo(80);
     }
 
     @Test
     void buyingWithoutASubscriptionStartsTheClockImmediately() {
         Project bought = Project.builder().id("p").build();
-        access.openWindow(bought, 30, 9900, false);
+        access.openWindow(bought, 30, 80, false);
 
         assertThat(bought.getAccessPausedAt()).isNull();
         assertThat(bought.getAccessExpiresAt()).isAfter(LocalDateTime.now().plusDays(29));
-        assertThat(bought.getPurchasePricePaise()).isEqualTo(9900);
+        assertThat(bought.getPurchasePoints()).isEqualTo(80);
     }
 
     /** Reopening early must not destroy days already paid for. */

@@ -34,7 +34,7 @@ public class AuthService {
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final com.gridstore.huevista.notification.EmailSender emailSender;
-    private final com.gridstore.huevista.billing.service.BillingWalletService billingWalletService;
+    private final com.gridstore.huevista.billing.service.RewardPointsService rewardPointsService;
 
     /**
      * How long a new shop's free trial runs. Seven days with three projects on it: long
@@ -55,7 +55,7 @@ public class AuthService {
                        com.gridstore.huevista.billing.service.BillingService billingService,
                        com.gridstore.huevista.common.audit.AuditService auditService,
                        com.gridstore.huevista.notification.EmailSender emailSender,
-                       @Lazy com.gridstore.huevista.billing.service.BillingWalletService billingWalletService) {
+                       @Lazy com.gridstore.huevista.billing.service.RewardPointsService rewardPointsService) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.oauthExchangeCodeRepository = oauthExchangeCodeRepository;
@@ -67,7 +67,7 @@ public class AuthService {
         this.billingService = billingService;
         this.auditService = auditService;
         this.emailSender = emailSender;
-        this.billingWalletService = billingWalletService;
+        this.rewardPointsService = rewardPointsService;
     }
 
     @Value("${app.refresh-token.expiration-ms}")
@@ -432,18 +432,19 @@ public class AuthService {
             log.warn("Could not end subscriptions while deleting account {}: {}", userId, e.getMessage());
         }
 
-        // 2) Flag any money left behind so support can settle it — the balance itself is
-        //    refunded by an admin (the transfer is manual), but it must not be invisible.
+        // 2) Record any unspent points so a support query later has an answer. Nothing is
+        //    owed on them — points are not money, cannot be cashed out, and some were
+        //    granted free — but a shop that paid for some and then deleted the account
+        //    will ask, and "we have no idea" is not a reply.
         try {
-            long stranded = billingWalletService.balancePaise(userId);
+            int stranded = rewardPointsService.balance(userId);
             if (stranded > 0) {
-                log.warn("Account {} deleted with {} paise still in its billing wallet — needs a manual refund",
-                        userId, stranded);
-                auditService.record(userId, "ACCOUNT_DELETED_WITH_WALLET_BALANCE", "USER", userId,
-                        "balancePaise=" + stranded);
+                log.warn("Account {} deleted holding {} unspent points", userId, stranded);
+                auditService.record(userId, "ACCOUNT_DELETED_WITH_POINTS", "USER", userId,
+                        "points=" + stranded);
             }
         } catch (Exception e) {
-            log.warn("Could not read wallet balance while deleting account {}: {}", userId, e.getMessage());
+            log.warn("Could not read point balance while deleting account {}: {}", userId, e.getMessage());
         }
 
         refreshTokenRepository.deleteByUser(user);

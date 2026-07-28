@@ -22,9 +22,9 @@ import lombok.RequiredArgsConstructor;
  *
  * Prices are BASE prices in paise; GST ({@link #GST_PERCENT}) is added on
  * top — see {@link #priceWithTaxInPaise()}. GST is currently 0, so the
- * with-tax amounts equal the base prices. Once the image quota is spent,
- * extra images can be bought one at a time at
- * {@link #IMAGE_OVERAGE_PRICE_PAISE}.
+ * with-tax amounts equal the base prices. Once a quota is spent, extra images
+ * and auto-mask runs are bought with POINTS, priced in
+ * {@code PricingService} — a plan tier does not set those.
  */
 @Getter
 @RequiredArgsConstructor
@@ -48,15 +48,6 @@ public enum Plan {
      *  are billed and shown flat, with no tax added. Restore to 18 to re-enable
      *  GST once the project is registered. */
     public static final int GST_PERCENT = 0;
-
-    /** Base price of ONE extra image once the monthly image quota is spent
-     *  (Rs. 50 — covers the ~Rs. 40 full pipeline cost). */
-    public static final int IMAGE_OVERAGE_PRICE_PAISE = 5000;
-
-    /** Base price of ONE extra AI auto-mask run once the monthly auto-mask
-     *  allowance is spent (Rs. 25 — covers the ~Rs. 15 model cost). Payable
-     *  from the prepaid billing wallet. */
-    public static final int AUTO_MASK_OVERAGE_PRICE_PAISE = 2500;
 
     private final int priceInPaise;           // base price, -1 = custom pricing
     private final int monthlyImageLimit;      // images processed / cycle (MAX_VALUE = unlimited)
@@ -82,16 +73,6 @@ public enum Plan {
 
     public double priceWithTaxInRupees() {
         return priceInPaise < 0 ? -1 : priceWithTaxInPaise() / 100.0;
-    }
-
-    /** Price of one extra image incl. GST, in paise (Rs. 50 at 0% GST). */
-    public static int imageOveragePriceWithTaxInPaise() {
-        return IMAGE_OVERAGE_PRICE_PAISE * (100 + GST_PERCENT) / 100;
-    }
-
-    /** Price of one extra AI auto-mask run incl. GST, in paise (Rs. 25 at 0% GST). */
-    public static int autoMaskOveragePriceWithTaxInPaise() {
-        return AUTO_MASK_OVERAGE_PRICE_PAISE * (100 + GST_PERCENT) / 100;
     }
 
     /** True when switching from {@code current} to this plan is a step UP the

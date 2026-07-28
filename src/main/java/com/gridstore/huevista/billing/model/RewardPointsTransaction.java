@@ -24,6 +24,8 @@ public class RewardPointsTransaction {
     public enum Type {
         /** A walk-in bought a visualisation through this shop's kiosk link. */
         KIOSK_EARNED,
+        /** The shop bought points outright. Worth exactly the same as earned ones. */
+        PURCHASED,
         /** That kiosk payment was refunded, so its points came back out. */
         KIOSK_REVERSED,
         /** Points that reached their first birthday unspent. */

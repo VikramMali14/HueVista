@@ -30,15 +30,15 @@ public class ProjectCreditLedger {
 
     /** Credit a verified purchase. Returns the credit so the caller can report its terms. */
     @Transactional
-    public ProjectCredit issue(String userId, int pricePaise, int validDays, ProjectCredit.Source source) {
+    public ProjectCredit issue(String userId, int pointsSpent, int validDays, ProjectCredit.Source source) {
         ProjectCredit credit = creditRepository.save(ProjectCredit.builder()
                 .userId(userId)
-                .pricePaise(pricePaise)
+                .pointsSpent(pointsSpent)
                 .validDays(validDays)
                 .source(source)
                 .build());
         log.info("Project credit issued: user={} price={} validDays={} source={}",
-                userId, pricePaise, validDays, source);
+                userId, pointsSpent, validDays, source);
         return credit;
     }
 

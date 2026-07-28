@@ -27,9 +27,7 @@ public class BillingController {
 
     private final BillingService billingService;
     private final PdfQuotaService pdfQuotaService;
-    private final com.gridstore.huevista.billing.service.ImageCreditService imageCreditService;
-    private final com.gridstore.huevista.billing.service.BillingWalletService walletService;
-    private final com.gridstore.huevista.billing.service.ProjectCreditService projectCreditService;
+    private final com.gridstore.huevista.billing.service.PricingService pricingService;
 
     @Operation(summary = "Create subscription",
             description = "Creates a Razorpay subscription and returns a payment URL for checkout.")
@@ -88,7 +86,7 @@ public class BillingController {
 
     @Operation(summary = "Get available plans",
             description = "Returns all plan options with base pricing, GST, image / auto-mask / PDF "
-                    + "limits and the pay-per-image overage price.")
+                    + "limits and the point price of overage.")
     @GetMapping("/plans")
     public ResponseEntity<List<Map<String, Object>>> getPlans() {
         // FREE is granted with a new shop, never sold — listing it here would put a
@@ -117,111 +115,13 @@ public class BillingController {
                 m.put("pdfImageLimit", p.getPdfImageLimit());
                 m.put("monthlyPdfLimit", p.getMonthlyPdfLimit() == Integer.MAX_VALUE
                         ? "unlimited" : p.getMonthlyPdfLimit());
-                m.put("imageOveragePriceInPaise",
-                        com.gridstore.huevista.billing.model.Plan.IMAGE_OVERAGE_PRICE_PAISE);
-                m.put("imageOveragePriceWithTaxInPaise",
-                        com.gridstore.huevista.billing.model.Plan.imageOveragePriceWithTaxInPaise());
-                m.put("autoMaskOveragePriceInPaise",
-                        com.gridstore.huevista.billing.model.Plan.AUTO_MASK_OVERAGE_PRICE_PAISE);
-                m.put("autoMaskOveragePriceWithTaxInPaise",
-                        com.gridstore.huevista.billing.model.Plan.autoMaskOveragePriceWithTaxInPaise());
+                // Overage is priced in POINTS, not rupees — there is no cash per-item
+                // checkout to quote a rupee figure for.
+                m.put("imageOveragePricePoints", pricingService.pointsPriceImage());
+                m.put("autoMaskOveragePricePoints", pricingService.pointsPriceAutoMask());
                 return m;
             }).toList();
         return ResponseEntity.ok(plans);
-    }
-
-    @Operation(summary = "Buy one extra image (order)",
-            description = "Creates a one-time Razorpay order for a single extra image at Rs. 50, "
-                    + "used once the monthly image quota is spent. Requires an active subscription.")
-    @PostMapping("/image-credits/order")
-    public ResponseEntity<com.gridstore.huevista.billing.dto.ProjectCreditOrderResponse> createImageCreditOrder(
-            @AuthenticationPrincipal UserDetails userDetails) {
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(imageCreditService.createOrder(userDetails.getUsername()));
-    }
-
-    @Operation(summary = "Buy one extra image (verify)",
-            description = "Verifies the Razorpay Checkout signature and credits one extra image to the "
-                    + "active subscription. Replay-protected — one payment buys exactly one image.")
-    @PostMapping("/image-credits/verify")
-    public ResponseEntity<SubscriptionResponse> verifyImageCredit(
-            @AuthenticationPrincipal UserDetails userDetails,
-            @Valid @RequestBody com.gridstore.huevista.billing.dto.VerifyProjectCreditRequest request) {
-        return ResponseEntity.ok(imageCreditService.verifyAndCredit(userDetails.getUsername(), request));
-    }
-
-    // ── Prepaid billing wallet ───────────────────────────────────────────────
-
-    @Operation(summary = "Get my billing wallet",
-            description = "Prepaid wallet balance, pay-per-use prices and the recent statement. "
-                    + "The wallet pays for overage (extra images at Rs. 50, extra AI "
-                    + "auto-masks at Rs. 25) once monthly allowances are spent.")
-    @GetMapping("/wallet")
-    public ResponseEntity<com.gridstore.huevista.billing.dto.BillingWalletSummaryResponse> getWallet(
-            @AuthenticationPrincipal UserDetails userDetails) {
-        return ResponseEntity.ok(walletService.getWallet(userDetails.getUsername()));
-    }
-
-    @Operation(summary = "Top up the wallet (order)",
-            description = "Creates a one-time Razorpay order that adds the paid amount to the wallet "
-                    + "once verified. Requires an active subscription.")
-    @PostMapping("/wallet/topup/order")
-    public ResponseEntity<com.gridstore.huevista.billing.dto.ProjectCreditOrderResponse> createWalletTopUpOrder(
-            @AuthenticationPrincipal UserDetails userDetails,
-            @Valid @RequestBody com.gridstore.huevista.billing.dto.WalletTopUpRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(walletService.createTopUpOrder(userDetails.getUsername(), request.getAmountPaise()));
-    }
-
-    @Operation(summary = "Top up the wallet (verify)",
-            description = "Verifies the Razorpay Checkout signature and credits the order amount to the "
-                    + "wallet. Replay-protected — one payment credits exactly once.")
-    @PostMapping("/wallet/topup/verify")
-    public ResponseEntity<com.gridstore.huevista.billing.dto.BillingWalletSummaryResponse> verifyWalletTopUp(
-            @AuthenticationPrincipal UserDetails userDetails,
-            @Valid @RequestBody com.gridstore.huevista.billing.dto.VerifyProjectCreditRequest request) {
-        return ResponseEntity.ok(walletService.verifyTopUp(userDetails.getUsername(), request));
-    }
-
-    @Operation(summary = "Pay for one extra image from the wallet",
-            description = "Atomically debits Rs. 50 from the wallet and credits one "
-                    + "extra image to the active subscription. 402 when the balance is insufficient.")
-    @PostMapping("/wallet/pay/image-credit")
-    public ResponseEntity<SubscriptionResponse> walletPayImageCredit(
-            @AuthenticationPrincipal UserDetails userDetails) {
-        return ResponseEntity.ok(walletService.payForImageCredit(userDetails.getUsername()));
-    }
-
-    @Operation(summary = "Pay for one extra AI auto-mask from the wallet",
-            description = "Atomically debits Rs. 25 from the wallet and credits one "
-                    + "extra AI auto-mask run to the active subscription. 402 when the balance is "
-                    + "insufficient.")
-    @PostMapping("/wallet/pay/auto-mask-credit")
-    public ResponseEntity<SubscriptionResponse> walletPayAutoMaskCredit(
-            @AuthenticationPrincipal UserDetails userDetails) {
-        return ResponseEntity.ok(walletService.payForAutoMaskCredit(userDetails.getUsername()));
-    }
-
-    @Operation(summary = "Buy one project from the wallet",
-            description = "Atomically debits the project price (Rs. 50 while subscribed, Rs. 99 "
-                    + "without) from the wallet and issues one project credit. This is what gives "
-                    + "kiosk reward points their value to a shop with no active plan. 402 when the "
-                    + "balance is insufficient.")
-    @PostMapping("/wallet/pay/project-credit")
-    public ResponseEntity<com.gridstore.huevista.billing.dto.ProjectPurchaseOptionsResponse> walletPayProjectCredit(
-            @AuthenticationPrincipal UserDetails userDetails) {
-        return ResponseEntity.ok(projectCreditService.payWithWallet(userDetails.getUsername()));
-    }
-
-    @Operation(summary = "Reopen a project from the wallet",
-            description = "Atomically debits the reopen price (Rs. 9) from the wallet and gives the "
-                    + "project another validity window. 402 when the balance is insufficient.")
-    @PostMapping("/wallet/pay/project-reopen/{projectId}")
-    public ResponseEntity<com.gridstore.huevista.billing.dto.ProjectReopenResponse> walletPayProjectReopen(
-            @AuthenticationPrincipal UserDetails userDetails,
-            @PathVariable String projectId) {
-        return ResponseEntity.ok(
-                projectCreditService.reopenWithWallet(userDetails.getUsername(), projectId));
     }
 
     @Operation(summary = "Get my colour-board PDF allowance",

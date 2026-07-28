@@ -17,14 +17,19 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * The reward-point ledger: earned from kiosk sales, spent on HueVista services, expiring
- * a year after the day each batch was earned.
+ * The point ledger: the only balance in the product.
  *
- * <p><b>Points are not wallet money and this is not the wallet.</b> They have their own
- * price list ({@link PricingService#pointsPriceImage()} and friends) under which a point
- * buys more than its cash equivalent, and they expire, which prepaid top-ups never do.
- * Holding both in one balance would make it impossible to say which price applied or
- * which rupees died — so they are separate ledgers that a shop simply sees side by side.
+ * Points arrive two ways — earned when a walk-in buys through the shop's kiosk link, or
+ * bought outright at {@link PricingService#rupeesPerPoint()} rupees each — and are spent
+ * on everything chargeable besides the monthly plan: extra images, auto-masks, projects,
+ * reopens. There is no prepaid rupee wallet beside this and no per-item cash checkout;
+ * both existed once and were removed, so a purchase has exactly one price in exactly one
+ * unit.
+ *
+ * <p>Bought and earned points are deliberately indistinguishable once credited. They
+ * expire on the same one-year clock and buy the same things at the same prices, so the
+ * ledger never has to answer "which kind of point was that" — which is what would make a
+ * refund, an expiry or a spend ambiguous.
  *
  * <p><b>Retailers only.</b> Everything points buy is shop-side (plan overage, projects),
  * so a customer or painter account can neither earn nor spend them. The check is here
@@ -61,6 +66,21 @@ public class RewardPointsService {
         return transactionRepository.findTop20ByUserIdOrderByCreatedAtDesc(userId);
     }
 
+    // ── Buy ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Credit points a shop paid for, opening a batch dated a year out like any other.
+     *
+     * Replay protection lives with the caller, which claims the Razorpay payment id
+     * before getting here — one payment credits one batch.
+     */
+    @Transactional
+    public void creditPurchasedPoints(String userId, int points, String reference) {
+        requireRetailer(userId);
+        creditBatch(userId, points, reference, RewardPointsTransaction.Type.PURCHASED);
+        log.info("Points purchased: user={} points={} payment={}", userId, points, reference);
+    }
+
     // ── Earn ────────────────────────────────────────────────────────────────
 
     /**
@@ -85,6 +105,20 @@ public class RewardPointsService {
                     userId, reference);
             return;
         }
+        creditBatch(userId, points, reference, RewardPointsTransaction.Type.KIOSK_EARNED);
+        log.info("Kiosk points earned: user={} points={} payment={}", userId, points, reference);
+    }
+
+    /**
+     * Open a dated batch, settling any outstanding refund debt first.
+     *
+     * Shared by earning and buying because the two must behave identically once the
+     * points exist: same one-year clock, same debt settlement, same journal shape. A shop
+     * that went negative on a refund earns or buys its way back rather than carrying the
+     * shortfall behind a fresh, differently-dated batch.
+     */
+    private void creditBatch(String userId, int points, String reference,
+                             RewardPointsTransaction.Type type) {
         LocalDateTime now = LocalDateTime.now();
         int left = points;
 
@@ -108,8 +142,7 @@ public class RewardPointsService {
                     .sourceReference(reference)
                     .build());
         }
-        journal(userId, points, RewardPointsTransaction.Type.KIOSK_EARNED, reference);
-        log.info("Kiosk points earned: user={} points={} payment={}", userId, points, reference);
+        journal(userId, points, type, reference);
     }
 
     /**

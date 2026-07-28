@@ -136,7 +136,7 @@ public class ProjectService {
             // silently burnt down behind a plan that was already covering them.
             if (credit != null) {
                 projectAccessService.openWindow(project, credit.getValidDays(),
-                        credit.getPricePaise(), subscribed);
+                        credit.getPointsSpent(), subscribed);
             }
 
             project = projectRepository.save(project);
@@ -172,16 +172,18 @@ public class ProjectService {
      * messages name the standalone price either way, so neither is a dead end.
      */
     private RuntimeException noWayToPayFor(User user) {
-        String buyOne = "Buy a single project for Rs. "
-                + rupees(pricingService.projectUnsubscribedPricePaise())
-                + " — it stays open for " + pricingService.projectValidDays() + " days.";
         if (user.getRole() == com.gridstore.huevista.auth.model.UserRole.RETAILER) {
             return new com.gridstore.huevista.common.exception.SubscriptionRequiredException(
-                    "Your subscription has ended. Subscribe to keep creating projects, or "
-                    + buyOne.substring(0, 1).toLowerCase() + buyOne.substring(1));
+                    "Your subscription has ended. Subscribe to keep creating projects, or spend "
+                    + pricingService.pointsPriceProject() + " points on a single project — it "
+                    + "stays open for " + pricingService.projectValidDays() + " days.");
         }
+        // A customer holds no points and cannot buy any — points are a shop currency, and
+        // there is no cash checkout to fall back on. Their route back in is the shop, so
+        // say that rather than quoting a price they can never pay.
         return new QuotaExceededException(
-                "You don't have a subscription, so each project is bought on its own. " + buyOne);
+                "This project needs a new access code. Ask your paint shop for one, or use "
+                + "their in-store link to buy another visualisation.");
     }
 
     /** Paise → a rupee figure for a user-facing message ("99", "9", "50"). */
@@ -274,7 +276,7 @@ public class ProjectService {
         ProjectAccessService.Access access =
                 projectAccessService.accessFor(userId, user.getRole(), project);
         return response.withAccess(!access.editable(), access.reason(),
-                access.expiresAt(), access.reopenPricePaise());
+                access.expiresAt(), access.reopenPricePoints());
     }
 
     /**

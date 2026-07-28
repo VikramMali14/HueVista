@@ -136,57 +136,46 @@ public class BillingEmailService {
                 """.formatted(firstName(sub.getUser()), planName(sub)));
     }
 
-    /** One-time extra-project purchase receipt. */
-    public void sendProjectCreditPurchased(String userId, int amountPaise) {
+    /** Extra-project purchase receipt. Paid in points, so no invoice follows. */
+    public void sendProjectCreditPurchased(String userId, int points) {
         userRepository.findById(userId).ifPresent(user -> deliver(user,
-                "Payment received — 1 extra HueVista project",
+                "1 extra HueVista project added",
                 """
                 Hi %s,
 
-                Thank you — your payment of Rs. %.2f was received and one extra project has
-                been added to your account. It's ready to use right away.
+                %d points have been spent and one extra project added to your account. It's
+                ready to use right away.
 
-                Razorpay will email you the tax invoice separately.
-
-                — The HueVista team
-                """.formatted(firstName(user), amountPaise / 100.0)));
-    }
-
-    /** One-time pay-per-image overage purchase receipt. */
-    public void sendImageCreditPurchased(String userId, int amountPaise) {
-        userRepository.findById(userId).ifPresent(user -> deliver(user,
-                "Payment received — 1 extra HueVista image",
-                """
-                Hi %s,
-
-                Thank you — your payment of Rs. %.2f (incl. 18%% GST) was received and one
-                extra image has been added to your plan. It's ready to use right away and
-                never expires.
-
-                Razorpay will email you the tax invoice separately.
+                No invoice follows this one — points were paid for (or earned) when they were
+                added, and spending them is not a fresh charge.
 
                 — The HueVista team
-                """.formatted(firstName(user), amountPaise / 100.0)));
-    }
-
-    /** Wallet top-up receipt. */
-    public void sendWalletTopUp(String userId, long amountPaise) {
-        userRepository.findById(userId).ifPresent(user -> deliver(user,
-                "Payment received — HueVista wallet top-up",
-                """
-                Hi %s,
-
-                Thank you — Rs. %.2f has been added to your HueVista wallet. It's ready to
-                spend on extra images and AI auto-masks whenever your monthly allowance runs
-                out, and it never expires.
-
-                Razorpay will email you the tax invoice separately.
-
-                — The HueVista team
-                """.formatted(firstName(user), amountPaise / 100.0)));
+                """.formatted(firstName(user), points)));
     }
 
     // ── Reward points ────────────────────────────────────────────────────────
+
+    /** Receipt for a points purchase. Names the expiry date, because they do expire. */
+    public void sendPointsPurchased(String userId, int points, int amountPaise, int validityDays) {
+        userRepository.findById(userId).ifPresent(user -> deliver(user,
+                points + " HueVista points added",
+                """
+                Hi %s,
+
+                Thank you — %d points have been added to your HueVista account for Rs. %.2f.
+
+                %s
+
+                Points last %d days from today, so these are good until %s. Spending always
+                uses your oldest points first, so you never lose ones you could have used.
+
+                Razorpay will email you the tax invoice separately.
+
+                — The HueVista team
+                """.formatted(firstName(user), points, amountPaise / 100.0,
+                        whatPointsBuy(points), validityDays,
+                        DATE.format(LocalDateTime.now().plusDays(validityDays)))));
+    }
 
     /**
      * Points are a year old in {@code daysLeft} days. Says the number, the date and what

@@ -51,7 +51,7 @@ public class ProjectCredit {
 
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default
-    private int pricePaise = 0;
+    private int pointsSpent = 0;
 
     /** Days of access this credit opens on the project it becomes. */
     @Column(nullable = false, columnDefinition = "integer not null default 30")

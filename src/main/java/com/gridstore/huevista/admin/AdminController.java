@@ -52,7 +52,6 @@ public class AdminController {
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final ProjectRepository projectRepository;
     private final AuditService auditService;
-    private final com.gridstore.huevista.billing.service.BillingWalletService billingWalletService;
     private final com.gridstore.huevista.account.service.AccountService accountService;
     private final com.gridstore.huevista.common.audit.AuditLogRepository auditLogRepository;
 
@@ -233,22 +232,6 @@ public class AdminController {
         return ResponseEntity.ok(
                 billingService.adminAdjustSubscription(auth.getName(), userId,
                         request.getAddAiGenerations(), request.getExtendDays()));
-    }
-
-    @Operation(summary = "Refund a retailer's prepaid billing wallet",
-            description = "Writes the prepaid wallet balance back off the account and returns the "
-                    + "amount to transfer (the money movement itself is manual, like kiosk payouts). "
-                    + "Use when a shop cancels or closes an account with money still on it — top-ups "
-                    + "and spending both need an active plan, so that balance is otherwise stranded.")
-    @PostMapping("/users/{userId}/wallet/refund")
-    public ResponseEntity<Map<String, Object>> refundBillingWallet(
-            @PathVariable String userId,
-            @RequestParam(required = false) String reason,
-            Authentication auth) {
-        long refunded = billingWalletService.refundWallet(auth.getName(), userId, reason);
-        auditService.record(auth.getName(), "BILLING_WALLET_REFUND", "USER", userId,
-                "amountPaise=" + refunded + (reason != null ? " reason=" + reason : ""));
-        return ResponseEntity.ok(Map.of("userId", userId, "refundedPaise", refunded));
     }
 
     @Operation(summary = "List all subscriptions")
