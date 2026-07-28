@@ -1,5 +1,7 @@
 package com.gridstore.huevista.account.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.account.dto.AccessCodeResponse;
 import com.gridstore.huevista.account.dto.AssignedProductsResponse;
 import com.gridstore.huevista.account.dto.GenerateAccessCodeRequest;
@@ -27,6 +29,7 @@ import java.util.List;
 @RestController
 @RequiredArgsConstructor
 @Tag(name = "Customer Access Codes", description = "Retailer-issued temporary access codes for walk-in customers")
+@RequiresFeature(AppFeature.CUSTOMER_PORTAL)
 public class AccessCodeController {
 
     private final AccessCodeService accessCodeService;

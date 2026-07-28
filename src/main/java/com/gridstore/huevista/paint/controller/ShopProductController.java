@@ -1,5 +1,7 @@
 package com.gridstore.huevista.paint.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.paint.dto.CreateShopProductRequest;
 import com.gridstore.huevista.paint.dto.ShopProductResponse;
 import com.gridstore.huevista.paint.service.ShopProductService;
@@ -19,6 +21,7 @@ import java.util.List;
 @RequestMapping("/api/organizations/{orgId}/products")
 @RequiredArgsConstructor
 @Tag(name = "Shop products", description = "A retailer's paint product listings")
+@RequiresFeature(AppFeature.PRODUCTS)
 public class ShopProductController {
 
     private final ShopProductService shopProductService;

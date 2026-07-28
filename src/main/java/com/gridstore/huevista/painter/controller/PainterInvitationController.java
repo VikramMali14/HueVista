@@ -1,5 +1,7 @@
 package com.gridstore.huevista.painter.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.painter.dto.GeneratePainterInvitationRequest;
 import com.gridstore.huevista.painter.dto.PainterInvitationResponse;
 import com.gridstore.huevista.painter.dto.PainterRetailerLinkResponse;
@@ -24,6 +26,7 @@ public class PainterInvitationController {
 
     private final PainterInvitationService invitationService;
 
+    @RequiresFeature(AppFeature.NETWORK)
     @Operation(summary = "Generate an invitation (retailer owner only)")
     @PostMapping("/api/organizations/{retailerOrgId}/painter-invitations")
     public ResponseEntity<PainterInvitationResponse> generate(
@@ -35,6 +38,7 @@ public class PainterInvitationController {
         return ResponseEntity.status(HttpStatus.CREATED).body(resp);
     }
 
+    @RequiresFeature(AppFeature.NETWORK)
     @Operation(summary = "List invitations for a retailer (owner only)")
     @GetMapping("/api/organizations/{retailerOrgId}/painter-invitations")
     public ResponseEntity<List<PainterInvitationResponse>> list(

@@ -1,5 +1,7 @@
 package com.gridstore.huevista.paint.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.paint.dto.ShadeCodeSchemeResponse;
 import com.gridstore.huevista.paint.dto.UpdateShadeCodeSchemeRequest;
 import com.gridstore.huevista.paint.service.ShadeCodeSchemeService;
@@ -30,6 +32,7 @@ public class ShadeCodeSchemeController {
 
     @Operation(summary = "Get the shop's shade-code scheme",
             description = "All parts empty when the shop has no scheme. Caller must be an org member.")
+    @RequiresFeature(AppFeature.CUSTOMER_PORTAL)
     @GetMapping("/api/organizations/{orgId}/shade-code-scheme")
     public ResponseEntity<ShadeCodeSchemeResponse> get(@PathVariable String orgId, Authentication auth) {
         return ResponseEntity.ok(schemeService.get(auth.getName(), orgId));
@@ -39,6 +42,7 @@ public class ShadeCodeSchemeController {
             description = "Prefix (max 4), inserted pair (max 2, goes after the first two characters of the "
                     + "shade code) and suffix (max 4); letters and digits only, stored uppercase. Sending all "
                     + "three empty clears the scheme. Owner or manager only.")
+    @RequiresFeature(AppFeature.CUSTOMER_PORTAL)
     @PutMapping("/api/organizations/{orgId}/shade-code-scheme")
     public ResponseEntity<ShadeCodeSchemeResponse> update(
             @PathVariable String orgId,
@@ -47,6 +51,11 @@ public class ShadeCodeSchemeController {
         return ResponseEntity.ok(schemeService.update(auth.getName(), orgId, request));
     }
 
+    // Deliberately NOT gated on the Customer portal grant, unlike the management pair
+    // above. This is how a swatch is LABELLED for whoever is looking at it — staff,
+    // painters, customers, guests. A shop whose portal was switched off still has to read
+    // its own numbering in the studio, and gating it here would quietly hand that shop
+    // back the manufacturer's codes on every screen.
     @Operation(summary = "My shop's shade-code scheme",
             description = "The scheme the studio should encode shade codes with for the caller: their own "
                     + "shop's (retailer staff), their retailer's (entitled customers), or the code-issuing "

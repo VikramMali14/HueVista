@@ -1,5 +1,7 @@
 package com.gridstore.huevista.project.controller;
 
+import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.project.dto.*;
 import com.gridstore.huevista.project.service.ProjectService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -24,6 +26,7 @@ import java.util.Map;
 @RequestMapping("/api/projects")
 @RequiredArgsConstructor
 @Tag(name = "Projects", description = "Create and manage paint visualization projects")
+@RequiresFeature(AppFeature.STUDIO)
 public class ProjectController {
 
     private final ProjectService projectService;
