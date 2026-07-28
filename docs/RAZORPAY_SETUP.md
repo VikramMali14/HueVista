@@ -21,7 +21,7 @@ Six money flows are implemented. Five use one-time **Orders**, one uses
 | One extra image (₹50) | Orders | `POST /api/billing/image-credits/order` → `.../verify` | in-app quota prompt |
 | Buy a project | Orders | `POST /api/projects/credits/order` → `.../verify` | project create |
 | Reopen an expired project | Orders | same controller, reopen variant | project list |
-| In-store kiosk (walk-in customer pays) | Orders | `POST /api/store/{slug}/order` → `.../verify` | `/store/{slug}` (public) |
+| In-store kiosk (walk-in customer pays ₹99) | Orders | `POST /api/store/{slug}/order` → `.../verify` | `/store/{slug}` (public) |
 
 All of them verify the Checkout signature server-side before granting anything,
 and the webhook receiver at `POST /api/billing/webhooks/razorpay` handles the
@@ -193,12 +193,18 @@ product; cards are the reliable recurring-payment path in test mode.
    in Postman) and confirm it does *not* grant a second image.
 7. **Buy a project / reopen a project** — check the validity window.
 8. **Kiosk** — open `/store/{slug}` in an incognito window (it is public, no
-   login), pay with UPI `success@razorpay`, confirm an access code is issued and
-   the retailer's wallet share is recorded.
-9. **Refund** — refund the kiosk payment from the dashboard and confirm the
-   retailer's redeemable balance drops (`refund.processed` →
-   `WalletService.reverseKioskPayment`).
-10. **Failed payment** — pay a subscription with the Failure option and confirm
+   login), pay ₹99 with UPI `success@razorpay`, confirm an access code is issued
+   and the shop earned 39 points (kiosk panel, and a `KIOSK_BONUS` row in the
+   wallet statement).
+9. **Spend the points** — with no active plan, buy a project from the balance and
+   confirm it debits ₹50/₹99 and issues a project credit. With a plan, buy an
+   extra image from the balance instead.
+10. **Refund** — refund the kiosk payment from the dashboard and confirm the
+    points are clawed back (`refund.processed` →
+    `WalletService.reverseKioskPayment`). Spend the points *first* on one run to
+    confirm the balance is allowed to go negative rather than silently keeping
+    the reward for a refunded sale.
+11. **Failed payment** — pay a subscription with the Failure option and confirm
     the plan does not activate.
 
 Watch **Dashboard → Webhooks → the webhook → Logs** for delivery status; a
@@ -249,22 +255,26 @@ Pick one domain, make every address live on it, and make sure it is the same
 domain you submit to Razorpay. Receipts arriving from a domain that isn't the
 one on the application is a review flag.
 
-### 5d. Declare the kiosk model honestly
+### 5d. The kiosk is a plain B2C sale — keep it that way
 
-The in-store kiosk collects money from a walk-in customer at a price the
-*retailer* sets, keeps a ₹50 platform base, and credits the rest to the
-retailer's wallet, which is later paid out by manual bank transfer after an
-email request.
+Worth knowing what you are declaring, because this was deliberately changed to
+be answerable in one line.
 
-Collecting on behalf of third parties is a regulated pattern. Before you go
-live, either:
+A walk-in at `/store/{slug}` pays a **flat ₹99 that is entirely HueVista's**, for
+a HueVista visualisation. The shop does not set that price and takes no share of
+it. What the shop earns is **39 reward points** credited to its billing wallet —
+₹39 of spending power on extra images, AI auto-masks and projects, with no way to
+withdraw it as cash.
 
-- describe it in your application and ask Razorpay support to confirm your
-  account is allowed to run it as-is; **or**
-- move the split onto **Razorpay Route** (linked accounts + transfers), which is
-  the supported way to settle a share to a third party.
+So on your application the kiosk is simply "customers buy a room visualisation
+from us at a fixed price", and there is no third-party settlement to explain.
 
-Do not skip this. Discovering it after go-live risks a settlement hold.
+**Do not add a cash-out path for points.** Paying a shop's balance to a bank
+account or UPI id would turn every kiosk sale back into a payment collected on
+that shop's behalf — which needs **Razorpay Route** (linked accounts + transfers)
+rather than a plain merchant account, and is the kind of thing that surfaces as a
+settlement hold rather than a rejection letter. The earlier revenue-share model
+did exactly this; it was removed for this reason.
 
 ### 5e. Redo every test-mode object in live mode
 
