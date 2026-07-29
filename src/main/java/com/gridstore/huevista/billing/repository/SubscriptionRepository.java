@@ -26,11 +26,18 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
      * {@code subscription.cancelled} every feature returned "No active subscription"
      * while the account page still (correctly) read "active till period end".
      *
+     * A subscription whose period has not STARTED yet never entitles, whatever its
+     * status. Re-subscribing while a paid plan winds down schedules the new plan at the
+     * gateway for the day the old one ends (so the customer isn't billed twice); until
+     * that day the old plan is the one in force, and the new one must not hand out its
+     * larger quota a month early.
+     *
      * Ordered so a genuinely ACTIVE row always wins over a winding-down CANCELLED one.
      */
     @Query("""
             SELECT s FROM Subscription s
              WHERE s.user.id = :userId
+               AND (s.currentPeriodStart IS NULL OR s.currentPeriodStart <= :now)
                AND (s.status = :active
                     OR (s.status = :cancelled AND s.currentPeriodEnd IS NOT NULL
                         AND s.currentPeriodEnd > :now))
@@ -87,6 +94,18 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
            "WHERE s.id = :id AND s.aiGenerationsUsed + s.reservedImages + :count " +
            "      <= s.aiGenerationsLimit + s.purchasedImageCredits")
     int reserveImagesIfWithinLimit(@Param("id") String id, @Param("count") int count);
+
+    /**
+     * Add {@code count} holds unconditionally — the carry-over when a new plan supersedes
+     * an old one. Unlike {@link #reserveImagesIfWithinLimit} this is NOT limit-gated: the
+     * holds already exist behind issued access codes, so refusing to move them would
+     * strand the codes rather than protect the quota. (Downgrades can therefore land
+     * slightly over the new plan's ceiling until those codes are spent, which is the
+     * correct end of the trade — the shop already paid for them.)
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE Subscription s SET s.reservedImages = s.reservedImages + :count WHERE s.id = :id")
+    int addReservedImages(@Param("id") String id, @Param("count") int count);
 
     /**
      * Return {@code count} previously held images to the pool (code revoked, or expired

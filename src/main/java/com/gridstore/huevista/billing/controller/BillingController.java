@@ -99,6 +99,10 @@ public class BillingController {
                 Map<String, Object> m = new java.util.LinkedHashMap<>();
                 m.put("plan", p.name());
                 m.put("displayName", p.getDisplayName());
+                // The tier ladder, so a client can tell an upgrade from a downgrade
+                // without hard-coding a copy of the enum order that silently rots when a
+                // tier is added or reordered here.
+                m.put("rank", p.ordinal());
                 m.put("priceInPaise", p.getPriceInPaise());
                 m.put("priceInRupees", p.priceInRupees());
                 m.put("taxPercent", com.gridstore.huevista.billing.model.Plan.GST_PERCENT);

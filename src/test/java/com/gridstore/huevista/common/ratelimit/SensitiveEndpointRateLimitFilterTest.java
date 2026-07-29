@@ -20,7 +20,8 @@ class SensitiveEndpointRateLimitFilterTest {
                 12, 900,   // code redeem
                 30, 3600,  // image upload
                 5, 3600,   // shop lead
-                60, 3600); // store kiosk order/verify
+                60, 3600,  // store kiosk order/verify
+                20, 3600); // subscription create/verify
     }
 
     private MockHttpServletRequest req(String method, String path) {
@@ -48,6 +49,9 @@ class SensitiveEndpointRateLimitFilterTest {
         // Store kiosk rules carry a one-segment wildcard for the slug.
         assertThat(f.shouldNotFilter(req("POST", "/api/store/mehta-paints-x7k2p9/order"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/store/mehta-paints-x7k2p9/verify"))).isFalse();
+        // Each create opens a real gateway subscription; verify is the replay surface.
+        assertThat(f.shouldNotFilter(req("POST", "/api/billing/subscriptions"))).isFalse();
+        assertThat(f.shouldNotFilter(req("POST", "/api/billing/subscriptions/verify"))).isFalse();
     }
 
     @Test
