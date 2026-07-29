@@ -71,6 +71,7 @@ public class SegmentationService {
     private final RestTemplate restTemplate;
     private final ReplicateMaskSegmenter maskSegmenter;
     private final ImageCleanerService imageCleaner;
+    private final StubAiPipeline stubAiPipeline;
     private final ImageRepository imageRepository;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final com.gridstore.huevista.account.repository.CustomerAccessCodeRepository accessCodeRepository;
@@ -114,7 +115,10 @@ public class SegmentationService {
         try {
             log.info("Starting wall segmentation: project={}", projectId);
 
-            if (replicateApiToken == null || replicateApiToken.isBlank()) {
+            // Stub mode calls neither Replicate model, so it must not demand a
+            // token — the whole point is to run this flow without one.
+            if (!stubAiPipeline.isEnabled()
+                    && (replicateApiToken == null || replicateApiToken.isBlank())) {
                 markFailed(projectId, "REPLICATE_API_TOKEN not configured");
                 return;
             }
@@ -153,10 +157,16 @@ public class SegmentationService {
             // (see tryColorCodedSegmentation). An ADMIN can skip this step per
             // run via the segment request's cleanImage=false testing knob
             // (persisted on the project — see requestSegmentation).
-            boolean skipClean = Boolean.TRUE.equals(
+            // The stub testing mode (huevista.testing.stub-ai.enabled) forces the
+            // same skip globally: the photo stays exactly as uploaded, and no
+            // Replicate clean call — nor the Claude cleaning-hint call nested
+            // inside it — is made. See StubAiPipeline.
+            boolean stubbed = stubAiPipeline.isEnabled();
+            boolean skipClean = stubbed || Boolean.TRUE.equals(
                     projectRepository.findSkipImageCleanById(projectId).orElse(null));
             if (skipClean) {
-                log.info("Image cleaner skipped for project {} (admin cleanImage=false)", projectId);
+                log.info("Image cleaner skipped for project {} ({})", projectId,
+                        stubbed ? "stub AI pipeline enabled" : "admin cleanImage=false");
                 // Drop any cleaned canvas left by a previous run: this run's
                 // masks align to the ORIGINAL photo, and a stale cleaned key
                 // would make the frontend render them on the wrong canvas.
@@ -275,7 +285,9 @@ public class SegmentationService {
                                       byte[] cleanedBytes, byte[] originalBytes,
                                       int imageWidth, int imageHeight) {
         try {
-            if (!maskSegmenter.isConfigured()) {
+            // Stub mode draws the colour-coded mask locally, so the real
+            // segmenter's configuration is irrelevant to it.
+            if (!stubAiPipeline.isEnabled() && !maskSegmenter.isConfigured()) {
                 log.warn("Mask segmenter not configured — set " +
                         "REPLICATE_NANO_BANANA_ENABLED=true");
                 return false;
@@ -374,7 +386,21 @@ public class SegmentationService {
     private ProcessedMasks generateAndProcessMasks(String projectId, String imageUrl,
                                                    ImageType scene,
                                                    int targetW, int targetH) {
-        Optional<byte[]> colorRaw = maskSegmenter.generateColorCodedMask(imageUrl, scene);
+        // Testing stub: draw the colour-coded image locally (vertical
+        // RED|GREEN|BLUE thirds) instead of paying for a generation. Produced
+        // at the canvas size, so the resize below is a no-op.
+        Optional<byte[]> colorRaw;
+        if (stubAiPipeline.isEnabled()) {
+            try {
+                colorRaw = Optional.of(stubAiPipeline.colorCodedMask(targetW, targetH));
+            } catch (Exception e) {
+                log.warn("Stub colour-coded mask generation failed for project {}: {}",
+                        projectId, e.getMessage());
+                return null;
+            }
+        } else {
+            colorRaw = maskSegmenter.generateColorCodedMask(imageUrl, scene);
+        }
         if (colorRaw.isEmpty()) {
             log.info("Mask segmenter returned no color-coded mask for project {}", projectId);
             return null;

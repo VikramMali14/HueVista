@@ -147,6 +147,29 @@ APP_BASE_URL=https://api.huevista.com # default: http://localhost:8080
 CORS_ALLOWED_ORIGINS=https://huevista.com
 ```
 
+#### Free-of-charge testing mode
+
+To click through the whole product without paying for image generation:
+
+```bash
+HUEVISTA_TESTING_STUB_AI_ENABLED=true   # default false — NEVER enable in production
+```
+
+With this on, the two paid Replicate steps are replaced by local no-ops:
+
+| Step | Normally | With the stub |
+|---|---|---|
+| Upload classification | Claude Vision | **unchanged — still calls Claude** (indoor / house exterior / not a house) |
+| Photo clean-up | Nano Banana Pro repaint | skipped — the uploaded photo is left untouched and stays the canvas |
+| Cleaning hints | Claude | skipped (only reachable from inside the cleaner) |
+| Colour-coded mask | FLUX.2 [max] | drawn locally: three equal **vertical** stripes, RED \| GREEN \| BLUE |
+
+The fake mask always splits into all three categories — main wall, accent wall
+and trim — so region editing, shade picking, compare, PDF export and sharing
+all have something real to work on. No `REPLICATE_API_TOKEN` is needed for that
+path (click-to-segment still uses SAM 2 and still does). Billing is untouched:
+a stub run charges credits like a real one, so plan limits stay testable.
+
 ### 2. Run
 
 ```bash
