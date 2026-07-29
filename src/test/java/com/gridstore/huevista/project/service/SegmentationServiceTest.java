@@ -48,9 +48,12 @@ class SegmentationServiceTest {
     private final RegionRepository regions = mock(RegionRepository.class);
     private final StorageService storage = mock(StorageService.class);
     private final ReplicateMaskSegmenter segmenter = mock(ReplicateMaskSegmenter.class);
+    /** Defaults to isEnabled()=false, i.e. the real Replicate path, for every
+     *  test that doesn't explicitly turn the testing stub on. */
+    private final StubAiPipeline stubAiPipeline = mock(StubAiPipeline.class);
     private final SegmentationService service = new SegmentationService(
             projects, regions, storage, mock(RestTemplate.class), segmenter,
-            mock(ImageCleanerService.class), mock(ImageRepository.class),
+            mock(ImageCleanerService.class), stubAiPipeline, mock(ImageRepository.class),
             mock(BillingService.class), mock(CustomerAccessCodeRepository.class),
             mock(ProjectBillingResolver.class));
 
