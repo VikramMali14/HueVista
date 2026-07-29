@@ -102,6 +102,42 @@ gitignored — never commit it).
 - All of these endpoints still return bare JSON arrays — there is no envelope or
   metadata wrapper.
 
+## 8. SMTP: the relay must be able to authenticate the sender domain
+
+Mail is the one subsystem that starts up perfectly and then fails on first use.
+The app only builds a `JavaMailSender` when `MAIL_HOST` is set, and only sends when
+`MAIL_ENABLED=true`; otherwise codes are written to the log as `[DEV EMAIL]`. The
+startup config diagnostic now prints a `MAIL / SMTP` block and warns about each of
+the traps below — check it after any mail change.
+
+Senders default to `no-reply@huevista.org` and `payments@huevista.org`, so the
+relay must be authorised to send as **huevista.org**.
+
+| Symptom in the log | Cause | Fix |
+| --- | --- | --- |
+| `550-5.7.0 Mail relay denied [<ip>]. Invalid credentials for relay` + `SMTP relay isn't supported for unmanaged work accounts` | `MAIL_HOST=smtp-relay.gmail.com` with a personal/unmanaged Google account, or the host's egress IP is not registered | Use SES or `smtp.gmail.com` (below). The Workspace relay needs a **managed** Workspace account *and* the egress IP registered under Admin console → Apps → Google Workspace → Gmail → Routing → SMTP relay service |
+| `535 Username and Password not accepted` | Gmail account password used instead of an app password | Enable 2-Step Verification, then generate a 16-char app password |
+| Mail "sent" but the From is rewritten | The SMTP account cannot authenticate the From domain | Put every sender on one verified domain, or set `MAIL_FROM` to the authenticated address |
+| No SMTP error at all, codes appear as `[DEV EMAIL]` in the log | `MAIL_ENABLED=false`, or `MAIL_HOST` empty | Set both |
+
+**Recommended for this stack** — Amazon SES in the region you already run in:
+verify `huevista.org`, enable DKIM, request production access (to leave the
+sandbox), then generate **SES SMTP credentials** — these are not your AWS access
+keys:
+
+```
+MAIL_ENABLED=true
+MAIL_HOST=email-smtp.ap-south-1.amazonaws.com
+MAIL_PORT=587
+MAIL_USERNAME=<SES SMTP username>
+MAIL_PASSWORD=<SES SMTP password>
+```
+
+Note that SMTP is deliberately excluded from the health probe
+(`MAIL_HEALTH_CHECK=false` by default), so a broken relay will **not** show up as
+an unhealthy container — it surfaces only as a `503` from the affected endpoint
+and an `Email delivery failed` line in the log.
+
 ## Quick pre-deploy checklist
 
 - [ ] `JWT_SECRET` set to a freshly generated 32+ byte base64 value (compose fails fast without it)
@@ -112,3 +148,4 @@ gitignored — never commit it).
 - [ ] Point the load balancer / container healthcheck at `GET /actuator/health`
 - [ ] `RATE_LIMIT_TRUST_FORWARDED=true` only if behind a proxy; `false` if directly exposed
 - [ ] All third-party secrets (Razorpay, Replicate, Anthropic, SMTP, …) supplied via the environment — never committed
+- [ ] If `MAIL_ENABLED=true`: startup diagnostic shows `Delivering : yes — real SMTP` with no `MAIL / SMTP` warnings, and a test password reset actually arrives
