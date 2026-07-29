@@ -29,6 +29,7 @@ import java.util.Map;
  *   - OTP send (email/sms) — verification-message bombing (cost + spam)
  *   - OTP confirm          — 6-digit verification-code brute force
  *   - access-code redeem   — 8-char code brute force / griefing (burn a shop's code)
+ *   - subscribe / verify   — gateway subscription spam + Checkout-payload replay
  *
  * INCR+EXPIRE fixed window, real client IP from the frontend-forwarded header,
  * 429 + Retry-After when over the limit, and FAIL-OPEN if Redis is unreachable
@@ -111,7 +112,13 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             // shop IP (the kiosk device), so the cap is generous — it only has to stop
             // scripted Razorpay-order spam, not a queue of paying walk-ins.
             @Value("${app.rate-limit.store-order.max-attempts:60}") int storeOrderMax,
-            @Value("${app.rate-limit.store-order.window-seconds:3600}") long storeOrderWindow) {
+            @Value("${app.rate-limit.store-order.window-seconds:3600}") long storeOrderWindow,
+            // subscription create/verify: each create opens a real Razorpay subscription
+            // (and, with customer_notify, a live payment link), and verify is where a
+            // stored Checkout payload would be replayed. A shop subscribes once a month;
+            // 20/h is nothing but leaves scripted abuse nowhere to go.
+            @Value("${app.rate-limit.subscription.max-attempts:20}") int subscriptionMax,
+            @Value("${app.rate-limit.subscription.window-seconds:3600}") long subscriptionWindow) {
         this.redis = redis;
         this.enabled = enabled;
         this.trustForwardedHeaders = trustForwardedHeaders;
@@ -127,6 +134,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
         Policy upload = new Policy("upload", uploadMax, Duration.ofSeconds(uploadWindow));
         Policy lead = new Policy("lead", leadMax, Duration.ofSeconds(leadWindow));
         Policy storeOrder = new Policy("storeorder", storeOrderMax, Duration.ofSeconds(storeOrderWindow));
+        Policy subscription = new Policy("subscription", subscriptionMax, Duration.ofSeconds(subscriptionWindow));
 
         this.rules = List.of(
                 // Same Redis key namespace ("ratelimit:signup:<ip>") the old dedicated
@@ -155,7 +163,10 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 new Rule("POST", "/api/leads/shop", lead),
                 // Public store kiosk payment endpoints (slug in the middle).
                 new Rule("POST", "/api/store/*/order", storeOrder),
-                new Rule("POST", "/api/store/*/verify", storeOrder)
+                new Rule("POST", "/api/store/*/verify", storeOrder),
+                // Gateway-subscription creation and the Checkout-payload verify.
+                new Rule("POST", "/api/billing/subscriptions", subscription),
+                new Rule("POST", "/api/billing/subscriptions/verify", subscription)
         );
     }
 

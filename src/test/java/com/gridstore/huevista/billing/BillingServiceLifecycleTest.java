@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.LocalDateTime;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -42,6 +43,8 @@ class BillingServiceLifecycleTest {
     private static final String SUB_ID = "sub-row-1";
 
     private final SubscriptionRepository subs = mock(SubscriptionRepository.class);
+    private final com.gridstore.huevista.billing.repository.SubscriptionPaymentRepository payments =
+            mock(com.gridstore.huevista.billing.repository.SubscriptionPaymentRepository.class);
     private final UserRepository users = mock(UserRepository.class);
     private final RazorpayClient razorpay = mock(RazorpayClient.class);
     private final AuditService audit = mock(AuditService.class);
@@ -49,7 +52,7 @@ class BillingServiceLifecycleTest {
             mock(com.gridstore.huevista.billing.service.BillingEmailService.class);
 
     private BillingService service() {
-        BillingService svc = new BillingService(subs, users, razorpay, audit, emails);
+        BillingService svc = new BillingService(subs, payments, users, razorpay, audit, emails);
         ReflectionTestUtils.setField(svc, "keyId", "rzp_key");
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
         ReflectionTestUtils.setField(svc, "planIdStarter", "plan_starter");
@@ -188,6 +191,124 @@ class BillingServiceLifecycleTest {
         BillingService svc = service();
         ReflectionTestUtils.setField(svc, "planIdProfessional", "plan_professional");
         return svc;
+    }
+
+    // ---- checkout attempts: one live payment link, not one per click ----
+
+    @Test
+    void aSecondClickOnTheSamePlanReusesThePendingAttemptInsteadOfOpeningAnother() throws Exception {
+        Subscription pending = Subscription.builder()
+                .id("attempt-1").plan(Plan.STARTER).status(SubscriptionStatus.CREATED)
+                .razorpaySubscriptionId("rzp_sub_pending")
+                .aiGenerationsLimit(Plan.STARTER.getMonthlyImageLimit())
+                .build();
+        when(subs.findByUserIdAndStatus(USER, SubscriptionStatus.CREATED))
+                .thenReturn(java.util.List.of(pending));
+        User user = new User();
+        user.setId(USER);
+        when(users.findById(USER)).thenReturn(Optional.of(user));
+        razorpay.subscriptions = mock(SubscriptionClient.class);
+        when(razorpay.subscriptions.fetch("rzp_sub_pending")).thenReturn(new com.razorpay.Subscription(
+                new JSONObject().put("id", "rzp_sub_pending").put("status", "created")
+                        .put("short_url", "https://rzp.io/i/pending")));
+
+        CreateSubscriptionRequest req = new CreateSubscriptionRequest();
+        req.setPlan(Plan.STARTER);
+
+        SubscriptionResponse out = service().createSubscription(USER, req);
+
+        assertThat(out.getRazorpaySubscriptionId()).isEqualTo("rzp_sub_pending");
+        assertThat(out.getPaymentUrl()).isEqualTo("https://rzp.io/i/pending");
+        verify(razorpay.subscriptions, never()).create(any(JSONObject.class));
+        verify(subs, never()).save(any());
+    }
+
+    @Test
+    void abandonedAttemptsForOtherPlansAreCancelledSoTheirPaymentLinksDie() throws Exception {
+        Subscription abandoned = Subscription.builder()
+                .id("attempt-old").plan(Plan.BUSINESS).status(SubscriptionStatus.CREATED)
+                .razorpaySubscriptionId("rzp_sub_business")
+                .aiGenerationsLimit(Plan.BUSINESS.getMonthlyImageLimit())
+                .build();
+        when(subs.findByUserIdAndStatus(USER, SubscriptionStatus.CREATED))
+                .thenReturn(java.util.List.of(abandoned));
+        User user = new User();
+        user.setId(USER);
+        when(users.findById(USER)).thenReturn(Optional.of(user));
+        razorpay.subscriptions = mock(SubscriptionClient.class);
+        when(razorpay.subscriptions.create(any(JSONObject.class)))
+                .thenReturn(new com.razorpay.Subscription(new JSONObject().put("id", "rzp_sub_new")));
+
+        CreateSubscriptionRequest req = new CreateSubscriptionRequest();
+        req.setPlan(Plan.STARTER);
+
+        service().createSubscription(USER, req);
+
+        verify(razorpay.subscriptions).cancel(eq("rzp_sub_business"), any(JSONObject.class));
+        assertThat(abandoned.getStatus()).isEqualTo(SubscriptionStatus.EXPIRED);
+    }
+
+    // ---- re-subscribing while a paid plan winds down ----
+
+    @Test
+    void resubscribingWhileWindingDownSchedulesTheNewPlanForThePeriodEnd() throws Exception {
+        Subscription windingDown = activePaid(0, 25, Plan.STARTER);
+        windingDown.setCancelAtPeriodEnd(true);
+        LocalDateTime endsAt = LocalDateTime.now().plusDays(18);
+        windingDown.setCurrentPeriodEnd(endsAt);
+        when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE),
+                eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(windingDown));
+        User user = new User();
+        user.setId(USER);
+        when(users.findById(USER)).thenReturn(Optional.of(user));
+        razorpay.subscriptions = mock(SubscriptionClient.class);
+        when(razorpay.subscriptions.create(any(JSONObject.class)))
+                .thenReturn(new com.razorpay.Subscription(new JSONObject().put("id", "rzp_sub_next")));
+
+        CreateSubscriptionRequest req = new CreateSubscriptionRequest();
+        req.setPlan(Plan.STARTER);
+
+        service().createSubscription(USER, req);
+
+        // Razorpay is told to start billing the day the current period ends, so the shop
+        // is not charged for two overlapping months...
+        ArgumentCaptor<JSONObject> sent = ArgumentCaptor.forClass(JSONObject.class);
+        verify(razorpay.subscriptions).create(sent.capture());
+        assertThat(sent.getValue().getLong("start_at"))
+                .isEqualTo(endsAt.atZone(java.time.ZoneId.systemDefault()).toEpochSecond());
+        // ...and the row carries that start date, so findEntitling keeps the OLD plan in
+        // force until then rather than handing over the new quota immediately.
+        ArgumentCaptor<Subscription> saved = ArgumentCaptor.forClass(Subscription.class);
+        verify(subs).save(saved.capture());
+        assertThat(saved.getValue().getCurrentPeriodStart()).isEqualTo(endsAt);
+    }
+
+    @Test
+    void aTrialDoesNotDeferThePaidPlanItIsReplaced_by() throws Exception {
+        Subscription trial = activeTrial();
+        trial.setCancelAtPeriodEnd(true);
+        trial.setCurrentPeriodEnd(LocalDateTime.now().plusDays(5));
+        when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE),
+                eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(trial));
+        User user = new User();
+        user.setId(USER);
+        when(users.findById(USER)).thenReturn(Optional.of(user));
+        razorpay.subscriptions = mock(SubscriptionClient.class);
+        when(razorpay.subscriptions.create(any(JSONObject.class)))
+                .thenReturn(new com.razorpay.Subscription(new JSONObject().put("id", "rzp_sub_now")));
+
+        CreateSubscriptionRequest req = new CreateSubscriptionRequest();
+        req.setPlan(Plan.STARTER);
+
+        service().createSubscription(USER, req);
+
+        // Nothing was paid for the trial, so there is no double billing to avoid — making
+        // the shop wait it out before the plan they just bought begins would be worse.
+        ArgumentCaptor<JSONObject> sent = ArgumentCaptor.forClass(JSONObject.class);
+        verify(razorpay.subscriptions).create(sent.capture());
+        assertThat(sent.getValue().has("start_at")).isFalse();
     }
 
     @Test

@@ -38,6 +38,7 @@ class ImageHoldAccountingTest {
     private final SubscriptionRepository subs = mock(SubscriptionRepository.class);
     private final BillingService service = new BillingService(
             subs,
+            mock(com.gridstore.huevista.billing.repository.SubscriptionPaymentRepository.class),
             mock(com.gridstore.huevista.auth.repository.UserRepository.class),
             mock(RazorpayClient.class),
             mock(com.gridstore.huevista.common.audit.AuditService.class),

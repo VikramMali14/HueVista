@@ -7,7 +7,9 @@ import com.gridstore.huevista.billing.dto.SubscriptionResponse;
 import com.gridstore.huevista.billing.dto.VerifySubscriptionRequest;
 import com.gridstore.huevista.billing.model.Plan;
 import com.gridstore.huevista.billing.model.Subscription;
+import com.gridstore.huevista.billing.model.SubscriptionPayment;
 import com.gridstore.huevista.billing.model.SubscriptionStatus;
+import com.gridstore.huevista.billing.repository.SubscriptionPaymentRepository;
 import com.gridstore.huevista.billing.repository.SubscriptionRepository;
 import com.gridstore.huevista.common.exception.QuotaExceededException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
@@ -31,6 +33,7 @@ import java.util.List;
 public class BillingService {
 
     private final SubscriptionRepository subscriptionRepository;
+    private final SubscriptionPaymentRepository subscriptionPaymentRepository;
     private final UserRepository userRepository;
     private final RazorpayClient razorpayClient;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
@@ -70,6 +73,14 @@ public class BillingService {
     // period has lapsed. Renewals are driven by webhooks, which can be delayed; without a
     // grace period a late webhook would cut off a customer who has actually paid.
     private static final int RENEWAL_GRACE_DAYS = 3;
+
+    /**
+     * Statuses a subscription never comes back from. Reaching one of these means the
+     * gateway will not charge this subscription again, so nothing may re-activate it in
+     * place — a new one has to be bought.
+     */
+    private static final java.util.Set<SubscriptionStatus> TERMINAL_STATUSES = java.util.EnumSet.of(
+            SubscriptionStatus.EXPIRED, SubscriptionStatus.CANCELLED, SubscriptionStatus.COMPLETED);
 
     @Transactional
     public SubscriptionResponse createSubscription(String userId, CreateSubscriptionRequest request) {
@@ -131,12 +142,29 @@ public class BillingService {
             throw new IllegalStateException("Razorpay plan ID not configured for: " + request.getPlan());
         }
 
+        // Hand back the attempt already waiting for this exact plan rather than opening a
+        // second one, and retire the attempts for plans the shop moved on from.
+        SubscriptionResponse pending = reusePendingAttempt(userId, request);
+        if (pending != null) {
+            return pending;
+        }
+
+        // A plan already winding down keeps every day it was paid for, so the replacement
+        // starts the day that period ends. Billing it immediately took a second month's
+        // money AND threw the remaining days away when supersedeActiveSubscriptions
+        // expired the old row on activation.
+        LocalDateTime scheduledStart = scheduledStartFor(userId);
+
         try {
             JSONObject subRequest = new JSONObject();
             subRequest.put("plan_id", razorpayPlanId);
             subRequest.put("total_count", subscriptionTotalCount);
             subRequest.put("quantity", request.getQuantity());
             subRequest.put("customer_notify", 1);
+            if (scheduledStart != null) {
+                subRequest.put("start_at",
+                        scheduledStart.atZone(java.time.ZoneId.systemDefault()).toEpochSecond());
+            }
 
             JSONObject notes = new JSONObject();
             notes.put("userId", userId);
@@ -152,6 +180,10 @@ public class BillingService {
                     .plan(request.getPlan())
                     .status(SubscriptionStatus.CREATED)
                     .razorpaySubscriptionId(rzpSubId)
+                    // A scheduled plan carries its start date from the moment it exists, so
+                    // findEntitling can tell "bought, starts later" from "in force now".
+                    .currentPeriodStart(scheduledStart)
+                    .currentPeriodEnd(scheduledStart != null ? scheduledStart.plusMonths(1) : null)
                     // quantity multiplies the amount Razorpay bills, so scale the image and
                     // auto-mask quotas by it too — otherwise a customer paying Nx would still
                     // get a single plan's limit.
@@ -164,7 +196,8 @@ public class BillingService {
                     .build();
 
             subscriptionRepository.save(sub);
-            log.info("Subscription created: user={} plan={} rzpId={}", userId, request.getPlan(), rzpSubId);
+            log.info("Subscription created: user={} plan={} rzpId={} startsAt={}",
+                    userId, request.getPlan(), rzpSubId, scheduledStart);
             // razorpayKeyId lets the browser open the in-app Checkout for this subscription;
             // paymentUrl (hosted short_url) is kept as a fallback for clients that can't.
             return SubscriptionResponse.from(sub, paymentUrl, keyId);
@@ -173,6 +206,100 @@ public class BillingService {
             log.error("Razorpay subscription creation failed: {}", e.getMessage());
             throw new IllegalStateException("Payment gateway error: " + e.getMessage());
         }
+    }
+
+    /**
+     * When the caller already holds a PAID plan that is winding down, the moment its paid
+     * period ends — otherwise null (start now).
+     *
+     * Only a paid plan defers: a free trial costs nothing to walk away from, and making a
+     * shop wait out its trial before the plan they just bought begins would be worse for
+     * them, not better.
+     */
+    private LocalDateTime scheduledStartFor(String userId) {
+        LocalDateTime now = LocalDateTime.now();
+        return findEntitlingSubscription(userId)
+                .filter(s -> !s.isTrial())
+                .filter(Subscription::isCancelAtPeriodEnd)
+                .map(Subscription::getCurrentPeriodEnd)
+                // Razorpay rejects a start_at that isn't comfortably in the future, and a
+                // plan ending within the hour isn't worth deferring for anyway.
+                .filter(end -> end != null && end.isAfter(now.plusHours(1)))
+                .orElse(null);
+    }
+
+    /**
+     * Reuse the checkout attempt already open for this exact plan, and retire the rest.
+     *
+     * Every click on a plan card used to create a fresh Razorpay subscription, and with
+     * {@code customer_notify} on, its own live "pay now" link. Browsing three plans left
+     * three payable links for three different plans, so a customer could later pay one
+     * they had not chosen. Returns the response to hand back when an attempt can be
+     * reused, or null when a new subscription should be created.
+     */
+    private SubscriptionResponse reusePendingAttempt(String userId, CreateSubscriptionRequest request) {
+        int wantedImages = scaledLimit(request.getPlan().getMonthlyImageLimit(), request.getQuantity());
+        SubscriptionResponse reusable = null;
+
+        for (Subscription attempt : subscriptionRepository
+                .findByUserIdAndStatus(userId, SubscriptionStatus.CREATED)) {
+            String rzpId = attempt.getRazorpaySubscriptionId();
+            boolean sameOffer = attempt.getPlan() == request.getPlan()
+                    && attempt.getAiGenerationsLimit() == wantedImages;
+
+            if (sameOffer && reusable == null && rzpId != null && !rzpId.isBlank()) {
+                String shortUrl = stillPayableShortUrl(rzpId);
+                if (shortUrl != null) {
+                    log.info("Reusing pending checkout attempt: user={} plan={} rzpId={}",
+                            userId, request.getPlan(), rzpId);
+                    reusable = SubscriptionResponse.from(
+                            attempt, shortUrl.isBlank() ? null : shortUrl, keyId);
+                    continue;
+                }
+            }
+            retirePendingAttempt(attempt);
+        }
+        return reusable;
+    }
+
+    /**
+     * The hosted payment link of a gateway subscription still awaiting authorization
+     * ({@code ""} when it has none), or null when it is gone, already paid, or the
+     * gateway can't be reached — in which case the caller creates a fresh one rather
+     * than pointing the buyer at a link that may not work.
+     */
+    private String stillPayableShortUrl(String razorpaySubscriptionId) {
+        try {
+            com.razorpay.Subscription fetched = razorpayClient.subscriptions.fetch(razorpaySubscriptionId);
+            String status = fetched.has("status") ? fetched.get("status") : "";
+            if (!"created".equalsIgnoreCase(status)) {
+                return null;
+            }
+            String shortUrl = fetched.has("short_url") ? fetched.get("short_url") : null;
+            return shortUrl == null ? "" : shortUrl;
+        } catch (Exception e) {
+            log.warn("Could not re-check pending subscription {} — creating a new one: {}",
+                    razorpaySubscriptionId, e.getMessage());
+            return null;
+        }
+    }
+
+    /** Take an abandoned attempt out of play on both sides so its payment link dies with it. */
+    private void retirePendingAttempt(Subscription attempt) {
+        String rzpId = attempt.getRazorpaySubscriptionId();
+        if (rzpId != null && !rzpId.isBlank()) {
+            try {
+                JSONObject cancelRequest = new JSONObject();
+                cancelRequest.put("cancel_at_cycle_end", 0);
+                razorpayClient.subscriptions.cancel(rzpId, cancelRequest);
+            } catch (Exception e) {
+                log.warn("Could not cancel abandoned checkout attempt {} (expiring locally anyway): {}",
+                        rzpId, e.getMessage());
+            }
+        }
+        expireLocally(attempt);
+        log.info("Abandoned checkout attempt retired: subId={} plan={}",
+                attempt.getId(), attempt.getPlan());
     }
 
     /**
@@ -210,24 +337,74 @@ public class BillingService {
             throw new SecurityException("Payment verification failed.");
         }
 
-        if (sub.getStatus() != SubscriptionStatus.ACTIVE) {
-            LocalDateTime now = LocalDateTime.now();
-            sub.setStatus(SubscriptionStatus.ACTIVE);
-            sub.setTrial(false);
+        if (sub.getStatus() == SubscriptionStatus.ACTIVE) {
+            return SubscriptionResponse.from(sub); // already activated; nothing to do
+        }
+
+        // A subscription that has ENDED never comes back through this door. The signature
+        // is a plain HMAC over "<payment>|<subscription>" — no nonce, no expiry — so the
+        // payload from a shop's very first successful checkout stays valid forever. With
+        // only an "is it already ACTIVE?" guard, re-POSTing it each time the plan lapsed
+        // renewed it free of charge; replaying a superseded plan's payload also expired
+        // and gateway-cancelled the bigger one that had replaced it. Pay again instead.
+        if (TERMINAL_STATUSES.contains(sub.getStatus())) {
+            log.warn("Rejected verify against a {} subscription: user={} rzpId={}",
+                    sub.getStatus(), userId, request.getSubscriptionId());
+            throw new IllegalStateException(
+                    "That plan has already ended and can't be restarted from an old payment. "
+                    + "Choose a plan to subscribe again.");
+        }
+
+        // Claim the payment. Belt to the status guard's braces: one payment authorizes one
+        // activation, and the primary key settles a race between two concurrent submits.
+        claimSubscriptionPayment(request.getPaymentId(), request.getSubscriptionId(), sub, userId);
+
+        LocalDateTime now = LocalDateTime.now();
+        // A plan bought to replace one that is still winding down was scheduled at the
+        // gateway to begin when that period ends; authorizing it must not drag it forward.
+        boolean scheduled = sub.getCurrentPeriodStart() != null
+                && sub.getCurrentPeriodStart().isAfter(now);
+        sub.setStatus(SubscriptionStatus.ACTIVE);
+        sub.setTrial(false);
+        if (!scheduled) {
             sub.setCurrentPeriodStart(now);
             // Approximate the first monthly period; the renewal webhook corrects it later.
             sub.setCurrentPeriodEnd(now.plusMonths(1));
-            subscriptionRepository.save(sub);
+        }
+        subscriptionRepository.save(sub);
+        if (!scheduled) {
             // The retailer just paid — end any other still-active subscription (a free
             // trial, or the smaller plan this purchase upgrades from) so they never hold
-            // two active plans or get double-billed.
+            // two active plans or get double-billed. A SCHEDULED plan supersedes nothing:
+            // the plan it replaces is already set to stop on the day this one starts.
             supersedeActiveSubscriptions(sub.getUser().getId(), sub.getId());
-            auditService.record(userId, "SUBSCRIPTION_ACTIVATE", "SUBSCRIPTION", sub.getId(),
-                    "plan=" + sub.getPlan() + " rzpId=" + request.getSubscriptionId());
-            log.info("Subscription activated via checkout verify: user={} subId={}", userId, sub.getId());
-            billingEmailService.sendSubscriptionActivated(sub);
         }
+        auditService.record(userId, "SUBSCRIPTION_ACTIVATE", "SUBSCRIPTION", sub.getId(),
+                "plan=" + sub.getPlan() + " rzpId=" + request.getSubscriptionId()
+                        + (scheduled ? " startsAt=" + sub.getCurrentPeriodStart() : ""));
+        log.info("Subscription activated via checkout verify: user={} subId={} scheduled={}",
+                userId, sub.getId(), scheduled);
+        billingEmailService.sendSubscriptionActivated(sub);
         return SubscriptionResponse.from(sub);
+    }
+
+    /**
+     * Record {@code paymentId} as spent, refusing a payment that already activated
+     * something. The pre-check keeps the common case readable; the primary key is the
+     * race-safe backstop for two concurrent submits of the same payload.
+     */
+    private void claimSubscriptionPayment(String paymentId, String razorpaySubscriptionId,
+                                          Subscription sub, String userId) {
+        if (subscriptionPaymentRepository.existsById(paymentId)) {
+            log.warn("Replayed subscription payment rejected: user={} paymentId={}", userId, paymentId);
+            throw new IllegalStateException("This payment has already been used to start a plan.");
+        }
+        try {
+            subscriptionPaymentRepository.saveAndFlush(SubscriptionPayment.of(
+                    paymentId, razorpaySubscriptionId, sub.getId(), userId));
+        } catch (org.springframework.dao.DataIntegrityViolationException duplicate) {
+            throw new IllegalStateException("This payment has already been used to start a plan.");
+        }
     }
 
     /**
@@ -238,7 +415,12 @@ public class BillingService {
      */
     @Transactional
     public SubscriptionResponse grantTrial(String userId, Plan plan, int trialDays) {
-        if (subscriptionRepository.existsByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE)) {
+        // "Already has a live plan" means entitled, not merely ACTIVE. A shop that
+        // cancelled a paid plan still has every day it paid for; handing it the free tier
+        // on top put a 3-image row in front of a Business one (findEntitling prefers
+        // ACTIVE), silently downgrading a paying customer through the distributor's
+        // "grant free tier" button.
+        if (findEntitlingSubscription(userId).isPresent()) {
             return getCurrentSubscription(userId);
         }
         User user = userRepository.findById(userId)
@@ -278,14 +460,6 @@ public class BillingService {
         User user = userRepository.findById(targetUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + targetUserId));
 
-        subscriptionRepository.findByUserIdAndStatus(targetUserId, SubscriptionStatus.ACTIVE)
-                .forEach(existing -> {
-                    existing.setStatus(SubscriptionStatus.EXPIRED);
-                    subscriptionRepository.save(existing);
-                    log.info("Subscription superseded by admin grant: user={} subId={}",
-                            targetUserId, existing.getId());
-                });
-
         LocalDateTime now = LocalDateTime.now();
         Subscription sub = Subscription.builder()
                 .user(user)
@@ -301,6 +475,19 @@ public class BillingService {
                 .pdfImageLimit(plan.getPdfImageLimit())
                 .build();
         subscriptionRepository.save(sub);
+
+        // Retire what they were on AFTER the replacement exists, so its purchased credits
+        // and outstanding access-code holds have somewhere to land.
+        subscriptionRepository.findByUserIdAndStatus(targetUserId, SubscriptionStatus.ACTIVE)
+                .forEach(existing -> {
+                    if (existing.getId().equals(sub.getId())) {
+                        return;
+                    }
+                    carryOverCredits(existing, sub.getId());
+                    expireLocally(existing);
+                    log.info("Subscription superseded by admin grant: user={} subId={}",
+                            targetUserId, existing.getId());
+                });
 
         auditService.record(adminUserId, "ADMIN_SUBSCRIPTION_GRANT", "SUBSCRIPTION", sub.getId(),
                 "user=" + targetUserId + " plan=" + plan + " days=" + days
@@ -374,10 +561,19 @@ public class BillingService {
         return SubscriptionResponse.from(sub);
     }
 
+    /**
+     * The subscription to SHOW the caller: the one actually entitling them, else their
+     * most recent row so a lapsed account still gets a plan name and a renew prompt.
+     *
+     * Resolved through the same {@link #findEntitlingSubscription} gate every feature
+     * enforces with. Matching on ACTIVE alone here (with "newest row of any status" as
+     * the fallback) let the two disagree: a shop with a CANCELLED-but-still-paid-for plan
+     * AND a newer abandoned checkout attempt was shown the attempt — "your subscription
+     * has ended", "awaiting payment" — while the API happily served every feature.
+     */
     @Transactional(readOnly = true)
     public SubscriptionResponse getCurrentSubscription(String userId) {
-        Subscription sub = subscriptionRepository
-                .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+        Subscription sub = findEntitlingSubscription(userId)
                 .orElseGet(() -> subscriptionRepository
                         .findByUserIdOrderByCreatedAtDesc(userId)
                         .stream().findFirst()
@@ -454,14 +650,18 @@ public class BillingService {
                     JSONObject cancelRequest = new JSONObject();
                     cancelRequest.put("cancel_at_cycle_end", 0);
                     razorpayClient.subscriptions.cancel(rzpId, cancelRequest);
-                } catch (RazorpayException e) {
+                } catch (Exception e) {
+                    // Best-effort on ANY failure: a gateway outage must not block someone
+                    // from closing their account.
                     log.error("Razorpay cancel FAILED while deleting account {} (subscription {} may "
                             + "keep charging — settle manually): {}", userId, rzpId, e.getMessage());
                 }
             }
-            sub.setStatus(SubscriptionStatus.EXPIRED);
             sub.setCancelAtPeriodEnd(true);
-            subscriptionRepository.save(sub);
+            // Closes the period as well as the status: a row left holding next month's
+            // end date came back as an entitling CANCELLED one the moment Razorpay
+            // echoed the cancellation back.
+            expireLocally(sub);
             log.info("Subscription ended for deleted account: user={} subId={}", userId, sub.getId());
         }
         auditService.record(userId, "SUBSCRIPTIONS_ENDED_ON_DELETE", "USER", userId,
@@ -721,17 +921,41 @@ public class BillingService {
     @Transactional
     public void activateSubscription(String razorpaySubscriptionId, long chargeAt, long currentEnd) {
         subscriptionRepository.findByRazorpaySubscriptionId(razorpaySubscriptionId).ifPresent(sub -> {
+            // Same one-way door the verify path enforces: an ended subscription is never
+            // brought back in place, whichever side the event arrives from.
+            if (TERMINAL_STATUSES.contains(sub.getStatus())) {
+                log.info("Ignoring activation webhook for a {} subscription: {}",
+                        sub.getStatus(), razorpaySubscriptionId);
+                return;
+            }
             // The checkout-verify fast path usually activates first; only the genuine
             // transition sends the confirmation email (no duplicate on the webhook echo).
             boolean wasActive = sub.getStatus() == SubscriptionStatus.ACTIVE;
             sub.setStatus(SubscriptionStatus.ACTIVE);
             sub.setTrial(false);
-            sub.setCurrentPeriodStart(LocalDateTime.now());
-            sub.setCurrentPeriodEnd(resolvePeriodEnd(currentEnd));
+            // Only the transition INTO active sets the period. A late echo of an
+            // activation the verify path already handled used to push currentPeriodStart
+            // forward to "now", which moved the renewal date and — before the charge
+            // counter — made the next real renewal read as a first charge.
+            if (!wasActive) {
+                LocalDateTime now = LocalDateTime.now();
+                boolean scheduled = sub.getCurrentPeriodStart() != null
+                        && sub.getCurrentPeriodStart().isAfter(now);
+                if (!scheduled) {
+                    sub.setCurrentPeriodStart(now);
+                    sub.setCurrentPeriodEnd(resolvePeriodEnd(currentEnd));
+                }
+            }
             subscriptionRepository.save(sub);
             // End any other still-active subscription (free trial, or the plan this
-            // one upgrades from) now that the new paid plan is live.
-            supersedeActiveSubscriptions(sub.getUser().getId(), sub.getId());
+            // one upgrades from) now that the new paid plan is live. A plan scheduled to
+            // start later supersedes nothing yet — the one it replaces is still running
+            // out the period it was paid for.
+            boolean inForce = sub.getCurrentPeriodStart() == null
+                    || !sub.getCurrentPeriodStart().isAfter(LocalDateTime.now());
+            if (inForce) {
+                supersedeActiveSubscriptions(sub.getUser().getId(), sub.getId());
+            }
             log.info("Subscription activated: {}", razorpaySubscriptionId);
             if (!wasActive) {
                 billingEmailService.sendSubscriptionActivated(sub);
@@ -745,17 +969,23 @@ public class BillingService {
     @Transactional
     public void markCancelled(String razorpaySubscriptionId) {
         subscriptionRepository.findByRazorpaySubscriptionId(razorpaySubscriptionId).ifPresent(sub -> {
+            // An upgrade (and account deletion) cancels the old plan at the gateway, so
+            // this webhook echoes back for a row we already retired. Writing CANCELLED
+            // over EXPIRED un-retired it: findEntitling counts a CANCELLED row as still
+            // entitling while its period runs, so the superseded plan came back as a free
+            // second entitlement. It is already ended — leave it alone. (The email is
+            // suppressed for the same reason: nobody who just upgraded wants to be told
+            // their subscription has ended.)
+            if (sub.getStatus() == SubscriptionStatus.EXPIRED) {
+                log.info("Ignoring cancellation webhook for an already-retired subscription: {}",
+                        razorpaySubscriptionId);
+                return;
+            }
             boolean wasCancelled = sub.getStatus() == SubscriptionStatus.CANCELLED;
-            // An upgrade cancels the old plan at the gateway; when that webhook echoes
-            // back the user already holds a new ACTIVE plan — a "your subscription has
-            // ended" email would only alarm someone who just paid for a bigger one.
-            boolean superseded = sub.getStatus() == SubscriptionStatus.EXPIRED
-                    && subscriptionRepository.existsByUserIdAndStatus(
-                            sub.getUser().getId(), SubscriptionStatus.ACTIVE);
             sub.setStatus(SubscriptionStatus.CANCELLED);
             subscriptionRepository.save(sub);
             log.info("Subscription cancelled: {}", razorpaySubscriptionId);
-            if (!wasCancelled && !superseded) {
+            if (!wasCancelled) {
                 billingEmailService.sendSubscriptionEnded(sub);
             }
         });
@@ -795,16 +1025,19 @@ public class BillingService {
     @Transactional
     public void handlePaymentCaptured(String razorpaySubscriptionId, long currentEnd) {
         subscriptionRepository.findByRazorpaySubscriptionId(razorpaySubscriptionId).ifPresent(sub -> {
-            // Classify BEFORE mutating: the very first charge arrives right after checkout
-            // (activation already emailed a receipt), while a real renewal lands roughly a
-            // month into an ACTIVE period. HALTED→captured is a recovery — quota refreshed,
-            // so it reads as a renewal too.
+            // Classify BEFORE mutating, by counting charges rather than guessing from
+            // dates. The old test ("did this period start more than 7 days ago?") had to
+            // guess because nothing recorded the charges; it misread a late activation
+            // echo, and a plan scheduled to begin next month — whose period start is in
+            // the FUTURE on its first charge — would have defeated it entirely.
+            //
+            // Cycle 0 is the charge that starts the plan; the buyer was already emailed
+            // when it activated, so only an activation this webhook itself performs sends
+            // that mail. Every later cycle is a renewal, including a HALTED recovery.
             SubscriptionStatus previousStatus = sub.getStatus();
-            LocalDateTime previousStart = sub.getCurrentPeriodStart();
-            boolean firstCharge = previousStatus == SubscriptionStatus.CREATED || previousStart == null;
-            boolean renewal = !firstCharge
-                    && (previousStatus == SubscriptionStatus.HALTED
-                        || previousStart.isBefore(LocalDateTime.now().minusDays(7)));
+            boolean firstCharge = sub.getBillingCyclesCharged() == 0;
+            boolean alreadyAnnounced = previousStatus == SubscriptionStatus.ACTIVE;
+            sub.setBillingCyclesCharged(sub.getBillingCyclesCharged() + 1);
 
             sub.setStatus(SubscriptionStatus.ACTIVE);
             sub.setAiGenerationsUsed(0);
@@ -832,10 +1065,17 @@ public class BillingService {
                 sub.setCurrentPeriodEnd(newEnd);
             }
             subscriptionRepository.save(sub);
-            log.info("Subscription renewed, AI usage reset: {}", razorpaySubscriptionId);
             if (firstCharge) {
+                // A plan bought while another was winding down starts here, a month after
+                // it was authorized: take over from whatever the shop was still on. For an
+                // immediate purchase the verify path already did this and there is nothing
+                // left to supersede.
+                supersedeActiveSubscriptions(sub.getUser().getId(), sub.getId());
+            }
+            log.info("Subscription renewed, AI usage reset: {}", razorpaySubscriptionId);
+            if (firstCharge && !alreadyAnnounced) {
                 billingEmailService.sendSubscriptionActivated(sub);
-            } else if (renewal) {
+            } else if (!firstCharge) {
                 billingEmailService.sendSubscriptionRenewed(sub);
             }
             // else: the charge webhook echoing a just-verified activation — already emailed.
@@ -889,17 +1129,75 @@ public class BillingService {
                             cancelRequest.put("cancel_at_cycle_end", 0);
                             razorpayClient.subscriptions.cancel(
                                     existing.getRazorpaySubscriptionId(), cancelRequest);
-                        } catch (RazorpayException e) {
+                        } catch (Exception e) {
+                            // Any gateway trouble, not just a RazorpayException: this runs
+                            // inside the activation of a plan the shop has ALREADY paid
+                            // for, and nothing that happens to the old subscription is
+                            // worth failing that. Local expiry is what we enforce anyway.
                             log.warn("Razorpay cancel of superseded subscription {} failed "
                                     + "(local expiry still applied): {}",
                                     existing.getRazorpaySubscriptionId(), e.getMessage());
                         }
                     }
-                    existing.setStatus(SubscriptionStatus.EXPIRED);
-                    subscriptionRepository.save(existing);
+                    carryOverCredits(existing, keepSubId);
+                    expireLocally(existing);
                     log.info("Subscription superseded by new activation: user={} oldSubId={} trial={}",
                             userId, existing.getId(), existing.isTrial());
                 });
+    }
+
+    /**
+     * Move everything the shop has already paid for off a subscription being retired and
+     * onto the one replacing it: purchased image and auto-mask credits, and the image
+     * holds standing behind access codes that customers have not redeemed yet.
+     *
+     * Without this an upgrade quietly destroyed all three. Purchased credits are real
+     * money and the entity says outright that one "never evaporates" — it survived
+     * renewal but not an upgrade. The holds were worse than lost: the CODES kept their
+     * side of the reservation, so when the customer finally redeemed one,
+     * SegmentationService found no hold left on the subscription and fell through to a
+     * normal charge, billing the shop a second time for a project it had already paid
+     * for when it issued the code.
+     */
+    private void carryOverCredits(Subscription from, String toSubId) {
+        int images = from.getPurchasedImageCredits();
+        int masks = from.getPurchasedAutoMaskCredits();
+        int held = from.getReservedImages();
+        if (images <= 0 && masks <= 0 && held <= 0) {
+            return;
+        }
+        if (images > 0) {
+            subscriptionRepository.addPurchasedImageCredits(toSubId, images);
+            from.setPurchasedImageCredits(0);
+        }
+        if (masks > 0) {
+            subscriptionRepository.addPurchasedAutoMaskCredits(toSubId, masks);
+            from.setPurchasedAutoMaskCredits(0);
+        }
+        if (held > 0) {
+            subscriptionRepository.addReservedImages(toSubId, held);
+            from.setReservedImages(0);
+        }
+        log.info("Carried credits onto subscription {}: images={} autoMasks={} held={}",
+                toSubId, images, masks, held);
+    }
+
+    /**
+     * Retire a subscription on our side: EXPIRED, and its paid period closed off at now.
+     *
+     * Truncating the period is what makes EXPIRED stick. {@code findEntitling} treats a
+     * CANCELLED row with a future period end as still entitling, so a superseded (or
+     * deleted-account) row left holding next month's end date came back to life the
+     * moment Razorpay echoed {@code subscription.cancelled} — handing back the plan the
+     * shop had just upgraded away from, for free.
+     */
+    private void expireLocally(Subscription sub) {
+        sub.setStatus(SubscriptionStatus.EXPIRED);
+        LocalDateTime now = LocalDateTime.now();
+        if (sub.getCurrentPeriodEnd() == null || sub.getCurrentPeriodEnd().isAfter(now)) {
+            sub.setCurrentPeriodEnd(now);
+        }
+        subscriptionRepository.save(sub);
     }
 
     /** Scale a plan's monthly quota by the billed quantity, clamped to avoid int overflow. */

@@ -119,6 +119,20 @@ public class Subscription {
     @Builder.Default
     private int trialProjectsCreated = 0;
 
+    /**
+     * Billing cycles Razorpay has actually charged for. Incremented by
+     * {@code subscription.charged} / {@code payment.captured}, so 0 means "authorized
+     * but never charged" — the state a subscription scheduled to start at a later date
+     * sits in for its whole first month.
+     *
+     * This replaces guessing a first charge from how long ago the period started, which
+     * a scheduled start makes meaningless (the period start is in the FUTURE) and a late
+     * {@code subscription.activated} echo could reset under the old code.
+     */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int billingCyclesCharged = 0;
+
     @Builder.Default
     private boolean cancelAtPeriodEnd = false;
 
