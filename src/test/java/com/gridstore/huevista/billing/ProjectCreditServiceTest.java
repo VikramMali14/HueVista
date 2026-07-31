@@ -51,6 +51,7 @@ class ProjectCreditServiceTest {
     private static final int REOPEN_PAISE = 1000;
 
     private ProjectCreditLedger ledger;
+    private com.gridstore.huevista.billing.repository.SubscriptionRepository subscriptions;
     private ProjectRepository projects;
     private BillingService billing;
     private PricingService pricing;
@@ -61,6 +62,7 @@ class ProjectCreditServiceTest {
     @BeforeEach
     void setUp() {
         ledger = mock(ProjectCreditLedger.class);
+        subscriptions = mock(com.gridstore.huevista.billing.repository.SubscriptionRepository.class);
         projects = mock(ProjectRepository.class);
         billing = mock(BillingService.class);
         points = mock(RewardPointsService.class);
@@ -77,7 +79,7 @@ class ProjectCreditServiceTest {
         retailer.setRole(com.gridstore.huevista.auth.model.UserRole.RETAILER);
         when(users.findById(USER)).thenReturn(Optional.of(retailer));
 
-        svc = new ProjectCreditService(ledger, projects,
+        svc = new ProjectCreditService(ledger, subscriptions, projects,
                 new ProjectAccessService(projects, billing, pricing), pricing,
                 mock(BillingEmailService.class), points, billing, users);
 
@@ -177,6 +179,70 @@ class ProjectCreditServiceTest {
         assertThat(options.getAvailableCredits()).isEqualTo(2);
         assertThat(options.getValidDays()).isEqualTo(VALID_DAYS);
         assertThat(options.isSubscribed()).isFalse();
+    }
+
+    // ── Assigning a bought project to a customer ────────────────────────────
+
+    private static final String SUB = "sub-1";
+
+    /** Nothing is relocated while the plan can still cover the assignment on its own. */
+    @Test
+    void assigningWithinThePlansOwnAllowanceLeavesTheLedgerAlone() {
+        when(subscriptions.reserveProjectsIfWithinLimit(SUB, 2)).thenReturn(1);
+
+        assertThat(svc.reserveIncludingBoughtExtras(USER, SUB, 2)).isTrue();
+        verify(ledger, never()).claim(any());
+    }
+
+    /**
+     * The case this exists for: a shop bought extras while it had no plan, so they sat in
+     * the ledger where only project CREATION could see them — it could paint those rooms
+     * itself but was told it had nothing to give a customer. Only the shortfall moves.
+     */
+    @Test
+    void anExtraBoughtBetweenPlansCanStillBeAssignedToACustomer() {
+        Subscription spent = new Subscription();
+        spent.setProjectsLimit(15);
+        spent.setProjectsUsed(15);
+        when(subscriptions.findById(SUB)).thenReturn(Optional.of(spent));
+        when(subscriptions.reserveProjectsIfWithinLimit(SUB, 1)).thenReturn(0, 1);
+        when(ledger.claim(USER)).thenReturn(Optional.of(new ProjectCredit()));
+        when(billing.creditPurchasedProjects(USER, 1))
+                .thenReturn(Optional.of(mock(com.gridstore.huevista.billing.dto.SubscriptionResponse.class)));
+
+        assertThat(svc.reserveIncludingBoughtExtras(USER, SUB, 1)).isTrue();
+        verify(billing).creditPurchasedProjects(USER, 1);
+    }
+
+    /** A spent plan with nothing bought behind it is a real refusal, not a silent free one. */
+    @Test
+    void assigningIsRefusedWhenNoBoughtProjectIsAvailableToCoverIt() {
+        Subscription spent = new Subscription();
+        spent.setProjectsLimit(15);
+        spent.setProjectsUsed(15);
+        when(subscriptions.findById(SUB)).thenReturn(Optional.of(spent));
+        when(subscriptions.reserveProjectsIfWithinLimit(SUB, 1)).thenReturn(0);
+        when(ledger.claim(USER)).thenReturn(Optional.empty());
+
+        assertThat(svc.reserveIncludingBoughtExtras(USER, SUB, 1)).isFalse();
+        verify(billing, never()).creditPurchasedProjects(any(), anyInt());
+    }
+
+    /**
+     * The claim happens before the credit lands, so that a parallel project creation can
+     * never spend one this call has promised. If there turns out to be no plan to land it
+     * on, it has to go straight back — a claim held onto is a project the shop paid for
+     * and can no longer use.
+     */
+    @Test
+    void aClaimedCreditGoesBackWhenThereIsNoPlanToMoveItOnto() {
+        ProjectCredit credit = new ProjectCredit();
+        credit.setId("credit-1");
+        when(ledger.claim(USER)).thenReturn(Optional.of(credit));
+        when(billing.creditPurchasedProjects(USER, 1)).thenReturn(Optional.empty());
+
+        assertThat(svc.transferLedgerCreditsToPlan(USER, 1)).isZero();
+        verify(ledger).release("credit-1");
     }
 
     // ── Reopen ──────────────────────────────────────────────────────────────
