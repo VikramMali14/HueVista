@@ -1,6 +1,7 @@
 package com.gridstore.huevista.billing.service;
 
 import com.gridstore.huevista.billing.dto.ProjectOrderResponse;
+import com.gridstore.huevista.billing.dto.ProjectReopenResponse;
 import com.gridstore.huevista.billing.dto.VerifyProjectPurchaseRequest;
 import com.gridstore.huevista.billing.model.Plan;
 import com.gridstore.huevista.billing.model.ProjectCredit;
@@ -49,6 +50,7 @@ public class ProjectPurchaseService {
     private String keySecret;
 
     private static final String ORDER_PURPOSE = "project_purchase";
+    private static final String REOPEN_PURPOSE = "project_reopen";
 
     /** Create the Razorpay order the client opens in Checkout. */
     public ProjectOrderResponse createOrder(String userId) {
@@ -99,18 +101,7 @@ public class ProjectPurchaseService {
      */
     @Transactional
     public void verifyAndCredit(String userId, VerifyProjectPurchaseRequest req) {
-        try {
-            JSONObject options = new JSONObject();
-            options.put("razorpay_order_id", req.getOrderId());
-            options.put("razorpay_payment_id", req.getPaymentId());
-            options.put("razorpay_signature", req.getSignature());
-            if (!Utils.verifyPaymentSignature(options, keySecret)) {
-                throw new SecurityException("Payment verification failed.");
-            }
-        } catch (RazorpayException e) {
-            log.error("Razorpay project signature verification error: {}", e.getMessage());
-            throw new SecurityException("Payment verification error.");
-        }
+        verifySignature(req);
 
         Plan pricedAs;
         int amountPaise;
@@ -136,8 +127,115 @@ public class ProjectPurchaseService {
             throw new SecurityException("Payment verification error.");
         }
 
-        // Claim the payment exactly once. The pre-check keeps the common case readable;
-        // the unique constraint is the race-safe backstop for two concurrent submits.
+        claimPayment(req, userId, pricedAs, amountPaise);
+        projectCreditService.creditPurchasedProject(userId, ProjectCredit.Source.PURCHASE);
+        log.info("Project bought with money: user={} plan={} amountPaise={}",
+                userId, pricedAs, amountPaise);
+    }
+
+    // ── Reopen: another validity window on a project already paid for once ──────
+
+    /**
+     * Create the Razorpay order for a paid reopen.
+     *
+     * The access check happens HERE, before the buyer is ever shown a payment sheet —
+     * charging first and discovering afterwards that the project was never locked is the
+     * failure this order is built to avoid. The project id travels on the order so verify
+     * extends the project that was actually paid for rather than one the client names
+     * afterwards.
+     */
+    public ProjectOrderResponse createReopenOrder(String userId, String projectId) {
+        if (keyId.isBlank() || keySecret.isBlank()) {
+            throw new IllegalStateException("Online payment is not configured.");
+        }
+        projectCreditService.requireReopenable(userId, projectId);
+        int amountPaise = pricingService.reopenPricePaise();
+        try {
+            JSONObject req = new JSONObject();
+            req.put("amount", amountPaise);
+            req.put("currency", pricingService.currency());
+            req.put("receipt", "reopen_" + System.currentTimeMillis());
+            JSONObject notes = new JSONObject();
+            notes.put("userId", userId);
+            notes.put("purpose", REOPEN_PURPOSE);
+            notes.put("projectId", projectId);
+            req.put("notes", notes);
+
+            Order order = razorpayClient.orders.create(req);
+            String orderId = order.get("id");
+            log.info("Reopen order created: user={} order={} project={} amountPaise={}",
+                    userId, orderId, projectId, amountPaise);
+
+            return ProjectOrderResponse.builder()
+                    .orderId(orderId)
+                    .pricingPlan(pricingService.pricingPlanFor(userId).name())
+                    .amount(amountPaise)
+                    .currency(pricingService.currency())
+                    .razorpayKeyId(keyId)
+                    .build();
+        } catch (RazorpayException e) {
+            log.error("Razorpay reopen order creation failed: {}", e.getMessage());
+            throw new IllegalStateException("Could not start the payment. Please try again.");
+        }
+    }
+
+    /**
+     * Verify the Checkout signature and extend the project the ORDER was for.
+     *
+     * Which project is read back from the order's notes, not from the request: a client
+     * that could name the project could pay ₹10 for one and reopen another.
+     */
+    @Transactional
+    public ProjectReopenResponse verifyAndCreditReopen(String userId, VerifyProjectPurchaseRequest req) {
+        verifySignature(req);
+
+        String projectId;
+        int amountPaise;
+        try {
+            Order order = razorpayClient.orders.fetch(req.getOrderId());
+            amountPaise = ((Number) order.get("amount")).intValue();
+            JSONObject notes = order.get("notes");
+            String purpose = notes != null ? notes.optString("purpose", "") : "";
+            String orderUserId = notes != null ? notes.optString("userId", "") : "";
+            projectId = notes != null ? notes.optString("projectId", "") : "";
+
+            if (!REOPEN_PURPOSE.equals(purpose) || !userId.equals(orderUserId)
+                    || projectId.isBlank() || amountPaise != pricingService.reopenPricePaise()) {
+                log.warn("Reopen order mismatch: user={} order={} amount={} purpose={} orderUser={} project={}",
+                        userId, req.getOrderId(), amountPaise, purpose, orderUserId, projectId);
+                throw new SecurityException("Payment verification failed.");
+            }
+        } catch (RazorpayException e) {
+            log.error("Razorpay order fetch failed during reopen verification: {}", e.getMessage());
+            throw new SecurityException("Payment verification error.");
+        }
+
+        claimPayment(req, userId, null, amountPaise);
+        return projectCreditService.creditReopen(userId, projectId, amountPaise);
+    }
+
+    /** The Checkout signature must belong to this merchant account. */
+    private void verifySignature(VerifyProjectPurchaseRequest req) {
+        try {
+            JSONObject options = new JSONObject();
+            options.put("razorpay_order_id", req.getOrderId());
+            options.put("razorpay_payment_id", req.getPaymentId());
+            options.put("razorpay_signature", req.getSignature());
+            if (!Utils.verifyPaymentSignature(options, keySecret)) {
+                throw new SecurityException("Payment verification failed.");
+            }
+        } catch (RazorpayException e) {
+            log.error("Razorpay signature verification error: {}", e.getMessage());
+            throw new SecurityException("Payment verification error.");
+        }
+    }
+
+    /**
+     * Claim the payment exactly once. The pre-check keeps the common case readable; the
+     * unique constraint is the race-safe backstop for two concurrent submits.
+     */
+    private void claimPayment(VerifyProjectPurchaseRequest req, String userId,
+                              Plan pricedAs, int amountPaise) {
         if (purchaseRepository.existsByPaymentId(req.getPaymentId())) {
             throw new IllegalStateException("This payment has already been redeemed.");
         }
@@ -147,10 +245,6 @@ public class ProjectPurchaseService {
         } catch (DataIntegrityViolationException duplicate) {
             throw new IllegalStateException("This payment has already been redeemed.");
         }
-
-        projectCreditService.creditPurchasedProject(userId, ProjectCredit.Source.PURCHASE);
-        log.info("Project bought with money: user={} plan={} amountPaise={}",
-                userId, pricedAs, amountPaise);
     }
 
     /** The tier named on an order, or null when it names none we recognise. */

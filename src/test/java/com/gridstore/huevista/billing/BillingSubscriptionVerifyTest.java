@@ -287,6 +287,42 @@ class BillingSubscriptionVerifyTest {
     }
 
     /**
+     * Credits stranded on a plan that ENDED rather than being superseded follow the shop
+     * back. carryOverCredits only ever looked at ACTIVE rows, so a shop that bought extras,
+     * let the plan lapse and resubscribed a month later came back to nothing — and any
+     * access code still outstanding lost the hold behind it, so redeeming it charged the
+     * shop a second time for work it had already paid for.
+     */
+    @Test
+    void resubscribingAfterALapseReclaimsCreditsFromTheDeadPlan() {
+        Subscription dead = sub("user-1", SubscriptionStatus.EXPIRED);
+        dead.setId("sub-row-dead");
+        dead.setPurchasedProjectCredits(7);
+        dead.setReservedProjects(2);
+
+        Subscription bought = sub("user-1", SubscriptionStatus.CREATED);
+        SubscriptionRepository subs = mock(SubscriptionRepository.class);
+        when(subs.findByRazorpaySubscriptionId("rzp_sub_1")).thenReturn(Optional.of(bought));
+        when(subs.findByUserIdAndStatus("user-1", SubscriptionStatus.ACTIVE))
+                .thenReturn(java.util.List.of());
+        when(subs.findWithUnspentCredits("user-1", "sub-row-1"))
+                .thenReturn(java.util.List.of(dead));
+        BillingService svc = service(subs);
+
+        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
+            utils.when(() -> Utils.verifySignature(any(), any(), any())).thenReturn(true);
+
+            svc.verifyAndActivateSubscription("user-1", req("rzp_sub_1", "pay_1", "sig"));
+
+            verify(subs).addPurchasedProjectCredits("sub-row-1", 7);
+            verify(subs).addReservedProjects("sub-row-1", 2);
+            // Moved, not copied — a second activation must not hand them over again.
+            assertThat(dead.getPurchasedProjectCredits()).isZero();
+            assertThat(dead.getReservedProjects()).isZero();
+        }
+    }
+
+    /**
      * Retiring a plan closes its period too. A superseded row left holding next month's
      * end date came back as an entitling CANCELLED one as soon as Razorpay echoed the
      * cancellation — a free second plan alongside the one that replaced it.

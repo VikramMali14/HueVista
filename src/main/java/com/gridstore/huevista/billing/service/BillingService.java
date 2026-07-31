@@ -1094,6 +1094,44 @@ public class BillingService {
                     log.info("Subscription superseded by new activation: user={} oldSubId={} trial={}",
                             userId, existing.getId(), existing.isTrial());
                 });
+        reclaimStrandedCredits(userId, keepSubId);
+    }
+
+    /**
+     * Sweep paid-for credits and outstanding holds off subscriptions that ENDED rather
+     * than being superseded, and onto the one now in force.
+     *
+     * {@link #carryOverCredits} only ever ran against ACTIVE rows, which covers the
+     * upgrade but not the gap: a shop that bought extras, let its plan lapse, and
+     * resubscribed a month later came back to nothing. An EXPIRED row is invisible to
+     * every other query here — the entitlement lookup sees only ACTIVE and winding-down
+     * CANCELLED ones — so those credits were not spendable, not refundable and not
+     * visible anywhere. Holds were worse: the access codes behind them were still live,
+     * so redeeming one after the shop came back found no hold and charged the shop a
+     * second time for a project it had already paid for.
+     *
+     * Only the two buckets that genuinely outlive a plan move. The monthly allowance of a
+     * dead subscription is not swept up — that really did expire with it.
+     *
+     * Moving rather than copying is what keeps this safe to run on every activation: a
+     * swept row is left at zero, so the second run finds nothing.
+     */
+    private void reclaimStrandedCredits(String userId, String keepSubId) {
+        for (Subscription stranded : subscriptionRepository.findWithUnspentCredits(userId, keepSubId)) {
+            int purchased = stranded.getPurchasedProjectCredits();
+            int held = stranded.getReservedProjects();
+            if (purchased > 0) {
+                subscriptionRepository.addPurchasedProjectCredits(keepSubId, purchased);
+                stranded.setPurchasedProjectCredits(0);
+            }
+            if (held > 0) {
+                subscriptionRepository.addReservedProjects(keepSubId, held);
+                stranded.setReservedProjects(0);
+            }
+            subscriptionRepository.save(stranded);
+            log.info("Reclaimed stranded credits from ended subscription {} onto {}: "
+                    + "purchased={} held={}", stranded.getId(), keepSubId, purchased, held);
+        }
     }
 
     /**

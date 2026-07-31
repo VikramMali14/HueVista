@@ -142,6 +142,26 @@ public class ProjectAccessService {
         }
     }
 
+    /**
+     * Gate for BUYING a reopen: refuses when this account can already work on the project,
+     * so nobody is sold a window they do not need.
+     *
+     * The obvious guard — "does the project have an open window?" — is the wrong question,
+     * and asking it took money for nothing. A project covered by a live subscription or by
+     * a shop's access code carries no window AT ALL (null on every field), so it read as
+     * closed while being fully editable: a subscriber could POST a reopen and be charged
+     * to unlock something already unlocked. What matters is the caller's ACCESS, which is
+     * the one thing this class exists to answer.
+     */
+    @Transactional
+    public void assertNeedsReopen(String userId, UserRole role, Project project) {
+        if (accessFor(userId, role, project).editable()) {
+            throw new IllegalStateException(
+                    "This project is already open — there's nothing to reopen. "
+                    + "A reopen is only needed once its validity has run out.");
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Opening and extending windows
     // ─────────────────────────────────────────────────────────────────────────

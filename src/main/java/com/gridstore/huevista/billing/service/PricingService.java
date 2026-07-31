@@ -60,6 +60,11 @@ public class PricingService {
     @Value("${app.points.max-purchase:100000}")
     private int pointsMaxPurchase;
 
+    /** What a reopen costs in money. Flat, like its point price — a reopen buys another
+     *  window on work already paid for once, so there is nothing tier-shaped about it. */
+    @Value("${app.project-credit.reopen-price-paise:1000}")
+    private int reopenPricePaise;
+
     @Value("${app.points.reopen:9}")
     private int pointsPriceReopen;
 
@@ -131,6 +136,11 @@ public class PricingService {
     /** What one extra project costs this account in paise (GST included), at its plan's rate. */
     public int projectPricePaise(String userId) {
         return pricingPlanFor(userId).extraProjectPriceWithTaxInPaise();
+    }
+
+    /** What one reopen costs in paise, GST included. */
+    public int reopenPricePaise() {
+        return reopenPricePaise * (100 + Plan.GST_PERCENT) / 100;
     }
 
     public int pointsPriceReopen() {

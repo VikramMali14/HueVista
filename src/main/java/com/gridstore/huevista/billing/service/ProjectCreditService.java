@@ -44,6 +44,7 @@ public class ProjectCreditService {
     private final BillingEmailService billingEmailService;
     private final RewardPointsService rewardPointsService;
     private final BillingService billingService;
+    private final com.gridstore.huevista.auth.repository.UserRepository userRepository;
 
     /**
      * What a project costs this account on both rails and whether they can afford one —
@@ -59,6 +60,7 @@ public class ProjectCreditService {
                 .projectPricePoints(pricedAs.getExtraProjectPoints())
                 .projectPricePaise(pricedAs.extraProjectPriceWithTaxInPaise())
                 .reopenPricePoints(pricingService.pointsPriceReopen())
+                .reopenPricePaise(pricingService.reopenPricePaise())
                 .pointsBalance(rewardPointsService.balance(userId))
                 .validDays(pricingService.projectValidDays())
                 .availableCredits(creditLedger.available(userId))
@@ -105,19 +107,51 @@ public class ProjectCreditService {
     }
 
     /**
+     * Give a project another validity window after a verified CASH payment.
+     *
+     * The access check has already happened at order time; re-running it here would let a
+     * shop that subscribed between paying and returning lose the window it just bought.
+     */
+    @Transactional
+    public ProjectReopenResponse creditReopen(String userId, String projectId, int amountPaise) {
+        Project project = projectRepository.findByIdAndUserId(projectId, userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+        projectAccessService.extendWindow(project, pricingService.projectValidDays());
+        projectRepository.save(project);
+        log.info("Project reopened with money: user={} project={} until={} paise={}",
+                userId, project.getId(), project.getAccessExpiresAt(), amountPaise);
+        return reopenResult(project, 0, amountPaise);
+    }
+
+    /**
+     * Refuse a reopen this account does not need, BEFORE any money moves.
+     *
+     * Shared by both rails so the points path and the cash path can never disagree about
+     * whether a project is locked.
+     */
+    @Transactional(readOnly = true)
+    public Project requireReopenable(String userId, String projectId) {
+        Project project = projectRepository.findByIdAndUserId(projectId, userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+        com.gridstore.huevista.auth.model.User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+        projectAccessService.assertNeedsReopen(userId, user.getRole(), project);
+        return project;
+    }
+
+    /**
      * Give a project another validity window, paid in points.
      *
      * The project id comes from the request rather than from a verified order, which is
      * safe because the lookup is scoped to the caller ({@code findByIdAndUserId}) and the
      * points are their own either way.
+     *
+     * Refused when the caller can already work on the project — see
+     * {@link ProjectAccessService#assertNeedsReopen}.
      */
     @Transactional
     public ProjectReopenResponse reopenWithPoints(String userId, String projectId) {
-        Project project = projectRepository.findByIdAndUserId(projectId, userId)
-                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
-        if (project.isAccessWindowOpen()) {
-            throw new IllegalStateException("This project is still open — there's nothing to reopen yet.");
-        }
+        Project project = requireReopenable(userId, projectId);
 
         int points = pricingService.pointsPriceReopen();
         rewardPointsService.spend(userId, points,
@@ -128,11 +162,16 @@ public class ProjectCreditService {
         log.info("Project reopened with points: user={} project={} until={} points={}",
                 userId, project.getId(), project.getAccessExpiresAt(), points);
 
+        return reopenResult(project, points, 0);
+    }
+
+    private ProjectReopenResponse reopenResult(Project project, int pointsSpent, int amountPaise) {
         return ProjectReopenResponse.builder()
                 .projectId(project.getId())
                 .accessExpiresAt(project.getAccessExpiresAt())
                 .paused(project.getAccessPausedAt() != null)
-                .pointsSpent(points)
+                .pointsSpent(pointsSpent)
+                .amountPaise(amountPaise)
                 .daysAdded(pricingService.projectValidDays())
                 .build();
     }

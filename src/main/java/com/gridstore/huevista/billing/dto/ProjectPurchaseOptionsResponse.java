@@ -27,8 +27,11 @@ public class ProjectPurchaseOptionsResponse {
     /** What one project costs in money, in paise, GST included. */
     private int projectPricePaise;
 
-    /** What another window on a lapsed project costs, in points. */
+    /** What another window on a lapsed project costs — points, and money in paise.
+     *  Flat on both rails: a reopen buys more time on work already paid for once, so
+     *  unlike a new project it does not get cheaper with the tier. */
     private int reopenPricePoints;
+    private int reopenPricePaise;
 
     /** The account's spendable balance, so the caller can say whether it is enough. */
     private int pointsBalance;

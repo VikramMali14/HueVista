@@ -180,6 +180,20 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
            "WHERE s.id = :id AND s.trialProjectsCreated < :limit")
     int claimTrialProjectSlot(@Param("id") String id, @Param("limit") int limit);
 
+    /**
+     * Rows that still hold something the shop paid for, other than {@code keepId}.
+     *
+     * Used when a plan goes live to sweep up credits stranded on subscriptions that ENDED
+     * rather than being superseded. Those rows are invisible to every other query — the
+     * entitlement lookup only sees ACTIVE and winding-down CANCELLED ones — so a shop that
+     * bought extras, let the plan lapse and came back a month later lost them, and any
+     * access codes still outstanding lost the holds standing behind them.
+     */
+    @Query("SELECT s FROM Subscription s WHERE s.user.id = :userId AND s.id <> :keepId "
+           + "AND (s.purchasedProjectCredits > 0 OR s.reservedProjects > 0)")
+    List<Subscription> findWithUnspentCredits(@Param("userId") String userId,
+                                              @Param("keepId") String keepId);
+
     @Query("SELECT s.plan, COUNT(s) FROM Subscription s WHERE s.status = :status GROUP BY s.plan")
     List<Object[]> countByPlanAndStatus(@Param("status") SubscriptionStatus status);
 

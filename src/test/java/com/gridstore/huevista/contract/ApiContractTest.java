@@ -106,7 +106,8 @@ class ApiContractTest {
         // the buyer's plan, so it is quoted per account rather than stated as a constant.
         assertThat(propsOf("ProjectPurchaseOptionsResponse")).containsExactlyInAnyOrder(
                 "subscribed", "pricingPlan", "projectPricePoints", "projectPricePaise",
-                "reopenPricePoints", "pointsBalance", "validDays", "availableCredits");
+                "reopenPricePoints", "reopenPricePaise",
+                "pointsBalance", "validDays", "availableCredits");
     }
 
     @Test

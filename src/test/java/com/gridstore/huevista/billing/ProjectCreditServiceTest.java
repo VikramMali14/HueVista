@@ -48,12 +48,14 @@ class ProjectCreditServiceTest {
     /** The no-plan rate — what an unsubscribed shop pays. */
     private static final int POINTS_PROJECT = Plan.FREE.getExtraProjectPoints();
     private static final int POINTS_REOPEN = 9;
+    private static final int REOPEN_PAISE = 1000;
 
     private ProjectCreditLedger ledger;
     private ProjectRepository projects;
     private BillingService billing;
     private PricingService pricing;
     private RewardPointsService points;
+    private com.gridstore.huevista.auth.repository.UserRepository users;
     private ProjectCreditService svc;
 
     @BeforeEach
@@ -66,11 +68,18 @@ class ProjectCreditServiceTest {
         pricing = new PricingService(billing, mock(OrgMembershipRepository.class));
         ReflectionTestUtils.setField(pricing, "projectValidDays", VALID_DAYS);
         ReflectionTestUtils.setField(pricing, "pointsPriceReopen", POINTS_REOPEN);
+        ReflectionTestUtils.setField(pricing, "reopenPricePaise", REOPEN_PAISE);
         ReflectionTestUtils.setField(pricing, "currency", "INR");
+
+        users = mock(com.gridstore.huevista.auth.repository.UserRepository.class);
+        com.gridstore.huevista.auth.model.User retailer = new com.gridstore.huevista.auth.model.User();
+        retailer.setId(USER);
+        retailer.setRole(com.gridstore.huevista.auth.model.UserRole.RETAILER);
+        when(users.findById(USER)).thenReturn(Optional.of(retailer));
 
         svc = new ProjectCreditService(ledger, projects,
                 new ProjectAccessService(projects, billing, pricing), pricing,
-                mock(BillingEmailService.class), points, billing);
+                mock(BillingEmailService.class), points, billing, users);
 
         // Default: nobody is subscribed. Individual tests opt in.
         when(billing.findEntitlingSubscription(any())).thenReturn(Optional.empty());
@@ -163,6 +172,7 @@ class ProjectCreditServiceTest {
                 .isEqualTo(Plan.FREE.extraProjectPriceWithTaxInPaise());
         assertThat(options.getPricingPlan()).isEqualTo("FREE");
         assertThat(options.getReopenPricePoints()).isEqualTo(POINTS_REOPEN);
+        assertThat(options.getReopenPricePaise()).isEqualTo(REOPEN_PAISE);
         assertThat(options.getPointsBalance()).isEqualTo(200);
         assertThat(options.getAvailableCredits()).isEqualTo(2);
         assertThat(options.getValidDays()).isEqualTo(VALID_DAYS);
@@ -191,7 +201,44 @@ class ProjectCreditServiceTest {
 
         assertThatThrownBy(() -> svc.reopenWithPoints(USER, "proj-1"))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("still open");
+                .hasMessageContaining("already open");
+        verify(points, never()).spend(any(), anyInt(), any(), any());
+    }
+
+    /**
+     * A plan-covered project carries NO window at all — null on every field — so the
+     * obvious "is the window open?" guard read it as closed and happily charged a
+     * subscriber to unlock something their plan was already unlocking. The guard has to
+     * ask about ACCESS, not about the window.
+     */
+    @Test
+    void aSubscribedShopIsNotChargedToReopenAProjectItsPlanAlreadyCovers() {
+        subscribedOn(Plan.STARTER);
+        Project planCovered = Project.builder().id("proj-3").build();
+        when(projects.findByIdAndUserId("proj-3", USER)).thenReturn(Optional.of(planCovered));
+
+        assertThatThrownBy(() -> svc.reopenWithPoints(USER, "proj-3"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("already open");
+        verify(points, never()).spend(any(), anyInt(), any(), any());
+    }
+
+    /**
+     * Same trap on the other route in: work created under a shop's access code is paid for
+     * by that shop and stays fully editable for as long as the code lives, window or no
+     * window.
+     */
+    @Test
+    void anAccessCodeProjectIsNotChargedAReopenEither() {
+        Project codeCovered = Project.builder()
+                .id("proj-4")
+                .accessCode(new com.gridstore.huevista.account.model.CustomerAccessCode())
+                .build();
+        when(projects.findByIdAndUserId("proj-4", USER)).thenReturn(Optional.of(codeCovered));
+
+        assertThatThrownBy(() -> svc.reopenWithPoints(USER, "proj-4"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("already open");
         verify(points, never()).spend(any(), anyInt(), any(), any());
     }
 

@@ -4,6 +4,7 @@ import com.gridstore.huevista.billing.dto.CreateSubscriptionRequest;
 import com.gridstore.huevista.billing.dto.PdfAllowanceResponse;
 import com.gridstore.huevista.billing.dto.ProjectOrderResponse;
 import com.gridstore.huevista.billing.dto.ProjectPurchaseOptionsResponse;
+import com.gridstore.huevista.billing.dto.ProjectReopenResponse;
 import com.gridstore.huevista.billing.dto.SubscriptionResponse;
 import com.gridstore.huevista.billing.dto.VerifyProjectPurchaseRequest;
 import com.gridstore.huevista.billing.dto.VerifySubscriptionRequest;
@@ -158,6 +159,32 @@ public class BillingController {
         String userId = userDetails.getUsername();
         projectPurchaseService.verifyAndCredit(userId, request);
         return ResponseEntity.ok(projectCreditService.getOptions(userId));
+    }
+
+    @Operation(summary = "Reopen a lapsed project with money (order)",
+            description = "Creates a Razorpay order for another validity window on a project "
+                    + "whose own has run out. Flat price, unlike a new project — a reopen buys "
+                    + "more time on work already paid for once. Refused up-front (409) when the "
+                    + "caller can already work on the project, so nobody pays to unlock something "
+                    + "a live plan or a shop code is already unlocking.")
+    @PostMapping("/projects/{projectId}/reopen/order")
+    public ResponseEntity<ProjectOrderResponse> createReopenOrder(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String projectId) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(projectPurchaseService.createReopenOrder(userDetails.getUsername(), projectId));
+    }
+
+    @Operation(summary = "Reopen a lapsed project with money (verify)",
+            description = "Verifies the Razorpay Checkout signature and extends the project the "
+                    + "ORDER was for — which project is read back from the order, not named by the "
+                    + "client. Replay-protected.")
+    @PostMapping("/projects/reopen/verify")
+    public ResponseEntity<ProjectReopenResponse> verifyReopen(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Valid @RequestBody VerifyProjectPurchaseRequest request) {
+        return ResponseEntity.ok(
+                projectPurchaseService.verifyAndCreditReopen(userDetails.getUsername(), request));
     }
 
     @Operation(summary = "Get my colour-board PDF allowance",
