@@ -51,12 +51,12 @@ public class CustomerAccessCode {
     // Image credits this code still HOLDS on the issuing shop's subscription: starts at
     // projectQuota, drops by one each time a project under this code is actually
     // segmented, and is released back to the shop when the code is revoked or swept
-    // after expiring unredeemed. Kept in lock-step with Subscription#reservedImages —
+    // after expiring unredeemed. Kept in lock-step with Subscription#reservedProjects —
     // every mutation moves both — so a shop is never billed twice for one project and
     // never loses quota to a code nobody used.
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default
-    private int reservedImages = 0;
+    private int reservedProjects = 0;
 
     // Set when a retailer revokes the code before it was redeemed. A revoked code can
     // never be redeemed or re-entered; its held quota has already gone back to the shop.

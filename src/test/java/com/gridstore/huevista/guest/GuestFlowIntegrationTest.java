@@ -111,18 +111,26 @@ class GuestFlowIntegrationTest {
                 .andExpect(jsonPath("$.id").value(projectId));
     }
 
+    /**
+     * A guest's run is never refused for the SHOP's quota, because by the time a guest is
+     * holding a code the shop has already been charged for it.
+     *
+     * The gate moved to where the shop actually makes the decision: issuing a code
+     * reserves a project credit per assigned project, and that reservation is
+     * limit-gated. Refusing at segmentation instead meant a walk-in standing at the
+     * counter, photo already uploaded, was told the shop was out — after the shop had
+     * handed them the code. There is nothing the guest can do about that, and nothing the
+     * counter can do quickly either.
+     */
     @Test
-    void guest_segmentation_is_blocked_when_shop_has_no_ai_credits() throws Exception {
+    void guest_segmentation_is_not_gated_on_the_shops_quota() throws Exception {
         String guestToken = redeemAsGuest();
         String imageId = guestUpload(guestToken);
         String projectId = guestCreateProject(guestToken, imageId);
 
-        // The test shop owner was created directly (no trial / subscription), so the
-        // shop has no AI quota. Guest AI must be blocked with 402 — the UI then falls
-        // back to letting the guest mark walls by hand.
         mockMvc.perform(post("/api/guest/projects/" + projectId + "/segment")
                         .header("Authorization", "Bearer " + guestToken))
-                .andExpect(status().isPaymentRequired());
+                .andExpect(status().isOk());
     }
 
     /**
@@ -195,7 +203,7 @@ class GuestFlowIntegrationTest {
         Subscription sub = subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(retailerId, SubscriptionStatus.ACTIVE)
                 .orElseThrow();
-        org.junit.jupiter.api.Assertions.assertEquals(0, sub.getAiGenerationsUsed());
+        org.junit.jupiter.api.Assertions.assertEquals(0, sub.getProjectsUsed());
     }
 
     @Test
@@ -235,7 +243,7 @@ class GuestFlowIntegrationTest {
     void guest_gets_as_many_projects_as_the_code_paid_for() throws Exception {
         CustomerAccessCode multi = codeRepository.findById(codeId).orElseThrow();
         multi.setProjectQuota(3);
-        multi.setReservedImages(3);
+        multi.setReservedProjects(3);
         codeRepository.saveAndFlush(multi);
 
         String guestToken = redeemAsGuest();

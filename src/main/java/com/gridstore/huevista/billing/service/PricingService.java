@@ -1,5 +1,7 @@
 package com.gridstore.huevista.billing.service;
 
+import com.gridstore.huevista.billing.model.Plan;
+import com.gridstore.huevista.billing.model.Subscription;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -7,14 +9,16 @@ import org.springframework.stereotype.Service;
 /**
  * One place that answers "what does this cost?".
  *
- * There are exactly two prices denominated in money: a monthly plan, and buying points.
- * Everything else a shop can spend on — extra images, auto-masks, projects, reopens —
- * is priced in POINTS and nothing else. There is no prepaid rupee wallet and no
- * per-item cash checkout, so a purchase has one price rather than a cash price and a
- * points price that can drift apart.
+ * A shop buys three things: a monthly plan, points, and extra projects once the plan's
+ * monthly allowance is spent. The extra project is the only one with two prices — points
+ * or money — and both are read off the buyer's own PLAN rather than being flat: the
+ * bigger the tier, the cheaper the extra, so a shop that keeps outgrowing its plan is
+ * nudged up a tier instead of paying a flat premium forever. An account with no paid plan
+ * (a lapsed one, or one still on the free trial) pays the FREE tier's rate, the dearest.
  *
  * Cash amounts are in paise (Rs. 1 = 100 paise) to match Razorpay; point prices are in
- * whole points.
+ * whole points. Points are the cheaper rail by design — 80 points against ₹99 with no
+ * plan — because they are bought in bulk or earned at the kiosk.
  */
 @Service
 @RequiredArgsConstructor
@@ -56,14 +60,10 @@ public class PricingService {
     @Value("${app.points.max-purchase:100000}")
     private int pointsMaxPurchase;
 
-    @Value("${app.points.image:40}")
-    private int pointsPriceImage;
-
-    @Value("${app.points.auto-mask:20}")
-    private int pointsPriceAutoMask;
-
-    @Value("${app.points.project:80}")
-    private int pointsPriceProject;
+    /** What a reopen costs in money. Flat, like its point price — a reopen buys another
+     *  window on work already paid for once, so there is nothing tier-shaped about it. */
+    @Value("${app.project-credit.reopen-price-paise:1000}")
+    private int reopenPricePaise;
 
     @Value("${app.points.reopen:9}")
     private int pointsPriceReopen;
@@ -115,16 +115,32 @@ public class PricingService {
         return kioskBonusPoints;
     }
 
-    public int pointsPriceImage() {
-        return pointsPriceImage;
+    /**
+     * The plan an account buys extras at. A live PAID plan sets its own rate; anything
+     * else — no plan, a lapsed one, or a free trial — pays the FREE tier's, which is the
+     * dearest. A trial is deliberately excluded: it is granted, not bought, so quoting it
+     * a paid tier's discount would hand out the benefit of a subscription nobody paid for.
+     */
+    public Plan pricingPlanFor(String userId) {
+        return billingService.findEntitlingSubscription(userId)
+                .filter(s -> !s.isTrial())
+                .map(Subscription::getPlan)
+                .orElse(Plan.FREE);
     }
 
-    public int pointsPriceAutoMask() {
-        return pointsPriceAutoMask;
+    /** What one extra project costs this account in points, at its plan's rate. */
+    public int pointsPriceProject(String userId) {
+        return pricingPlanFor(userId).getExtraProjectPoints();
     }
 
-    public int pointsPriceProject() {
-        return pointsPriceProject;
+    /** What one extra project costs this account in paise (GST included), at its plan's rate. */
+    public int projectPricePaise(String userId) {
+        return pricingPlanFor(userId).extraProjectPriceWithTaxInPaise();
+    }
+
+    /** What one reopen costs in paise, GST included. */
+    public int reopenPricePaise() {
+        return reopenPricePaise * (100 + Plan.GST_PERCENT) / 100;
     }
 
     public int pointsPriceReopen() {

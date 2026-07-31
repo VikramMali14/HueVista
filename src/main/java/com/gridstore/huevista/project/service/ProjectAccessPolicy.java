@@ -98,14 +98,14 @@ public class ProjectAccessPolicy {
             return; // an extra project bought on top of a plan bypasses the trial allowance
         }
 
-        // 3) The trial's project allowance IS its image quota — three on the free tier —
-        //    rather than a second constant that can drift from the plan it describes.
-        //    Claimed against a MONOTONIC counter on the subscription, not a live count of
-        //    rows: counting live projects meant deleting the trial project handed the slot
-        //    straight back, so a trial account could create unlimited projects one at a
-        //    time while the message promised a fixed number. The conditional UPDATE also
-        //    makes parallel creates safe.
-        int trialProjects = Math.max(1, sub.getAiGenerationsLimit());
+        // 3) The trial's project allowance IS its monthly project quota — two on the free
+        //    tier — rather than a second constant that can drift from the plan it
+        //    describes. Claimed against a MONOTONIC counter on the subscription, not a live
+        //    count of rows: counting live projects meant deleting the trial project handed
+        //    the slot straight back, so a trial account could create unlimited projects one
+        //    at a time while the message promised a fixed number. The conditional UPDATE
+        //    also makes parallel creates safe.
+        int trialProjects = Math.max(1, sub.getProjectsLimit());
         if (sub.isTrial()
                 && subscriptionRepository.claimTrialProjectSlot(sub.getId(), trialProjects) == 0) {
             throw new SubscriptionRequiredException(

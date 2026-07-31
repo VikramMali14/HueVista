@@ -23,22 +23,28 @@ public class SubscriptionResponse {
     private String razorpayKeyId;
     private LocalDateTime currentPeriodStart;
     private LocalDateTime currentPeriodEnd;
-    // Image quota (the compulsory clean-up makes every image consume one).
-    // Field names keep the historical "aiGenerations" naming for API compatibility.
-    private int aiGenerationsUsed;
-    private int aiGenerationsLimit;
-    private int aiGenerationsRemaining;
-    // AI auto-mask (wall-detection) quota — spent only when the shop picks the
-    // automatic mask after clean-up.
-    private int autoMasksUsed;
-    private int autoMasksLimit;
-    private int autoMasksRemaining;
-    /** Pay-per-image overage credits (Rs. 50 + GST each) still unused. Included in
-     *  {@code aiGenerationsRemaining}. */
-    private int purchasedImageCredits;
-    /** Pay-per-use auto-mask credits (Rs. 25 + GST each, wallet-paid) still unused.
-     *  Included in {@code autoMasksRemaining}. */
-    private int purchasedAutoMaskCredits;
+    /** How many of the plan this subscription is billed for — the multiplier behind
+     *  {@code projectsLimit}. */
+    private int quantity;
+    // The project quota. One project covers the whole automatic pipeline — the AI photo
+    // clean-up AND the AI wall detection — so it is charged once, not once per step.
+    private int projectsUsed;
+    private int projectsLimit;
+    /** Projects still free to start: allowance less usage less what is held behind
+     *  unredeemed access codes. */
+    private int projectsRemaining;
+    /** Projects held for access codes customers haven't redeemed yet. Already paid for,
+     *  and excluded from {@code projectsRemaining} because they are spoken for. */
+    private int reservedProjects;
+    /** Extra projects bought at the plan's rate, still unused. Never expire; included in
+     *  {@code projectsRemaining}. */
+    private int purchasedProjectCredits;
+    /** Projects carried over from a plan this one replaced. Included in
+     *  {@code projectsRemaining}, but they expire when this cycle renews. */
+    private int carriedProjectCredits;
+    /** What one extra project costs on this plan — points, and money in paise. */
+    private int extraProjectPoints;
+    private int extraProjectPricePaise;
     private int pdfDownloadsUsed;
     private int pdfDownloadsLimit;
     private int pdfDownloadsRemaining;
@@ -56,18 +62,13 @@ public class SubscriptionResponse {
     }
 
     public static SubscriptionResponse from(Subscription sub, String paymentUrl, String razorpayKeyId) {
-        // Remaining images include purchased pay-per-image overage credits.
-        long allowance = (long) sub.getAiGenerationsLimit() + sub.getPurchasedImageCredits();
-        int remaining = sub.getAiGenerationsLimit() == Integer.MAX_VALUE
-                ? Integer.MAX_VALUE
-                : (int) Math.max(0, Math.min(Integer.MAX_VALUE, allowance - sub.getAiGenerationsUsed()));
-        long autoAllowance = (long) sub.getAutoMasksLimit() + sub.getPurchasedAutoMaskCredits();
-        int autoMasksRemaining = sub.getAutoMasksLimit() == Integer.MAX_VALUE
-                ? Integer.MAX_VALUE
-                : (int) Math.max(0, Math.min(Integer.MAX_VALUE, autoAllowance - sub.getAutoMasksUsed()));
         int pdfRemaining = sub.getPdfDownloadsLimit() == Integer.MAX_VALUE
                 ? Integer.MAX_VALUE
                 : Math.max(0, sub.getPdfDownloadsLimit() - sub.getPdfDownloadsUsed());
+        // A free trial is not a paid plan, so it buys extras at the no-plan rate — the
+        // dearest one. Reading the rate off the row's own plan would quote a trialing
+        // shop the Starter discount it has not bought.
+        Plan pricedAs = sub.isTrial() ? Plan.FREE : sub.getPlan();
 
         return SubscriptionResponse.builder()
                 .id(sub.getId())
@@ -79,14 +80,15 @@ public class SubscriptionResponse {
                 .razorpayKeyId(razorpayKeyId)
                 .currentPeriodStart(sub.getCurrentPeriodStart())
                 .currentPeriodEnd(sub.getCurrentPeriodEnd())
-                .aiGenerationsUsed(sub.getAiGenerationsUsed())
-                .aiGenerationsLimit(sub.getAiGenerationsLimit())
-                .aiGenerationsRemaining(remaining)
-                .autoMasksUsed(sub.getAutoMasksUsed())
-                .autoMasksLimit(sub.getAutoMasksLimit())
-                .autoMasksRemaining(autoMasksRemaining)
-                .purchasedImageCredits(sub.getPurchasedImageCredits())
-                .purchasedAutoMaskCredits(sub.getPurchasedAutoMaskCredits())
+                .quantity(sub.getQuantity())
+                .projectsUsed(sub.getProjectsUsed())
+                .projectsLimit(sub.getProjectsLimit())
+                .projectsRemaining(sub.projectsRemaining())
+                .reservedProjects(sub.getReservedProjects())
+                .purchasedProjectCredits(sub.getPurchasedProjectCredits())
+                .carriedProjectCredits(sub.getCarriedProjectCredits())
+                .extraProjectPoints(pricedAs.getExtraProjectPoints())
+                .extraProjectPricePaise(pricedAs.extraProjectPriceWithTaxInPaise())
                 .pdfDownloadsUsed(sub.getPdfDownloadsUsed())
                 .pdfDownloadsLimit(sub.getPdfDownloadsLimit())
                 .pdfDownloadsRemaining(pdfRemaining)

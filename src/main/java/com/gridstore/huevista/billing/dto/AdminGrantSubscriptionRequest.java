@@ -18,7 +18,7 @@ public class AdminGrantSubscriptionRequest {
     @Max(value = 3650, message = "Days cannot exceed 3650")
     private int days = 30;
 
-    /** Optional override of the plan's monthly AI generation limit. */
-    @Min(value = 1, message = "AI generation limit must be at least 1")
-    private Integer aiGenerationsLimit;
+    /** Optional override of the plan's monthly project limit. */
+    @Min(value = 1, message = "Project limit must be at least 1")
+    private Integer projectsLimit;
 }

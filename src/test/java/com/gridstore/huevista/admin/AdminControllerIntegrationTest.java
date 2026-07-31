@@ -149,7 +149,7 @@ class AdminControllerIntegrationTest {
         mockMvc.perform(get("/api/admin/stats/ai-usage")
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.totalAiGenerationsUsedThisCycle").isNumber());
+                .andExpect(jsonPath("$.totalProjectsUsedThisCycle").isNumber());
     }
 
     @Test

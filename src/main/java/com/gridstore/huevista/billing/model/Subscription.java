@@ -42,57 +42,68 @@ public class Subscription {
     private LocalDateTime currentPeriodStart;
     private LocalDateTime currentPeriodEnd;
 
-    // Images processed this cycle. Every image consumes one — the AI photo
-    // clean-up step is compulsory. (Column names keep the historical
-    // "ai_generations" naming for DB compatibility.)
-    @Column(nullable = false)
+    /**
+     * How many of the plan this subscription is billed for. Razorpay multiplies the
+     * charge by it, so the quota is multiplied to match.
+     *
+     * Stored rather than recomputed because renewal has to rebuild the allowance from
+     * the plan (that is how a change to a tier's quota reaches existing customers), and
+     * without the quantity it could only ever rebuild a single plan's worth — silently
+     * cutting a shop paying 3x down to 1x on its next renewal.
+     */
+    @Column(nullable = false, columnDefinition = "integer not null default 1")
     @Builder.Default
-    private int aiGenerationsUsed = 0;
-
-    @Column(nullable = false)
-    private int aiGenerationsLimit;
+    private int quantity = 1;
 
     /**
-     * Image credits currently HELD (not yet spent) by outstanding customer access
+     * Complete projects run this cycle. One project covers the whole automatic
+     * pipeline — the compulsory AI photo clean-up AND the AI wall detection — so it is
+     * charged once, not once per step.
+     */
+    @Column(nullable = false)
+    @Builder.Default
+    private int projectsUsed = 0;
+
+    @Column(nullable = false)
+    private int projectsLimit;
+
+    /**
+     * Project credits currently HELD (not yet spent) by outstanding customer access
      * codes — one per assigned project. Held at code-generation time and moved into
-     * {@link #aiGenerationsUsed} only when the project is actually segmented; returned
+     * {@link #projectsUsed} only when the project is actually segmented; returned
      * to the pool when a code is revoked or expires unredeemed.
      *
      * Deliberately NOT reset on renewal: a code issued in the old cycle is still
      * redeemable in the new one, so its hold must survive the reset (see
      * BillingService#handlePaymentCaptured). Effective availability everywhere is
-     * {@code limit + purchasedImageCredits - used - reservedImages}.
+     * {@code limit + purchasedProjectCredits + carriedProjectCredits - used - reservedProjects}.
      */
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default
-    private int reservedImages = 0;
+    private int reservedProjects = 0;
 
-    /** AI auto-mask (wall-detection) runs this cycle — charged only when the
-     *  shop picks the automatic mask after clean-up; manual masking is free. */
+    /**
+     * Extra projects bought one at a time at the plan's own rate once the monthly quota
+     * is spent. NOT reset on renewal — a paid credit never evaporates; it simply extends
+     * the project allowance.
+     */
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default
-    private int autoMasksUsed = 0;
+    private int purchasedProjectCredits = 0;
 
-    /** Auto-mask runs allowed per cycle (0 = plan is manual-masking only). */
+    /**
+     * Projects left over from the plan this one replaced, moved across on upgrade so a
+     * shop that upgrades mid-cycle doesn't forfeit what it had already paid for.
+     *
+     * Unlike {@link #purchasedProjectCredits} these DO expire: they are part of a monthly
+     * allowance, so they are zeroed on renewal along with {@link #projectsUsed}. A shop
+     * that carries 5 projects into a new plan has that cycle to use them, not forever.
+     */
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default
-    private int autoMasksLimit = 0;
+    private int carriedProjectCredits = 0;
 
-    /** Pay-per-image overage credits bought at Rs. 50 + GST each once the
-     *  monthly image quota is spent. NOT reset on renewal — a paid credit
-     *  never evaporates; it simply extends the image allowance. */
-    @Column(nullable = false, columnDefinition = "integer not null default 0")
-    @Builder.Default
-    private int purchasedImageCredits = 0;
-
-    /** Pay-per-use AI auto-mask credits bought at Rs. 25 + GST each (from the
-     *  prepaid billing wallet) once the monthly auto-mask allowance is spent.
-     *  NOT reset on renewal, same as purchasedImageCredits. */
-    @Column(nullable = false, columnDefinition = "integer not null default 0")
-    @Builder.Default
-    private int purchasedAutoMaskCredits = 0;
-
-    /** Colour-board PDF downloads this billing cycle — reset on renewal like AI usage. */
+    /** Colour-board PDF downloads this billing cycle — reset on renewal like project usage. */
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default
     private int pdfDownloadsUsed = 0;
@@ -109,11 +120,11 @@ public class Subscription {
 
     /**
      * Projects ever created while this subscription was on its free trial — monotonic,
-     * so the trial's one-project allowance can't be recycled.
+     * so the trial's project allowance can't be recycled.
      *
      * The trial gate used to COUNT live projects, which meant deleting the trial project
      * freed the slot and a trial account could create an unlimited number of them one at
-     * a time, despite the message promising "your free trial includes one project".
+     * a time, despite the message promising a fixed allowance.
      */
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default
@@ -147,4 +158,26 @@ public class Subscription {
 
     @UpdateTimestamp
     private LocalDateTime updatedAt;
+
+    /**
+     * Every project this subscription may still run this cycle before anything is spent:
+     * the plan's monthly allowance, plus paid-for extras, plus whatever was carried in
+     * from a plan it replaced. Clamped against int overflow (Enterprise is unlimited).
+     */
+    public int effectiveProjectAllowance() {
+        if (projectsLimit == Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        long allowance = (long) projectsLimit + purchasedProjectCredits + carriedProjectCredits;
+        return allowance > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) allowance;
+    }
+
+    /** Projects still free to start — the allowance less what is spent and what is held
+     *  behind unredeemed access codes. */
+    public int projectsRemaining() {
+        if (projectsLimit == Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        return Math.max(0, effectiveProjectAllowance() - projectsUsed - reservedProjects);
+    }
 }

@@ -57,7 +57,7 @@ class BillingSubscriptionVerifyTest {
                 .plan(Plan.PROFESSIONAL)
                 .status(status)
                 .razorpaySubscriptionId("rzp_sub_1")
-                .aiGenerationsLimit(60)
+                .projectsLimit(60)
                 .build();
     }
 
@@ -243,20 +243,23 @@ class BillingSubscriptionVerifyTest {
     }
 
     /**
-     * Upgrading must not destroy what the shop already paid for. Purchased credits are
-     * money; the image holds are projects paid for when access codes were issued, and
-     * losing them billed the shop a SECOND time when the customer finally redeemed one
-     * (SegmentationService finds no hold and falls through to a normal charge).
+     * Upgrading must not destroy what the shop already has. Purchased credits are money;
+     * the holds are projects paid for when access codes were issued, and losing them
+     * billed the shop a SECOND time when the customer finally redeemed one
+     * (SegmentationService finds no hold and falls through to a normal charge); and the
+     * unused monthly allowance was simply forfeited, so upgrading mid-cycle cost a shop
+     * every project it had paid for but not yet run.
      */
     @Test
-    void upgradingCarriesPurchasedCreditsAndAccessCodeHoldsOntoTheNewPlan() {
+    void upgradingCarriesPurchasedCreditsHoldsAndLeftoverProjectsOntoTheNewPlan() {
         Subscription old = sub("user-1", SubscriptionStatus.ACTIVE);
         old.setId("sub-row-old");
         old.setRazorpaySubscriptionId("rzp_sub_old");
         old.setPlan(Plan.STARTER);
-        old.setPurchasedImageCredits(12);
-        old.setPurchasedAutoMaskCredits(3);
-        old.setReservedImages(4);
+        old.setProjectsLimit(15);
+        old.setProjectsUsed(10);       // 5 of the monthly allowance left
+        old.setPurchasedProjectCredits(12);
+        old.setReservedProjects(4);
         old.setCurrentPeriodEnd(LocalDateTime.now().plusDays(15));
 
         Subscription bought = sub("user-1", SubscriptionStatus.CREATED);
@@ -271,13 +274,51 @@ class BillingSubscriptionVerifyTest {
 
             svc.verifyAndActivateSubscription("user-1", req("rzp_sub_1", "pay_1", "sig"));
 
-            verify(subs).addPurchasedImageCredits("sub-row-1", 12);
-            verify(subs).addPurchasedAutoMaskCredits("sub-row-1", 3);
-            verify(subs).addReservedImages("sub-row-1", 4);
-            // Moved, not copied — the retired row must not still count them.
-            assertThat(old.getPurchasedImageCredits()).isZero();
-            assertThat(old.getPurchasedAutoMaskCredits()).isZero();
-            assertThat(old.getReservedImages()).isZero();
+            verify(subs).addPurchasedProjectCredits("sub-row-1", 12);
+            verify(subs).addReservedProjects("sub-row-1", 4);
+            // The 5 unused projects of the old plan follow the shop onto the new one, in
+            // the bucket that expires with the cycle rather than the one that never does.
+            verify(subs).addCarriedProjectCredits("sub-row-1", 5);
+            // Moved, not copied — the retired row must not still count any of them.
+            assertThat(old.getPurchasedProjectCredits()).isZero();
+            assertThat(old.getReservedProjects()).isZero();
+            assertThat(old.getProjectsUsed()).isEqualTo(old.getProjectsLimit());
+        }
+    }
+
+    /**
+     * Credits stranded on a plan that ENDED rather than being superseded follow the shop
+     * back. carryOverCredits only ever looked at ACTIVE rows, so a shop that bought extras,
+     * let the plan lapse and resubscribed a month later came back to nothing — and any
+     * access code still outstanding lost the hold behind it, so redeeming it charged the
+     * shop a second time for work it had already paid for.
+     */
+    @Test
+    void resubscribingAfterALapseReclaimsCreditsFromTheDeadPlan() {
+        Subscription dead = sub("user-1", SubscriptionStatus.EXPIRED);
+        dead.setId("sub-row-dead");
+        dead.setPurchasedProjectCredits(7);
+        dead.setReservedProjects(2);
+
+        Subscription bought = sub("user-1", SubscriptionStatus.CREATED);
+        SubscriptionRepository subs = mock(SubscriptionRepository.class);
+        when(subs.findByRazorpaySubscriptionId("rzp_sub_1")).thenReturn(Optional.of(bought));
+        when(subs.findByUserIdAndStatus("user-1", SubscriptionStatus.ACTIVE))
+                .thenReturn(java.util.List.of());
+        when(subs.findWithUnspentCredits("user-1", "sub-row-1"))
+                .thenReturn(java.util.List.of(dead));
+        BillingService svc = service(subs);
+
+        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
+            utils.when(() -> Utils.verifySignature(any(), any(), any())).thenReturn(true);
+
+            svc.verifyAndActivateSubscription("user-1", req("rzp_sub_1", "pay_1", "sig"));
+
+            verify(subs).addPurchasedProjectCredits("sub-row-1", 7);
+            verify(subs).addReservedProjects("sub-row-1", 2);
+            // Moved, not copied — a second activation must not hand them over again.
+            assertThat(dead.getPurchasedProjectCredits()).isZero();
+            assertThat(dead.getReservedProjects()).isZero();
         }
     }
 

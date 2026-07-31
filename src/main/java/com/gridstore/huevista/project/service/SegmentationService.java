@@ -569,53 +569,22 @@ public class SegmentationService {
     }
 
     /**
-     * Charges a completed run to whoever pays for it: one IMAGE credit (the clean-up step
-     * is compulsory) plus, when AI wall detection ran, one AUTO-MASK credit.
+     * A completed run costs nothing further.
      *
-     * When the project is covered by an access code the shop ALREADY paid for the image
-     * at code-generation time, so the image charge SPENDS that held credit instead of
-     * taking a second one — previously a code with quota N charged the shop N images up
-     * front and then another one per project actually rendered, i.e. double billing.
-     * A code with no hold left (a legacy code, or more projects than were reserved)
-     * falls back to a normal charge so work is never silently free.
-     *
-     * Best-effort throughout: a missing code/org/owner just means no charge (the customer
-     * still got their result), so billing problems never fail an otherwise-successful run.
+     * The project's credit was taken when the project was CREATED, so by the time the AI
+     * finishes, the work is already paid for. Charging here as well as there would bill a
+     * room twice, and charging ONLY here is what made "15 projects a month" invisible: a
+     * shop could create any number and only met the ceiling once a photo was uploaded and
+     * a customer was watching. Kept as a named no-op so the call site still reads as the
+     * billing boundary it is, and so the log line that says who a run belonged to survives.
      */
     private void billRun(ProjectBillingResolver.Target billing, boolean autoMaskRan) {
         if (billing == null) {
-            log.warn("Segmentation succeeded but no billable account was resolved — not charging");
+            log.warn("Segmentation succeeded but no billable account was resolved");
             return;
         }
-        // The walk-in paid for this at the kiosk. The shop's plan was never part of that
-        // transaction, so it is not charged — spending the shop's credits on a stranger's
-        // paid-for project is billing the same work twice, to two different people.
-        if (billing.selfFunded()) {
-            log.info("Run under self-funded code {} — no subscription charged (customer paid at the kiosk)",
-                    billing.accessCodeId());
-            return;
-        }
-        try {
-            boolean spentHeldCredit = false;
-            if (billing.coveredByCode()) {
-                // Take the hold off the code first; only if that succeeds may we move the
-                // matching hold on the subscription, so the two counters stay in step.
-                spentHeldCredit = accessCodeRepository.consumeReservedImage(billing.accessCodeId()) == 1
-                        && billingService.consumeReservedImage(billing.billedUserId());
-            }
-            if (!spentHeldCredit) {
-                billingService.incrementAiUsage(billing.billedUserId());
-            }
-            if (autoMaskRan) {
-                billingService.incrementAutoMaskUsage(billing.billedUserId());
-            }
-            log.info("Run billed to {}: image={} autoMask={} (code={})",
-                    billing.billedUserId(), spentHeldCredit ? "held-credit" : "charged",
-                    autoMaskRan, billing.accessCodeId());
-        } catch (Exception e) {
-            log.warn("Segmentation succeeded but billing failed (payer={}): {}",
-                    billing.billedUserId(), e.getMessage());
-        }
+        log.info("Run completed for {}: autoMask={} (code={}) — already paid for at creation",
+                billing.billedUserId(), autoMaskRan, billing.accessCodeId());
     }
 
     // ========================================================================

@@ -94,7 +94,7 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
     java.util.List<String> usedByAccountUserIds(@Param("id") String id);
 
     /**
-     * Atomically spend one of this code's held image credits. The {@code reservedImages
+     * Atomically spend one of this code's held image credits. The {@code reservedProjects
      * > 0} guard makes it a compare-and-set: concurrent segmentations of two projects
      * under the same code can never both claim the last hold. Returns 1 when a hold was
      * taken (the caller then moves it on the subscription too), 0 when the code has none
@@ -103,10 +103,10 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
-            UPDATE CustomerAccessCode c SET c.reservedImages = c.reservedImages - 1
-             WHERE c.id = :id AND c.reservedImages > 0
+            UPDATE CustomerAccessCode c SET c.reservedProjects = c.reservedProjects - 1
+             WHERE c.id = :id AND c.reservedProjects > 0
             """)
-    int consumeReservedImage(@Param("id") String id);
+    int consumeReservedProject(@Param("id") String id);
 
     /**
      * Atomically zero a code's remaining holds, stamping when they were returned.
@@ -116,7 +116,7 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
-            UPDATE CustomerAccessCode c SET c.reservedImages = 0, c.quotaReleasedAt = :now
+            UPDATE CustomerAccessCode c SET c.reservedProjects = 0, c.quotaReleasedAt = :now
              WHERE c.id = :id AND c.quotaReleasedAt IS NULL
             """)
     int markQuotaReleased(@Param("id") String id, @Param("now") LocalDateTime now);
@@ -138,7 +138,7 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
      * larger half of the leak: a code redeemed for five projects whose customer created
      * two left THREE credits held on the shop's subscription with no path back. Revoking
      * refuses on a redeemed code (the customer may have work under it), the old sweep
-     * skipped it, and {@code reservedImages} deliberately survives a renewal — so those
+     * skipped it, and {@code reservedProjects} deliberately survives a renewal — so those
      * credits were subtracted from the shop's effective quota in every future billing
      * period, forever. A shop issuing codes at a steady rate simply ran out.
      *
@@ -149,7 +149,7 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
     @Query("""
             SELECT c FROM CustomerAccessCode c
              WHERE c.expiresAt < :cutoff
-               AND c.revokedAt IS NULL AND c.quotaReleasedAt IS NULL AND c.reservedImages > 0
+               AND c.revokedAt IS NULL AND c.quotaReleasedAt IS NULL AND c.reservedProjects > 0
             """)
     List<CustomerAccessCode> findExpiredWithHolds(@Param("cutoff") LocalDateTime cutoff);
 }

@@ -74,7 +74,7 @@ class BillingWebhookIntegrationTest {
                 .plan(Plan.STARTER)
                 .status(SubscriptionStatus.CREATED)
                 .razorpaySubscriptionId("sub_test_123")
-                .aiGenerationsLimit(Plan.STARTER.getMonthlyImageLimit())
+                .projectsLimit(Plan.STARTER.getMonthlyProjectLimit())
                 .build());
     }
 
@@ -140,7 +140,7 @@ class BillingWebhookIntegrationTest {
     void webhook_payment_captured_resets_ai_usage() throws Exception {
         // Set some usage first
         testSubscription.setStatus(SubscriptionStatus.ACTIVE);
-        testSubscription.setAiGenerationsUsed(15);
+        testSubscription.setProjectsUsed(15);
         subscriptionRepository.save(testSubscription);
 
         String payload = """
@@ -165,8 +165,56 @@ class BillingWebhookIntegrationTest {
                 .andExpect(status().isOk());
 
         Subscription updated = subscriptionRepository.findById(testSubscription.getId()).orElseThrow();
-        assertThat(updated.getAiGenerationsUsed()).isEqualTo(0);
+        assertThat(updated.getProjectsUsed()).isEqualTo(0);
         assertThat(updated.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
+    }
+
+    /**
+     * The two kinds of extra credit expire differently, and renewal is where that shows.
+     *
+     * Projects CARRIED from a plan the shop upgraded away from are someone's unused
+     * monthly allowance: they were moved across so upgrading mid-cycle didn't forfeit
+     * them, and they last the cycle they were carried into. Projects BOUGHT at the plan's
+     * rate are money, and never evaporate. Renewing must therefore clear one and keep the
+     * other — clearing both would take back something the shop paid for, and keeping both
+     * would make a one-cycle grace period permanent.
+     */
+    @Test
+    void webhook_payment_captured_expires_carried_projects_but_keeps_purchased_ones() throws Exception {
+        testSubscription.setStatus(SubscriptionStatus.ACTIVE);
+        testSubscription.setProjectsUsed(9);
+        testSubscription.setCarriedProjectCredits(5);
+        testSubscription.setPurchasedProjectCredits(4);
+        subscriptionRepository.save(testSubscription);
+
+        String payload = """
+                {
+                  "event": "payment.captured",
+                  "payload": {
+                    "payment": {
+                      "entity": {
+                        "id": "pay_test_789",
+                        "subscription_id": "sub_test_123",
+                        "amount": 49900
+                      }
+                    }
+                  }
+                }
+                """;
+
+        mockMvc.perform(post("/api/billing/webhooks/razorpay")
+                        .header("X-Razorpay-Signature", SIGNATURE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk());
+
+        Subscription updated = subscriptionRepository.findById(testSubscription.getId()).orElseThrow();
+        assertThat(updated.getCarriedProjectCredits()).isZero();
+        assertThat(updated.getPurchasedProjectCredits()).isEqualTo(4);
+        // The allowance is rebuilt from the plan rather than only ever raised, so a tier
+        // whose quota changes reaches the shops already on it.
+        assertThat(updated.getProjectsLimit())
+                .isEqualTo(Plan.STARTER.getMonthlyProjectLimit());
     }
 
     @Test

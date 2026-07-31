@@ -218,11 +218,11 @@ public class AdminController {
             Authentication auth) {
         return ResponseEntity.status(HttpStatus.CREATED).body(
                 billingService.adminGrantSubscription(auth.getName(), userId,
-                        request.getPlan(), request.getDays(), request.getAiGenerationsLimit()));
+                        request.getPlan(), request.getDays(), request.getProjectsLimit()));
     }
 
     @Operation(summary = "Adjust a user's subscription",
-            description = "Adds AI image-generation credits (raises the monthly limit) and/or extends the "
+            description = "Grants extra project credits (which survive renewal) and/or extends the "
                     + "period end. Extending a lapsed subscription reactivates it.")
     @PatchMapping("/users/{userId}/subscription")
     public ResponseEntity<SubscriptionResponse> adjustSubscription(
@@ -231,7 +231,7 @@ public class AdminController {
             Authentication auth) {
         return ResponseEntity.ok(
                 billingService.adminAdjustSubscription(auth.getName(), userId,
-                        request.getAddAiGenerations(), request.getExtendDays()));
+                        request.getAddProjects(), request.getExtendDays()));
     }
 
     @Operation(summary = "List all subscriptions")
@@ -252,7 +252,7 @@ public class AdminController {
         long segmentedProjects = projectRepository.countByStatus(ProjectStatus.SEGMENTED);
         long failedProjects = projectRepository.countByStatus(ProjectStatus.FAILED);
         long newUsersLast30Days = userRepository.countByCreatedAtAfter(LocalDateTime.now().minusDays(30));
-        long totalAiGenerations = subscriptionRepository.sumAiGenerationsUsedByStatus(SubscriptionStatus.ACTIVE);
+        long totalProjectsUsed = subscriptionRepository.sumProjectsUsedByStatus(SubscriptionStatus.ACTIVE);
 
         return ResponseEntity.ok(Map.of(
                 "totalUsers", userRepository.count(),
@@ -263,7 +263,7 @@ public class AdminController {
                 "totalProjects", totalProjects,
                 "segmentedProjects", segmentedProjects,
                 "failedProjects", failedProjects,
-                "totalAiGenerationsUsed", totalAiGenerations
+                "totalProjectsUsed", totalProjectsUsed
         ));
     }
 
@@ -300,13 +300,13 @@ public class AdminController {
     @Operation(summary = "AI usage statistics")
     @GetMapping("/stats/ai-usage")
     public ResponseEntity<Map<String, Object>> aiUsageStats() {
-        long totalUsed = subscriptionRepository.sumAiGenerationsUsedByStatus(SubscriptionStatus.ACTIVE);
+        long totalUsed = subscriptionRepository.sumProjectsUsedByStatus(SubscriptionStatus.ACTIVE);
         long activeCount = subscriptionRepository.countByStatus(SubscriptionStatus.ACTIVE);
         double avgPerActiveUser = activeCount > 0 ? (double) totalUsed / activeCount : 0;
         return ResponseEntity.ok(Map.of(
-                "totalAiGenerationsUsedThisCycle", totalUsed,
+                "totalProjectsUsedThisCycle", totalUsed,
                 "activeSubscriptions", activeCount,
-                "avgAiGenerationsPerActiveSubscription", Math.round(avgPerActiveUser * 100.0) / 100.0
+                "avgProjectsPerActiveSubscription", Math.round(avgPerActiveUser * 100.0) / 100.0
         ));
     }
 }

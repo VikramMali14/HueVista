@@ -63,7 +63,7 @@ class PdfQuotaServiceTest {
         return Subscription.builder()
                 .id(SUB_ID).user(user(RETAILER, UserRole.RETAILER)).plan(Plan.PROFESSIONAL)
                 .status(SubscriptionStatus.ACTIVE)
-                .aiGenerationsLimit(60)
+                .projectsLimit(60)
                 .pdfDownloadsUsed(pdfUsed).pdfDownloadsLimit(pdfLimit)
                 .pdfImageLimit(8)
                 .build();

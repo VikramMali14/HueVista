@@ -103,7 +103,17 @@ public class ProjectService {
             // allowance). Previously this checked the allowance here and incremented after the
             // insert, so two parallel requests could both pass on the last remaining slot.
             entitlementService.claimProjectSlot(userId);
-        } else if (!subscribed) {
+        } else if (subscribed) {
+            // The plan's project credit is spent HERE, at creation — the moment the shop
+            // commits to a room — rather than when the AI later runs. Charging at the run
+            // meant "15 projects a month" gated nothing a shop could see: it could create
+            // any number, and only discovered the ceiling once a photo was already
+            // uploaded and a customer was watching. A single conditional UPDATE, so two
+            // parallel creates can never both take the last credit. It runs in THIS
+            // transaction, so a creation that fails after this point rolls the charge back
+            // with it — there is nothing to hand back by hand.
+            billingService.reserveProjectUsage(userId);
+        } else {
             credit = projectCreditLedger.claim(userId).orElseThrow(() -> noWayToPayFor(user));
         }
 
@@ -143,6 +153,12 @@ public class ProjectService {
             if (credit != null) {
                 projectCreditLedger.attach(credit.getId(), project.getId());
             }
+            // Work under a shop's code is the SHOP's to pay for, not this account's: the
+            // shop reserved a credit per assigned project when it generated the code, so
+            // this spends that hold rather than taking a second one.
+            if (linkedCode != null) {
+                spendShopCredit(linkedCode);
+            }
 
             log.info("Project created: id={} user={} paidBy={}", project.getId(), userId,
                     shopEntitled ? "shop-code" : credit != null ? "purchase" : "subscription");
@@ -163,6 +179,35 @@ public class ProjectService {
     }
 
     /**
+     * Spend the credit the issuing shop is holding for one access-code project.
+     *
+     * The hold comes off the CODE first; only if that succeeds may the matching hold move
+     * on the subscription, so the two counters — which are the same reservation counted in
+     * two places — can never drift. A code with no hold left (a legacy one, or more
+     * projects than were reserved) falls back to a normal charge, so work is never
+     * silently free. Best-effort throughout: a missing org or owner means nobody to bill,
+     * and that must not fail a project the customer is entitled to.
+     */
+    private void spendShopCredit(CustomerAccessCode code) {
+        if (code.isSelfFunded()) {
+            return; // the walk-in paid at the kiosk; the shop's plan was never part of it
+        }
+        try {
+            String ownerId = resolveShopOwnerUserId(code);
+            if (ownerId == null) return;
+            boolean spentHold = accessCodeRepository.consumeReservedProject(code.getId()) == 1
+                    && billingService.consumeReservedProject(ownerId);
+            if (!spentHold) {
+                billingService.incrementProjectUsage(ownerId);
+            }
+            log.info("Access-code project charged to {}: {} (code={})",
+                    ownerId, spentHold ? "held-credit" : "charged", code.getId());
+        } catch (RuntimeException e) {
+            log.warn("Could not charge access-code project (code={}): {}", code.getId(), e.getMessage());
+        }
+    }
+
+    /**
      * Nothing covers this project: no plan, no shop code, no credit bought.
      *
      * A shop and a walk-in need different answers, and the exception TYPE is what routes
@@ -175,7 +220,7 @@ public class ProjectService {
         if (user.getRole() == com.gridstore.huevista.auth.model.UserRole.RETAILER) {
             return new com.gridstore.huevista.common.exception.SubscriptionRequiredException(
                     "Your subscription has ended. Subscribe to keep creating projects, or spend "
-                    + pricingService.pointsPriceProject() + " points on a single project — it "
+                    + pricingService.pointsPriceProject(user.getId()) + " points on a single project — it "
                     + "stays open for " + pricingService.projectValidDays() + " days.");
         }
         // A customer holds no points and cannot buy any — points are a shop currency, and
@@ -420,18 +465,12 @@ public class ProjectService {
         // A kiosk walk-in bought this project outright, so no subscription is consulted —
         // in EITHER direction. Gating it on the shop's plan is what let the kiosk take a
         // payment and then refuse the work when the shop's own plan had lapsed.
-        if (!target.selfFunded()) {
-            boolean holdsReservation = target.coveredByCode()
-                    && accessCodeRepository.findById(target.accessCodeId())
-                            .map(c -> c.getReservedImages() > 0).orElse(false);
-            billingService.assertAiQuotaAvailable(target.billedUserId(), holdsReservation);
-            // AUTO mask mode additionally needs an auto-mask credit — rejected up-front with
-            // a 402 AUTO_MASK_UNAVAILABLE the frontend turns into "mark walls yourself (free)
-            // or upgrade", instead of burning the clean-up on a run that can't finish.
-            if (!"MANUAL".equalsIgnoreCase(project.getMaskMode())) {
-                billingService.assertAutoMaskQuotaAvailable(target.billedUserId());
-            }
-        }
+        // No quota check here: the project's credit was taken when the project was
+        // CREATED, so the run it was created for — and every retry of it — is already
+        // paid for. Gating again would refuse a re-run to a shop that has since used up
+        // its month, on a room it has already been charged for. What still applies is
+        // findEditable above: a view-only project (lapsed plan, expired validity) cannot
+        // be re-run at all.
 
         // Allow re-triggering if the previous run never finished (e.g. it
         // crashed, the worker JVM restarted, or an upstream API like Gemini
@@ -885,6 +924,10 @@ public class ProjectService {
                 .status(ProjectStatus.CREATED)
                 .build());
 
+        // Charged to the issuing shop at creation, exactly like a signed-in one — a kiosk
+        // code is skipped inside, because the walk-in already paid for it themselves.
+        spendShopCredit(code);
+
         log.info("Guest project created: id={} accessCode={}", project.getId(), accessCodeId);
         return toPublicResponse(project);
     }
@@ -967,14 +1010,9 @@ public class ProjectService {
         // project when it generated the code, so re-checking the limit would block work
         // already bought. The credit is only charged once the AI actually produces walls
         // (SegmentationService bills on success), so a failed run is free.
-        if (!code.isSelfFunded()) {
-            String shopOwnerUserId = resolveShopOwnerUserId(code);
-            billingService.assertAiQuotaAvailable(shopOwnerUserId, code.getReservedImages() > 0);
-            // Guest runs are always fully automatic (clean-up + AI wall detection), so the
-            // shop's plan must also cover an auto-mask credit; when it doesn't the guest
-            // falls back to marking walls by hand exactly like on an image-quota 402.
-            billingService.assertAutoMaskQuotaAvailable(shopOwnerUserId);
-        }
+        // The shop was charged when this guest project was created, so the run is already
+        // paid for and needs no gate. The code's own expiry is checked above, which is the
+        // thing that actually ends a walk-in's access.
 
         // Re-trigger guard mirrors requestSegmentation: a run stuck >5 min is treated as stale.
         if (project.getStatus() == ProjectStatus.SEGMENTING) {

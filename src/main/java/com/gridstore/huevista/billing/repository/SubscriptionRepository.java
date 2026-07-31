@@ -1,6 +1,5 @@
 package com.gridstore.huevista.billing.repository;
 
-import com.gridstore.huevista.billing.model.Plan;
 import com.gridstore.huevista.billing.model.Subscription;
 import com.gridstore.huevista.billing.model.SubscriptionStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -65,115 +64,108 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
     long countByStatus(SubscriptionStatus status);
 
     /**
-     * Atomically charge one image only while usage is below the effective allowance
-     * (monthly limit + purchased pay-per-image credits). A single conditional UPDATE
-     * (no read-modify-write in Java) so two concurrent requests can't both consume the
-     * last remaining credit. Returns the number of rows updated: 1 when a credit was
-     * taken, 0 when the allowance was already reached.
+     * Atomically charge one project only while usage is below the effective allowance
+     * (monthly limit + purchased extras + credits carried in from a replaced plan). A
+     * single conditional UPDATE (no read-modify-write in Java) so two concurrent
+     * requests can't both consume the last remaining credit. Returns the number of rows
+     * updated: 1 when a credit was taken, 0 when the allowance was already reached.
      */
-    @Modifying(clearAutomatically = true)
-    @Query("UPDATE Subscription s SET s.aiGenerationsUsed = s.aiGenerationsUsed + 1 " +
-           "WHERE s.id = :id AND s.aiGenerationsUsed + s.reservedImages " +
-           "      < s.aiGenerationsLimit + s.purchasedImageCredits")
-    int incrementAiUsageIfWithinLimit(@Param("id") String id);
+    // flushAutomatically matters as much as clearAutomatically here: this now runs inside
+    // the caller's transaction (the project creation it pays for), so the context can be
+    // holding unflushed writes. Clearing without flushing first DISCARDS them — which
+    // silently lost the row the charge was being taken for.
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE Subscription s SET s.projectsUsed = s.projectsUsed + 1 " +
+           "WHERE s.id = :id AND s.projectsUsed + s.reservedProjects " +
+           "      < s.projectsLimit + s.purchasedProjectCredits + s.carriedProjectCredits")
+    int incrementProjectUsageIfWithinLimit(@Param("id") String id);
 
     /**
-     * Atomically HOLD {@code count} images at once (used when a retailer assigns a
-     * multi-project access code — one image held per assigned project). The single
+     * Atomically HOLD {@code count} projects at once (used when a retailer assigns a
+     * multi-project access code — one held per assigned project). The single
      * conditional UPDATE only applies when the WHOLE block fits under the effective
      * allowance, so a partial reservation is impossible. Returns 1 when the block was
      * held, 0 when it wouldn't fit.
      *
-     * A hold is NOT a charge: it moves into {@code aiGenerationsUsed} via
-     * {@link #consumeReservedImage} when the project is actually segmented, or back
-     * into the pool via {@link #releaseReservedImages} when the code is revoked or
+     * A hold is NOT a charge: it moves into {@code projectsUsed} via
+     * {@link #consumeReservedProject} when the project is actually segmented, or back
+     * into the pool via {@link #releaseReservedProjects} when the code is revoked or
      * expires unredeemed.
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("UPDATE Subscription s SET s.reservedImages = s.reservedImages + :count " +
-           "WHERE s.id = :id AND s.aiGenerationsUsed + s.reservedImages + :count " +
-           "      <= s.aiGenerationsLimit + s.purchasedImageCredits")
-    int reserveImagesIfWithinLimit(@Param("id") String id, @Param("count") int count);
+    @Query("UPDATE Subscription s SET s.reservedProjects = s.reservedProjects + :count " +
+           "WHERE s.id = :id AND s.projectsUsed + s.reservedProjects + :count " +
+           "      <= s.projectsLimit + s.purchasedProjectCredits + s.carriedProjectCredits")
+    int reserveProjectsIfWithinLimit(@Param("id") String id, @Param("count") int count);
 
     /**
      * Add {@code count} holds unconditionally — the carry-over when a new plan supersedes
-     * an old one. Unlike {@link #reserveImagesIfWithinLimit} this is NOT limit-gated: the
-     * holds already exist behind issued access codes, so refusing to move them would
+     * an old one. Unlike {@link #reserveProjectsIfWithinLimit} this is NOT limit-gated:
+     * the holds already exist behind issued access codes, so refusing to move them would
      * strand the codes rather than protect the quota. (Downgrades can therefore land
      * slightly over the new plan's ceiling until those codes are spent, which is the
      * correct end of the trade — the shop already paid for them.)
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("UPDATE Subscription s SET s.reservedImages = s.reservedImages + :count WHERE s.id = :id")
-    int addReservedImages(@Param("id") String id, @Param("count") int count);
+    @Query("UPDATE Subscription s SET s.reservedProjects = s.reservedProjects + :count WHERE s.id = :id")
+    int addReservedProjects(@Param("id") String id, @Param("count") int count);
 
     /**
-     * Return {@code count} previously held images to the pool (code revoked, or expired
+     * Return {@code count} previously held projects to the pool (code revoked, or expired
      * without being redeemed). Floored at zero and applied atomically.
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("UPDATE Subscription s SET s.reservedImages = " +
-           "  CASE WHEN s.reservedImages > :count THEN s.reservedImages - :count ELSE 0 END " +
-           "WHERE s.id = :id AND s.reservedImages > 0")
-    int releaseReservedImages(@Param("id") String id, @Param("count") int count);
+    @Query("UPDATE Subscription s SET s.reservedProjects = " +
+           "  CASE WHEN s.reservedProjects > :count THEN s.reservedProjects - :count ELSE 0 END " +
+           "WHERE s.id = :id AND s.reservedProjects > 0")
+    int releaseReservedProjects(@Param("id") String id, @Param("count") int count);
 
     /**
-     * Spend one HELD image: moves it from {@code reservedImages} into
-     * {@code aiGenerationsUsed} in a single atomic UPDATE, so an access-code project
+     * Spend one HELD project: moves it from {@code reservedProjects} into
+     * {@code projectsUsed} in a single atomic UPDATE, so an access-code project
      * that was already paid for at generation time is never charged a second time.
      * Returns 1 when a hold was consumed, 0 when none was left (caller should fall
      * back to a normal charge — e.g. a legacy code issued before holds existed).
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("UPDATE Subscription s SET s.reservedImages = s.reservedImages - 1, " +
-           "       s.aiGenerationsUsed = s.aiGenerationsUsed + 1 " +
-           "WHERE s.id = :id AND s.reservedImages > 0")
-    int consumeReservedImage(@Param("id") String id);
+    @Query("UPDATE Subscription s SET s.reservedProjects = s.reservedProjects - 1, " +
+           "       s.projectsUsed = s.projectsUsed + 1 " +
+           "WHERE s.id = :id AND s.reservedProjects > 0")
+    int consumeReservedProject(@Param("id") String id);
+
+    /** Add extra projects bought at the plan's own rate, in points or in money. */
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE Subscription s SET s.purchasedProjectCredits = s.purchasedProjectCredits + :count " +
+           "WHERE s.id = :id")
+    int addPurchasedProjectCredits(@Param("id") String id, @Param("count") int count);
 
     /**
-     * Atomically charge one AI auto-mask run while usage is below the effective
-     * allowance (plan limit + purchased pay-per-use credits) — same conditional-UPDATE
-     * pattern as the image quota. Returns 1 when charged, 0 when the allowance is spent.
+     * Add projects left over from a plan this one replaces. Separate from
+     * {@link #addPurchasedProjectCredits} because these expire with the cycle: they are
+     * someone's unused monthly allowance, not something they bought outright.
      */
-    @Modifying(clearAutomatically = true)
-    @Query("UPDATE Subscription s SET s.autoMasksUsed = s.autoMasksUsed + 1 " +
-           "WHERE s.id = :id AND s.autoMasksUsed < s.autoMasksLimit + s.purchasedAutoMaskCredits")
-    int incrementAutoMaskUsageIfWithinLimit(@Param("id") String id);
-
-    /** Add pay-per-use auto-mask credits after a verified wallet debit (Rs. 25 + GST each). */
-    @Modifying(clearAutomatically = true)
-    @Query("UPDATE Subscription s SET s.purchasedAutoMaskCredits = s.purchasedAutoMaskCredits + :count " +
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE Subscription s SET s.carriedProjectCredits = s.carriedProjectCredits + :count " +
            "WHERE s.id = :id")
-    int addPurchasedAutoMaskCredits(@Param("id") String id, @Param("count") int count);
-
-    /** Atomically charge one auto-mask run regardless of the limit — the run already happened. */
-    @Modifying(clearAutomatically = true)
-    @Query("UPDATE Subscription s SET s.autoMasksUsed = s.autoMasksUsed + 1 WHERE s.id = :id")
-    int incrementAutoMaskUsage(@Param("id") String id);
-
-    /** Add pay-per-image overage credits after a verified Rs. 50 + GST payment. */
-    @Modifying(clearAutomatically = true)
-    @Query("UPDATE Subscription s SET s.purchasedImageCredits = s.purchasedImageCredits + :count " +
-           "WHERE s.id = :id")
-    int addPurchasedImageCredits(@Param("id") String id, @Param("count") int count);
+    int addCarriedProjectCredits(@Param("id") String id, @Param("count") int count);
 
     /**
-     * Atomically charge one AI generation regardless of the limit — used when the work has
+     * Atomically charge one project regardless of the limit — used when the work has
      * already succeeded, so the charge must land even if it nudges usage to the ceiling.
      */
     @Modifying(clearAutomatically = true)
-    @Query("UPDATE Subscription s SET s.aiGenerationsUsed = s.aiGenerationsUsed + 1 WHERE s.id = :id")
-    int incrementAiUsage(@Param("id") String id);
+    @Query("UPDATE Subscription s SET s.projectsUsed = s.projectsUsed + 1 WHERE s.id = :id")
+    int incrementProjectUsage(@Param("id") String id);
 
     /** Atomically return one previously reserved credit (never below zero) when the work failed. */
     @Modifying(clearAutomatically = true)
-    @Query("UPDATE Subscription s SET s.aiGenerationsUsed = s.aiGenerationsUsed - 1 " +
-           "WHERE s.id = :id AND s.aiGenerationsUsed > 0")
-    int decrementAiUsage(@Param("id") String id);
+    @Query("UPDATE Subscription s SET s.projectsUsed = s.projectsUsed - 1 " +
+           "WHERE s.id = :id AND s.projectsUsed > 0")
+    int decrementProjectUsage(@Param("id") String id);
 
     /**
      * Atomically charge one colour-board PDF download while usage is below the limit —
-     * same conditional-UPDATE pattern as {@link #incrementAiUsageIfWithinLimit} so
+     * same conditional-UPDATE pattern as {@link #incrementProjectUsageIfWithinLimit} so
      * parallel downloads can't both take the last one. Returns 1 when charged, 0 when
      * the monthly allowance is spent.
      */
@@ -192,9 +184,23 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
            "WHERE s.id = :id AND s.trialProjectsCreated < :limit")
     int claimTrialProjectSlot(@Param("id") String id, @Param("limit") int limit);
 
+    /**
+     * Rows that still hold something the shop paid for, other than {@code keepId}.
+     *
+     * Used when a plan goes live to sweep up credits stranded on subscriptions that ENDED
+     * rather than being superseded. Those rows are invisible to every other query — the
+     * entitlement lookup only sees ACTIVE and winding-down CANCELLED ones — so a shop that
+     * bought extras, let the plan lapse and came back a month later lost them, and any
+     * access codes still outstanding lost the holds standing behind them.
+     */
+    @Query("SELECT s FROM Subscription s WHERE s.user.id = :userId AND s.id <> :keepId "
+           + "AND (s.purchasedProjectCredits > 0 OR s.reservedProjects > 0)")
+    List<Subscription> findWithUnspentCredits(@Param("userId") String userId,
+                                              @Param("keepId") String keepId);
+
     @Query("SELECT s.plan, COUNT(s) FROM Subscription s WHERE s.status = :status GROUP BY s.plan")
     List<Object[]> countByPlanAndStatus(@Param("status") SubscriptionStatus status);
 
-    @Query("SELECT COALESCE(SUM(s.aiGenerationsUsed), 0) FROM Subscription s WHERE s.status = :status")
-    long sumAiGenerationsUsedByStatus(@Param("status") SubscriptionStatus status);
+    @Query("SELECT COALESCE(SUM(s.projectsUsed), 0) FROM Subscription s WHERE s.status = :status")
+    long sumProjectsUsedByStatus(@Param("status") SubscriptionStatus status);
 }

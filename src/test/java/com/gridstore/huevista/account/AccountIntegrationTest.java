@@ -171,16 +171,16 @@ class AccountIntegrationTest {
         String code = objectMapper.readTree(genResult.getResponse().getContentAsString()).get("code").asText();
 
         // The 3 assigned projects are HELD against the owner's monthly image quota — not
-        // spent. They move into aiGenerationsUsed one at a time as the customer actually
+        // spent. They move into projectsUsed one at a time as the customer actually
         // renders each room, and come back if the code is revoked or expires unredeemed.
-        // (Charging them straight to aiGenerationsUsed double-billed the shop, because the
+        // (Charging them straight to projectsUsed double-billed the shop, because the
         // render itself charged again.)
         User owner = userRepository.findByEmail("retailer-owner@example.com").orElseThrow();
         Subscription sub = subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(owner.getId(), SubscriptionStatus.ACTIVE)
                 .orElseThrow();
-        org.assertj.core.api.Assertions.assertThat(sub.getReservedImages()).isEqualTo(3);
-        org.assertj.core.api.Assertions.assertThat(sub.getAiGenerationsUsed()).isZero();
+        org.assertj.core.api.Assertions.assertThat(sub.getReservedProjects()).isEqualTo(3);
+        org.assertj.core.api.Assertions.assertThat(sub.getProjectsUsed()).isZero();
 
         // Redeeming needs NO auth — it auto-creates a signed-in CUSTOMER account.
         RedeemCodeRequest redeem = new RedeemCodeRequest();
@@ -326,7 +326,7 @@ class AccountIntegrationTest {
         User owner = userRepository.findByEmail("retailer-owner@example.com").orElseThrow();
         org.assertj.core.api.Assertions.assertThat(subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(owner.getId(), SubscriptionStatus.ACTIVE)
-                .orElseThrow().getReservedImages()).isEqualTo(3);
+                .orElseThrow().getReservedProjects()).isEqualTo(3);
 
         // Cancelling the code hands the three held credits straight back to the shop —
         // previously a mistyped code could only be replaced by paying the quota twice.
@@ -337,7 +337,7 @@ class AccountIntegrationTest {
 
         org.assertj.core.api.Assertions.assertThat(subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(owner.getId(), SubscriptionStatus.ACTIVE)
-                .orElseThrow().getReservedImages()).isZero();
+                .orElseThrow().getReservedProjects()).isZero();
 
         // …and the revoked code can never be redeemed.
         RedeemCodeRequest redeem = new RedeemCodeRequest();
@@ -387,7 +387,7 @@ class AccountIntegrationTest {
                 .user(owner)
                 .plan(Plan.PROFESSIONAL)
                 .status(SubscriptionStatus.ACTIVE)
-                .aiGenerationsLimit(60)
+                .projectsLimit(60)
                 .currentPeriodStart(LocalDateTime.now())
                 .currentPeriodEnd(LocalDateTime.now().plusDays(30))
                 .build());
