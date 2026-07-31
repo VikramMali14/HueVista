@@ -1,7 +1,9 @@
 package com.gridstore.huevista.schema;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.EnumType;
 import jakarta.persistence.Entity;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToMany;
 import jakarta.persistence.ManyToOne;
@@ -21,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
@@ -76,6 +79,57 @@ class MigrationsCoverEntitiesTest {
                 .isEmpty();
     }
 
+    /**
+     * The same gap, one level down: a value added to an enum must reach the CHECK
+     * constraint that guards its column.
+     *
+     * Hibernate derives that constraint from the enum when it first creates the table and
+     * never alters it afterwards, so on the deployed (Flyway-managed) database the allowed
+     * values are frozen at whatever the enum held on the day the table was made. Tests
+     * can't see it — they build the schema from the current enums every run, so the
+     * constraint is always correct here and always stale there. It has shipped twice:
+     * ACCESS_CODE broke every access-code redemption (fixed in V21), and Plan.FREE broke
+     * every shop signup, because the free tier became the trial while the constraint still
+     * named only the four paid tiers.
+     *
+     * Textual, like the column check above: whatever the newest migration to define the
+     * constraint allows must cover every constant of the enum. A column whose constraint
+     * no migration mentions is skipped — an absent constraint is permissive, and so
+     * rejects nothing.
+     */
+    @Test
+    void everyEnumValueAppearsInItsCheckConstraint() throws IOException {
+        String sql = readMigrationsInVersionOrder();
+        List<String> stale = new ArrayList<>();
+
+        for (Class<?> entity : entityClasses()) {
+            String table = tableName(entity);
+            for (Field field : entity.getDeclaredFields()) {
+                Class<?> enumType = stringEnumType(field);
+                if (enumType == null) continue;
+                String constraint = table + "_" + columnName(field) + "_check";
+                List<String> allowed = allowedValues(sql, constraint);
+                if (allowed == null) continue;   // no constraint in any migration
+
+                for (Object constant : enumType.getEnumConstants()) {
+                    String value = ((Enum<?>) constant).name();
+                    if (!allowed.contains(value)) {
+                        stale.add(constraint + " rejects " + enumType.getSimpleName() + "." + value
+                                  + "  (allows: " + String.join(", ", allowed) + ")");
+                    }
+                }
+            }
+        }
+
+        assertThat(stale)
+                .withFailMessage("""
+                        These CHECK constraints are older than their enum, so the deployed \
+                        database will reject rows the code writes. Widen them in a new \
+                        src/main/resources/db/migration/V<next>__*.sql:
+                          %s""", String.join("\n  ", stale))
+                .isEmpty();
+    }
+
     /** Migrations must be uniquely numbered — two V22s make Flyway refuse to start. */
     @Test
     void migrationVersionsAreUnique() throws IOException {
@@ -97,6 +151,77 @@ class MigrationsCoverEntitiesTest {
             }
         }
         return sql.toString().toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * The migrations concatenated in Flyway's own order, so that when a constraint is
+     * dropped and re-added the later definition is the one that reads as current.
+     */
+    private String readMigrationsInVersionOrder() throws IOException {
+        StringBuilder sql = new StringBuilder();
+        try (Stream<Path> files = Files.list(MIGRATIONS)) {
+            List<Path> ordered = files
+                    .filter(p -> p.getFileName().toString().matches("V\\d+__.*\\.sql"))
+                    .sorted(Comparator.comparingInt(MigrationsCoverEntitiesTest::version))
+                    .toList();
+            for (Path file : ordered) {
+                sql.append(Files.readString(file, StandardCharsets.UTF_8)).append('\n');
+            }
+        }
+        return sql.toString();
+    }
+
+    private static int version(Path migration) {
+        String name = migration.getFileName().toString();
+        return Integer.parseInt(name.substring(1, name.indexOf("__")));
+    }
+
+    /**
+     * What the newest definition of {@code constraint} allows, or null when no migration
+     * defines it. Reads the quoted literals inside that constraint's own CHECK(...) —
+     * bounded by the closing parenthesis rather than the statement, or a constraint
+     * declared inline in a CREATE TABLE would swallow the values of the one after it and
+     * report as permitting them. Covers both spellings in use: the baseline's single-line
+     * {@code ANY (ARRAY[...])} and the multi-line one V21 introduced.
+     */
+    private List<String> allowedValues(String sql, String constraint) {
+        var definition = Pattern
+                .compile("constraint\\s+" + Pattern.quote(constraint) + "\\s+check\\b",
+                         Pattern.CASE_INSENSITIVE)
+                .matcher(sql);
+        String body = null;
+        while (definition.find()) {
+            body = checkBody(sql, definition.end());
+        }
+        if (body == null) return null;
+
+        List<String> values = new ArrayList<>();
+        var literal = Pattern.compile("'([A-Z][A-Z0-9_]*)'").matcher(body);
+        while (literal.find()) {
+            values.add(literal.group(1));
+        }
+        return values;
+    }
+
+    /** The CHECK's parenthesised body: from the first '(' at or after {@code from} to the
+     *  one that closes it. Enum literals hold no parentheses, so counting is enough. */
+    private String checkBody(String sql, int from) {
+        int open = sql.indexOf('(', from);
+        if (open < 0) return null;
+        int depth = 0;
+        for (int i = open; i < sql.length(); i++) {
+            char c = sql.charAt(i);
+            if (c == '(') depth++;
+            else if (c == ')' && --depth == 0) return sql.substring(open, i + 1);
+        }
+        return null;
+    }
+
+    /** The enum a field persists by name, or null when it isn't one. */
+    private Class<?> stringEnumType(Field field) {
+        Enumerated enumerated = field.getAnnotation(Enumerated.class);
+        if (enumerated == null || enumerated.value() != EnumType.STRING) return null;
+        return field.getType().isEnum() ? field.getType() : null;
     }
 
     /** Whole-word match, so {@code used_at} never satisfies {@code quota_released_at}. */
