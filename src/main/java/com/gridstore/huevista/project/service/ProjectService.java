@@ -237,12 +237,37 @@ public class ProjectService {
                 : String.format(java.util.Locale.ROOT, "%.2f", paise / 100.0);
     }
 
+    /** Largest merged window a single request will assemble — see {@link #getUserProjects}. */
+    private static final int MAX_MERGE_WINDOW = 1_000;
+    /** Largest page the list endpoint will hand back. */
+    public static final int MAX_PAGE_SIZE = 500;
+
     /**
      * The dashboard list. For a RETAILER this is their own rooms AND every room their
      * customers created under a code the shop issued — the shop paid an image credit per
      * assigned project, so that work belongs on their dashboard rather than only inside
      * the customer portal. Each row is tagged {@code OWN} or {@code CUSTOMER} so the
      * dashboard can filter between them.
+     *
+     * <h2>Paging across two sources</h2>
+     * A retailer's page is drawn from two queries, and the page has to mean the same
+     * thing as it would from one. Handing the SAME {@code Pageable} to both was neither:
+     * it returned up to 2×{@code size} rows, and "page 1" meant the second page of each
+     * list independently — so a row could sit on both pages or on neither, depending on
+     * how the two interleaved by date.
+     *
+     * Both queries order by {@code updatedAt DESC}, so the fix is to read a window
+     * covering everything up to the end of the requested page from each, merge on that
+     * same key, and cut the requested slice out of the result. One page in, one page out.
+     *
+     * The window is bounded by {@link #MAX_MERGE_WINDOW}: deep paging over a merged list
+     * costs a row read per source per page, and this is a dashboard, not an export.
+     * Beyond that depth the list reads empty rather than growing without limit.
+     *
+     * {@code size} is a cap on the WHOLE response now rather than on each source, which
+     * on its own would have shown a busy shop less than before. The ceiling is raised to
+     * {@link #MAX_PAGE_SIZE} to cover that: the old shape could return 2×200 rows across
+     * the two sources, so anything less than 400 would have been a reduction.
      */
     @Transactional
     public List<ProjectSummaryResponse> getUserProjects(String userId, int page, int size) {
@@ -251,9 +276,22 @@ public class ProjectService {
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
         boolean subscribed = pricingService.isSubscribed(userId);
 
-        // Clamp instead of rejecting: page >= 0, 1 <= size <= 200.
-        int clampedSize = Math.min(Math.max(1, size), 200);
-        var pageable = org.springframework.data.domain.PageRequest.of(Math.max(0, page), clampedSize);
+        // Clamp instead of rejecting: page >= 0, 1 <= size <= MAX_PAGE_SIZE.
+        int clampedPage = Math.max(0, page);
+        int clampedSize = Math.min(Math.max(1, size), MAX_PAGE_SIZE);
+        boolean retailer = user.getRole() == com.gridstore.huevista.auth.model.UserRole.RETAILER;
+
+        // A non-retailer has one source, so the requested page IS the query's page and
+        // nothing needs merging. Only the two-source case pays for the wider window.
+        long offset = (long) clampedPage * clampedSize;
+        if (offset >= MAX_MERGE_WINDOW) {
+            return List.of();
+        }
+        int windowSize = retailer
+                ? (int) Math.min(MAX_MERGE_WINDOW, offset + clampedSize)
+                : clampedSize;
+        var pageable = org.springframework.data.domain.PageRequest.of(
+                retailer ? 0 : clampedPage, windowSize);
 
         List<Project> own = projectRepository.findByUserIdWithImage(userId, pageable);
         // Bring the stored windows in line with the subscription before reading them, so a
@@ -265,10 +303,16 @@ public class ProjectService {
                 .map(p -> summarize(p, user, subscribed))
                 .toList());
 
-        if (user.getRole() == com.gridstore.huevista.auth.model.UserRole.RETAILER) {
-            rows.addAll(customerRoomsFor(userId, pageable));
+        if (!retailer) {
+            return rows;
         }
-        return rows;
+
+        rows.addAll(customerRoomsFor(userId, pageable));
+        // Merge on the key both queries already sort by. Nulls last so a row with no
+        // timestamp sinks to the bottom instead of colonising the top of the dashboard.
+        rows.sort(java.util.Comparator.comparing(ProjectSummaryResponse::getUpdatedAt,
+                java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder())));
+        return rows.stream().skip(offset).limit(clampedSize).toList();
     }
 
     /** Rooms created by this shop's customers, under codes the shop issued. */
