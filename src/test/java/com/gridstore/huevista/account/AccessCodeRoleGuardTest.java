@@ -54,6 +54,8 @@ class AccessCodeRoleGuardTest {
             mock(com.gridstore.huevista.project.repository.ProjectRepository.class);
     private final com.gridstore.huevista.account.service.ProjectGrantService grants =
             mock(com.gridstore.huevista.account.service.ProjectGrantService.class);
+    private final com.gridstore.huevista.billing.service.ProjectCreditService projectCredits =
+            mock(com.gridstore.huevista.billing.service.ProjectCreditService.class);
 
     // The self-reference the expiry sweep uses for its per-code REQUIRES_NEW; only the
     // scheduled sweep touches it, so the unit under test here never resolves it.
@@ -63,7 +65,7 @@ class AccessCodeRoleGuardTest {
 
     private final AccessCodeService service = new AccessCodeService(
             codes, orgs, memberships, users, entitlements, jwt, auth, subscriptions,
-            billing, audit, brandAccess, shopProducts, projects, grants, self);
+            billing, audit, brandAccess, shopProducts, projects, grants, projectCredits, self);
 
     private static CustomerAccessCode validCode() {
         Organization org = new Organization();

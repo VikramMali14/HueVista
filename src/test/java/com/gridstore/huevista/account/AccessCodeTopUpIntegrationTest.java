@@ -64,6 +64,7 @@ class AccessCodeTopUpIntegrationTest {
     @Autowired CustomerAccessCodeRepository codeRepository;
     @Autowired CustomerEntitlementRepository entitlementRepository;
     @Autowired com.gridstore.huevista.account.service.AccessCodeService accessCodeService;
+    @Autowired com.gridstore.huevista.billing.service.ProjectCreditLedger projectCreditLedger;
 
     private static final String SHOP_EMAIL = "topup-shop@example.com";
 
@@ -177,6 +178,53 @@ class AccessCodeTopUpIntegrationTest {
 
         assertThat(entitlementRepository.findByCustomerId(customerId).orElseThrow()
                 .getAccessExpiresAt()).isAfter(LocalDateTime.now().plusDays(9));
+    }
+
+    /**
+     * A project the shop BOUGHT is assignable, wherever the purchase happens to be sitting.
+     *
+     * One bought while the shop had no plan lands in the standalone credit ledger, which
+     * only project creation ever read — so a shop that had paid for extras could paint
+     * those rooms itself and still be told, at the counter, that it had nothing to give
+     * the customer standing in front of it. The plan is asked first and only the shortfall
+     * moves across, so this never quietly relocates credits an assignment doesn't need.
+     */
+    @Test
+    void aProjectBoughtOutrightCanBeAssignedOnceThePlansAllowanceIsSpent() throws Exception {
+        JsonNode code = generateCode(1);
+        String codeId = code.get("id").asText();
+        String shopUserId = userRepository.findByEmail(SHOP_EMAIL).orElseThrow().getId();
+        spendAllButTheHeldProject(shopUserId);
+
+        // Nothing bought, nothing left on the plan: a real refusal.
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/projects", orgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(grant(1))))
+                .andExpect(status().isPaymentRequired());
+
+        projectCreditLedger.issue(shopUserId, 80, 30,
+                com.gridstore.huevista.billing.model.ProjectCredit.Source.POINTS);
+
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/projects", orgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(grant(1))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.projectQuota").value(2));
+
+        // Spent, not double-counted: it left the ledger and became part of the plan's
+        // allowance, which is where the hold behind the code is now standing.
+        assertThat(projectCreditLedger.available(shopUserId)).isZero();
+        assertThat(codeRepository.findById(codeId).orElseThrow().getReservedProjects()).isEqualTo(2);
+    }
+
+    /** Leave the plan with exactly enough for the one project already held by a code. */
+    private void spendAllButTheHeldProject(String shopUserId) {
+        Subscription sub = subscriptionRepository.findByUserIdOrderByCreatedAtDesc(shopUserId)
+                .stream().findFirst().orElseThrow();
+        sub.setProjectsUsed(sub.getProjectsLimit() - sub.getReservedProjects());
+        subscriptionRepository.saveAndFlush(sub);
     }
 
     @Test

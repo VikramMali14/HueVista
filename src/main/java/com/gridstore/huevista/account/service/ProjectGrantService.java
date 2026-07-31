@@ -55,6 +55,7 @@ public class ProjectGrantService {
     private final SubscriptionRepository subscriptionRepository;
     private final ProjectRepository projectRepository;
     private final BillingService billingService;
+    private final com.gridstore.huevista.billing.service.ProjectCreditService projectCreditService;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
 
     /** Reserve the images and record the grant. Returns the ledger row. */
@@ -220,9 +221,10 @@ public class ProjectGrantService {
     }
 
     /**
-     * Reserve {@code projects} images against the shop owner's live plan — the same
-     * all-or-nothing reservation code issuance makes. Without a plan there is no quota to
-     * draw on, so the grant is refused rather than silently free.
+     * Reserve {@code projects} against the shop owner's live plan — the same
+     * all-or-nothing reservation code issuance makes, and it draws on the extras the shop
+     * bought outright as well as on the month's allowance. Without a plan there is nothing
+     * to hold against at all, so the grant is refused rather than silently free.
      */
     private Subscription reserve(String orgId, int projects) {
         String ownerId = ownerOf(orgId);
@@ -231,12 +233,13 @@ public class ProjectGrantService {
                         LocalDateTime.now())
                 .stream().findFirst()
                 .orElseThrow(() -> new SubscriptionRequiredException(
-                        "Your subscription has ended, so there's no image quota to draw from. "
+                        "Your subscription has ended, so there's no project quota to draw from. "
                         + "Renew your plan to give a customer more projects."));
-        if (subscriptionRepository.reserveProjectsIfWithinLimit(sub.getId(), projects) == 0) {
+        if (!projectCreditService.reserveIncludingBoughtExtras(ownerId, sub.getId(), projects)) {
             throw new QuotaExceededException(
-                    "Not enough image quota to give " + projects + " project"
-                    + (projects == 1 ? "" : "s") + ". Buy more images or give fewer.");
+                    "Not enough project quota to give " + projects + " project"
+                    + (projects == 1 ? "" : "s") + ". Buy another project from the studio, "
+                    + "upgrade your plan, or give fewer.");
         }
         return sub;
     }

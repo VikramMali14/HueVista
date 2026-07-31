@@ -38,6 +38,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class ProjectCreditService {
 
     private final ProjectCreditLedger creditLedger;
+    private final com.gridstore.huevista.billing.repository.SubscriptionRepository subscriptionRepository;
     private final ProjectRepository projectRepository;
     private final ProjectAccessService projectAccessService;
     private final PricingService pricingService;
@@ -104,6 +105,84 @@ public class ProjectCreditService {
     @Transactional
     public void creditPurchasedProject(String userId, ProjectCredit.Source source) {
         grantOneProject(userId, 0, source);
+    }
+
+    /**
+     * Hold {@code projects} against this shop's plan for a customer assignment, drawing on
+     * projects it bought outright when the monthly allowance alone will not cover them.
+     * All-or-nothing, like the plain reservation it wraps.
+     *
+     * Extras bought while a plan was live are already part of what the reservation counts
+     * ({@code purchasedProjectCredits}); ones bought between plans are not, and are pulled
+     * across here. Only the SHORTFALL moves, and only after the plan has been asked once: a
+     * credit sitting in the ledger still works when the plan lapses and one moved onto the
+     * plan does not, so nothing is relocated that this assignment does not actually need.
+     */
+    @Transactional
+    public boolean reserveIncludingBoughtExtras(String ownerId, String subscriptionId, int projects) {
+        if (subscriptionRepository.reserveProjectsIfWithinLimit(subscriptionId, projects) == 1) {
+            return true;
+        }
+        int shortfall = subscriptionRepository.findById(subscriptionId)
+                .map(sub -> projects - assignableHeadroom(sub))
+                .orElse(projects);
+        if (shortfall > 0 && transferLedgerCreditsToPlan(ownerId, shortfall) == 0) {
+            return false;
+        }
+        return subscriptionRepository.reserveProjectsIfWithinLimit(subscriptionId, projects) == 1;
+    }
+
+    /**
+     * What a plan can still hold: the monthly allowance plus everything bought or carried
+     * over, less what is already spent or held. Widened to a long on the way through because
+     * an unlimited tier carries {@code Integer.MAX_VALUE} as its limit, and adding bought
+     * extras to that wraps negative.
+     */
+    private static int assignableHeadroom(com.gridstore.huevista.billing.model.Subscription sub) {
+        long capacity = (long) sub.getProjectsLimit()
+                + sub.getPurchasedProjectCredits() + sub.getCarriedProjectCredits();
+        long headroom = capacity - sub.getProjectsUsed() - sub.getReservedProjects();
+        return (int) Math.max(0, Math.min(Integer.MAX_VALUE, headroom));
+    }
+
+    /**
+     * Move up to {@code wanted} standalone credits onto the account's live plan, so extras
+     * bought outright can be spent wherever the plan's own allowance is spent. Returns how
+     * many actually moved.
+     *
+     * A project bought while the shop was between plans lands in the ledger, and the ledger
+     * is only ever read by project CREATION — which meant a shop that bought three extras,
+     * then subscribed, could paint three rooms itself but could not give one of them to a
+     * customer: assigning draws on the plan's allowance, and the plan had never heard of
+     * those three. They were bought and paid for either way, so the honest fix is to let
+     * them follow the shop rather than making it guess which pool a purchase went into.
+     *
+     * Claim-then-credit rather than the reverse: the claim is the compare-and-set that
+     * decides who gets the credit, so doing it first means a parallel project creation can
+     * never spend a credit this call has already promised to the plan. If there turns out
+     * to be no live plan to move them onto, every claim is handed straight back.
+     */
+    @Transactional
+    public int transferLedgerCreditsToPlan(String userId, int wanted) {
+        if (wanted <= 0) {
+            return 0;
+        }
+        var claimed = new java.util.ArrayList<String>(wanted);
+        while (claimed.size() < wanted) {
+            var credit = creditLedger.claim(userId);
+            if (credit.isEmpty()) break;
+            claimed.add(credit.get().getId());
+        }
+        if (claimed.isEmpty()) {
+            return 0;
+        }
+        if (billingService.creditPurchasedProjects(userId, claimed.size()).isEmpty()) {
+            claimed.forEach(creditLedger::release);
+            return 0;
+        }
+        log.info("Moved {} bought project(s) from the credit ledger onto the live plan: user={}",
+                claimed.size(), userId);
+        return claimed.size();
     }
 
     /**

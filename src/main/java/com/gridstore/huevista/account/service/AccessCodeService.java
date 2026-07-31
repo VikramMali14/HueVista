@@ -56,6 +56,7 @@ public class AccessCodeService {
     private final ShopProductRepository shopProductRepository;
     private final com.gridstore.huevista.project.repository.ProjectRepository projectRepository;
     private final ProjectGrantService projectGrantService;
+    private final com.gridstore.huevista.billing.service.ProjectCreditService projectCreditService;
 
     /**
      * This bean through its own proxy, for the expiry sweep's per-code REQUIRES_NEW.
@@ -136,10 +137,16 @@ public class AccessCodeService {
     }
 
     /**
-     * Reserve {@code projectQuota} images against the retailer owner's ACTIVE subscription
-     * (one image per assigned project). Throws {@link QuotaExceededException} when the shop
-     * has no active plan or not enough remaining quota — the retailer must top up or assign
-     * fewer projects.
+     * Reserve {@code projectQuota} projects against the retailer owner's ACTIVE subscription
+     * (one held per assigned project). Throws {@link QuotaExceededException} when the shop
+     * has no active plan or not enough left to hold — the retailer must buy another project
+     * from the studio or assign fewer.
+     *
+     * <p>The plan's own monthly allowance is not the whole of what a shop may assign: extra
+     * projects it bought outright count too (see
+     * {@code SubscriptionRepository#reserveProjectsIfWithinLimit}), and any it bought while
+     * between plans are pulled onto the plan here before the second attempt. A project the
+     * shop paid for is assignable wherever it happens to be sitting.
      */
     private Subscription reserveProjectQuota(String orgId, int projectQuota) {
         String ownerId = resolveOrgOwnerUserId(orgId);
@@ -149,12 +156,13 @@ public class AccessCodeService {
                 .stream().findFirst()
                 .orElseThrow(() -> new QuotaExceededException(
                         "No active subscription. Subscribe to a plan before assigning projects to customers."));
-        if (subscriptionRepository.reserveProjectsIfWithinLimit(sub.getId(), projectQuota) == 0) {
+        if (!projectCreditService.reserveIncludingBoughtExtras(ownerId, sub.getId(), projectQuota)) {
             throw new QuotaExceededException(
-                    "Not enough image quota to assign " + projectQuota + " project"
-                    + (projectQuota == 1 ? "" : "s") + ". Buy more images or assign fewer.");
+                    "Not enough project quota to assign " + projectQuota + " project"
+                    + (projectQuota == 1 ? "" : "s") + ". Buy another project from the studio, "
+                    + "upgrade your plan, or assign fewer.");
         }
-        log.info("Held {} image(s) on subscription {} for access-code assignment", projectQuota, sub.getId());
+        log.info("Held {} project(s) on subscription {} for access-code assignment", projectQuota, sub.getId());
         return sub;
     }
 
