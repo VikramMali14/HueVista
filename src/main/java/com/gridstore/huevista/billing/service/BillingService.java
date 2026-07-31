@@ -820,15 +820,19 @@ public class BillingService {
     }
 
     /**
-     * Atomically reserve one project up-front and limit-gated. The check and the
-     * increment are a single conditional UPDATE, so two concurrent requests can never both
-     * consume the last remaining credit (the old read-then-write let a user with 1 credit
-     * left fire N parallel requests and get N of them). Throws when there is no active
-     * subscription or the monthly limit is already reached. Pair with
-     * {@link #refundProjectUsage} so a run that later fails returns its credit and stays
-     * free.
+     * Atomically charge one project up-front and limit-gated. The check and the increment
+     * are a single conditional UPDATE, so two concurrent requests can never both consume
+     * the last remaining credit (a read-then-write let a shop with 1 credit left fire N
+     * parallel creates and get N projects). Throws when there is no active subscription or
+     * the monthly limit is already reached.
+     *
+     * JOINS the caller's transaction rather than committing on its own. The charge and the
+     * thing it pays for — a project row — have to land or fail together: a separate
+     * transaction meant a creation that failed after this point left the shop a credit
+     * short until something noticed and handed it back, and it could not see a
+     * subscription the caller had only just written.
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional
     public void reserveProjectUsage(String userId) {
         Subscription sub = requireBillableSubscription(userId);
         int reserved = subscriptionRepository.incrementProjectUsageIfWithinLimit(sub.getId());

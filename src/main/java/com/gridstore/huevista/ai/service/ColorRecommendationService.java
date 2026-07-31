@@ -31,6 +31,7 @@ public class ColorRecommendationService {
 
     private final ProjectRepository projectRepository;
     private final ShadeRepository shadeRepository;
+    private final com.gridstore.huevista.project.repository.RegionRepository regionRepository;
     private final StorageService storageService;
     private final ClaudeService claude;
     private final ObjectMapper objectMapper;
@@ -38,22 +39,57 @@ public class ColorRecommendationService {
     @Value("${app.claude.recommendation-model:claude-sonnet-4-6}")
     private String recommendationModel;
 
-    private static final String PROMPT = """
+    /**
+     * The prompt is built per project rather than fixed, because how many colours a
+     * palette should have is a property of the ROOM, not of the model: a photo masked into
+     * one wall cannot use three colours, and offering three there produced two swatches
+     * the shop had nowhere to put. {@code %d} is the number of masked regions, clamped to
+     * {@link #MAX_COLOURS}.
+     */
+    private static String promptFor(int colours) {
+        String slots = switch (colours) {
+            case 1 -> """
+                    - primaryHex: hex color for the single paintable surface in this photo
+                    Return ONLY primaryHex for each palette. Do NOT include accentHex or trimHex.""";
+            case 2 -> """
+                    - primaryHex: hex color for the primary/main walls (most surface area)
+                    - accentHex: hex color for the second surface — an accent wall or feature wall
+                    Return ONLY primaryHex and accentHex for each palette. Do NOT include trimHex.""";
+            default -> """
+                    - primaryHex: hex color for the primary/main walls (most surface area)
+                    - accentHex: hex color for an accent wall, feature wall, or secondary surface
+                    - trimHex: hex color for window frames, door trims, skirting, or ceiling""";
+        };
+        String example = switch (colours) {
+            case 1 -> """
+                    [{"name":"Monsoon Calm","rationale":"Cool blues create serenity in this sunlit living room.","primaryHex":"#B8D4E8"}]""";
+            case 2 -> """
+                    [{"name":"Monsoon Calm","rationale":"Cool blues create serenity in this sunlit living room.","primaryHex":"#B8D4E8","accentHex":"#7BA7C4"}]""";
+            default -> """
+                    [{"name":"Monsoon Calm","rationale":"Cool blues create serenity in this sunlit living room.","primaryHex":"#B8D4E8","accentHex":"#7BA7C4","trimHex":"#F5F5F5"}]""";
+        };
+        return """
             You are an expert Indian interior and exterior color consultant with deep knowledge of Asian Paints, Berger, and Nerolac shade ranges.
 
             Analyze this room/building photo and suggest exactly 3 paint color combination palettes that would look beautiful, are culturally suitable for the Indian market, and work well with the existing lighting and furnishings visible.
 
+            This photo has %d paintable surface%s marked, so each palette must use EXACTLY %d color%s — no more.
+
             For each palette provide:
             - name: a creative palette name (2-4 words, evocative)
             - rationale: one sentence explaining why this palette works for this specific space
-            - primaryHex: hex color for the primary/main walls (most surface area)
-            - accentHex: hex color for an accent wall, feature wall, or secondary surface
-            - trimHex: hex color for window frames, door trims, skirting, or ceiling
+            %s
 
             Return ONLY a valid JSON array with exactly 3 objects. No markdown, no explanation, just the raw JSON array.
             Example format:
-            [{"name":"Monsoon Calm","rationale":"Cool blues create serenity in this sunlit living room.","primaryHex":"#B8D4E8","accentHex":"#7BA7C4","trimHex":"#F5F5F5"}]
-            """;
+            %s
+            """.formatted(colours, colours == 1 ? "" : "s", colours, colours == 1 ? "" : "s",
+                          slots, example);
+    }
+
+    /** Most colours a palette can carry — main, accent and trim, the three roles the
+     *  studio can actually paint. */
+    private static final int MAX_COLOURS = 3;
 
     @Transactional(readOnly = true)
     public RecommendationResponse getRecommendations(String userId, String projectId) {
@@ -79,19 +115,29 @@ public class ColorRecommendationService {
                     "This project's access window has closed. Reopen it to keep working on it.");
         }
 
+        // As many colours as this photo has paintable surfaces, capped at the three roles
+        // the studio can paint. Asking for three on a one-wall room produced two swatches
+        // the shop had nowhere to put; asking again after a wall is added now returns the
+        // extra colour, because the count is read fresh on every ask.
+        int colours = Math.max(1, Math.min(MAX_COLOURS, regionRepository.countByProjectId(projectId)));
+
         List<ColorCombo> combos = new ArrayList<>();
         String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
-        List<Map<String, Object>> rawCombos = callClaude(imageUrl);
+        List<Map<String, Object>> rawCombos = callClaude(imageUrl, colours);
         List<Shade> catalog = shadeRepository.findAll();
 
         for (Map<String, Object> raw : rawCombos) {
+            // Slots beyond the count stay null even if the model volunteers them, so the
+            // studio never shows a colour there is no surface for.
             String primaryHex = normalize((String) raw.get("primaryHex"));
-            String accentHex = normalize((String) raw.get("accentHex"));
-            String trimHex = normalize((String) raw.get("trimHex"));
+            String accentHex = colours >= 2 ? normalize((String) raw.get("accentHex")) : null;
+            String trimHex = colours >= 3 ? normalize((String) raw.get("trimHex")) : null;
 
-            Shade primaryShade = DeltaEMatcher.findNearest(primaryHex, catalog);
-            Shade accentShade = DeltaEMatcher.findNearest(accentHex, catalog);
-            Shade trimShade = DeltaEMatcher.findNearest(trimHex, catalog);
+            // A null hex is a slot this room has no surface for — never matched, so the
+            // shade stays null too and the whole role drops out of the response.
+            Shade primaryShade = nearest(primaryHex, catalog);
+            Shade accentShade = nearest(accentHex, catalog);
+            Shade trimShade = nearest(trimHex, catalog);
 
             combos.add(ColorCombo.builder()
                     .name((String) raw.get("name"))
@@ -119,12 +165,12 @@ public class ColorRecommendationService {
                 .build();
     }
 
-    private List<Map<String, Object>> callClaude(String imageUrl) {
+    private List<Map<String, Object>> callClaude(String imageUrl, int colours) {
         try {
             String raw = ClaudeService.stripCodeFences(
                     claude.askUser(recommendationModel, 1024, List.of(
                             ClaudeService.imageUrlBlock(imageUrl),
-                            ClaudeService.textBlock(PROMPT)
+                            ClaudeService.textBlock(promptFor(colours))
                     )));
             return objectMapper.readValue(raw, new TypeReference<>() {});
         } catch (Exception e) {
@@ -136,5 +182,9 @@ public class ColorRecommendationService {
     private String normalize(String hex) {
         if (hex == null) return "#808080";
         return hex.startsWith("#") ? hex : "#" + hex;
+    }
+
+    private Shade nearest(String hex, List<Shade> catalog) {
+        return hex == null ? null : DeltaEMatcher.findNearest(hex, catalog);
     }
 }

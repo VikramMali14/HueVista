@@ -70,7 +70,11 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
      * requests can't both consume the last remaining credit. Returns the number of rows
      * updated: 1 when a credit was taken, 0 when the allowance was already reached.
      */
-    @Modifying(clearAutomatically = true)
+    // flushAutomatically matters as much as clearAutomatically here: this now runs inside
+    // the caller's transaction (the project creation it pays for), so the context can be
+    // holding unflushed writes. Clearing without flushing first DISCARDS them — which
+    // silently lost the row the charge was being taken for.
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("UPDATE Subscription s SET s.projectsUsed = s.projectsUsed + 1 " +
            "WHERE s.id = :id AND s.projectsUsed + s.reservedProjects " +
            "      < s.projectsLimit + s.purchasedProjectCredits + s.carriedProjectCredits")

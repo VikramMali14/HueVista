@@ -41,6 +41,7 @@ public class ShadeCodeSchemeService {
     private final OrgMembershipRepository membershipRepository;
     private final CustomerEntitlementRepository entitlementRepository;
     private final CustomerAccessCodeRepository accessCodeRepository;
+    private final com.gridstore.huevista.paint.repository.RetiredShadeCodeSchemeRepository retiredRepository;
 
     // --- Retailer-side management (portal) ---
 
@@ -55,9 +56,13 @@ public class ShadeCodeSchemeService {
         boolean showNames = organizationRepository.findById(orgId)
                 .map(Organization::isShowShadeNames)
                 .orElse(true);
+        java.util.List<ShadeCodeSchemeResponse.RetiredScheme> retired =
+                retiredRepository.findByOrganizationIdOrderByRetiredAtDesc(orgId).stream()
+                        .map(ShadeCodeSchemeResponse.RetiredScheme::from)
+                        .toList();
         return schemeRepository.findByOrganizationId(orgId)
-                .map(scheme -> ShadeCodeSchemeResponse.from(scheme, showNames))
-                .orElseGet(() -> ShadeCodeSchemeResponse.empty(showNames));
+                .map(scheme -> ShadeCodeSchemeResponse.from(scheme, showNames, retired))
+                .orElseGet(() -> ShadeCodeSchemeResponse.empty(showNames, retired));
     }
 
     @Transactional
@@ -78,21 +83,34 @@ public class ShadeCodeSchemeService {
             log.info("Shade names {} for org={}", req.getShowNames() ? "shown" : "hidden", orgId);
         }
 
-        // All three parts empty = the shop wants no pattern; drop the row.
+        // All three parts empty = the shop wants no pattern; drop the row — but retire
+        // the pattern first, because the codes it printed are still out there.
         if (prefix.isEmpty() && infix.isEmpty() && suffix.isEmpty()) {
-            schemeRepository.findByOrganizationId(orgId).ifPresent(schemeRepository::delete);
+            schemeRepository.findByOrganizationId(orgId).ifPresent(existing -> {
+                retire(org, existing.getPrefix(), existing.getInfix(), existing.getSuffix());
+                schemeRepository.delete(existing);
+            });
             log.info("Shade-code scheme cleared: org={}", orgId);
-            return ShadeCodeSchemeResponse.empty(org.isShowShadeNames());
+            return describe(orgId);
         }
 
         ShadeCodeScheme scheme = schemeRepository.findByOrganizationId(orgId)
                 .orElseGet(() -> ShadeCodeScheme.builder().organization(org).build());
+        // Archive what is being replaced BEFORE overwriting it. Only a genuine change is
+        // archived: re-saving the same pattern (the shop toggling showNames, say) must not
+        // pile up duplicate history rows.
+        boolean changed = !prefix.equals(scheme.getPrefix())
+                || !infix.equals(scheme.getInfix())
+                || !suffix.equals(scheme.getSuffix());
+        if (changed && scheme.getId() != null) {
+            retire(org, scheme.getPrefix(), scheme.getInfix(), scheme.getSuffix());
+        }
         scheme.setPrefix(prefix);
         scheme.setInfix(infix);
         scheme.setSuffix(suffix);
-        scheme = schemeRepository.save(scheme);
+        schemeRepository.save(scheme);
         log.info("Shade-code scheme saved: org={} prefix={} infix={} suffix={}", orgId, prefix, infix, suffix);
-        return ShadeCodeSchemeResponse.from(scheme, org.isShowShadeNames());
+        return describe(orgId);
     }
 
     // --- Studio-side read (retailer staff, customers, guests) ---
@@ -183,6 +201,24 @@ public class ShadeCodeSchemeService {
     }
 
     // --- helpers ---
+
+    /**
+     * Record a pattern the shop has stopped using, so codes printed under it keep
+     * decoding. Skipped for an all-empty pattern (there was nothing to print with) and
+     * for one already on file — a shop that flips between two patterns should end up with
+     * one row each, not a row per flip.
+     */
+    private void retire(Organization org, String prefix, String infix, String suffix) {
+        if (prefix.isEmpty() && infix.isEmpty() && suffix.isEmpty()) return;
+        if (retiredRepository.existsByOrganizationIdAndPrefixAndInfixAndSuffix(
+                org.getId(), prefix, infix, suffix)) {
+            return;
+        }
+        retiredRepository.save(com.gridstore.huevista.paint.model.RetiredShadeCodeScheme.builder()
+                .organization(org).prefix(prefix).infix(infix).suffix(suffix).build());
+        log.info("Shade-code scheme retired: org={} prefix={} infix={} suffix={}",
+                org.getId(), prefix, infix, suffix);
+    }
 
     /** Scheme parts read best in one case; store uppercase so decode is case-stable. */
     private static String normalize(String part) {
