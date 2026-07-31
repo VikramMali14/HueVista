@@ -153,7 +153,7 @@ public class ProjectGrantService {
         }
 
         applyRevoke(grant);
-        billingService.releaseReservedImages(ownerOf(orgId), grant.getProjects());
+        billingService.releaseReservedProjects(ownerOf(orgId), grant.getProjects());
 
         auditService.record(requestingUserId, "PROJECT_GRANT_REVOKED", "GRANT", grantId,
                 "org=" + orgId + " projects=" + grant.getProjects());
@@ -214,7 +214,7 @@ public class ProjectGrantService {
         codeRepository.findById(grant.getAccessCodeId()).ifPresent(code -> {
             int created = (int) projectRepository.countByAccessCodeId(code.getId());
             code.setProjectQuota(Math.max(created, code.getProjectQuota() - grant.getProjects()));
-            code.setReservedImages(Math.max(0, code.getReservedImages() - grant.getProjects()));
+            code.setReservedProjects(Math.max(0, code.getReservedProjects() - grant.getProjects()));
             codeRepository.save(code);
         });
     }
@@ -233,7 +233,7 @@ public class ProjectGrantService {
                 .orElseThrow(() -> new SubscriptionRequiredException(
                         "Your subscription has ended, so there's no image quota to draw from. "
                         + "Renew your plan to give a customer more projects."));
-        if (subscriptionRepository.reserveImagesIfWithinLimit(sub.getId(), projects) == 0) {
+        if (subscriptionRepository.reserveProjectsIfWithinLimit(sub.getId(), projects) == 0) {
             throw new QuotaExceededException(
                     "Not enough image quota to give " + projects + " project"
                     + (projects == 1 ? "" : "s") + ". Buy more images or give fewer.");

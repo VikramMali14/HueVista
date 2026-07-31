@@ -91,7 +91,7 @@ class DataResetTest {
                 .build());
         subscriptionRepository.save(Subscription.builder()
                 .user(shopOwner).plan(Plan.PROFESSIONAL).status(SubscriptionStatus.ACTIVE)
-                .aiGenerationsLimit(100).aiGenerationsUsed(4)
+                .projectsLimit(100).projectsUsed(4)
                 .currentPeriodEnd(LocalDateTime.now().plusDays(20))
                 .build());
 

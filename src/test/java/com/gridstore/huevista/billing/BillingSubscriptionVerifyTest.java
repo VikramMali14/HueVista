@@ -57,7 +57,7 @@ class BillingSubscriptionVerifyTest {
                 .plan(Plan.PROFESSIONAL)
                 .status(status)
                 .razorpaySubscriptionId("rzp_sub_1")
-                .aiGenerationsLimit(60)
+                .projectsLimit(60)
                 .build();
     }
 
@@ -243,20 +243,23 @@ class BillingSubscriptionVerifyTest {
     }
 
     /**
-     * Upgrading must not destroy what the shop already paid for. Purchased credits are
-     * money; the image holds are projects paid for when access codes were issued, and
-     * losing them billed the shop a SECOND time when the customer finally redeemed one
-     * (SegmentationService finds no hold and falls through to a normal charge).
+     * Upgrading must not destroy what the shop already has. Purchased credits are money;
+     * the holds are projects paid for when access codes were issued, and losing them
+     * billed the shop a SECOND time when the customer finally redeemed one
+     * (SegmentationService finds no hold and falls through to a normal charge); and the
+     * unused monthly allowance was simply forfeited, so upgrading mid-cycle cost a shop
+     * every project it had paid for but not yet run.
      */
     @Test
-    void upgradingCarriesPurchasedCreditsAndAccessCodeHoldsOntoTheNewPlan() {
+    void upgradingCarriesPurchasedCreditsHoldsAndLeftoverProjectsOntoTheNewPlan() {
         Subscription old = sub("user-1", SubscriptionStatus.ACTIVE);
         old.setId("sub-row-old");
         old.setRazorpaySubscriptionId("rzp_sub_old");
         old.setPlan(Plan.STARTER);
-        old.setPurchasedImageCredits(12);
-        old.setPurchasedAutoMaskCredits(3);
-        old.setReservedImages(4);
+        old.setProjectsLimit(15);
+        old.setProjectsUsed(10);       // 5 of the monthly allowance left
+        old.setPurchasedProjectCredits(12);
+        old.setReservedProjects(4);
         old.setCurrentPeriodEnd(LocalDateTime.now().plusDays(15));
 
         Subscription bought = sub("user-1", SubscriptionStatus.CREATED);
@@ -271,13 +274,15 @@ class BillingSubscriptionVerifyTest {
 
             svc.verifyAndActivateSubscription("user-1", req("rzp_sub_1", "pay_1", "sig"));
 
-            verify(subs).addPurchasedImageCredits("sub-row-1", 12);
-            verify(subs).addPurchasedAutoMaskCredits("sub-row-1", 3);
-            verify(subs).addReservedImages("sub-row-1", 4);
-            // Moved, not copied — the retired row must not still count them.
-            assertThat(old.getPurchasedImageCredits()).isZero();
-            assertThat(old.getPurchasedAutoMaskCredits()).isZero();
-            assertThat(old.getReservedImages()).isZero();
+            verify(subs).addPurchasedProjectCredits("sub-row-1", 12);
+            verify(subs).addReservedProjects("sub-row-1", 4);
+            // The 5 unused projects of the old plan follow the shop onto the new one, in
+            // the bucket that expires with the cycle rather than the one that never does.
+            verify(subs).addCarriedProjectCredits("sub-row-1", 5);
+            // Moved, not copied — the retired row must not still count any of them.
+            assertThat(old.getPurchasedProjectCredits()).isZero();
+            assertThat(old.getReservedProjects()).isZero();
+            assertThat(old.getProjectsUsed()).isEqualTo(old.getProjectsLimit());
         }
     }
 

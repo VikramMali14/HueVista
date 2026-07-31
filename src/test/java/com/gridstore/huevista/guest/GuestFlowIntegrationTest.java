@@ -195,7 +195,7 @@ class GuestFlowIntegrationTest {
         Subscription sub = subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(retailerId, SubscriptionStatus.ACTIVE)
                 .orElseThrow();
-        org.junit.jupiter.api.Assertions.assertEquals(0, sub.getAiGenerationsUsed());
+        org.junit.jupiter.api.Assertions.assertEquals(0, sub.getProjectsUsed());
     }
 
     @Test
@@ -235,7 +235,7 @@ class GuestFlowIntegrationTest {
     void guest_gets_as_many_projects_as_the_code_paid_for() throws Exception {
         CustomerAccessCode multi = codeRepository.findById(codeId).orElseThrow();
         multi.setProjectQuota(3);
-        multi.setReservedImages(3);
+        multi.setReservedProjects(3);
         codeRepository.saveAndFlush(multi);
 
         String guestToken = redeemAsGuest();

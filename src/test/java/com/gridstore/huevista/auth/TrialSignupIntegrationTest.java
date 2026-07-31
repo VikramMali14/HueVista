@@ -96,9 +96,11 @@ class TrialSignupIntegrationTest {
         // nothing made the subscribe decision look like a downgrade.
         assertThat(sub.getPlan()).isEqualTo(Plan.FREE);
         assertThat(sub.getRazorpaySubscriptionId()).isNull();
-        assertThat(sub.getAiGenerationsLimit()).isEqualTo(Plan.FREE.getMonthlyImageLimit());
-        assertThat(sub.getAiGenerationsLimit()).isEqualTo(3);
-        assertThat(sub.getAutoMasksLimit()).isEqualTo(2);
+        // Two COMPLETE projects — each one covers the AI clean-up and the AI wall
+        // detection, where the trial used to hand out three images and only two masks to
+        // put them through.
+        assertThat(sub.getProjectsLimit()).isEqualTo(Plan.FREE.getMonthlyProjectLimit());
+        assertThat(sub.getProjectsLimit()).isEqualTo(2);
         // Seven days, so the decision arrives while the product is still fresh.
         assertThat(sub.getCurrentPeriodEnd())
                 .isAfter(sub.getCurrentPeriodStart().plusDays(6))

@@ -12,10 +12,14 @@ import lombok.Data;
 @Data
 public class AdminAdjustSubscriptionRequest {
 
-    /** Extra AI image generations to ADD to the current limit. */
-    @Min(value = 1, message = "Added generations must be at least 1")
-    @Max(value = 1_000_000, message = "Added generations cannot exceed 1000000")
-    private Integer addAiGenerations;
+    /**
+     * Extra projects to grant. They land in the subscription's purchased-credit bucket,
+     * which survives a renewal — writing them into the monthly limit instead meant the
+     * grant quietly evaporated the next time the plan renewed and rebuilt that limit.
+     */
+    @Min(value = 1, message = "Added projects must be at least 1")
+    @Max(value = 1_000_000, message = "Added projects cannot exceed 1000000")
+    private Integer addProjects;
 
     /** Days to extend the current period end by (from now if already lapsed). */
     @Min(value = 1, message = "Extension must be at least 1 day")

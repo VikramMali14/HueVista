@@ -108,21 +108,12 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).body(body);
     }
 
-    @ExceptionHandler(ImageLimitReachedException.class)
-    public ResponseEntity<Map<String, Object>> handleImageLimitReached(ImageLimitReachedException ex) {
-        // Monthly image allowance spent — tagged so the frontend offers the
-        // Rs. 50 + GST buy-one-extra-image checkout instead of a dead end.
+    @ExceptionHandler(ProjectLimitReachedException.class)
+    public ResponseEntity<Map<String, Object>> handleProjectLimitReached(ProjectLimitReachedException ex) {
+        // Monthly project allowance spent — tagged so the frontend offers the
+        // buy-one-extra-project flow at the plan's rate instead of a dead end.
         Map<String, Object> body = baseError(HttpStatus.PAYMENT_REQUIRED, ex.getMessage());
-        body.put("code", "IMAGE_LIMIT_REACHED");
-        return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).body(body);
-    }
-
-    @ExceptionHandler(AutoMaskUnavailableException.class)
-    public ResponseEntity<Map<String, Object>> handleAutoMaskUnavailable(AutoMaskUnavailableException ex) {
-        // AI auto-mask not in the plan / allowance spent — frontend steers to
-        // manual masking (free on every tier) or an upgrade.
-        Map<String, Object> body = baseError(HttpStatus.PAYMENT_REQUIRED, ex.getMessage());
-        body.put("code", "AUTO_MASK_UNAVAILABLE");
+        body.put("code", "PROJECT_LIMIT_REACHED");
         return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).body(body);
     }
 

@@ -99,13 +99,13 @@ class ProjectGrantIntegrationTest {
 
     @Test
     void grantingReservesImagesAgainstTheShopsPlan() throws Exception {
-        int before = subscriptionRepository.findById(subscriptionId).orElseThrow().getReservedImages();
+        int before = subscriptionRepository.findById(subscriptionId).orElseThrow().getReservedProjects();
 
         grant(2).andExpect(status().isOk())
                 .andExpect(jsonPath("$.projectAllowance").value(3));
 
         // The whole point: the shop's quota moved. It never used to.
-        assertThat(subscriptionRepository.findById(subscriptionId).orElseThrow().getReservedImages())
+        assertThat(subscriptionRepository.findById(subscriptionId).orElseThrow().getReservedProjects())
                 .isEqualTo(before + 2);
     }
 
@@ -119,7 +119,7 @@ class ProjectGrantIntegrationTest {
     void anUnusedGrantComesBackAndReturnsTheImages() throws Exception {
         grant(2).andExpect(status().isOk());
         String grantId = firstGrantId();
-        int reserved = subscriptionRepository.findById(subscriptionId).orElseThrow().getReservedImages();
+        int reserved = subscriptionRepository.findById(subscriptionId).orElseThrow().getReservedProjects();
 
         mockMvc.perform(delete("/api/organizations/{orgId}/project-grants/{id}", orgId, grantId)
                         .header("Authorization", "Bearer " + shopToken))
@@ -128,7 +128,7 @@ class ProjectGrantIntegrationTest {
 
         assertThat(entitlementRepository.findByCustomerId(customerId).orElseThrow()
                 .getProjectAllowance()).isEqualTo(1);
-        assertThat(subscriptionRepository.findById(subscriptionId).orElseThrow().getReservedImages())
+        assertThat(subscriptionRepository.findById(subscriptionId).orElseThrow().getReservedProjects())
                 .isEqualTo(reserved - 2);
     }
 
@@ -288,7 +288,7 @@ class ProjectGrantIntegrationTest {
                 .user(owner)
                 .plan(Plan.PROFESSIONAL)
                 .status(SubscriptionStatus.ACTIVE)
-                .aiGenerationsLimit(60)
+                .projectsLimit(60)
                 .currentPeriodStart(LocalDateTime.now())
                 .currentPeriodEnd(LocalDateTime.now().plusDays(30))
                 .build());

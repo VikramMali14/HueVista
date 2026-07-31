@@ -123,7 +123,7 @@ public class AccessCodeService {
                 // One held image credit per assigned project. Spent as projects are
                 // actually segmented; returned to the shop if the code is revoked or
                 // expires with nobody redeeming it.
-                .reservedImages(request.getProjectQuota())
+                .reservedProjects(request.getProjectQuota())
                 .build();
         accessCode.setAllowedBrandList(request.getAllowedBrands());
         accessCode.setAllowedProductIdList(productIds);
@@ -149,7 +149,7 @@ public class AccessCodeService {
                 .stream().findFirst()
                 .orElseThrow(() -> new QuotaExceededException(
                         "No active subscription. Subscribe to a plan before assigning projects to customers."));
-        if (subscriptionRepository.reserveImagesIfWithinLimit(sub.getId(), projectQuota) == 0) {
+        if (subscriptionRepository.reserveProjectsIfWithinLimit(sub.getId(), projectQuota) == 0) {
             throw new QuotaExceededException(
                     "Not enough image quota to assign " + projectQuota + " project"
                     + (projectQuota == 1 ? "" : "s") + ". Buy more images or assign fewer.");
@@ -164,7 +164,7 @@ public class AccessCodeService {
      * refunds exactly once. Returns how many credits went back.
      */
     private int releaseHeldQuota(CustomerAccessCode code) {
-        int held = code.getReservedImages();
+        int held = code.getReservedProjects();
         if (held <= 0) {
             codeRepository.markQuotaReleased(code.getId(), LocalDateTime.now());
             return 0;
@@ -173,7 +173,7 @@ public class AccessCodeService {
             return 0; // someone else already refunded this code
         }
         resolveOrgOwnerUserIdOptional(code.getOrganization().getId())
-                .ifPresent(ownerId -> billingService.releaseReservedImages(ownerId, held));
+                .ifPresent(ownerId -> billingService.releaseReservedProjects(ownerId, held));
         log.info("Released {} held image(s) back to shop {} from code {}",
                 held, code.getOrganization().getId(), code.getCode());
         return held;
@@ -294,7 +294,7 @@ public class AccessCodeService {
         projectGrantService.recordCodeGrant(orgId, codeId, projects, funding);
 
         code.setProjectQuota(code.getProjectQuota() + projects);
-        code.setReservedImages(code.getReservedImages() + projects);
+        code.setReservedProjects(code.getReservedProjects() + projects);
         codeRepository.save(code);
 
         // A code already redeemed into an account has a live entitlement behind it; the
@@ -393,7 +393,7 @@ public class AccessCodeService {
      *   <li>The code WAS redeemed, but the customer created fewer projects than the shop
      *       assigned. This was the bigger leak and had no path back at all: revoking is
      *       refused once a code is redeemed, the sweep used to skip redeemed codes, and
-     *       {@code reservedImages} deliberately survives a renewal — so the unspent
+     *       {@code reservedProjects} deliberately survives a renewal — so the unspent
      *       credits were subtracted from the shop's quota in every period thereafter,
      *       forever. A shop issuing codes at any steady rate eventually had none left.</li>
      * </ul>

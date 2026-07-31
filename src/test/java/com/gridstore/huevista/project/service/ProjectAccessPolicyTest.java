@@ -50,7 +50,7 @@ class ProjectAccessPolicyTest {
                 .plan(plan)
                 .status(SubscriptionStatus.ACTIVE)
                 .trial(trial)
-                .aiGenerationsLimit(plan.getMonthlyImageLimit())
+                .projectsLimit(plan.getMonthlyProjectLimit())
                 .build();
     }
 
@@ -127,7 +127,7 @@ class ProjectAccessPolicyTest {
     }
 
     @Test
-    void trial_retailer_can_create_a_project_within_the_free_tiers_three() {
+    void trial_retailer_can_create_a_project_within_the_free_tiers_allowance() {
         activeSub(sub(true));
         trialSlotAvailable(true);
         assertThatCode(() -> fullGate().assertCanCreateProject(retailer(true, true))).doesNotThrowAnyException();
@@ -139,17 +139,17 @@ class ProjectAccessPolicyTest {
         trialSlotAvailable(false);
         assertThatThrownBy(() -> fullGate().assertCanCreateProject(retailer(true, true)))
                 .isInstanceOf(SubscriptionRequiredException.class)
-                .hasMessageContaining("free trial includes 3 projects");
+                .hasMessageContaining("free trial includes 2 projects");
     }
 
     /** The cap is read off the plan, so it moves with the tier instead of a constant. */
     @Test
-    void theTrialCapIsTheFreeTiersImageQuota() {
+    void theTrialCapIsTheFreeTiersProjectQuota() {
         activeSub(sub(true));
         trialSlotAvailable(true);
         fullGate().assertCanCreateProject(retailer(true, true));
         verify(subscriptionRepository)
-                .claimTrialProjectSlot(any(), eq(Plan.FREE.getMonthlyImageLimit()));
+                .claimTrialProjectSlot(any(), eq(Plan.FREE.getMonthlyProjectLimit()));
     }
 
     @Test

@@ -102,11 +102,11 @@ class ApiContractTest {
 
     @Test
     void project_purchase_options_match_frontend() {
-        // One price, in points, plus the balance to weigh it against. The subscribed /
-        // unsubscribed pair went with the rupee prices: points do not move with a plan.
+        // Two rails, and the tier both were read off — the price of a project falls with
+        // the buyer's plan, so it is quoted per account rather than stated as a constant.
         assertThat(propsOf("ProjectPurchaseOptionsResponse")).containsExactlyInAnyOrder(
-                "subscribed", "projectPricePoints", "reopenPricePoints", "pointsBalance",
-                "validDays", "availableCredits");
+                "subscribed", "pricingPlan", "projectPricePoints", "projectPricePaise",
+                "reopenPricePoints", "pointsBalance", "validDays", "availableCredits");
     }
 
     @Test

@@ -39,15 +39,6 @@ public class BillingService {
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final BillingEmailService billingEmailService;
 
-    // Read straight from configuration rather than through PricingService: that class
-    // depends on THIS one to answer "is this account subscribed", so injecting it back
-    // would close a cycle. These two are only used to phrase a quota message.
-    @Value("${app.points.image:40}")
-    private int pointsPriceImage;
-
-    @Value("${app.points.auto-mask:20}")
-    private int pointsPriceAutoMask;
-
     @Value("${razorpay.plan.starter:}")
     private String planIdStarter;
 
@@ -184,13 +175,14 @@ public class BillingService {
                     // findEntitling can tell "bought, starts later" from "in force now".
                     .currentPeriodStart(scheduledStart)
                     .currentPeriodEnd(scheduledStart != null ? scheduledStart.plusMonths(1) : null)
-                    // quantity multiplies the amount Razorpay bills, so scale the image and
-                    // auto-mask quotas by it too — otherwise a customer paying Nx would still
-                    // get a single plan's limit.
-                    .aiGenerationsLimit(scaledLimit(request.getPlan().getMonthlyImageLimit(), request.getQuantity()))
-                    .autoMasksLimit(scaledLimit(request.getPlan().getMonthlyAutoMaskLimit(), request.getQuantity()))
-                    // PDF downloads scale with quantity like the image quota; images-per-PDF is a
-                    // per-document property of the tier, so it does NOT scale.
+                    // quantity multiplies the amount Razorpay bills, so scale the project quota
+                    // by it too — otherwise a customer paying Nx would still get a single plan's
+                    // limit. It is stored so renewal can rebuild the allowance from the plan
+                    // without losing the multiplier.
+                    .quantity(Math.max(1, request.getQuantity()))
+                    .projectsLimit(scaledLimit(request.getPlan().getMonthlyProjectLimit(), request.getQuantity()))
+                    // PDF downloads scale with quantity like the project quota; images-per-PDF is
+                    // a per-document property of the tier, so it does NOT scale.
                     .pdfDownloadsLimit(scaledLimit(request.getPlan().getMonthlyPdfLimit(), request.getQuantity()))
                     .pdfImageLimit(request.getPlan().getPdfImageLimit())
                     .build();
@@ -238,14 +230,14 @@ public class BillingService {
      * reused, or null when a new subscription should be created.
      */
     private SubscriptionResponse reusePendingAttempt(String userId, CreateSubscriptionRequest request) {
-        int wantedImages = scaledLimit(request.getPlan().getMonthlyImageLimit(), request.getQuantity());
+        int wantedProjects = scaledLimit(request.getPlan().getMonthlyProjectLimit(), request.getQuantity());
         SubscriptionResponse reusable = null;
 
         for (Subscription attempt : subscriptionRepository
                 .findByUserIdAndStatus(userId, SubscriptionStatus.CREATED)) {
             String rzpId = attempt.getRazorpaySubscriptionId();
             boolean sameOffer = attempt.getPlan() == request.getPlan()
-                    && attempt.getAiGenerationsLimit() == wantedImages;
+                    && attempt.getProjectsLimit() == wantedProjects;
 
             if (sameOffer && reusable == null && rzpId != null && !rzpId.isBlank()) {
                 String shortUrl = stillPayableShortUrl(rzpId);
@@ -436,9 +428,8 @@ public class BillingService {
                 .trial(true)
                 .currentPeriodStart(now)
                 .currentPeriodEnd(now.plusDays(trialDays))
-                .aiGenerationsUsed(0)
-                .aiGenerationsLimit(p.getMonthlyImageLimit())
-                .autoMasksLimit(p.getMonthlyAutoMaskLimit())
+                .projectsUsed(0)
+                .projectsLimit(p.getMonthlyProjectLimit())
                 .pdfDownloadsLimit(p.getMonthlyPdfLimit())
                 .pdfImageLimit(p.getPdfImageLimit())
                 .build();
@@ -456,7 +447,7 @@ public class BillingService {
      */
     @Transactional
     public SubscriptionResponse adminGrantSubscription(String adminUserId, String targetUserId,
-                                                       Plan plan, int days, Integer aiLimitOverride) {
+                                                       Plan plan, int days, Integer projectLimitOverride) {
         User user = userRepository.findById(targetUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + targetUserId));
 
@@ -468,9 +459,8 @@ public class BillingService {
                 .trial(false)
                 .currentPeriodStart(now)
                 .currentPeriodEnd(now.plusDays(days))
-                .aiGenerationsUsed(0)
-                .aiGenerationsLimit(aiLimitOverride != null ? aiLimitOverride : plan.getMonthlyImageLimit())
-                .autoMasksLimit(plan.getMonthlyAutoMaskLimit())
+                .projectsUsed(0)
+                .projectsLimit(projectLimitOverride != null ? projectLimitOverride : plan.getMonthlyProjectLimit())
                 .pdfDownloadsLimit(plan.getMonthlyPdfLimit())
                 .pdfImageLimit(plan.getPdfImageLimit())
                 .build();
@@ -491,23 +481,29 @@ public class BillingService {
 
         auditService.record(adminUserId, "ADMIN_SUBSCRIPTION_GRANT", "SUBSCRIPTION", sub.getId(),
                 "user=" + targetUserId + " plan=" + plan + " days=" + days
-                        + (aiLimitOverride != null ? " aiLimit=" + aiLimitOverride : ""));
+                        + (projectLimitOverride != null ? " projectsLimit=" + projectLimitOverride : ""));
         log.info("Admin {} granted subscription: user={} plan={} days={}", adminUserId, targetUserId, plan, days);
         return SubscriptionResponse.from(sub);
     }
 
     /**
-     * ADMIN: adjust a user's most recent subscription in place — add AI generation
-     * credits (raises the limit) and/or extend the period end. Extending a lapsed
-     * (EXPIRED/CANCELLED/HALTED) subscription reactivates it, which is how an
-     * ended plan is brought back without making the user pay again.
+     * ADMIN: adjust a user's most recent subscription in place — add project credits
+     * and/or extend the period end. Extending a lapsed (EXPIRED/CANCELLED/HALTED)
+     * subscription reactivates it, which is how an ended plan is brought back without
+     * making the user pay again.
+     *
+     * Granted projects land in {@code purchasedProjectCredits} rather than raising the
+     * monthly limit. Renewal rebuilds the limit from the plan, so a granted allowance
+     * written there would silently evaporate at the end of the cycle — the opposite of
+     * what "give this shop 20 more projects" means. Purchased credits are the bucket
+     * that explicitly survives a renewal.
      */
     @Transactional
     public SubscriptionResponse adminAdjustSubscription(String adminUserId, String targetUserId,
-                                                        Integer addAiGenerations, Integer extendDays) {
-        if (addAiGenerations == null && extendDays == null) {
+                                                        Integer addProjects, Integer extendDays) {
+        if (addProjects == null && extendDays == null) {
             throw new IllegalArgumentException(
-                    "Nothing to adjust — provide addAiGenerations and/or extendDays.");
+                    "Nothing to adjust — provide addProjects and/or extendDays.");
         }
         Subscription sub = subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(targetUserId, SubscriptionStatus.ACTIVE)
@@ -518,9 +514,9 @@ public class BillingService {
                                 "No subscription to adjust — grant one first.")));
 
         LocalDateTime now = LocalDateTime.now();
-        if (addAiGenerations != null) {
-            long raised = (long) sub.getAiGenerationsLimit() + addAiGenerations;
-            sub.setAiGenerationsLimit(raised > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) raised);
+        if (addProjects != null) {
+            long raised = (long) sub.getPurchasedProjectCredits() + addProjects;
+            sub.setPurchasedProjectCredits((int) Math.max(0, Math.min(Integer.MAX_VALUE, raised)));
         }
         if (extendDays != null) {
             LocalDateTime base = sub.getCurrentPeriodEnd();
@@ -543,8 +539,12 @@ public class BillingService {
                 if (deadAtGateway) {
                     log.info("Subscription {} is cancelled/completed at Razorpay — issuing a fresh "
                             + "local grant instead of reviving it", sub.getId());
-                    return adminGrantSubscription(adminUserId, targetUserId, sub.getPlan(), extendDays,
-                            addAiGenerations != null ? sub.getAiGenerationsLimit() : null);
+                    SubscriptionResponse granted = adminGrantSubscription(
+                            adminUserId, targetUserId, sub.getPlan(), extendDays, null);
+                    if (addProjects != null && addProjects > 0) {
+                        subscriptionRepository.addPurchasedProjectCredits(granted.getId(), addProjects);
+                    }
+                    return granted;
                 }
                 sub.setStatus(SubscriptionStatus.ACTIVE);
                 sub.setCancelAtPeriodEnd(false);
@@ -554,10 +554,10 @@ public class BillingService {
 
         auditService.record(adminUserId, "ADMIN_SUBSCRIPTION_ADJUST", "SUBSCRIPTION", sub.getId(),
                 "user=" + targetUserId
-                        + (addAiGenerations != null ? " addAiGenerations=" + addAiGenerations : "")
+                        + (addProjects != null ? " addProjects=" + addProjects : "")
                         + (extendDays != null ? " extendDays=" + extendDays : ""));
-        log.info("Admin {} adjusted subscription {}: addAi={} extendDays={}",
-                adminUserId, sub.getId(), addAiGenerations, extendDays);
+        log.info("Admin {} adjusted subscription {}: addProjects={} extendDays={}",
+                adminUserId, sub.getId(), addProjects, extendDays);
         return SubscriptionResponse.from(sub);
     }
 
@@ -713,40 +713,42 @@ public class BillingService {
     }
 
     /**
-     * Read-only image-quota gate: throws if {@code userId} has no active subscription or
-     * has spent their effective image allowance (monthly limit + purchased pay-per-image
-     * credits), but does NOT increment. Used as a cheap fail-fast pre-flight before the
-     * actual charge lands once the AI work succeeds (see {@link #incrementAiUsage}) —
-     * e.g. guest wall-detection billed to the shop, so a failed run never costs a credit.
+     * Read-only project-quota gate: throws if {@code userId} has no active subscription
+     * or has spent their effective project allowance (monthly limit + purchased extras +
+     * credits carried in from a replaced plan), but does NOT increment. Used as a cheap
+     * fail-fast pre-flight before the actual charge lands once the AI work succeeds (see
+     * {@link #incrementProjectUsage}) — e.g. guest wall-detection billed to the shop, so
+     * a failed run never costs a credit.
      */
     @Transactional(readOnly = true)
-    public void assertAiQuotaAvailable(String userId) {
-        assertAiQuotaAvailable(userId, false);
+    public void assertProjectQuotaAvailable(String userId) {
+        assertProjectQuotaAvailable(userId, false);
     }
 
     /**
-     * @param holdsReservation when true the caller already owns a HELD image credit for
+     * @param holdsReservation when true the caller already owns a HELD project credit for
      *        this run (an access-code project the shop paid for at code-generation time),
      *        so only the "is there a billable subscription at all" half of the gate
      *        applies — the allowance check would otherwise reject a run that has in fact
      *        already been paid for.
      */
     @Transactional(readOnly = true)
-    public void assertAiQuotaAvailable(String userId, boolean holdsReservation) {
+    public void assertProjectQuotaAvailable(String userId, boolean holdsReservation) {
         Subscription sub = requireBillableSubscription(userId);
         if (holdsReservation) {
             return;
         }
-        if (sub.getAiGenerationsUsed() + sub.getReservedImages() >= effectiveImageAllowance(sub)) {
-            throw new com.gridstore.huevista.common.exception.ImageLimitReachedException(
-                    "Monthly image limit reached (" + sub.getAiGenerationsLimit() + "). "
-                    + "Spend " + pointsPriceImage + " points on an extra image, "
+        if (sub.projectsRemaining() <= 0) {
+            Plan pricedAs = sub.isTrial() ? Plan.FREE : sub.getPlan();
+            throw new com.gridstore.huevista.common.exception.ProjectLimitReachedException(
+                    "Monthly project limit reached (" + sub.getProjectsLimit() + "). "
+                    + "Spend " + pricedAs.getExtraProjectPoints() + " points on an extra project, "
                     + "upgrade your plan, or wait for the next billing cycle.");
         }
     }
 
     /**
-     * Spend one image credit HELD by an access code. Moves the hold into usage on the
+     * Spend one project credit HELD by an access code. Moves the hold into usage on the
      * subscription; returns false when the shop had no hold left (the caller then falls
      * back to a normal charge).
      *
@@ -756,14 +758,14 @@ public class BillingService {
      * path has no ambient transaction, so it still commits on its own there.
      */
     @Transactional
-    public boolean consumeReservedImage(String userId) {
+    public boolean consumeReservedProject(String userId) {
         return findEntitlingSubscription(userId)
-                .map(sub -> subscriptionRepository.consumeReservedImage(sub.getId()) == 1)
+                .map(sub -> subscriptionRepository.consumeReservedProject(sub.getId()) == 1)
                 .orElse(false);
     }
 
     /**
-     * Hand {@code count} held image credits back to a shop — a code was revoked, or
+     * Hand {@code count} held project credits back to a shop — a code was revoked, or
      * expired without anyone redeeming it. Floored at zero.
      *
      * Joins the caller's transaction so the refund is atomic with the revoke that caused
@@ -771,80 +773,30 @@ public class BillingService {
      * back still gave the quota away.
      */
     @Transactional
-    public void releaseReservedImages(String userId, int count) {
+    public void releaseReservedProjects(String userId, int count) {
         if (count <= 0) return;
         findEntitlingSubscription(userId)
-                .ifPresent(sub -> subscriptionRepository.releaseReservedImages(sub.getId(), count));
+                .ifPresent(sub -> subscriptionRepository.releaseReservedProjects(sub.getId(), count));
     }
 
     /**
-     * Read-only auto-mask gate for the AI wall-detection step (the optional mask created
-     * automatically AFTER the compulsory photo clean-up). Throws 402-tagged
-     * {@code AUTO_MASK_UNAVAILABLE} when the plan has no auto-masking at all (Starter is
-     * manual-only) or the monthly auto-mask allowance is spent — manual masking stays
-     * available either way, so the caller should steer the user there or to an upgrade.
-     */
-    @Transactional(readOnly = true)
-    public void assertAutoMaskQuotaAvailable(String userId) {
-        Subscription sub = requireBillableSubscription(userId);
-        long allowance = (long) sub.getAutoMasksLimit() + sub.getPurchasedAutoMaskCredits();
-        if (allowance <= 0) {
-            throw new com.gridstore.huevista.common.exception.AutoMaskUnavailableException(
-                    "AI wall detection isn't included in the " + sub.getPlan().getDisplayName()
-                    + " plan — mark walls yourself with click-to-segment (free, unlimited), "
-                    + "or upgrade to a plan with AI auto-masking.");
-        }
-        if (sub.getAutoMasksUsed() >= allowance) {
-            throw new com.gridstore.huevista.common.exception.AutoMaskUnavailableException(
-                    "Monthly AI wall-detection limit reached (" + sub.getAutoMasksLimit() + "). "
-                    + "Spend " + pointsPriceAutoMask + " points on one more, mark "
-                    + "walls yourself with click-to-segment (free, unlimited), upgrade your plan, "
-                    + "or wait for the next billing cycle.");
-        }
-    }
-
-    /**
-     * Charges one AI auto-mask run to {@code userId} once wall detection has actually
-     * succeeded. Best-effort like {@link #incrementAiUsage} — a missing subscription is a
-     * no-op and the increment is not limit-gated because the run already happened.
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void incrementAutoMaskUsage(String userId) {
-        findEntitlingSubscription(userId)
-                .ifPresent(sub -> subscriptionRepository.incrementAutoMaskUsage(sub.getId()));
-    }
-
-    /**
-     * Credit one pay-per-image overage purchase (verified Rs. 50 + GST payment) to the
-     * user's ACTIVE subscription. Throws when there is no active subscription — the
-     * payment flow requires one up-front, so this only trips on a race with expiry.
+     * Credit {@code count} extra projects, bought at the plan's own rate in points or in
+     * money, to the user's live subscription. Returns empty when they have none — a shop
+     * between plans keeps its purchase as a standalone project credit in the ledger
+     * instead (see {@code ProjectCreditService}), so this is not an error.
      */
     @Transactional
-    public SubscriptionResponse creditPurchasedImage(String userId) {
-        Subscription sub = findEntitlingSubscription(userId)
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "No active subscription to credit — contact support with your payment id."));
-        subscriptionRepository.addPurchasedImageCredits(sub.getId(), 1);
-        Subscription fresh = subscriptionRepository.findById(sub.getId()).orElse(sub);
-        log.info("Image overage credit added: user={} subId={} credits={}",
-                userId, fresh.getId(), fresh.getPurchasedImageCredits());
-        return SubscriptionResponse.from(fresh);
-    }
-
-    /**
-     * Credit one pay-per-use AI auto-mask purchase (verified wallet debit of
-     * Rs. 25 + GST) to the user's ACTIVE subscription.
-     */
-    @Transactional
-    public SubscriptionResponse creditPurchasedAutoMask(String userId) {
-        Subscription sub = findEntitlingSubscription(userId)
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "No active subscription to credit — contact support with your payment id."));
-        subscriptionRepository.addPurchasedAutoMaskCredits(sub.getId(), 1);
-        Subscription fresh = subscriptionRepository.findById(sub.getId()).orElse(sub);
-        log.info("Auto-mask overage credit added: user={} subId={} credits={}",
-                userId, fresh.getId(), fresh.getPurchasedAutoMaskCredits());
-        return SubscriptionResponse.from(fresh);
+    public java.util.Optional<SubscriptionResponse> creditPurchasedProjects(String userId, int count) {
+        if (count <= 0) {
+            throw new IllegalArgumentException("Credit at least one project.");
+        }
+        return findEntitlingSubscription(userId).map(sub -> {
+            subscriptionRepository.addPurchasedProjectCredits(sub.getId(), count);
+            Subscription fresh = subscriptionRepository.findById(sub.getId()).orElse(sub);
+            log.info("Project credits added to subscription: user={} subId={} added={} total={}",
+                    userId, fresh.getId(), count, fresh.getPurchasedProjectCredits());
+            return SubscriptionResponse.from(fresh);
+        });
     }
 
     /**
@@ -867,28 +819,23 @@ public class BillingService {
                         "No active subscription. Subscribe to use AI features."));
     }
 
-    /** Monthly image limit + purchased overage credits, clamped against int overflow. */
-    private static int effectiveImageAllowance(Subscription sub) {
-        long allowance = (long) sub.getAiGenerationsLimit() + sub.getPurchasedImageCredits();
-        return allowance > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) allowance;
-    }
-
     /**
-     * Atomically reserve one AI generation up-front and limit-gated. The check and the
+     * Atomically reserve one project up-front and limit-gated. The check and the
      * increment are a single conditional UPDATE, so two concurrent requests can never both
      * consume the last remaining credit (the old read-then-write let a user with 1 credit
-     * left fire N parallel requests and get N generations). Throws when there is no active
-     * subscription or the monthly limit is already reached. Pair with {@link #refundAiUsage}
-     * so a run that later fails returns its credit and stays free.
+     * left fire N parallel requests and get N of them). Throws when there is no active
+     * subscription or the monthly limit is already reached. Pair with
+     * {@link #refundProjectUsage} so a run that later fails returns its credit and stays
+     * free.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void reserveAiUsage(String userId) {
+    public void reserveProjectUsage(String userId) {
         Subscription sub = requireBillableSubscription(userId);
-        int reserved = subscriptionRepository.incrementAiUsageIfWithinLimit(sub.getId());
+        int reserved = subscriptionRepository.incrementProjectUsageIfWithinLimit(sub.getId());
         if (reserved == 0) {
-            throw new com.gridstore.huevista.common.exception.ImageLimitReachedException(
-                    "Monthly image limit reached (" + sub.getAiGenerationsLimit() + "). " +
-                    "Buy an extra image, upgrade your plan, or wait for the next billing cycle.");
+            throw new com.gridstore.huevista.common.exception.ProjectLimitReachedException(
+                    "Monthly project limit reached (" + sub.getProjectsLimit() + "). " +
+                    "Buy an extra project, upgrade your plan, or wait for the next billing cycle.");
         }
     }
 
@@ -897,22 +844,22 @@ public class BillingService {
      * free. Best-effort and floored at zero. Commits independently of the caller.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void refundAiUsage(String userId) {
+    public void refundProjectUsage(String userId) {
         findEntitlingSubscription(userId)
-                .ifPresent(sub -> subscriptionRepository.decrementAiUsage(sub.getId()));
+                .ifPresent(sub -> subscriptionRepository.decrementProjectUsage(sub.getId()));
     }
 
     /**
-     * Charges one AI generation to {@code userId} once the work has actually succeeded.
+     * Charges one project to {@code userId} once the work has actually succeeded.
      * Best-effort: a missing subscription is a no-op (we never charge an account that can't
-     * be billed), and the increment is not limit-gated because the generation already
+     * be billed), and the increment is not limit-gated because the work already
      * happened. The increment is a single atomic UPDATE — no read-modify-write — so
      * concurrent charges can't lose each other. Commits independently of the caller.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void incrementAiUsage(String userId) {
+    public void incrementProjectUsage(String userId) {
         findEntitlingSubscription(userId)
-                .ifPresent(sub -> subscriptionRepository.incrementAiUsage(sub.getId()));
+                .ifPresent(sub -> subscriptionRepository.incrementProjectUsage(sub.getId()));
     }
 
     /**
@@ -1040,22 +987,25 @@ public class BillingService {
             sub.setBillingCyclesCharged(sub.getBillingCyclesCharged() + 1);
 
             sub.setStatus(SubscriptionStatus.ACTIVE);
-            sub.setAiGenerationsUsed(0);
-            sub.setAutoMasksUsed(0);
+            sub.setProjectsUsed(0);
             sub.setPdfDownloadsUsed(0);
-            // Purchased pay-per-image credits deliberately survive renewal — a paid
-            // credit never evaporates. reservedImages is likewise NOT reset: a code
-            // issued last cycle is still redeemable this one, so the hold behind it must
-            // outlive the counter reset (zeroing it silently gave those projects away).
-            // Older rows (pre-quota-split) were backfilled with base allowances; refreshing
-            // from the plan on every renewal also picks up any plan-limit changes.
+            // Projects carried in from a plan this one replaced expire HERE. They were
+            // someone's unused monthly allowance, moved across so an upgrade mid-cycle
+            // didn't forfeit them — not something bought outright, so they last the cycle
+            // they were carried into and no longer.
+            sub.setCarriedProjectCredits(0);
+            // Purchased project credits deliberately survive renewal — a paid credit never
+            // evaporates. reservedProjects is likewise NOT reset: a code issued last cycle
+            // is still redeemable this one, so the hold behind it must outlive the counter
+            // reset (zeroing it silently gave those projects away).
+            //
+            // The allowances are rebuilt from the plan (times the billed quantity) rather
+            // than only ever raised. Raising alone meant a tier whose quota CHANGED could
+            // never reach the shops already on it: a plan cut from 20 projects to 15 left
+            // every existing row on 20 for as long as it kept renewing.
             sub.setPdfImageLimit(sub.getPlan().getPdfImageLimit());
-            if (sub.getPdfDownloadsLimit() < sub.getPlan().getMonthlyPdfLimit()) {
-                sub.setPdfDownloadsLimit(sub.getPlan().getMonthlyPdfLimit());
-            }
-            if (sub.getAutoMasksLimit() < sub.getPlan().getMonthlyAutoMaskLimit()) {
-                sub.setAutoMasksLimit(sub.getPlan().getMonthlyAutoMaskLimit());
-            }
+            sub.setPdfDownloadsLimit(scaledLimit(sub.getPlan().getMonthlyPdfLimit(), sub.getQuantity()));
+            sub.setProjectsLimit(scaledLimit(sub.getPlan().getMonthlyProjectLimit(), sub.getQuantity()));
             sub.setCurrentPeriodStart(LocalDateTime.now());
             LocalDateTime newEnd = resolvePeriodEnd(currentEnd);
             // Never shrink an already-known period end. subscription.charged carries the real
@@ -1147,9 +1097,10 @@ public class BillingService {
     }
 
     /**
-     * Move everything the shop has already paid for off a subscription being retired and
-     * onto the one replacing it: purchased image and auto-mask credits, and the image
-     * holds standing behind access codes that customers have not redeemed yet.
+     * Move everything the shop still has off a subscription being retired and onto the
+     * one replacing it: extra projects it bought, the holds standing behind access codes
+     * customers have not redeemed yet, and whatever is LEFT of the monthly allowance it
+     * already paid for.
      *
      * Without this an upgrade quietly destroyed all three. Purchased credits are real
      * money and the entity says outright that one "never evaporates" — it survived
@@ -1157,29 +1108,50 @@ public class BillingService {
      * side of the reservation, so when the customer finally redeemed one,
      * SegmentationService found no hold left on the subscription and fell through to a
      * normal charge, billing the shop a second time for a project it had already paid
-     * for when it issued the code.
+     * for when it issued the code. And the unused allowance was simply forfeited — a shop
+     * on Starter with 5 projects left that moved to Professional began the new plan at 45
+     * having paid for 50, which quietly punished upgrading in the middle of a cycle.
+     *
+     * The three land in different buckets because they expire differently: purchased
+     * credits never do, holds belong to the codes that own them, and the leftover
+     * allowance lasts only the cycle it is carried into (see
+     * {@link #handlePaymentCaptured}).
      */
     private void carryOverCredits(Subscription from, String toSubId) {
-        int images = from.getPurchasedImageCredits();
-        int masks = from.getPurchasedAutoMaskCredits();
-        int held = from.getReservedImages();
-        if (images <= 0 && masks <= 0 && held <= 0) {
+        int purchased = from.getPurchasedProjectCredits();
+        int held = from.getReservedProjects();
+        // What is left of the monthly allowance, the carried-in credits included: those
+        // were already someone's leftover once, and a shop that upgrades twice in a cycle
+        // should not lose them the second time. Purchased credits and holds are excluded
+        // because they move across in their own right — counting them here too would hand
+        // the shop each of them twice. Unlimited (Enterprise) carries nothing: there is no
+        // leftover to speak of, and MAX_VALUE would overflow the sum.
+        int leftover = from.getProjectsLimit() == Integer.MAX_VALUE ? 0
+                : (int) Math.max(0, (long) from.getProjectsLimit()
+                                    + from.getCarriedProjectCredits() - from.getProjectsUsed());
+
+        if (purchased <= 0 && held <= 0 && leftover <= 0) {
             return;
         }
-        if (images > 0) {
-            subscriptionRepository.addPurchasedImageCredits(toSubId, images);
-            from.setPurchasedImageCredits(0);
-        }
-        if (masks > 0) {
-            subscriptionRepository.addPurchasedAutoMaskCredits(toSubId, masks);
-            from.setPurchasedAutoMaskCredits(0);
+        if (purchased > 0) {
+            subscriptionRepository.addPurchasedProjectCredits(toSubId, purchased);
+            from.setPurchasedProjectCredits(0);
         }
         if (held > 0) {
-            subscriptionRepository.addReservedImages(toSubId, held);
-            from.setReservedImages(0);
+            subscriptionRepository.addReservedProjects(toSubId, held);
+            from.setReservedProjects(0);
         }
-        log.info("Carried credits onto subscription {}: images={} autoMasks={} held={}",
-                toSubId, images, masks, held);
+        if (leftover > 0) {
+            subscriptionRepository.addCarriedProjectCredits(toSubId, leftover);
+            from.setCarriedProjectCredits(0);
+            // Spend the old row's remaining allowance so the two rows can never both
+            // count it — the retired row is about to be expired, but a late webhook can
+            // still land on it.
+            from.setProjectsUsed(from.getProjectsLimit() == Integer.MAX_VALUE
+                    ? from.getProjectsUsed() : from.getProjectsLimit());
+        }
+        log.info("Carried onto subscription {}: purchased={} held={} leftover={}",
+                toSubId, purchased, held, leftover);
     }
 
     /**

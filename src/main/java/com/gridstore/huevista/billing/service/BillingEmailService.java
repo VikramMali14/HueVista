@@ -35,14 +35,12 @@ public class BillingEmailService {
     @Value("${app.mail.billing-from:payments@huevista.org}")
     private String billingFrom;
 
-    // Read directly rather than through PricingService: this class is on the callback path
-    // of nearly every billing service, and taking a dependency on one of them to phrase an
-    // e-mail is how a cycle gets introduced later.
-    @Value("${app.points.image:40}")
-    private int pointsPriceImage;
-
-    @Value("${app.points.auto-mask:20}")
-    private int pointsPriceAutoMask;
+    // The dearest project rate — what an account with no plan pays. Read off the enum
+    // rather than through PricingService: this class sits on the callback path of nearly
+    // every billing service, and depending on one of them to phrase an e-mail is how a
+    // cycle gets introduced later. Under-promising is the safe direction for a "here's
+    // what your points are worth" line anyway — a reader on a plan gets more.
+    private static final int BASE_PROJECT_POINTS = Plan.FREE.getExtraProjectPoints();
 
     /** First payment confirmed — the plan is live. */
     public void sendSubscriptionActivated(Subscription sub) {
@@ -53,7 +51,7 @@ public class BillingEmailService {
                 Thank you — your payment was received and your HueVista %s plan is now active.
 
                 Plan: %s (%s / month)
-                AI previews: %s per month
+                Projects: %s per month (AI clean-up + AI wall detection on every one)
                 Colour-board PDFs: %s downloads per month, up to %d images per PDF
                 %s
 
@@ -62,7 +60,7 @@ public class BillingEmailService {
 
                 — The HueVista team
                 """.formatted(firstName(sub.getUser()), planName(sub), planName(sub),
-                        priceLine(sub.getPlan()), limitText(sub.getAiGenerationsLimit()),
+                        priceLine(sub.getPlan()), limitText(sub.getProjectsLimit()),
                         limitText(sub.getPdfDownloadsLimit()), sub.getPdfImageLimit(),
                         periodLine(sub)));
     }
@@ -75,7 +73,7 @@ public class BillingEmailService {
 
                 Your HueVista %s plan has renewed and your monthly quotas are refreshed.
 
-                AI previews: %s per month
+                Projects: %s per month
                 Colour-board PDFs: %s downloads per month
                 %s
 
@@ -83,7 +81,7 @@ public class BillingEmailService {
 
                 — The HueVista team
                 """.formatted(firstName(sub.getUser()), planName(sub),
-                        limitText(sub.getAiGenerationsLimit()),
+                        limitText(sub.getProjectsLimit()),
                         limitText(sub.getPdfDownloadsLimit()), periodLine(sub)));
     }
 
@@ -94,7 +92,7 @@ public class BillingEmailService {
                 Hi %s,
 
                 We couldn't collect the renewal payment for your HueVista %s plan, so it is
-                paused. AI previews and PDF downloads stay off until payment succeeds.
+                paused. New projects and PDF downloads stay off until payment succeeds.
 
                 Please update your payment method from the Razorpay link in their email, or
                 reply to this address and we'll help you sort it out.
@@ -229,14 +227,11 @@ public class BillingEmailService {
      * treat points as cash, which they are not.
      */
     private String whatPointsBuy(int points) {
-        int images = points / pointsPriceImage;
-        int masks = points / pointsPriceAutoMask;
-        if (images >= 1) {
-            return "That's enough for %d extra image%s, or %d AI auto-mask%s."
-                    .formatted(images, images == 1 ? "" : "s", masks, masks == 1 ? "" : "s");
-        }
-        if (masks >= 1) {
-            return "That's enough for %d AI auto-mask%s.".formatted(masks, masks == 1 ? "" : "s");
+        int projects = points / BASE_PROJECT_POINTS;
+        if (projects >= 1) {
+            return "That's at least %d extra project%s — more if you're on a plan, since "
+                    .formatted(projects, projects == 1 ? "" : "s")
+                    + "projects cost fewer points the bigger your plan.";
         }
         return "On their own they won't cover a purchase yet, but they top up whatever you "
                 + "buy next.";

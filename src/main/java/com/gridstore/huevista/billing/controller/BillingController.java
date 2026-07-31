@@ -2,10 +2,15 @@ package com.gridstore.huevista.billing.controller;
 
 import com.gridstore.huevista.billing.dto.CreateSubscriptionRequest;
 import com.gridstore.huevista.billing.dto.PdfAllowanceResponse;
+import com.gridstore.huevista.billing.dto.ProjectOrderResponse;
+import com.gridstore.huevista.billing.dto.ProjectPurchaseOptionsResponse;
 import com.gridstore.huevista.billing.dto.SubscriptionResponse;
+import com.gridstore.huevista.billing.dto.VerifyProjectPurchaseRequest;
 import com.gridstore.huevista.billing.dto.VerifySubscriptionRequest;
 import com.gridstore.huevista.billing.service.BillingService;
 import com.gridstore.huevista.billing.service.PdfQuotaService;
+import com.gridstore.huevista.billing.service.ProjectCreditService;
+import com.gridstore.huevista.billing.service.ProjectPurchaseService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -27,7 +32,8 @@ public class BillingController {
 
     private final BillingService billingService;
     private final PdfQuotaService pdfQuotaService;
-    private final com.gridstore.huevista.billing.service.PricingService pricingService;
+    private final ProjectPurchaseService projectPurchaseService;
+    private final ProjectCreditService projectCreditService;
 
     @Operation(summary = "Create subscription",
             description = "Creates a Razorpay subscription and returns a payment URL for checkout.")
@@ -85,8 +91,8 @@ public class BillingController {
     }
 
     @Operation(summary = "Get available plans",
-            description = "Returns all plan options with base pricing, GST, image / auto-mask / PDF "
-                    + "limits and the point price of overage.")
+            description = "Returns all plan options with base pricing, GST, monthly project and PDF "
+                    + "limits, and what one extra project costs on that tier in points and in money.")
     @GetMapping("/plans")
     public ResponseEntity<List<Map<String, Object>>> getPlans() {
         // FREE is granted with a new shop, never sold — listing it here would put a
@@ -108,24 +114,50 @@ public class BillingController {
                 m.put("taxPercent", com.gridstore.huevista.billing.model.Plan.GST_PERCENT);
                 m.put("priceWithTaxInPaise", p.priceWithTaxInPaise());
                 m.put("priceWithTaxInRupees", p.priceWithTaxInRupees());
-                // Kept under the historical "monthlyAiLimit" key for API compatibility;
-                // it counts IMAGES processed (clean-up is compulsory on every image).
-                m.put("monthlyAiLimit", p.getMonthlyImageLimit() == Integer.MAX_VALUE
-                        ? "unlimited" : p.getMonthlyImageLimit());
-                m.put("monthlyImageLimit", p.getMonthlyImageLimit() == Integer.MAX_VALUE
-                        ? "unlimited" : p.getMonthlyImageLimit());
-                m.put("monthlyAutoMaskLimit", p.getMonthlyAutoMaskLimit() == Integer.MAX_VALUE
-                        ? "unlimited" : p.getMonthlyAutoMaskLimit());
+                // Complete projects per cycle. One covers the whole automatic pipeline —
+                // the AI photo clean-up AND the AI wall detection — so there is a single
+                // number here where there used to be an image quota and an auto-mask one.
+                m.put("monthlyProjectLimit", p.getMonthlyProjectLimit() == Integer.MAX_VALUE
+                        ? "unlimited" : p.getMonthlyProjectLimit());
                 m.put("pdfImageLimit", p.getPdfImageLimit());
                 m.put("monthlyPdfLimit", p.getMonthlyPdfLimit() == Integer.MAX_VALUE
                         ? "unlimited" : p.getMonthlyPdfLimit());
-                // Overage is priced in POINTS, not rupees — there is no cash per-item
-                // checkout to quote a rupee figure for.
-                m.put("imageOveragePricePoints", pricingService.pointsPriceImage());
-                m.put("autoMaskOveragePricePoints", pricingService.pointsPriceAutoMask());
+                // What one extra project costs ON THIS TIER, once the monthly allowance is
+                // spent — cheaper the bigger the plan, on both rails. This is a property of
+                // the tier, so it belongs on the card a shop compares tiers with.
+                m.put("extraProjectPoints", p.getExtraProjectPoints());
+                m.put("extraProjectPriceInPaise", p.getExtraProjectPricePaise());
+                m.put("extraProjectPriceWithTaxInPaise", p.extraProjectPriceWithTaxInPaise());
                 return m;
             }).toList();
         return ResponseEntity.ok(plans);
+    }
+
+    @Operation(summary = "Buy one extra project with money (order)",
+            description = "Creates a Razorpay order for one project at the CALLER'S plan rate — "
+                    + "₹99 with no plan, ₹65 / ₹55 / ₹45 on Starter / Professional / Business. The "
+                    + "amount is derived server-side from the plan, so the client never names a "
+                    + "price. Points are the cheaper rail for the same thing (see "
+                    + "/api/billing/points/pay/project-credit).")
+    @PostMapping("/projects/order")
+    public ResponseEntity<ProjectOrderResponse> createProjectOrder(
+            @AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(projectPurchaseService.createOrder(userDetails.getUsername()));
+    }
+
+    @Operation(summary = "Buy one extra project with money (verify)",
+            description = "Verifies the Razorpay Checkout signature and grants the project the "
+                    + "order was for: added to the live plan's allowance if there is one, otherwise "
+                    + "issued as a standalone credit. Replay-protected — one payment buys exactly "
+                    + "one project.")
+    @PostMapping("/projects/verify")
+    public ResponseEntity<ProjectPurchaseOptionsResponse> verifyProjectPurchase(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Valid @RequestBody VerifyProjectPurchaseRequest request) {
+        String userId = userDetails.getUsername();
+        projectPurchaseService.verifyAndCredit(userId, request);
+        return ResponseEntity.ok(projectCreditService.getOptions(userId));
     }
 
     @Operation(summary = "Get my colour-board PDF allowance",

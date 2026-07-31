@@ -5,11 +5,8 @@ import com.gridstore.huevista.billing.dto.PointsOrderResponse;
 import com.gridstore.huevista.billing.dto.ProjectPurchaseOptionsResponse;
 import com.gridstore.huevista.billing.dto.ProjectReopenResponse;
 import com.gridstore.huevista.billing.dto.RewardPointsSummaryResponse;
-import com.gridstore.huevista.billing.dto.SubscriptionResponse;
 import com.gridstore.huevista.billing.dto.VerifyPointsPurchaseRequest;
 import com.gridstore.huevista.billing.model.RewardPointsLot;
-import com.gridstore.huevista.billing.model.RewardPointsTransaction;
-import com.gridstore.huevista.billing.service.BillingService;
 import com.gridstore.huevista.billing.service.PricingService;
 import com.gridstore.huevista.billing.service.ProjectCreditService;
 import com.gridstore.huevista.billing.service.PointsPurchaseService;
@@ -26,13 +23,14 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 /**
- * Points: balance, the price list, what expires when, buying more, and the four things
- * points buy.
+ * Points: balance, the price list, what expires when, buying more, and the two things
+ * points buy — an extra project, and another window on one that has lapsed.
  *
- * This is the whole non-subscription billing surface. There is no wallet controller
- * beside it and no per-item checkout — a shop buys points here and spends points here.
- * The RETAILER-only rule is enforced in {@link RewardPointsService}, not in this class,
- * so it holds for every caller rather than for this controller alone.
+ * A shop buys points here and spends points here. The same extra project can also be
+ * bought with money on {@code /api/billing/projects} at a slightly dearer rate; that rail
+ * lives with the other Razorpay flows rather than here, because nothing about it involves
+ * points. The RETAILER-only rule is enforced in {@link RewardPointsService}, not in this
+ * class, so it holds for every caller rather than for this controller alone.
  */
 @RestController
 @RequestMapping("/api/billing/points")
@@ -42,7 +40,6 @@ public class RewardPointsController {
 
     private final RewardPointsService pointsService;
     private final PricingService pricingService;
-    private final BillingService billingService;
     private final ProjectCreditService projectCreditService;
     private final PointsPurchaseService pointsPurchaseService;
 
@@ -65,9 +62,7 @@ public class RewardPointsController {
                 .maxPurchase(pricingService.pointsMaxPurchase())
                 .validityDays(pricingService.pointsValidityDays())
                 .expiryWarningDays(pricingService.pointsExpiryWarningDays())
-                .imagePrice(pricingService.pointsPriceImage())
-                .autoMaskPrice(pricingService.pointsPriceAutoMask())
-                .projectPrice(pricingService.pointsPriceProject())
+                .projectPrice(pricingService.pointsPriceProject(userId))
                 .reopenPrice(pricingService.pointsPriceReopen())
                 .nextExpiringPoints(next != null ? next.getPointsRemaining() : null)
                 .nextExpiryAt(next != null ? next.getExpiresAt() : null)
@@ -111,32 +106,10 @@ public class RewardPointsController {
         return summary(userDetails);
     }
 
-    @Operation(summary = "Spend points on one extra image",
-            description = "Debits the point price of an extra image and credits one to the active "
-                    + "subscription. 402 when the balance is short.")
-    @PostMapping("/pay/image-credit")
-    public ResponseEntity<SubscriptionResponse> payImageCredit(
-            @AuthenticationPrincipal UserDetails userDetails) {
-        String userId = userDetails.getUsername();
-        pointsService.spend(userId, pricingService.pointsPriceImage(),
-                RewardPointsTransaction.Type.SPENT_ON_IMAGE, null);
-        return ResponseEntity.ok(billingService.creditPurchasedImage(userId));
-    }
-
-    @Operation(summary = "Spend points on one extra AI auto-mask",
-            description = "Debits the point price of an auto-mask run and credits one to the "
-                    + "active subscription. 402 when the balance is short.")
-    @PostMapping("/pay/auto-mask-credit")
-    public ResponseEntity<SubscriptionResponse> payAutoMaskCredit(
-            @AuthenticationPrincipal UserDetails userDetails) {
-        String userId = userDetails.getUsername();
-        pointsService.spend(userId, pricingService.pointsPriceAutoMask(),
-                RewardPointsTransaction.Type.SPENT_ON_AUTO_MASK, null);
-        return ResponseEntity.ok(billingService.creditPurchasedAutoMask(userId));
-    }
-
-    @Operation(summary = "Spend points on one project",
-            description = "Debits the point price of a project and issues one project credit. "
+    @Operation(summary = "Spend points on one extra project",
+            description = "Debits the point price of a project AT THE CALLER'S PLAN RATE (80 with "
+                    + "no plan, down to 40 on Business) and grants one project: added to the live "
+                    + "plan's allowance if there is one, otherwise issued as a standalone credit. "
                     + "Needs no active plan — this is what points are worth to a shop between "
                     + "subscriptions. 402 when the balance is short.")
     @PostMapping("/pay/project-credit")

@@ -6,7 +6,6 @@ import com.gridstore.huevista.ai.dto.ColorCombo;
 import com.gridstore.huevista.ai.dto.MatchedShade;
 import com.gridstore.huevista.ai.dto.RecommendationResponse;
 import com.gridstore.huevista.ai.util.DeltaEMatcher;
-import com.gridstore.huevista.billing.service.BillingService;
 import com.gridstore.huevista.common.ai.ClaudeService;
 import com.gridstore.huevista.common.exception.ExternalServiceException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
@@ -33,7 +32,6 @@ public class ColorRecommendationService {
     private final ProjectRepository projectRepository;
     private final ShadeRepository shadeRepository;
     private final StorageService storageService;
-    private final BillingService billingService;
     private final ClaudeService claude;
     private final ObjectMapper objectMapper;
 
@@ -66,54 +64,51 @@ public class ColorRecommendationService {
                 ? project.getImage().getImageType().name()
                 : "UNKNOWN";
 
-        // Reserve one preview up-front, atomically and limit-gated: throws 402 when there's
-        // no active subscription or the monthly limit is hit. Doing the check and the charge
-        // in one step stops concurrent requests from both spending the last credit. The
-        // reservation is refunded below if the AI call fails or returns nothing, so a failed
-        // run never costs a preview — matching the segmentation path.
-        billingService.reserveAiUsage(userId);
-
-        List<ColorCombo> combos = new ArrayList<>();
-        try {
-            String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
-            List<Map<String, Object>> rawCombos = callClaude(imageUrl);
-            List<Shade> catalog = shadeRepository.findAll();
-
-            for (Map<String, Object> raw : rawCombos) {
-                String primaryHex = normalize((String) raw.get("primaryHex"));
-                String accentHex = normalize((String) raw.get("accentHex"));
-                String trimHex = normalize((String) raw.get("trimHex"));
-
-                Shade primaryShade = DeltaEMatcher.findNearest(primaryHex, catalog);
-                Shade accentShade = DeltaEMatcher.findNearest(accentHex, catalog);
-                Shade trimShade = DeltaEMatcher.findNearest(trimHex, catalog);
-
-                combos.add(ColorCombo.builder()
-                        .name((String) raw.get("name"))
-                        .rationale((String) raw.get("rationale"))
-                        .primaryHex(primaryHex)
-                        .primaryShade(primaryShade != null
-                                ? MatchedShade.from(primaryShade, DeltaEMatcher.computeDeltaE(primaryHex, primaryShade.getHexCode()))
-                                : null)
-                        .accentHex(accentHex)
-                        .accentShade(accentShade != null
-                                ? MatchedShade.from(accentShade, DeltaEMatcher.computeDeltaE(accentHex, accentShade.getHexCode()))
-                                : null)
-                        .trimHex(trimHex)
-                        .trimShade(trimShade != null
-                                ? MatchedShade.from(trimShade, DeltaEMatcher.computeDeltaE(trimHex, trimShade.getHexCode()))
-                                : null)
-                        .build());
-            }
-        } catch (RuntimeException e) {
-            // Generation failed — hand the reserved credit back so the run stays free.
-            billingService.refundAiUsage(userId);
-            throw e;
+        // Nothing is charged here. Palette suggestions used to spend an "AI generation" —
+        // the same credit an image cost — which under the single-project model would mean
+        // charging a whole project (₹45-99 of allowance) to suggest three colour combos
+        // for a project that has already been paid for. A project covers everything done
+        // inside it, and this is inside it.
+        //
+        // The gate is the project's own access window rather than a subscription: a shop
+        // between plans that bought this project outright holds no subscription at all, and
+        // asking for one here would lock them out of something they have paid for. A window
+        // that never opened (null on both fields) is a plan-covered project and passes.
+        if (project.hasAccessWindow() && !project.isAccessWindowOpen()) {
+            throw new com.gridstore.huevista.common.exception.QuotaExceededException(
+                    "This project's access window has closed. Reopen it to keep working on it.");
         }
 
-        // An empty result is treated as a failed generation and stays free.
-        if (combos.isEmpty()) {
-            billingService.refundAiUsage(userId);
+        List<ColorCombo> combos = new ArrayList<>();
+        String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
+        List<Map<String, Object>> rawCombos = callClaude(imageUrl);
+        List<Shade> catalog = shadeRepository.findAll();
+
+        for (Map<String, Object> raw : rawCombos) {
+            String primaryHex = normalize((String) raw.get("primaryHex"));
+            String accentHex = normalize((String) raw.get("accentHex"));
+            String trimHex = normalize((String) raw.get("trimHex"));
+
+            Shade primaryShade = DeltaEMatcher.findNearest(primaryHex, catalog);
+            Shade accentShade = DeltaEMatcher.findNearest(accentHex, catalog);
+            Shade trimShade = DeltaEMatcher.findNearest(trimHex, catalog);
+
+            combos.add(ColorCombo.builder()
+                    .name((String) raw.get("name"))
+                    .rationale((String) raw.get("rationale"))
+                    .primaryHex(primaryHex)
+                    .primaryShade(primaryShade != null
+                            ? MatchedShade.from(primaryShade, DeltaEMatcher.computeDeltaE(primaryHex, primaryShade.getHexCode()))
+                            : null)
+                    .accentHex(accentHex)
+                    .accentShade(accentShade != null
+                            ? MatchedShade.from(accentShade, DeltaEMatcher.computeDeltaE(accentHex, accentShade.getHexCode()))
+                            : null)
+                    .trimHex(trimHex)
+                    .trimShade(trimShade != null
+                            ? MatchedShade.from(trimShade, DeltaEMatcher.computeDeltaE(trimHex, trimShade.getHexCode()))
+                            : null)
+                    .build());
         }
 
         log.info("Color recommendations generated: project={} combos={}", projectId, combos.size());

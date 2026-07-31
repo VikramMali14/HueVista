@@ -569,15 +569,18 @@ public class SegmentationService {
     }
 
     /**
-     * Charges a completed run to whoever pays for it: one IMAGE credit (the clean-up step
-     * is compulsory) plus, when AI wall detection ran, one AUTO-MASK credit.
+     * Charges a completed run to whoever pays for it: exactly one PROJECT credit, whether
+     * or not the AI wall detection ran. The clean-up and the auto-mask are one unit now,
+     * so a run costs the same either way — a shop that marks walls by hand after the
+     * clean-up is not charged less, and one that uses the AI is not charged twice.
+     * {@code autoMaskRan} is carried only so the log says which pipeline actually ran.
      *
-     * When the project is covered by an access code the shop ALREADY paid for the image
-     * at code-generation time, so the image charge SPENDS that held credit instead of
-     * taking a second one — previously a code with quota N charged the shop N images up
-     * front and then another one per project actually rendered, i.e. double billing.
-     * A code with no hold left (a legacy code, or more projects than were reserved)
-     * falls back to a normal charge so work is never silently free.
+     * When the project is covered by an access code the shop ALREADY paid for it at
+     * code-generation time, so the charge SPENDS that held credit instead of taking a
+     * second one — previously a code with quota N charged the shop N up front and then
+     * another one per project actually rendered, i.e. double billing. A code with no hold
+     * left (a legacy code, or more projects than were reserved) falls back to a normal
+     * charge so work is never silently free.
      *
      * Best-effort throughout: a missing code/org/owner just means no charge (the customer
      * still got their result), so billing problems never fail an otherwise-successful run.
@@ -600,16 +603,13 @@ public class SegmentationService {
             if (billing.coveredByCode()) {
                 // Take the hold off the code first; only if that succeeds may we move the
                 // matching hold on the subscription, so the two counters stay in step.
-                spentHeldCredit = accessCodeRepository.consumeReservedImage(billing.accessCodeId()) == 1
-                        && billingService.consumeReservedImage(billing.billedUserId());
+                spentHeldCredit = accessCodeRepository.consumeReservedProject(billing.accessCodeId()) == 1
+                        && billingService.consumeReservedProject(billing.billedUserId());
             }
             if (!spentHeldCredit) {
-                billingService.incrementAiUsage(billing.billedUserId());
+                billingService.incrementProjectUsage(billing.billedUserId());
             }
-            if (autoMaskRan) {
-                billingService.incrementAutoMaskUsage(billing.billedUserId());
-            }
-            log.info("Run billed to {}: image={} autoMask={} (code={})",
+            log.info("Run billed to {}: project={} autoMask={} (code={})",
                     billing.billedUserId(), spentHeldCredit ? "held-credit" : "charged",
                     autoMaskRan, billing.accessCodeId());
         } catch (Exception e) {

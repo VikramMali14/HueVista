@@ -66,7 +66,7 @@ class BillingServiceLifecycleTest {
         return Subscription.builder()
                 .id(SUB_ID).user(owner).plan(Plan.PROFESSIONAL)
                 .status(SubscriptionStatus.ACTIVE).trial(true)
-                .aiGenerationsLimit(60).aiGenerationsUsed(0)
+                .projectsLimit(60).projectsUsed(0)
                 .build();
     }
 
@@ -81,7 +81,7 @@ class BillingServiceLifecycleTest {
                 .id(SUB_ID).user(owner).plan(plan)
                 .status(SubscriptionStatus.ACTIVE).trial(false)
                 .razorpaySubscriptionId("rzp_sub_1")
-                .aiGenerationsUsed(used).aiGenerationsLimit(limit)
+                .projectsUsed(used).projectsLimit(limit)
                 .build();
     }
 
@@ -109,11 +109,11 @@ class BillingServiceLifecycleTest {
         assertThat(out.getStatus()).isEqualTo(SubscriptionStatus.CREATED);
         ArgumentCaptor<Subscription> saved = ArgumentCaptor.forClass(Subscription.class);
         verify(subs).save(saved.capture());
-        // Image and auto-mask quotas both scale with the billed quantity (x3).
-        assertThat(saved.getValue().getAiGenerationsLimit())
-                .isEqualTo(Plan.STARTER.getMonthlyImageLimit() * 3);
-        assertThat(saved.getValue().getAutoMasksLimit())
-                .isEqualTo(Plan.STARTER.getMonthlyAutoMaskLimit() * 3);
+        // The project quota scales with the billed quantity (x3), and the quantity is
+        // stored so renewal can rebuild the allowance without losing the multiplier.
+        assertThat(saved.getValue().getProjectsLimit())
+                .isEqualTo(Plan.STARTER.getMonthlyProjectLimit() * 3);
+        assertThat(saved.getValue().getQuantity()).isEqualTo(3);
     }
 
     @Test
@@ -183,8 +183,8 @@ class BillingServiceLifecycleTest {
         ArgumentCaptor<Subscription> saved = ArgumentCaptor.forClass(Subscription.class);
         verify(subs).save(saved.capture());
         assertThat(saved.getValue().getPlan()).isEqualTo(Plan.PROFESSIONAL);
-        assertThat(saved.getValue().getAutoMasksLimit())
-                .isEqualTo(Plan.PROFESSIONAL.getMonthlyAutoMaskLimit());
+        assertThat(saved.getValue().getProjectsLimit())
+                .isEqualTo(Plan.PROFESSIONAL.getMonthlyProjectLimit());
     }
 
     private BillingService serviceWithProfessionalPlan() {
@@ -200,7 +200,7 @@ class BillingServiceLifecycleTest {
         Subscription pending = Subscription.builder()
                 .id("attempt-1").plan(Plan.STARTER).status(SubscriptionStatus.CREATED)
                 .razorpaySubscriptionId("rzp_sub_pending")
-                .aiGenerationsLimit(Plan.STARTER.getMonthlyImageLimit())
+                .projectsLimit(Plan.STARTER.getMonthlyProjectLimit())
                 .build();
         when(subs.findByUserIdAndStatus(USER, SubscriptionStatus.CREATED))
                 .thenReturn(java.util.List.of(pending));
@@ -228,7 +228,7 @@ class BillingServiceLifecycleTest {
         Subscription abandoned = Subscription.builder()
                 .id("attempt-old").plan(Plan.BUSINESS).status(SubscriptionStatus.CREATED)
                 .razorpaySubscriptionId("rzp_sub_business")
-                .aiGenerationsLimit(Plan.BUSINESS.getMonthlyImageLimit())
+                .projectsLimit(Plan.BUSINESS.getMonthlyProjectLimit())
                 .build();
         when(subs.findByUserIdAndStatus(USER, SubscriptionStatus.CREATED))
                 .thenReturn(java.util.List.of(abandoned));
@@ -329,53 +329,53 @@ class BillingServiceLifecycleTest {
     // ---- #2 atomic AI-usage accounting ----
 
     @Test
-    void reserveAiUsageThrowsWhenNoActiveSubscription() {
+    void reserveProjectUsageThrowsWhenNoActiveSubscription() {
         when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
                 .thenReturn(java.util.List.of());
-        assertThatThrownBy(() -> service().reserveAiUsage(USER))
+        assertThatThrownBy(() -> service().reserveProjectUsage(USER))
                 .isInstanceOf(QuotaExceededException.class);
     }
 
     @Test
-    void reserveAiUsageThrowsWhenAtLimit() {
+    void reserveProjectUsageThrowsWhenAtLimit() {
         when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
                 .thenReturn(java.util.List.of(activePaid(20, 20)));
         // Conditional UPDATE affected no rows -> limit already reached.
-        when(subs.incrementAiUsageIfWithinLimit(SUB_ID)).thenReturn(0);
+        when(subs.incrementProjectUsageIfWithinLimit(SUB_ID)).thenReturn(0);
 
-        assertThatThrownBy(() -> service().reserveAiUsage(USER))
+        assertThatThrownBy(() -> service().reserveProjectUsage(USER))
                 .isInstanceOf(QuotaExceededException.class)
                 .hasMessageContaining("limit reached");
     }
 
     @Test
-    void reserveAiUsageSucceedsWhenCreditAvailable() {
+    void reserveProjectUsageSucceedsWhenCreditAvailable() {
         when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
                 .thenReturn(java.util.List.of(activePaid(5, 20)));
-        when(subs.incrementAiUsageIfWithinLimit(SUB_ID)).thenReturn(1);
+        when(subs.incrementProjectUsageIfWithinLimit(SUB_ID)).thenReturn(1);
 
-        service().reserveAiUsage(USER);
+        service().reserveProjectUsage(USER);
 
-        verify(subs).incrementAiUsageIfWithinLimit(SUB_ID);
+        verify(subs).incrementProjectUsageIfWithinLimit(SUB_ID);
     }
 
     @Test
-    void incrementAiUsageChargesViaAtomicUpdate() {
+    void incrementProjectUsageChargesViaAtomicUpdate() {
         when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
                 .thenReturn(java.util.List.of(activePaid(5, 20)));
 
-        service().incrementAiUsage(USER);
+        service().incrementProjectUsage(USER);
 
-        verify(subs).incrementAiUsage(eq(SUB_ID));
+        verify(subs).incrementProjectUsage(eq(SUB_ID));
     }
 
     @Test
-    void refundAiUsageReturnsCreditViaAtomicUpdate() {
+    void refundProjectUsageReturnsCreditViaAtomicUpdate() {
         when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
                 .thenReturn(java.util.List.of(activePaid(6, 20)));
 
-        service().refundAiUsage(USER);
+        service().refundProjectUsage(USER);
 
-        verify(subs).decrementAiUsage(eq(SUB_ID));
+        verify(subs).decrementProjectUsage(eq(SUB_ID));
     }
 }

@@ -4,7 +4,7 @@ import com.gridstore.huevista.billing.model.Plan;
 import com.gridstore.huevista.billing.model.Subscription;
 import com.gridstore.huevista.billing.model.SubscriptionStatus;
 import com.gridstore.huevista.billing.repository.SubscriptionRepository;
-import com.gridstore.huevista.common.exception.ImageLimitReachedException;
+import com.gridstore.huevista.common.exception.ProjectLimitReachedException;
 import com.gridstore.huevista.common.exception.QuotaExceededException;
 import com.gridstore.huevista.billing.service.BillingService;
 import com.razorpay.RazorpayClient;
@@ -21,16 +21,16 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * The image-credit HOLD accounting introduced so a shop is billed exactly once per
+ * The project-credit HOLD accounting introduced so a shop is billed exactly once per
  * assigned project.
  *
- * A retailer access code with quota N holds N image credits when it is generated; each
+ * A retailer access code with quota N holds N project credits when it is generated; each
  * credit is SPENT when that project is actually rendered, and RETURNED if the code is
- * revoked or expires unredeemed. Before this, generation charged N images outright and
- * the render charged again — the shop paid twice — while an unredeemed code kept the
- * quota forever.
+ * revoked or expires unredeemed. Before this, generation charged N outright and the
+ * render charged again — the shop paid twice — while an unredeemed code kept the quota
+ * forever.
  */
-class ImageHoldAccountingTest {
+class ProjectHoldAccountingTest {
 
     private static final String USER = "user-1";
     private static final String SUB_ID = "sub-1";
@@ -49,9 +49,9 @@ class ImageHoldAccountingTest {
                 .id(SUB_ID)
                 .plan(Plan.PROFESSIONAL)
                 .status(SubscriptionStatus.ACTIVE)
-                .aiGenerationsUsed(used)
-                .reservedImages(held)
-                .aiGenerationsLimit(limit)
+                .projectsUsed(used)
+                .reservedProjects(held)
+                .projectsLimit(limit)
                 .currentPeriodEnd(LocalDateTime.now().plusDays(20))
                 .build();
     }
@@ -64,11 +64,11 @@ class ImageHoldAccountingTest {
 
     @Test
     void heldCreditsCountAgainstTheAllowance() {
-        // 10-image plan, 2 spent and 8 held by outstanding codes: nothing left to give out.
+        // 10-project plan, 2 spent and 8 held by outstanding codes: nothing left to give out.
         entitling(sub(2, 8, 10));
 
-        assertThatThrownBy(() -> service.assertAiQuotaAvailable(USER))
-                .isInstanceOf(ImageLimitReachedException.class);
+        assertThatThrownBy(() -> service.assertProjectQuotaAvailable(USER))
+                .isInstanceOf(ProjectLimitReachedException.class);
     }
 
     @Test
@@ -78,15 +78,28 @@ class ImageHoldAccountingTest {
         // that has in fact been bought.
         entitling(sub(2, 8, 10));
 
-        service.assertAiQuotaAvailable(USER, true);
+        service.assertProjectQuotaAvailable(USER, true);
+    }
+
+    @Test
+    void purchasedAndCarriedCreditsExtendTheAllowance() {
+        // Exactly at the plan ceiling, but holding one bought extra and one carried over
+        // from the plan this one replaced — both are spendable, so two runs are still left.
+        Subscription s = sub(10, 0, 10);
+        s.setPurchasedProjectCredits(1);
+        s.setCarriedProjectCredits(1);
+        entitling(s);
+
+        service.assertProjectQuotaAvailable(USER);
+        assertThat(s.projectsRemaining()).isEqualTo(2);
     }
 
     @Test
     void spendingAHoldMovesItIntoUsageRatherThanChargingAgain() {
         entitling(sub(0, 3, 10));
-        when(subs.consumeReservedImage(SUB_ID)).thenReturn(1);
+        when(subs.consumeReservedProject(SUB_ID)).thenReturn(1);
 
-        assertThat(service.consumeReservedImage(USER)).isTrue();
+        assertThat(service.consumeReservedProject(USER)).isTrue();
     }
 
     @Test
@@ -94,23 +107,23 @@ class ImageHoldAccountingTest {
         // Legacy codes (issued before holds existed) hold nothing; the caller must then
         // charge normally rather than silently doing the work for free.
         entitling(sub(0, 0, 10));
-        when(subs.consumeReservedImage(SUB_ID)).thenReturn(0);
+        when(subs.consumeReservedProject(SUB_ID)).thenReturn(0);
 
-        assertThat(service.consumeReservedImage(USER)).isFalse();
+        assertThat(service.consumeReservedProject(USER)).isFalse();
     }
 
     @Test
     void revokingACodeReturnsItsHeldCreditsToTheShop() {
         entitling(sub(0, 3, 10));
 
-        service.releaseReservedImages(USER, 3);
+        service.releaseReservedProjects(USER, 3);
 
-        org.mockito.Mockito.verify(subs).releaseReservedImages(SUB_ID, 3);
+        org.mockito.Mockito.verify(subs).releaseReservedProjects(SUB_ID, 3);
     }
 
     @Test
     void releasingNothingIsANoOp() {
-        service.releaseReservedImages(USER, 0);
+        service.releaseReservedProjects(USER, 0);
         org.mockito.Mockito.verifyNoInteractions(subs);
     }
 
@@ -124,14 +137,14 @@ class ImageHoldAccountingTest {
         windingDown.setCancelAtPeriodEnd(true);
         entitling(windingDown);
 
-        service.assertAiQuotaAvailable(USER);
+        service.assertProjectQuotaAvailable(USER);
     }
 
     @Test
     void noEntitlingSubscriptionStillRefuses() {
         entitling(null);
 
-        assertThatThrownBy(() -> service.assertAiQuotaAvailable(USER))
+        assertThatThrownBy(() -> service.assertProjectQuotaAvailable(USER))
                 .isInstanceOf(QuotaExceededException.class);
     }
 }

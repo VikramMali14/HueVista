@@ -37,9 +37,8 @@ public class RewardPointsSummaryResponse {
     /** How many days before expiry the warning e-mail goes out. */
     private int expiryWarningDays;
 
-    /** What points buy, in points. */
-    private int imagePrice;
-    private int autoMaskPrice;
+    /** What points buy, in points. The project price is the CALLER'S rate — it falls
+     *  with their plan (80 with none, down to 40 on Business), so it is not a constant. */
     private int projectPrice;
     private int reopenPrice;
 

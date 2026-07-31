@@ -175,7 +175,7 @@ public class ProjectService {
         if (user.getRole() == com.gridstore.huevista.auth.model.UserRole.RETAILER) {
             return new com.gridstore.huevista.common.exception.SubscriptionRequiredException(
                     "Your subscription has ended. Subscribe to keep creating projects, or spend "
-                    + pricingService.pointsPriceProject() + " points on a single project — it "
+                    + pricingService.pointsPriceProject(user.getId()) + " points on a single project — it "
                     + "stays open for " + pricingService.projectValidDays() + " days.");
         }
         // A customer holds no points and cannot buy any — points are a shop currency, and
@@ -423,14 +423,13 @@ public class ProjectService {
         if (!target.selfFunded()) {
             boolean holdsReservation = target.coveredByCode()
                     && accessCodeRepository.findById(target.accessCodeId())
-                            .map(c -> c.getReservedImages() > 0).orElse(false);
-            billingService.assertAiQuotaAvailable(target.billedUserId(), holdsReservation);
-            // AUTO mask mode additionally needs an auto-mask credit — rejected up-front with
-            // a 402 AUTO_MASK_UNAVAILABLE the frontend turns into "mark walls yourself (free)
-            // or upgrade", instead of burning the clean-up on a run that can't finish.
-            if (!"MANUAL".equalsIgnoreCase(project.getMaskMode())) {
-                billingService.assertAutoMaskQuotaAvailable(target.billedUserId());
-            }
+                            .map(c -> c.getReservedProjects() > 0).orElse(false);
+            // One gate, whichever mask mode was picked: a project covers the clean-up AND
+            // the AI wall detection, so an account that can start one can always finish
+            // it. The auto-mask used to be metered separately and refused on its own,
+            // which meant a run could pass this gate, pay for the clean-up, and only then
+            // be told the wall detection it was started for wasn't available.
+            billingService.assertProjectQuotaAvailable(target.billedUserId(), holdsReservation);
         }
 
         // Allow re-triggering if the previous run never finished (e.g. it
@@ -969,11 +968,10 @@ public class ProjectService {
         // (SegmentationService bills on success), so a failed run is free.
         if (!code.isSelfFunded()) {
             String shopOwnerUserId = resolveShopOwnerUserId(code);
-            billingService.assertAiQuotaAvailable(shopOwnerUserId, code.getReservedImages() > 0);
-            // Guest runs are always fully automatic (clean-up + AI wall detection), so the
-            // shop's plan must also cover an auto-mask credit; when it doesn't the guest
-            // falls back to marking walls by hand exactly like on an image-quota 402.
-            billingService.assertAutoMaskQuotaAvailable(shopOwnerUserId);
+            // Guest runs are always fully automatic (clean-up + AI wall detection), and one
+            // project credit covers both, so this single gate is the whole check. When it
+            // refuses, the guest falls back to marking walls by hand.
+            billingService.assertProjectQuotaAvailable(shopOwnerUserId, code.getReservedProjects() > 0);
         }
 
         // Re-trigger guard mirrors requestSegmentation: a run stuck >5 min is treated as stale.

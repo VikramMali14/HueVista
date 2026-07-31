@@ -93,7 +93,7 @@ class AccessCodeTopUpIntegrationTest {
 
         // Every added project holds one more image credit, exactly as generation does —
         // otherwise the shop hands out work it never reserved quota for.
-        assertThat(codeRepository.findById(codeId).orElseThrow().getReservedImages()).isEqualTo(5);
+        assertThat(codeRepository.findById(codeId).orElseThrow().getReservedProjects()).isEqualTo(5);
     }
 
     /**
@@ -244,7 +244,7 @@ class AccessCodeTopUpIntegrationTest {
      * This was the larger half of a permanent quota leak. A shop issuing a code for five
      * projects reserves five image credits; a customer who creates two leaves three held.
      * Revoking is refused once a code is redeemed, the sweep only looked at UNREDEEMED
-     * codes, and {@code reservedImages} deliberately survives a renewal — so those three
+     * codes, and {@code reservedProjects} deliberately survives a renewal — so those three
      * credits were subtracted from the shop's effective allowance in every future billing
      * period, forever. A shop issuing codes at any steady rate eventually had none left.
      *
@@ -379,7 +379,7 @@ class AccessCodeTopUpIntegrationTest {
 
     private int heldImagesFor(String userId) {
         return subscriptionRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
-                .findFirst().map(Subscription::getReservedImages).orElse(0);
+                .findFirst().map(Subscription::getReservedProjects).orElse(0);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
@@ -424,7 +424,7 @@ class AccessCodeTopUpIntegrationTest {
                 .user(owner)
                 .plan(Plan.PROFESSIONAL)
                 .status(status)
-                .aiGenerationsLimit(60)
+                .projectsLimit(60)
                 .currentPeriodStart(LocalDateTime.now())
                 .currentPeriodEnd(LocalDateTime.now().plusDays(30))
                 .build());
