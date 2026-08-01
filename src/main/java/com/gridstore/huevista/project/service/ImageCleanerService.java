@@ -27,6 +27,12 @@ import java.util.Optional;
  * reference palette so the canvas opens already coloured. The downstream
  * mask-based recolor uses the same hexes, so the two agree.
  *
+ * Photos taken mid-construction get one extra step: an unplastered brick or
+ * blockwork shell — indoors also a bare concrete ceiling and raw cement floor —
+ * is completed into smooth paintable surfaces. Without it the surfaces stay
+ * bare in the canvas, and {@link ReplicateMaskSegmenter} then reads the raw
+ * brick as decorative cladding and blacks the whole room out.
+ *
  * The cleaned image is then used:
  *   1. As the canvas for the painted preview shown to the user
  *   2. As the input image for {@link ReplicateMaskSegmenter} so
@@ -128,9 +134,7 @@ public class ImageCleanerService {
             return Optional.empty();
         }
         try {
-            // Interiors and exterior facades have completely different clutter and surfaces,
-            // so pick a scene-specific instruction. UNKNOWN falls back to the exterior prompt.
-            String prompt = (imageType == ImageType.INDOOR) ? CLEAN_PROMPT_INTERIOR : CLEAN_PROMPT_EXTERIOR;
+            String prompt = cleanPromptFor(imageType);
             // Hybrid step: ground the instruction in THIS image's actual clutter/anchors.
             // The hint text is derived from the user-supplied image (vision analysis), so it
             // is UNTRUSTED: a crafted photo could try to smuggle instructions through it.
@@ -219,6 +223,15 @@ public class ImageCleanerService {
     private static final String DOOR_LEAF = "#5c4033";     // dark brown wood
     private static final String RAILING = "#43464a";       // charcoal grey metal
 
+    /**
+     * Interiors and exterior facades have completely different clutter and
+     * surfaces, so each gets its own instruction. UNKNOWN falls back to the
+     * exterior prompt.
+     */
+    static String cleanPromptFor(ImageType imageType) {
+        return imageType == ImageType.INDOOR ? CLEAN_PROMPT_INTERIOR : CLEAN_PROMPT_EXTERIOR;
+    }
+
     private static final String CLEAN_PROMPT_EXTERIOR =
             "You are RETOUCHING this photograph of a house. This is a photo retouch, "
           + "NOT a redesign and NOT an architectural visualisation. The output must be "
@@ -293,6 +306,10 @@ public class ImageCleanerService {
           + "plastered surface, then repaint the whole wall — finished and newly "
           + "completed parts alike — the single wall colour " + EXT_WALL + " so the "
           + "entire wall reads as one uniform freshly painted surface.\n"
+          + "- RESURFACE, DO NOT JUST RECOLOUR: the finished wall must be flat and "
+          + "smooth, with every brick course, mortar joint and block edge gone. "
+          + "Painting the brickwork white is NOT finishing it — whitewashed brick, "
+          + "with the pattern still legible under the paint, is a FAILED edit.\n"
           + "- Follow the wall's existing plane, perspective and outline exactly: "
           + "only fill in the missing render. Do NOT move or invent corners, windows, "
           + "doors, edges, or change the wall's shape or size.\n"
@@ -321,8 +338,10 @@ public class ImageCleanerService {
           + "house must remain pixel-faithful to the original in shape, proportion "
           + "and material; only the colour of painted surfaces changes, and "
           + "non-painted materials are never altered. If you are unsure whether "
-          + "something counts as clutter, LEAVE IT AS IT IS — an under-edited photo is "
-          + "always better than an invented one.\n";
+          + "something counts as CLUTTER, leave it as it is — an under-edited photo is "
+          + "always better than an invented one. That caution covers clutter and decor "
+          + "ONLY: it is never a reason to leave a half-plastered or raw masonry wall "
+          + "unfinished. Unfinished construction surfaces are always completed.\n";
 
     /**
      * Interior-room variant. Clutter here is furniture mess, cables, boxes and stains;
@@ -336,7 +355,18 @@ public class ImageCleanerService {
           + "retouch, NOT a redesign, NOT a restyling, and NOT virtual staging. The "
           + "output must be the SAME photograph of the SAME room, with only the edits "
           + "listed below applied. Every pixel that is not explicitly covered by a "
-          + "REMOVE or REPAINT rule must come back unchanged.\n\n"
+          + "REMOVE, REPAINT or FINISH rule must come back unchanged.\n\n"
+          + "YOU HAVE TWO JOBS, AND BOTH ARE REQUIRED:\n"
+          + "(1) CLEAN — remove clutter and damage, add nothing (see REMOVE and DO NOT "
+          + "ADD ANYTHING).\n"
+          + "(2) FINISH — if this room is still a construction shell (raw brick or "
+          + "blockwork walls, a bare concrete ceiling, a raw cement floor), complete "
+          + "those surfaces into properly plastered, puttied, painted ones (see FINISH). "
+          + "This job is NOT optional and NOT a matter of taste: an unfinished room that "
+          + "comes back still unfinished is a failed edit, exactly as much as an invented "
+          + "sofa would be. Job (1) is about restraint; job (2) is about completing work "
+          + "the builder has not done yet. Do not let the restraint of job (1) talk you "
+          + "out of job (2).\n\n"
           + "DO NOT ADD ANYTHING (most important rule — this is where these edits usually "
           + "go wrong):\n"
           + "- Do NOT add any object that is not already visible in the photograph. No new "
@@ -379,8 +409,56 @@ public class ImageCleanerService {
           + "- Preserve each surface's existing light and shade — keep the highlights, "
           + "shadows and soft gradients so the new colour still looks three-dimensional. "
           + "Recolour the surfaces, do not flatten them.\n"
-          + "- DO NOT change non-painted surfaces: wood/tile/marble/stone floors, "
-          + "countertops, cabinetry finish, glass and metal stay EXACTLY as they appear.\n\n"
+          + "- DO NOT change non-painted surfaces that are a FINISHED choice: "
+          + "wood/tile/marble/stone floors, countertops, cabinetry finish, glass "
+          + "and metal stay EXACTLY as they appear. (A raw unplastered wall or "
+          + "ceiling mid-construction is NOT such a finish — complete it per "
+          + "FINISH below.)\n\n"
+          + "FINISH (mandatory whenever the room is an unfinished construction "
+          + "shell — this is a REQUIRED edit):\n"
+          + "- Many of these photos are of a room still being built: raw "
+          + "unplastered brick or blockwork walls, bare cement render, patchy "
+          + "half-applied plaster, a bare concrete ceiling soffit carrying "
+          + "shuttering/formwork plank lines and board joints, exposed conduit "
+          + "chases, and a raw cement floor. Every such surface must come back "
+          + "FINISHED — as the same room after the plasterer, the putty coat and "
+          + "the painter have done their work.\n"
+          + "- WALLS — RESURFACE, DO NOT JUST RECOLOUR. Plaster the wall, apply "
+          + "the putty coat, then paint it " + INT_WALL + " (a clean white). The "
+          + "finished wall must be DEAD FLAT and SMOOTH: every brick course, "
+          + "every mortar joint, every block edge, every trowel patch and every "
+          + "chase is GONE. The brickwork grid must not be visible anywhere in "
+          + "the output — not as relief, not as a seam, not even faintly showing "
+          + "through the paint.\n"
+          + "  PAINTING THE BRICKWORK WHITE IS NOT FINISHING IT. Whitewashed "
+          + "brick — white paint with the brick pattern still legible under it — "
+          + "is the single most common way this edit fails, and it is a FAILED "
+          + "edit. Replace the masonry surface with smooth plaster; do not merely "
+          + "change its colour.\n"
+          + "- CEILING — FINISH IT TOO; DO NOT SKIP IT. A bare grey concrete slab "
+          + "soffit — shuttering plank lines, timber board impressions, form-tie "
+          + "marks, honeycombing, rough grey patches — must come back as a proper "
+          + "finished ceiling: ONE flat, smooth, evenly plastered and puttied "
+          + "plane, painted the same clean white " + INT_WALL + ". The plank/"
+          + "board pattern and the grey concrete must be completely gone. Keep "
+          + "the ceiling's exact height, slope, edges and any structural beams "
+          + "exactly where they are, and finish the beams the same way. A room "
+          + "whose walls are painted but whose ceiling comes back raw grey "
+          + "concrete is a FAILED edit.\n"
+          + "- FLOOR — smooth a raw cement floor into a clean, even finished "
+          + "floor. Keep it a plain neutral grey floor — do NOT lay tiles, wood, "
+          + "carpet or any pattern on it.\n"
+          + "- Finishing changes SURFACE ONLY, never geometry. Follow each "
+          + "surface's existing plane, perspective and outline exactly: only fill "
+          + "in the missing render. Do NOT move or invent corners, windows, "
+          + "doors, edges, or change a wall's shape or size, and do NOT furnish "
+          + "or decorate the finished room — a bare room that is now plastered "
+          + "and painted is still a bare room.\n"
+          + "- This applies ONLY to surfaces meant to be plastered and painted "
+          + "but left unfinished. Do NOT plaster over an intentional exposed-brick "
+          + "feature wall, natural stone cladding or decorative tile in an "
+          + "otherwise finished room — those are design choices and stay exactly "
+          + "as they are.\n\n"
           + "KEEP UNCHANGED (shape & position only — painted ones are recoloured above):\n"
           + "- Windows, doors, frames, built-in cabinetry and wardrobes, kitchen units, "
           + "fireplaces, shelving, switchboards keep their exact shapes and positions; "
@@ -392,15 +470,34 @@ public class ImageCleanerService {
           + "- Ceiling fans, light fittings, switches, sockets, AC units and curtains that "
           + "are ALREADY in the photo stay exactly as they are.\n"
           + "- The number of windows, doors and openings — never add or remove one.\n"
-          + "- Flooring material, lighting, shadows, time of day.\n"
+          + "- An already-finished flooring material, lighting, shadows, time of day "
+          + "(an unfinished raw cement floor is completed per FINISH instead).\n"
           + "- Camera angle, perspective, framing, image dimensions, room proportions.\n\n"
+          + "SELF-CHECK — verify each of these before returning the image, and fix "
+          + "any that is false:\n"
+          + "- No brick course, block edge or mortar joint is visible on ANY wall: "
+          + "every wall is dead flat and smooth, not whitewashed brick.\n"
+          + "- The ceiling is one smooth white finished plane — no grey concrete, "
+          + "no shuttering plank lines, no board joints — and it is at its "
+          + "original height and slope.\n"
+          + "- Nothing exists in the output that was not in the input photo: no "
+          + "added furniture, decor, curtains, light fittings, mouldings, "
+          + "panelling, patterns or textures.\n"
+          + "- Every window, door and opening is the same one, in the same place, "
+          + "at the same size, and there are exactly as many as before.\n"
+          + "- Camera position, framing, aspect and image dimensions are "
+          + "unchanged.\n\n"
           + "OUTPUT: the SAME photograph of the SAME room — same contents, same furniture, "
-          + "same fittings, same framing — with only the listed clutter removed and the "
-          + "painted surfaces recoloured (walls " + INT_WALL + ", trim " + INT_BORDER
+          + "same fittings, same framing — with only the listed clutter removed, any "
+          + "unfinished walls, ceiling and floor completed into smooth finished "
+          + "surfaces, and the painted surfaces recoloured (walls " + INT_WALL
+          + ", trim " + INT_BORDER
           + ", doors " + DOOR_LEAF + ", railings " + RAILING + "). If you are unsure "
-          + "whether something counts as clutter, LEAVE IT AS IT IS. Adding, staging or "
-          + "restyling anything is a failure; an under-edited photo is always better than "
-          + "an invented one.\n";
+          + "whether something counts as CLUTTER, leave it as it is: adding, staging or "
+          + "restyling is a failure, and an under-edited photo beats an invented one. "
+          + "That caution covers clutter, furniture and decor ONLY — it is never a "
+          + "reason to leave a raw brick wall or a bare concrete ceiling unfinished. "
+          + "Unfinished construction surfaces are always completed.\n";
 
     private String startPrediction(Map<String, Object> input) {
         try {

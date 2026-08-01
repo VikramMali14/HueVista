@@ -167,8 +167,15 @@ public class ReplicateMaskSegmenter {
      * are read before the per-category detail. Tested wording — be careful
      * editing.
      *
-     * <p>Two invariants matter most:
+     * <p>Three invariants matter most:
      * <ul>
+     *   <li><b>Bare masonry is a wall, not cladding.</b> The cladding rule
+     *   ("brick/stone/tile faces are BLACK") used to be unconditional, so a
+     *   room or facade photographed mid-construction — every wall raw brick or
+     *   blockwork — came back an almost entirely black mask, no main wall, and
+     *   the run failed. Decorative cladding in a finished space is still
+     *   BLACK; an unplastered construction shell is classified by role
+     *   (red/green) because it is about to be plastered and painted.</li>
      *   <li><b>Nothing may be removed.</b> The model is editing the photo, so
      *   without an explicit rule it happily "cleans up" railings and grilles
      *   by flooding wall colour straight over them — the railing then lands
@@ -226,12 +233,19 @@ public class ReplicateMaskSegmenter {
           + "shadow is still ONE wall and gets ONE colour; trim painted the same "
           + "colour as the wall is still trim.\n\n"
           + "1. MAIN WALLS → RED (#FF0000)\n\n"
-          + "All flat painted plaster/concrete/drywall wall planes — the surfaces a "
+          + "All flat plaster/concrete/drywall/masonry wall planes — the surfaces a "
           + "painter would roll in the main body colour (the largest painted area). "
-          + "This includes painted columns and porch pillars, solid masonry balcony "
-          + "parapet fronts, and painted compound/boundary walls and gate pillars. "
-          + "Every painted wall is RED unless it qualifies as the single accent "
-          + "wall described next.\n\n";
+          + "Outdoors this includes painted columns and porch pillars, solid masonry "
+          + "balcony parapet fronts, and painted compound/boundary walls and gate "
+          + "pillars. Indoors it is EVERY room wall plane, filled corner to corner "
+          + "and floor to ceiling — including the strips of wall above and beside a "
+          + "door or window, and the returns/reveals inside a deep opening. Every "
+          + "wall is RED unless it qualifies as the single accent wall described "
+          + "next.\n\n"
+          + "A wall counts here whether it is freshly painted, dirty, stained, "
+          + "shadowed, or still a bare unplastered shell (see the construction-"
+          + "masonry rule below). Its ROLE is what decides its colour, never its "
+          + "current finish.\n\n";
 
     /** Exterior/unknown: ZERO OR ONE accent, decided by architectural merit.
      *  An accent colour is only correct when it starts and stops on real
@@ -302,7 +316,12 @@ public class ReplicateMaskSegmenter {
           + "framing windows and doors;\n"
           + "- window frames, door FRAMES (the surround only — not the door "
           + "leaf), skirting/baseboards, cornices/crown moulding, fascia under "
-          + "the roof, and caps on compound-wall pillars.\n\n"
+          + "the roof, and caps on compound-wall pillars.\n"
+          + "- Indoors the trim is usually just these: the skirting board along "
+          + "the foot of the walls, the frames/architraves around doors and "
+          + "windows, the window sill, and a cornice where wall meets ceiling. "
+          + "If a room has none of them fitted yet, output NO blue at all rather "
+          + "than inventing a band.\n\n"
           + "These projecting slabs, copings and bands are SEPARATE trim pieces "
           + "even though they are attached to the wall and may be the same colour "
           + "in the photo. A real painter picks them out in a contrast colour, so "
@@ -320,22 +339,54 @@ public class ReplicateMaskSegmenter {
           + "NOT trim, and the joint where two red walls meet is NOT trim. Large "
           + "flat faces are never blue — the sloping side face of a staircase "
           + "parapet is wall (RED); only its narrow top coping band is blue.\n\n"
+          + "AN OPENING IS NOT TRIM. Never flood a whole doorway or window "
+          + "opening with blue. Only the narrow frame band AROUND the opening is "
+          + "blue; what the opening contains is BLACK — the glass and any grille "
+          + "or bars in a window, the door leaf, and the dark void of an empty "
+          + "doorway or an unframed opening in an unfinished wall. An opening "
+          + "with no frame fitted yet gets no blue at all: its void is black and "
+          + "the masonry around it is wall.\n\n"
           + "4. EVERYTHING ELSE → BLACK (#000000)\n\n"
           + "Sky, clouds, ground, soil, road, sidewalk, vegetation, trees, "
           + "vehicles, people, furniture, floors, ceilings; the door LEAVES/"
           + "panels themselves, gates, and rolling/roller shutters, garage and "
           + "shop-front shutters and their guide rails; all metalwork; glass "
-          + "panes inside windows; stone cladding, exposed brick, ceramic tile, "
-          + "marble, wood; AC units, drainpipes, wires, light fixtures, "
+          + "panes inside windows; DECORATIVE stone cladding, exposed-brick "
+          + "feature walls, ceramic tile, marble and wood finishes in an "
+          + "otherwise finished space (a raw unplastered brick or blockwork "
+          + "wall is NOT this — see the construction-masonry rule below); "
+          + "AC units, drainpipes, wires, light fixtures, "
           + "electrical boxes, meters, water tanks, signage, mailboxes, decor. "
           + "Doors and railings are kept as fixed features in the real scheme "
           + "(dark-brown doors, charcoal-grey metalwork), so here they belong "
           + "in BLACK — never in red, green or blue.\n\n"
           + "CLADDING IS A MATERIAL, NOT PAINT — this overrides the wall rules: "
-          + "any wall FACE finished in textured stone, brick, tile, wood or "
-          + "similar cladding is BLACK, even when it is a large flat wall-shaped "
-          + "surface. A painter does not roll over cladding, so it is NEVER the "
-          + "main wall (red) and NEVER the accent (green): leave it BLACK.\n\n"
+          + "any wall FACE deliberately FINISHED in decorative stone, brick, tile, "
+          + "wood or similar cladding is BLACK, even when it is a large flat "
+          + "wall-shaped surface. A painter does not roll over a finished cladding "
+          + "panel, so it is NEVER the main wall (red) and NEVER the accent "
+          + "(green): leave it BLACK.\n\n"
+          + "BARE CONSTRUCTION MASONRY IS A WALL, NOT CLADDING — this exception "
+          + "overrides the cladding rule and is the single most common way this "
+          + "task is got wrong. A wall of raw unplastered brick or blockwork, bare "
+          + "cement render, or patchy half-applied plaster is a wall waiting to be "
+          + "plastered and painted, so it is classified by its ROLE exactly like "
+          + "any other wall: RED for body walls, GREEN for the one accent wall. "
+          + "Tell the two apart by the room as a whole, not by the texture alone:\n"
+          + "- DECORATIVE cladding (BLACK) sits in an otherwise FINISHED space — "
+          + "neat and deliberate, laid in an even pattern with clean edges, "
+          + "confined to one face while the walls around it are smooth and "
+          + "painted, and surrounded by finished flooring, skirting and trim.\n"
+          + "- CONSTRUCTION masonry (RED/GREEN) is a shell still being built — "
+          + "rough mortar joints, dust and debris, chipped or ragged edges, "
+          + "conduit chases and junction boxes let into the wall, unfinished "
+          + "openings with no frames or shutters, a bare concrete ceiling and a "
+          + "raw cement floor, and usually EVERY wall in the frame in the same "
+          + "state.\n"
+          + "When a whole room or facade is bare brick or blockwork like that, it "
+          + "is under construction, not clad: colour its walls RED and GREEN. "
+          + "Blacking out an entire unfinished room is a FAILED mask — the user "
+          + "photographs these rooms precisely to see them painted.\n\n"
           + "RAILINGS ARE PROTECTED — this rule overrides everything else: every "
           + "balcony railing, terrace/parapet railing, staircase railing, "
           + "handrail, balustrade, window grille and safety grille in the photo "
@@ -357,6 +408,11 @@ public class ReplicateMaskSegmenter {
           + "appears only around and between it — flooding must never wipe an "
           + "object out.\n\n"
           + "FINAL SELF-CHECK — verify before returning the image\n\n"
+          + "- The image is NOT mostly black. Every wall plane in the photo "
+          + "carries a colour — red, or green for the single accent — including "
+          + "walls that are bare unplastered brick, blockwork or cement. If large "
+          + "wall areas came back black, you misread a construction shell as "
+          + "decorative cladding: go back and colour those walls.\n"
           + "- Compare against the photo: every railing, grille and gate is "
           + "still there, black, in its exact place — none missing, none "
           + "absorbed into a red, green or blue area.\n"
