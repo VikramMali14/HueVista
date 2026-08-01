@@ -50,12 +50,19 @@ public class ProjectController {
                 .body(projectService.createProject(userId(auth), request));
     }
 
-    @Operation(summary = "List my projects", description = "Returns projects for the authenticated user, most recently updated first. Paged; defaults return the newest 200.")
+    @Operation(summary = "List my projects", description = """
+            Returns projects for the authenticated user, most recently updated first.
+
+            For a RETAILER the list merges two sources — the shop's own rooms and the
+            rooms its customers created under codes the shop issued — into one
+            date-ordered sequence, each row tagged `OWN` or `CUSTOMER`. `size` caps the
+            WHOLE response, not each source.
+            """)
     @ApiResponse(responseCode = "200", description = "Project list")
     @GetMapping
     public ResponseEntity<List<ProjectSummaryResponse>> getUserProjects(
             @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0") int page,
-            @Parameter(description = "Page size, max 200") @RequestParam(defaultValue = "200") int size,
+            @Parameter(description = "Page size, max 500") @RequestParam(defaultValue = "400") int size,
             Authentication auth
     ) {
         return ResponseEntity.ok(projectService.getUserProjects(userId(auth), page, size));

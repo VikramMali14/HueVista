@@ -74,10 +74,18 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
     // the caller's transaction (the project creation it pays for), so the context can be
     // holding unflushed writes. Clearing without flushing first DISCARDS them — which
     // silently lost the row the charge was being taken for.
+    //
+    // The allowance is summed in BIGINT, not the columns' own integer type. An unlimited
+    // tier stores Integer.MAX_VALUE as its limit, so adding a single bought or carried
+    // credit to it overflows int4 — and Postgres RAISES on that ("integer out of range")
+    // rather than wrapping, which aborted the transaction and took the whole project
+    // creation with it. The Java side has always widened here
+    // (Subscription#effectiveProjectAllowance); the SQL has to as well.
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("UPDATE Subscription s SET s.projectsUsed = s.projectsUsed + 1 " +
            "WHERE s.id = :id AND s.projectsUsed + s.reservedProjects " +
-           "      < s.projectsLimit + s.purchasedProjectCredits + s.carriedProjectCredits")
+           "      < cast(s.projectsLimit as Long) + s.purchasedProjectCredits "
+         + "        + s.carriedProjectCredits")
     int incrementProjectUsageIfWithinLimit(@Param("id") String id);
 
     /**
@@ -91,11 +99,16 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
      * {@link #consumeReservedProject} when the project is actually segmented, or back
      * into the pool via {@link #releaseReservedProjects} when the code is revoked or
      * expires unredeemed.
+     *
+     * Summed in BIGINT for the same reason as
+     * {@link #incrementProjectUsageIfWithinLimit} — an unlimited tier's limit plus any
+     * credit at all overflows int4.
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("UPDATE Subscription s SET s.reservedProjects = s.reservedProjects + :count " +
            "WHERE s.id = :id AND s.projectsUsed + s.reservedProjects + :count " +
-           "      <= s.projectsLimit + s.purchasedProjectCredits + s.carriedProjectCredits")
+           "      <= cast(s.projectsLimit as Long) + s.purchasedProjectCredits "
+         + "         + s.carriedProjectCredits")
     int reserveProjectsIfWithinLimit(@Param("id") String id, @Param("count") int count);
 
     /**
