@@ -49,6 +49,7 @@ import com.gridstore.huevista.hierarchy.dto.NetworkReportResponse;
 
 import java.time.LocalDateTime;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -301,14 +302,30 @@ public class HierarchyService {
         throw new SecurityException("Only admins and distributors can manage a shop's brands.");
     }
 
-    /** Every brand with a flag for whether this shop currently has it assigned. */
+    /**
+     * The companies this shop can be given, with a flag for the ones it already has.
+     *
+     * Only companies with shades in the catalogue are offered — see
+     * {@link #grantableBrands()} — plus any this shop already holds. That exception
+     * matters: the editor saves the whole selection at once, so a granted company
+     * dropped from the list would be silently revoked on the distributor's next save.
+     */
     @Transactional(readOnly = true)
     public List<RetailerBrandOption> retailerBrandOptions(String callerUserId, String retailerOrgId) {
         resolveManageableShop(callerUserId, retailerOrgId);
         Set<Long> assigned = brandAssignmentRepository.findByRetailerId(retailerOrgId).stream()
                 .map(a -> a.getBrand().getId()) // id comes off the lazy proxy without a query
                 .collect(Collectors.toSet());
-        return brandRepository.findAllByOrderByNameAsc().stream()
+
+        Map<Long, Brand> options = new LinkedHashMap<>();
+        for (Brand b : brandRepository.findWithShadesOrderByNameAsc()) {
+            options.put(b.getId(), b);
+        }
+        if (!assigned.isEmpty()) {
+            brandRepository.findAllById(assigned).forEach(b -> options.putIfAbsent(b.getId(), b));
+        }
+        return options.values().stream()
+                .sorted(Comparator.comparing(Brand::getName, String.CASE_INSENSITIVE_ORDER))
                 .map(b -> RetailerBrandOption.of(b, assigned.contains(b.getId())))
                 .toList();
     }
@@ -370,10 +387,16 @@ public class HierarchyService {
      * The shop-creation form needs the same two checklists the editors show, but
      * {@link #retailerBrandOptions} and {@link #retailerFeatureOptions} both resolve a
      * shop first. These are the pre-creation twins: same DTOs, nothing assigned yet.
+     *
+     * <p>Only companies that actually have shades are offered. The brands table also
+     * carries companies seeded for their product lines alone, and listing those let a
+     * distributor limit a new shop to a company with nothing in it — a shop that opens
+     * to an empty catalogue and no way to tell why. A company appears here the moment
+     * its shades are uploaded, so the list stays current without a code change.
      */
     @Transactional(readOnly = true)
     public List<RetailerBrandOption> grantableBrands() {
-        return brandRepository.findAllByOrderByNameAsc().stream()
+        return brandRepository.findWithShadesOrderByNameAsc().stream()
                 .map(b -> RetailerBrandOption.of(b, false))
                 .toList();
     }

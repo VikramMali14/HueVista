@@ -433,6 +433,62 @@ class DistributorAccessControlIntegrationTest {
         assertThat(body.path("brands").get(0).path("id").asLong()).isPositive();
     }
 
+    @Test
+    void the_creation_form_only_offers_companies_that_have_shades() throws Exception {
+        seedCatalogue();
+        // A company with product lines but no shades — the shape PaintLineSeeder leaves
+        // behind for brands whose catalogue was never uploaded. Offering it would let a
+        // distributor limit a new shop to a company that has nothing to show.
+        brandRepository.save(Brand.builder().name("Emptyco Paints").slug("emptyco-paints").build());
+        String distToken = seedDistributor();
+
+        MvcResult res = mockMvc.perform(get("/api/hierarchy/grantable")
+                        .header("Authorization", "Bearer " + distToken))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        com.fasterxml.jackson.databind.JsonNode brands =
+                objectMapper.readTree(res.getResponse().getContentAsString()).path("brands");
+        java.util.List<String> slugs = new java.util.ArrayList<>();
+        brands.forEach(node -> slugs.add(node.path("slug").asText()));
+        assertThat(slugs).contains("testco-paints", "rivalco-paints").doesNotContain("emptyco-paints");
+    }
+
+    @Test
+    void a_shops_editor_keeps_showing_a_company_it_already_holds() throws Exception {
+        Brand[] brands = seedCatalogue();
+        String distToken = seedDistributor();
+        mockMvc.perform(post("/api/hierarchy/retailers")
+                        .header("Authorization", "Bearer " + distToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Priya","email":"shop@example.com","password":"password123",
+                                 "shopName":"Mehta Paint House",
+                                 "brandIds":[%d],"brandsUnrestricted":false}"""
+                                .formatted(brands[0].getId())))
+                .andExpect(status().isCreated());
+        String orgId = shopOrgId("shop@example.com");
+
+        // The company's last shade goes; the grant does not. The editor saves the whole
+        // selection at once, so dropping a held company from the list would revoke it
+        // behind the distributor's back on their next save.
+        shadeRepository.deleteAll(shadeRepository.findByBrandSlugOrderByPopularityAsc(brands[0].getSlug()));
+
+        MvcResult res = mockMvc.perform(get("/api/hierarchy/retailers/" + orgId + "/brands")
+                        .header("Authorization", "Bearer " + distToken))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        assertThat(slugsIn(res, "slug")).contains("testco-paints");
+        com.fasterxml.jackson.databind.JsonNode body =
+                objectMapper.readTree(res.getResponse().getContentAsString());
+        body.forEach(node -> {
+            if (node.path("slug").asText().equals("testco-paints")) {
+                assertThat(node.path("assigned").asBoolean()).isTrue();
+            }
+        });
+    }
+
     // ── Scoping ───────────────────────────────────────────────────────────
 
     @Test
