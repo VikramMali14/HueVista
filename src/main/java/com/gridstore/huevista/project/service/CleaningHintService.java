@@ -42,15 +42,20 @@ public class CleaningHintService {
         }
         boolean exterior = scene != ImageType.INDOOR;
         String sceneWord = exterior ? "building exterior" : "interior room";
-        // Exteriors can be photographed mid-construction (half-plastered walls), so we also
-        // ask for a FINISH list there; interiors only get REMOVE/PRESERVE.
-        String finishList = exterior
-                ? "FINISH: any wall that is clearly unfinished or only partly plastered — bare "
-                + "cement, raw brick/blockwork, or patchy half-applied plaster — that should be "
-                + "completed into one smooth paintable plastered wall. Omit this list if every "
-                + "wall is already finished.\n"
-                : "";
-        String headings = exterior ? "'REMOVE:', 'PRESERVE:' and 'FINISH:'" : "'REMOVE:' and 'PRESERVE:'";
+        // Both scenes can be photographed mid-construction — an unplastered brick shell is
+        // as common indoors as a half-rendered facade — so both get a FINISH list. Indoors
+        // the ceiling and floor can be raw too, not just the walls.
+        String finishList =
+                "FINISH: any " + (exterior ? "wall" : "wall, ceiling or floor")
+              + " that is clearly unfinished or only partly plastered — bare cement, raw "
+              + "brick/blockwork, patchy half-applied plaster"
+              + (exterior ? "" : ", a bare concrete ceiling soffit, a raw cement floor")
+              + " — that should be completed into a smooth paintable surface. Omit this "
+              + "list if every surface is already finished. Do not list an intentional "
+              + "exposed-brick, stone or tile feature in an otherwise finished "
+              + (exterior ? "facade" : "room") + " — that is a design choice, not "
+              + "unfinished work.\n";
+        String headings = "'REMOVE:', 'PRESERVE:' and 'FINISH:'";
         String instruction =
                 "You are preparing edit instructions to CLEAN this " + sceneWord + " photo for a paint "
               + "visualizer (remove clutter, keep the structure identical). Look at THIS image and output "
