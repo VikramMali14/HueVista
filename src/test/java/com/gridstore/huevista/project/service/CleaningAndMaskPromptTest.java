@@ -21,7 +21,7 @@ class CleaningAndMaskPromptTest {
     void interiorCleanPromptCompletesUnfinishedSurfaces() {
         String prompt = ImageCleanerService.cleanPromptFor(ImageType.INDOOR);
 
-        assertThat(prompt).contains("FINISH (complete unfinished / half-plastered rooms)");
+        assertThat(prompt).contains("FINISH (mandatory whenever the room is an unfinished construction");
         assertThat(prompt).contains("unplastered brick or blockwork");
         assertThat(prompt).contains("bare concrete ceiling soffit");
         assertThat(prompt).contains("raw cement floor");
@@ -29,6 +29,48 @@ class CleaningAndMaskPromptTest {
         assertThat(prompt).contains("do NOT furnish or decorate the finished room");
         // A genuine exposed-brick feature in a finished room is still a design choice.
         assertThat(prompt).contains("intentional exposed-brick");
+    }
+
+    /**
+     * The first fix got the walls white but left them whitewashed BRICK — the model
+     * recoloured the masonry instead of resurfacing it. Painting over the texture has
+     * to be named as the failure it is, or it stays the cheapest way to satisfy
+     * "paint the wall white".
+     */
+    @Test
+    void cleanPromptsDemandResurfacingNotJustRecolouring() {
+        for (ImageType scene : new ImageType[]{ImageType.INDOOR, ImageType.OUTDOOR}) {
+            String prompt = ImageCleanerService.cleanPromptFor(scene);
+
+            assertThat(prompt).contains("RESURFACE, DO NOT JUST RECOLOUR");
+            assertThat(prompt).containsIgnoringCase("IS NOT FINISHING IT");
+            assertThat(prompt).contains("mortar joint");
+            assertThat(prompt).containsIgnoringCase("whitewashed brick");
+        }
+    }
+
+    /**
+     * The ceiling came back raw grey concrete because FINISH was one buried line while
+     * the prompt opened with "DO NOT ADD ANYTHING (most important rule)" and closed with
+     * "an under-edited photo is always better". Finishing now has equal billing at the
+     * top, and the closing caution is scoped to clutter so it stops suppressing it.
+     */
+    @Test
+    void interiorCleanPromptGivesFinishingEqualBillingWithRestraint() {
+        String prompt = ImageCleanerService.cleanPromptFor(ImageType.INDOOR);
+
+        assertThat(prompt).contains("YOU HAVE TWO JOBS, AND BOTH ARE REQUIRED");
+        assertThat(prompt).contains("Do not let the restraint of job (1) talk you out of job (2)");
+        assertThat(prompt).contains("CEILING — FINISH IT TOO; DO NOT SKIP IT");
+        assertThat(prompt).contains("shuttering plank lines");
+        assertThat(prompt).contains("SELF-CHECK");
+        // The "leave it alone" tie-breaker must be scoped to clutter in BOTH prompts,
+        // so it can never be read as licence to skip an unfinished surface.
+        for (ImageType scene : new ImageType[]{ImageType.INDOOR, ImageType.OUTDOOR}) {
+            assertThat(ImageCleanerService.cleanPromptFor(scene))
+                    .contains("Unfinished construction surfaces are always completed.")
+                    .doesNotContain("something counts as clutter, LEAVE IT AS IT IS");
+        }
     }
 
     @Test

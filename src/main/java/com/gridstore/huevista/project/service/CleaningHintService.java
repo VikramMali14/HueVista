@@ -49,7 +49,9 @@ public class CleaningHintService {
                 "FINISH: any " + (exterior ? "wall" : "wall, ceiling or floor")
               + " that is clearly unfinished or only partly plastered — bare cement, raw "
               + "brick/blockwork, patchy half-applied plaster"
-              + (exterior ? "" : ", a bare concrete ceiling soffit, a raw cement floor")
+              + (exterior ? ""
+                  : ", a bare concrete ceiling soffit (call out shuttering/formwork "
+                  + "plank lines and board joints if you can see them), a raw cement floor")
               + " — that should be completed into a smooth paintable surface. Omit this "
               + "list if every surface is already finished. Do not list an intentional "
               + "exposed-brick, stone or tile feature in an otherwise finished "
