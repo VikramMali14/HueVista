@@ -278,6 +278,34 @@ class ProjectFlowIntegrationTest {
         assertThat(shareToken(projectId, "{\"validDays\": 7}")).isNotEqualTo(token);
     }
 
+    /**
+     * The link that gets forwarded must open the ROOM, not the JSON behind it.
+     *
+     * It used to be minted against the API origin — `…:8080/api/share/{token}` — so
+     * anyone who opened it without the app got the raw response body: a wall of JSON
+     * where a painted room should have been. The website serves `/share/{token}` for
+     * exactly this, and that is what a share link has to point at.
+     */
+    @Test
+    void a_share_link_points_at_the_website_page_not_the_api() throws Exception {
+        String projectId = createProject();
+
+        MvcResult res = mockMvc.perform(post("/api/projects/" + projectId + "/share")
+                        .header("Authorization", "Bearer " + userToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"validDays\": 7}"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        var body = objectMapper.readTree(res.getResponse().getContentAsString());
+        String shareUrl = body.get("shareUrl").asText();
+
+        // http://localhost:3000 is the CORS allowed origin in application-test.properties,
+        // which is where the website lives when app.web-base-url is not set explicitly.
+        assertThat(shareUrl).isEqualTo("http://localhost:3000/share/" + body.get("shareToken").asText());
+        assertThat(shareUrl).doesNotContain("/api/");
+    }
+
     private String shareToken(String projectId, String body) throws Exception {
         MvcResult res = mockMvc.perform(post("/api/projects/" + projectId + "/share")
                         .header("Authorization", "Bearer " + userToken)
