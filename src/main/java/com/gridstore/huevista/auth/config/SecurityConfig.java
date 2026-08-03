@@ -142,6 +142,13 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/api/store/*/order", "/api/store/*/verify").permitAll()
                 // Public "request a shop account" lead form — per-IP rate-limited
                 .requestMatchers(HttpMethod.POST, "/api/leads/shop").permitAll()
+                // Monthly-letter sign-up and unsubscribe. Both are public by necessity:
+                // most readers have no account, and an unsubscribe that needed a login
+                // would not be the "cancel quietly, any time" the form promises. The
+                // unsubscribe token is the authorisation and only removes its own
+                // address; both are per-IP rate-limited against sign-up bombing.
+                .requestMatchers(HttpMethod.POST,
+                        "/api/newsletter/subscribe", "/api/newsletter/unsubscribe").permitAll()
                 // Guest-scoped endpoints (image upload + project create/recolour) — guests only
                 .requestMatchers("/api/guest/**").hasRole("GUEST")
                 // Razorpay webhook — no user auth, signature-verified in service

@@ -241,6 +241,7 @@ public class ProjectCreditService {
         log.info("Project reopened with points: user={} project={} until={} points={}",
                 userId, project.getId(), project.getAccessExpiresAt(), points);
 
+        billingEmailService.sendProjectReopened(userId, points, 0, pricingService.projectValidDays());
         return reopenResult(project, points, 0);
     }
 

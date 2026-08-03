@@ -24,6 +24,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -326,6 +327,102 @@ class BillingServiceLifecycleTest {
         verifyNoInteractions(razorpay);
     }
 
+    // ---- a HALTED plan is still live at the gateway ----
+
+    /**
+     * The customer whose payment just failed is the one with the strongest reason to
+     * stop the plan, and used to be the only one who could not.
+     *
+     * cancelSubscription matched on ACTIVE alone, so a HALTED subscription answered "No
+     * active subscription found" — while the subscription itself was still live at
+     * Razorpay, holding an unpaid invoice against the card and free to resume the moment
+     * that invoice settled. The only way out was support.
+     */
+    @Test
+    void aHaltedPlanCanBeCancelledAndIsEndedAtTheGatewayImmediately() throws Exception {
+        Subscription halted = activePaid(3, 15);
+        halted.setStatus(SubscriptionStatus.HALTED);
+        halted.setCurrentPeriodEnd(LocalDateTime.now().plusDays(20));
+        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
+                .thenReturn(Optional.empty());
+        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.HALTED))
+                .thenReturn(Optional.of(halted));
+        razorpay.subscriptions = mock(SubscriptionClient.class);
+
+        SubscriptionResponse out = service().cancelSubscription(USER);
+
+        // Ended outright, not at cycle end: there is no access left to honour, so
+        // promising "active till period close" would be a promise of nothing.
+        assertThat(out.getStatus()).isEqualTo(SubscriptionStatus.EXPIRED);
+        ArgumentCaptor<JSONObject> sent = ArgumentCaptor.forClass(JSONObject.class);
+        verify(razorpay.subscriptions).cancel(eq("rzp_sub_1"), sent.capture());
+        assertThat(sent.getValue().getInt("cancel_at_cycle_end")).isZero();
+        // And the period is closed off, so no lingering end date can re-entitle it.
+        assertThat(halted.getCurrentPeriodEnd()).isBeforeOrEqualTo(LocalDateTime.now());
+    }
+
+    /**
+     * Buying a plan after a failed payment must retire the halted one at the gateway.
+     *
+     * "Payment fails, shop subscribes again" is the commonest recovery path there is,
+     * and supersedeActiveSubscriptions swept only ACTIVE rows — so the halted
+     * subscription stayed alive at Razorpay. Settling its outstanding invoice (or a
+     * retry landing late) then resurrected it: two entitlements, two monthly charges.
+     */
+    @Test
+    void activatingANewPlanAlsoRetiresAHaltedOne() throws Exception {
+        Subscription created = Subscription.builder()
+                .id("sub-new").user(activePaid(0, 15).getUser()).plan(Plan.STARTER)
+                .status(SubscriptionStatus.CREATED).razorpaySubscriptionId("rzp_sub_new")
+                .projectsLimit(15).build();
+        Subscription halted = activePaid(3, 15);
+        halted.setStatus(SubscriptionStatus.HALTED);
+
+        when(subs.findByRazorpaySubscriptionId("rzp_sub_new")).thenReturn(Optional.of(created));
+        when(subs.findByUserIdAndStatus(USER, SubscriptionStatus.ACTIVE))
+                .thenReturn(java.util.List.of());
+        when(subs.findByUserIdAndStatus(USER, SubscriptionStatus.HALTED))
+                .thenReturn(java.util.List.of(halted));
+        when(subs.findWithUnspentCredits(eq(USER), any())).thenReturn(java.util.List.of());
+        razorpay.subscriptions = mock(SubscriptionClient.class);
+
+        service().activateSubscription("rzp_sub_new", 0, 0);
+
+        assertThat(halted.getStatus()).isEqualTo(SubscriptionStatus.EXPIRED);
+        ArgumentCaptor<JSONObject> sent = ArgumentCaptor.forClass(JSONObject.class);
+        verify(razorpay.subscriptions).cancel(eq("rzp_sub_1"), sent.capture());
+        assertThat(sent.getValue().getInt("cancel_at_cycle_end")).isZero();
+    }
+
+    /**
+     * A halted plan's unused monthly allowance does NOT follow the shop onto the new
+     * plan: it belongs to a cycle the charge for which never went through, so carrying
+     * it would hand out a month of quota for a failed payment. (What the shop genuinely
+     * owns — bought extras and outstanding code holds — is swept up separately by
+     * reclaimStrandedCredits, which reads every row whatever its status.)
+     */
+    @Test
+    void aHaltedPlansUnusedAllowanceIsNotCarriedOntoTheNewPlan() throws Exception {
+        Subscription created = Subscription.builder()
+                .id("sub-new").user(activePaid(0, 15).getUser()).plan(Plan.STARTER)
+                .status(SubscriptionStatus.CREATED).razorpaySubscriptionId("rzp_sub_new")
+                .projectsLimit(15).build();
+        Subscription halted = activePaid(2, 15);   // 13 unused
+        halted.setStatus(SubscriptionStatus.HALTED);
+
+        when(subs.findByRazorpaySubscriptionId("rzp_sub_new")).thenReturn(Optional.of(created));
+        when(subs.findByUserIdAndStatus(USER, SubscriptionStatus.ACTIVE))
+                .thenReturn(java.util.List.of());
+        when(subs.findByUserIdAndStatus(USER, SubscriptionStatus.HALTED))
+                .thenReturn(java.util.List.of(halted));
+        when(subs.findWithUnspentCredits(eq(USER), any())).thenReturn(java.util.List.of());
+        razorpay.subscriptions = mock(SubscriptionClient.class);
+
+        service().activateSubscription("rzp_sub_new", 0, 0);
+
+        verify(subs, never()).addCarriedProjectCredits(eq("sub-new"), anyInt());
+    }
+
     // ---- #2 atomic AI-usage accounting ----
 
     @Test
@@ -345,7 +442,7 @@ class BillingServiceLifecycleTest {
 
         assertThatThrownBy(() -> service().reserveProjectUsage(USER))
                 .isInstanceOf(QuotaExceededException.class)
-                .hasMessageContaining("limit reached");
+                .hasMessageContaining("used this month's projects");
     }
 
     @Test

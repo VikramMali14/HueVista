@@ -206,8 +206,9 @@ public class RewardPointsService {
         int available = lots.stream().mapToInt(RewardPointsLot::getPointsRemaining).sum();
         if (available < points) {
             throw new QuotaExceededException(
-                    "Not enough points (" + available + " available, " + points + " needed). "
-                    + "Earn more through your kiosk link, or pay for this directly.");
+                    "Not enough points (" + available + " left, " + points + " needed). "
+                    + "Buy more from your subscription page, earn them through your kiosk "
+                    + "link, or pay by card instead.");
         }
 
         int left = points;
@@ -272,8 +273,8 @@ public class RewardPointsService {
     private void requireRetailer(String userId) {
         if (!isRetailer(userId)) {
             throw new SecurityException(
-                    "Reward points are for paint shops. Everything they buy — extra images, "
-                    + "auto-masks, projects — belongs to a shop account.");
+                    "Points are for paint shops. Everything they buy — extra rooms and reopens — "
+                    + "belongs to a shop account.");
         }
     }
 }

@@ -96,12 +96,15 @@ public class BillingController {
                     + "limits, and what one extra project costs on that tier in points and in money.")
     @GetMapping("/plans")
     public ResponseEntity<List<Map<String, Object>>> getPlans() {
-        // FREE is granted with a new shop, never sold — listing it here would put a
-        // "₹0/mo" card on the pricing page whose button can only ever answer "there's
-        // nothing to pay". ENTERPRISE stays listed because it IS a plan you can have,
-        // just not one you buy through Checkout.
+        // Only the tiers a shop can actually buy. FREE is granted with a new shop, never
+        // sold — listing it would put a "₹0/mo" card on the pricing page whose button can
+        // only ever answer "there's nothing to pay". ENTERPRISE is not offered at all for
+        // now: it was a "contact sales" card with no price, no checkout path and nothing
+        // behind it, so every surface that listed it was quoting a product a shop could
+        // not have. The enum constant stays for the rows already carrying it and for an
+        // admin grant, but nothing sells it.
         var plans = java.util.Arrays.stream(com.gridstore.huevista.billing.model.Plan.values())
-            .filter(p -> !p.isFree())
+            .filter(p -> !p.isFree() && p != com.gridstore.huevista.billing.model.Plan.ENTERPRISE)
             .map(p -> {
                 Map<String, Object> m = new java.util.LinkedHashMap<>();
                 m.put("plan", p.name());

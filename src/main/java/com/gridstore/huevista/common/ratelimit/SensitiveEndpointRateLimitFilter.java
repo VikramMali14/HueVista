@@ -108,6 +108,12 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             // shop-account lead form: public write endpoint — anti-spam.
             @Value("${app.rate-limit.lead.max-attempts:5}") int leadMax,
             @Value("${app.rate-limit.lead.window-seconds:3600}") long leadWindow,
+            // newsletter sign-up: public, and each new address sends a welcome mail — so
+            // it is a free way to post mail to strangers unless it is capped. A shop or a
+            // household behind one IP might sign up a handful of people; 10/h leaves that
+            // alone and gives a script nowhere to go.
+            @Value("${app.rate-limit.newsletter.max-attempts:10}") int newsletterMax,
+            @Value("${app.rate-limit.newsletter.window-seconds:3600}") long newsletterWindow,
             // public store kiosk order/verify: many legitimate customers can share one
             // shop IP (the kiosk device), so the cap is generous — it only has to stop
             // scripted Razorpay-order spam, not a queue of paying walk-ins.
@@ -133,6 +139,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
         Policy redeem = new Policy("redeem", redeemMax, Duration.ofSeconds(redeemWindow));
         Policy upload = new Policy("upload", uploadMax, Duration.ofSeconds(uploadWindow));
         Policy lead = new Policy("lead", leadMax, Duration.ofSeconds(leadWindow));
+        Policy newsletter = new Policy("newsletter", newsletterMax, Duration.ofSeconds(newsletterWindow));
         Policy storeOrder = new Policy("storeorder", storeOrderMax, Duration.ofSeconds(storeOrderWindow));
         Policy subscription = new Policy("subscription", subscriptionMax, Duration.ofSeconds(subscriptionWindow));
 
@@ -161,6 +168,9 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 new Rule("POST", "/api/guest/images/upload", upload),
                 // Public shop-account request form.
                 new Rule("POST", "/api/leads/shop", lead),
+                // Public monthly-letter sign-up (each new address sends a welcome mail).
+                new Rule("POST", "/api/newsletter/subscribe", newsletter),
+                new Rule("POST", "/api/newsletter/unsubscribe", newsletter),
                 // Public store kiosk payment endpoints (slug in the middle).
                 new Rule("POST", "/api/store/*/order", storeOrder),
                 new Rule("POST", "/api/store/*/verify", storeOrder),
