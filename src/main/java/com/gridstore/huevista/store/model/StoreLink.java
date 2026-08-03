@@ -35,7 +35,7 @@ public class StoreLink {
     @JoinColumn(name = "organization_id", nullable = false)
     private Organization organization;
 
-    /** URL token the shop prints/shares: huevista.com/store/{slug}. */
+    /** URL token the shop prints/shares: app.huevista.org/store/{slug}. */
     @Column(unique = true, nullable = false, length = 80)
     private String slug;
 

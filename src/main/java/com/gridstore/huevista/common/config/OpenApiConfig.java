@@ -44,7 +44,7 @@ public class OpenApiConfig {
                         .version("1.0.0")
                         .contact(new Contact()
                                 .name("HueVista")
-                                .url("https://huevista.com")))
+                                .url("https://app.huevista.org")))
                 .servers(List.of(new Server().url(baseUrl).description("Current server")))
                 .addSecurityItem(new SecurityRequirement().addList("Bearer JWT"))
                 .components(new Components()
