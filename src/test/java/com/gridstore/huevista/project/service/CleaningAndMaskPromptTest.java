@@ -21,7 +21,7 @@ class CleaningAndMaskPromptTest {
     void interiorCleanPromptCompletesUnfinishedSurfaces() {
         String prompt = ImageCleanerService.cleanPromptFor(ImageType.INDOOR);
 
-        assertThat(prompt).contains("FINISH (mandatory whenever the room is an unfinished construction");
+        assertThat(prompt).contains("FINISH (mandatory for EVERY unfinished surface, judged surface by");
         assertThat(prompt).contains("unplastered brick or blockwork");
         assertThat(prompt).contains("bare concrete ceiling soffit");
         assertThat(prompt).contains("raw cement floor");
@@ -71,6 +71,66 @@ class CleaningAndMaskPromptTest {
                     .contains("Unfinished construction surfaces are always completed.")
                     .doesNotContain("something counts as clutter, LEAVE IT AS IT IS");
         }
+    }
+
+    /**
+     * A room can be finished everywhere EXCEPT the ceiling — smooth painted walls
+     * under a bare concrete slab is the common half-built case. FINISH used to be
+     * gated on the room being "a construction shell", which let the model look at
+     * finished walls, conclude the room was not a shell, and skip the ceiling. The
+     * gate is now per-surface, so walls/ceiling/floor are judged one at a time.
+     */
+    @Test
+    void interiorCleanPromptJudgesEachSurfaceIndependently() {
+        String prompt = ImageCleanerService.cleanPromptFor(ImageType.INDOOR);
+
+        assertThat(prompt).contains("ASSESS WALLS, CEILING AND FLOOR INDEPENDENTLY");
+        assertThat(prompt).contains("Finishing is per-surface, not per-room");
+        // The exact wrong inference has to be named, or it stays available.
+        assertThat(prompt).contains("this room already looks finished, so there is nothing");
+        assertThat(prompt).contains("walls are already smooth and painted but whose "
+                + "ceiling is still raw grey concrete is the COMMON case");
+        // The old all-or-nothing shell gate must be gone from the job list too.
+        assertThat(prompt).doesNotContain("if this room is still a construction shell");
+    }
+
+    /**
+     * The ceiling must land at the same premium standard as the walls and read as
+     * one surface with them — a ceiling that is merely "not concrete any more",
+     * or that meets the wall in a visible tonal step, still looks unfinished.
+     */
+    @Test
+    void interiorCleanPromptDemandsPremiumSeamlessWhiteOnWallsAndCeiling() {
+        String prompt = ImageCleanerService.cleanPromptFor(ImageType.INDOOR);
+
+        assertThat(prompt).contains("COMPLETELY PLASTERED, PUTTIED TO A SMOOTH FINISH, "
+                + "AND PAINTED A MATCHING FLAWLESS MATTE WHITE");
+        assertThat(prompt).contains("CONTINUOUS AND SEAMLESS WITH THE WALLS");
+        assertThat(prompt).contains("no colour break, no tonal step, no visible seam");
+        assertThat(prompt).contains("FLAWLESS, SEAMLESS MATTE WHITE WALLS");
+        assertThat(prompt).contains("professional plastering, fine puttying and top-tier matte paint");
+        // Already-finished walls must not be degraded on the way through.
+        assertThat(prompt).contains("must come back at this same "
+                + "flawless standard");
+    }
+
+    /**
+     * Context the room needs to read as a real place: the view out of the windows
+     * and the dark timber joinery. Both were getting flattened — the view whited
+     * out, the door absorbed into the surrounding white.
+     */
+    @Test
+    void interiorCleanPromptPreservesViewAndDarkWoodJoinery() {
+        String prompt = ImageCleanerService.cleanPromptFor(ImageType.INDOOR);
+
+        assertThat(prompt).contains("THE VIEW OUTSIDE");
+        assertThat(prompt).contains("urban "
+                + "skyline, neighbouring buildings, rooftops");
+        assertThat(prompt).contains("Do not blank it out, white it out, fog it, blur it");
+        assertThat(prompt).contains("THE DARK WOOD JOINERY stays dark wood");
+        assertThat(prompt).contains("never whitened, lightened or");
+        // Both are re-checked before the image comes back.
+        assertThat(prompt).contains("the dark wood door is still dark");
     }
 
     @Test
