@@ -151,6 +151,59 @@ public class BillingEmailService {
                 """.formatted(firstName(user), points)));
     }
 
+    /**
+     * Extra-project receipt for the CASH rail. Its own mail rather than a shared one,
+     * because this is a real charge on a card: it names the amount and says an invoice
+     * follows, neither of which is true of the points version above.
+     */
+    public void sendProjectPurchased(String userId, int amountPaise, int validDays) {
+        userRepository.findById(userId).ifPresent(user -> deliver(user,
+                "Payment received — 1 extra HueVista project",
+                """
+                Hi %s,
+
+                Thank you — your payment of Rs. %.2f was received and one extra project has
+                been added to your account.
+
+                It's ready to use right away. Once you turn it into a room it stays editable
+                for %d days of use, and those days pause while a plan is covering your
+                account. Extra projects can also be assigned to a customer from your shop
+                portal, the same as the ones your plan includes.
+
+                Razorpay will email you the tax invoice separately.
+
+                — The HueVista team
+                """.formatted(firstName(user), amountPaise / 100.0, validDays)));
+    }
+
+    /**
+     * Reopen receipt, for both rails — {@code amountPaise} for a card payment,
+     * {@code points} for the points one, and exactly one of them is ever non-zero.
+     */
+    public void sendProjectReopened(String userId, int points, int amountPaise, int validDays) {
+        String paidWith = amountPaise > 0
+                ? "your payment of Rs. %.2f was received".formatted(amountPaise / 100.0)
+                : "%d points have been spent".formatted(points);
+        String invoiceLine = amountPaise > 0
+                ? "Razorpay will email you the tax invoice separately."
+                : "No invoice follows this one — points were paid for (or earned) when they "
+                  + "were added, and spending them is not a fresh charge.";
+        userRepository.findById(userId).ifPresent(user -> deliver(user,
+                "HueVista project reopened for another " + validDays + " days",
+                """
+                Hi %s,
+
+                Thank you — %s, and your project is open again for another %d days of use.
+
+                Everything you had is still there: the cleaned photo, the walls and the
+                colours you last applied. Pick up where you left off from your dashboard.
+
+                %s
+
+                — The HueVista team
+                """.formatted(firstName(user), paidWith, validDays, invoiceLine)));
+    }
+
     // ── Reward points ────────────────────────────────────────────────────────
 
     /** Receipt for a points purchase. Names the expiry date, because they do expire. */

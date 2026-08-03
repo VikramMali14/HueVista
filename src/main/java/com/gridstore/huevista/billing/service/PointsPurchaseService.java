@@ -38,6 +38,7 @@ public class PointsPurchaseService {
     private final RewardPointsService pointsService;
     private final PricingService pricingService;
     private final BillingEmailService billingEmailService;
+    private final com.gridstore.huevista.auth.repository.UserRepository userRepository;
 
     @Value("${razorpay.key-id:}")
     private String keyId;
@@ -52,6 +53,13 @@ public class PointsPurchaseService {
         if (keyId.isBlank() || keySecret.isBlank()) {
             throw new IllegalStateException("Online payment is not configured.");
         }
+        // Refuse an account that could never be credited BEFORE any money moves. Points
+        // are retailer-only, and RewardPointsService enforces that at the credit step —
+        // which is AFTER the payment has been taken. A painter or customer account that
+        // reached this flow therefore paid in full, had the whole verification rolled back
+        // by the role check, and was left with no points, no record and no refund path.
+        // The same rule, applied one step earlier, costs them nothing.
+        requirePointsEligible(userId);
         if (points < pricingService.pointsMinPurchase() || points > pricingService.pointsMaxPurchase()) {
             throw new IllegalArgumentException(
                     "Buy between " + pricingService.pointsMinPurchase() + " and "
@@ -150,5 +158,21 @@ public class PointsPurchaseService {
         billingEmailService.sendPointsPurchased(userId, points, amountPaise,
                 pricingService.pointsValidityDays());
         return points;
+    }
+
+    /**
+     * Only a shop account can hold points, so only a shop account may buy them. Phrased as
+     * guidance rather than a bare refusal: a customer who lands here wants a visualisation,
+     * and the thing that gets them one is their shop's access code, not a points balance.
+     */
+    private void requirePointsEligible(String userId) {
+        com.gridstore.huevista.auth.model.UserRole role = userRepository.findById(userId)
+                .map(com.gridstore.huevista.auth.model.User::getRole)
+                .orElse(null);
+        if (role != com.gridstore.huevista.auth.model.UserRole.RETAILER) {
+            throw new SecurityException(
+                    "Points are for paint shops — everything they buy (extra projects, reopens) "
+                    + "belongs to a shop account, so there would be nothing to spend them on here.");
+        }
     }
 }

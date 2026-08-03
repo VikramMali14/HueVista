@@ -42,6 +42,7 @@ public class ProjectPurchaseService {
     private final ProjectPurchaseRepository purchaseRepository;
     private final ProjectCreditService projectCreditService;
     private final PricingService pricingService;
+    private final BillingEmailService billingEmailService;
 
     @Value("${razorpay.key-id:}")
     private String keyId;
@@ -131,6 +132,7 @@ public class ProjectPurchaseService {
         projectCreditService.creditPurchasedProject(userId, ProjectCredit.Source.PURCHASE);
         log.info("Project bought with money: user={} plan={} amountPaise={}",
                 userId, pricedAs, amountPaise);
+        billingEmailService.sendProjectPurchased(userId, amountPaise, pricingService.projectValidDays());
     }
 
     // ── Reopen: another validity window on a project already paid for once ──────
@@ -211,7 +213,9 @@ public class ProjectPurchaseService {
         }
 
         claimPayment(req, userId, null, amountPaise);
-        return projectCreditService.creditReopen(userId, projectId, amountPaise);
+        ProjectReopenResponse reopened = projectCreditService.creditReopen(userId, projectId, amountPaise);
+        billingEmailService.sendProjectReopened(userId, 0, amountPaise, reopened.getDaysAdded());
+        return reopened;
     }
 
     /** The Checkout signature must belong to this merchant account. */

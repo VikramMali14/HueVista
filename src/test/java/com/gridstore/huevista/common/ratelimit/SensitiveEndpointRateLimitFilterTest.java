@@ -20,6 +20,7 @@ class SensitiveEndpointRateLimitFilterTest {
                 12, 900,   // code redeem
                 30, 3600,  // image upload
                 5, 3600,   // shop lead
+                10, 3600,  // newsletter subscribe/unsubscribe
                 60, 3600,  // store kiosk order/verify
                 20, 3600); // subscription create/verify
     }

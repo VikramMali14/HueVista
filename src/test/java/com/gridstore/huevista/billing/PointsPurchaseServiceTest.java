@@ -44,6 +44,7 @@ class PointsPurchaseServiceTest {
     private PointsPurchaseRepository purchases;
     private RewardPointsService points;
     private PricingService pricing;
+    private com.gridstore.huevista.auth.repository.UserRepository users;
     private PointsPurchaseService svc;
 
     @BeforeEach
@@ -52,6 +53,10 @@ class PointsPurchaseServiceTest {
         razorpay.orders = mock(OrderClient.class);
         purchases = mock(PointsPurchaseRepository.class);
         points = mock(RewardPointsService.class);
+        users = mock(com.gridstore.huevista.auth.repository.UserRepository.class);
+        // The buyer is a shop unless a test says otherwise — points are retailer-only,
+        // and order creation refuses anyone who could never be credited.
+        when(users.findById(USER)).thenReturn(java.util.Optional.of(retailer()));
 
         pricing = new PricingService(mock(BillingService.class), mock(OrgMembershipRepository.class));
         ReflectionTestUtils.setField(pricing, "rupeesPerPoint", 1);
@@ -61,9 +66,21 @@ class PointsPurchaseServiceTest {
         ReflectionTestUtils.setField(pricing, "currency", "INR");
 
         svc = new PointsPurchaseService(razorpay, purchases, points, pricing,
-                mock(BillingEmailService.class));
+                mock(BillingEmailService.class), users);
         ReflectionTestUtils.setField(svc, "keyId", "rzp_key");
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
+    }
+
+    private static com.gridstore.huevista.auth.model.User userWithRole(
+            com.gridstore.huevista.auth.model.UserRole role) {
+        com.gridstore.huevista.auth.model.User u = new com.gridstore.huevista.auth.model.User();
+        u.setId(USER);
+        u.setRole(role);
+        return u;
+    }
+
+    private static com.gridstore.huevista.auth.model.User retailer() {
+        return userWithRole(com.gridstore.huevista.auth.model.UserRole.RETAILER);
     }
 
     private VerifyPointsPurchaseRequest req() {
@@ -114,6 +131,32 @@ class PointsPurchaseServiceTest {
         assertThatThrownBy(() -> svc.createOrder(USER, MAX + 1))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("between");
+    }
+
+    /**
+     * An account that could never HOLD points is turned away before an order exists.
+     *
+     * Points are retailer-only, and that rule lives in RewardPointsService — i.e. at the
+     * CREDIT step, which happens after the money has been taken. A painter or customer
+     * account reaching this flow therefore paid in full, had the credit rolled back by
+     * the role check, and was left with no points, no purchase record and nothing to
+     * refund against. Refusing at order time costs them nothing instead.
+     */
+    @Test
+    void anAccountThatCannotHoldPointsCannotOpenAnOrderForThem() throws Exception {
+        for (com.gridstore.huevista.auth.model.UserRole role : java.util.List.of(
+                com.gridstore.huevista.auth.model.UserRole.CUSTOMER,
+                com.gridstore.huevista.auth.model.UserRole.PAINTER,
+                com.gridstore.huevista.auth.model.UserRole.DISTRIBUTOR)) {
+            when(users.findById(USER)).thenReturn(java.util.Optional.of(userWithRole(role)));
+
+            assertThatThrownBy(() -> svc.createOrder(USER, 500))
+                    .as("role %s", role)
+                    .isInstanceOf(SecurityException.class)
+                    .hasMessageContaining("paint shops");
+        }
+        // Nothing was opened at the gateway, so there is no payment sheet to pay against.
+        verify(razorpay.orders, never()).create(any());
     }
 
     // ── Verifying ───────────────────────────────────────────────────────────

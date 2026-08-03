@@ -26,7 +26,6 @@ import com.gridstore.huevista.project.repository.RegionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -65,30 +64,11 @@ public class ProjectService {
     private final com.gridstore.huevista.notification.EmailSender emailSender;
     private final com.gridstore.huevista.account.service.BrandAccessService brandAccessService;
     private final com.gridstore.huevista.account.service.FeatureAccessService featureAccessService;
+    /** Where a link handed to a human points — the website, not this API. */
+    private final com.gridstore.huevista.common.web.SiteUrls siteUrls;
 
     @Autowired(required = false)
     private SegmentationJobQueue segmentationJobQueue;
-
-    @Value("${app.base-url:http://localhost:8080}")
-    private String baseUrl;
-
-    /**
-     * Where the WEBSITE lives — the origin a share link must point at.
-     *
-     * A share link is forwarded to someone who does not have the app: it has to open
-     * the shared-room page, not the JSON the page is built from. It used to be minted
-     * against {@link #baseUrl}, the API origin, so every recipient without the app was
-     * handed `/api/share/{token}` and read the raw response body instead of the room.
-     *
-     * Blank by default so an existing deployment needs no new variable: the first CORS
-     * allowed origin is the website by definition, and that is what
-     * {@link #webBaseUrl()} falls back to.
-     */
-    @Value("${app.web-base-url:}")
-    private String webBaseUrl;
-
-    @Value("${app.cors.allowed-origins:}")
-    private String corsAllowedOrigins;
 
     @Transactional
     public ProjectResponse createProject(String userId, CreateProjectRequest request) {
@@ -605,8 +585,8 @@ public class ProjectService {
         project.setShareBrandList(brands);
         projectRepository.save(project);
 
-        // The website's page, not the API endpoint behind it — see webBaseUrl().
-        String shareUrl = webBaseUrl() + "/share/" + token;
+        // The website's page, not the API endpoint behind it — see SiteUrls.
+        String shareUrl = siteUrls.on("/share/" + token);
         log.info("Share link {} for project={} expires={}",
                 project.getShareToken().equals(token) ? "refreshed" : "generated", projectId, expiresAt);
 
@@ -631,38 +611,6 @@ public class ProjectService {
         project.setShareExpiresAt(null);
         projectRepository.save(project);
         log.info("Share link revoked: project={}", projectId);
-    }
-
-    /**
-     * The website origin share links are built on, without a trailing slash.
-     *
-     * Explicit config wins; otherwise the first CORS allowed origin is taken, which is
-     * the website in every deployment that has one. Only if neither is set does this
-     * fall back to the API origin — a single-host dev box, where the two are the same
-     * thing anyway.
-     */
-    private String webBaseUrl() {
-        String configured = firstOrigin(webBaseUrl);
-        if (configured != null) return configured;
-        String cors = firstOrigin(corsAllowedOrigins);
-        return cors != null ? cors : trimTrailingSlash(baseUrl);
-    }
-
-    /** First entry of a comma-separated origin list, trimmed and slash-stripped, or null. */
-    private String firstOrigin(String csv) {
-        if (csv == null || csv.isBlank()) return null;
-        for (String part : csv.split(",")) {
-            String origin = trimTrailingSlash(part.trim());
-            // "*" is a CORS wildcard, not an address anything can be linked to.
-            if (!origin.isEmpty() && !"*".equals(origin)) return origin;
-        }
-        return null;
-    }
-
-    private String trimTrailingSlash(String url) {
-        String s = url == null ? "" : url.trim();
-        while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
-        return s;
     }
 
     /** A shop can only share companies its distributor assigned it. */

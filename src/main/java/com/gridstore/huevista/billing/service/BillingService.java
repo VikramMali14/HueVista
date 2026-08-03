@@ -589,9 +589,23 @@ public class BillingService {
 
     @Transactional
     public SubscriptionResponse cancelSubscription(String userId) {
+        // A HALTED plan counts as cancellable. Razorpay halts a subscription once it has
+        // exhausted its retries, but the subscription itself is still LIVE at the gateway:
+        // it keeps a payable invoice against the customer's card and comes back the moment
+        // that invoice is settled. Matching on ACTIVE alone meant the one customer with the
+        // strongest reason to stop the plan — the one whose payment just failed — got "No
+        // active subscription found" and had no way out of it except support.
         Subscription sub = subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
+                .or(() -> subscriptionRepository
+                        .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.HALTED))
                 .orElseThrow(() -> new ResourceNotFoundException("No active subscription found"));
+
+        // Nothing is left to run out on a halted plan — access is already off and the
+        // period it was paid for has lapsed — so it ends NOW rather than at cycle end.
+        if (sub.getStatus() == SubscriptionStatus.HALTED) {
+            return cancelHaltedSubscription(userId, sub);
+        }
 
         // A free trial has no Razorpay subscription to cancel — calling the gateway with a
         // null id would blow up. Mark it not-to-renew and let it run out its window.
@@ -624,6 +638,38 @@ public class BillingService {
             throw new IllegalStateException("Payment gateway error: " + e.getMessage());
         }
 
+        return SubscriptionResponse.from(sub);
+    }
+
+    /**
+     * End a HALTED plan on the spot, on both sides.
+     *
+     * There is no period left to honour: Razorpay halted it because the renewal could not
+     * be collected, and this app already refuses every feature to a halted subscription.
+     * Cancelling at cycle end would therefore be a promise of access that does not exist,
+     * and would leave the gateway free to charge the card again if the outstanding invoice
+     * were ever settled. The gateway call is best-effort — a Razorpay outage must not stop
+     * someone ending a plan they are no longer getting anything from, and the local EXPIRED
+     * status is what this app enforces regardless.
+     */
+    private SubscriptionResponse cancelHaltedSubscription(String userId, Subscription sub) {
+        String rzpId = sub.getRazorpaySubscriptionId();
+        if (rzpId != null && !rzpId.isBlank()) {
+            try {
+                JSONObject cancelRequest = new JSONObject();
+                cancelRequest.put("cancel_at_cycle_end", 0);
+                razorpayClient.subscriptions.cancel(rzpId, cancelRequest);
+            } catch (Exception e) {
+                log.error("Razorpay cancel of halted subscription {} FAILED (expired locally anyway "
+                        + "— check the gateway so the card is not retried): {}", rzpId, e.getMessage());
+            }
+        }
+        sub.setCancelAtPeriodEnd(true);
+        expireLocally(sub);
+        auditService.record(userId, "SUBSCRIPTION_CANCEL", "SUBSCRIPTION", sub.getId(),
+                "plan=" + sub.getPlan() + " halted=true");
+        log.info("Halted subscription cancelled outright: user={} subId={}", userId, sub.getId());
+        billingEmailService.sendSubscriptionEnded(sub);
         return SubscriptionResponse.from(sub);
     }
 
@@ -1060,44 +1106,62 @@ public class BillingService {
     }
 
     /**
-     * End every other ACTIVE subscription of {@code userId} except {@code keepSubId},
+     * End every other LIVE subscription of {@code userId} except {@code keepSubId},
      * called when a paid plan goes live so a retailer never holds two active plans.
      * A superseded free trial simply expires locally; a superseded PAID plan (the
      * upgrade case) is also cancelled at Razorpay immediately so its next renewal
      * never charges the card again. The gateway cancel is best-effort: a Razorpay
      * hiccup must not fail the activation of the plan the user just paid for — the
      * local EXPIRED status is what the app enforces either way.
+     *
+     * HALTED counts as live for exactly the same reason a paid ACTIVE one does. A halted
+     * subscription is not finished at the gateway — it holds an unpaid invoice and starts
+     * charging again the moment that invoice is settled. Sweeping only ACTIVE rows meant
+     * the commonest recovery path in the product (payment fails → shop buys a plan again)
+     * left the old subscription alive at Razorpay, so a late settlement resurrected it as
+     * a second entitlement and a second monthly charge.
      */
     private void supersedeActiveSubscriptions(String userId, String keepSubId) {
-        subscriptionRepository.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE)
-                .forEach(existing -> {
-                    if (existing.getId().equals(keepSubId)) {
-                        return;
-                    }
-                    boolean paidAtGateway = !existing.isTrial()
-                            && existing.getRazorpaySubscriptionId() != null
-                            && !existing.getRazorpaySubscriptionId().isBlank();
-                    if (paidAtGateway) {
-                        try {
-                            JSONObject cancelRequest = new JSONObject();
-                            cancelRequest.put("cancel_at_cycle_end", 0);
-                            razorpayClient.subscriptions.cancel(
-                                    existing.getRazorpaySubscriptionId(), cancelRequest);
-                        } catch (Exception e) {
-                            // Any gateway trouble, not just a RazorpayException: this runs
-                            // inside the activation of a plan the shop has ALREADY paid
-                            // for, and nothing that happens to the old subscription is
-                            // worth failing that. Local expiry is what we enforce anyway.
-                            log.warn("Razorpay cancel of superseded subscription {} failed "
-                                    + "(local expiry still applied): {}",
-                                    existing.getRazorpaySubscriptionId(), e.getMessage());
-                        }
-                    }
-                    carryOverCredits(existing, keepSubId);
-                    expireLocally(existing);
-                    log.info("Subscription superseded by new activation: user={} oldSubId={} trial={}",
-                            userId, existing.getId(), existing.isTrial());
-                });
+        List<Subscription> live = new java.util.ArrayList<>(
+                subscriptionRepository.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE));
+        live.addAll(subscriptionRepository.findByUserIdAndStatus(userId, SubscriptionStatus.HALTED));
+        for (Subscription existing : live) {
+            if (existing.getId().equals(keepSubId)) {
+                continue;
+            }
+            SubscriptionStatus was = existing.getStatus();
+            boolean paidAtGateway = !existing.isTrial()
+                    && existing.getRazorpaySubscriptionId() != null
+                    && !existing.getRazorpaySubscriptionId().isBlank();
+            if (paidAtGateway) {
+                try {
+                    JSONObject cancelRequest = new JSONObject();
+                    cancelRequest.put("cancel_at_cycle_end", 0);
+                    razorpayClient.subscriptions.cancel(
+                            existing.getRazorpaySubscriptionId(), cancelRequest);
+                } catch (Exception e) {
+                    // Any gateway trouble, not just a RazorpayException: this runs inside
+                    // the activation of a plan the shop has ALREADY paid for, and nothing
+                    // that happens to the old subscription is worth failing that. Local
+                    // expiry is what we enforce anyway.
+                    log.warn("Razorpay cancel of superseded subscription {} failed "
+                            + "(local expiry still applied): {}",
+                            existing.getRazorpaySubscriptionId(), e.getMessage());
+                }
+            }
+            // A HALTED plan carries nothing forward here on purpose: its monthly allowance
+            // belongs to a cycle that was never paid for, so moving the unused remainder
+            // onto the new plan would hand out a month of quota for a failed charge. What
+            // the shop genuinely owns — projects it bought outright, and the holds standing
+            // behind access codes it has already issued — is swept up by
+            // reclaimStrandedCredits below, which reads every row regardless of status.
+            if (was == SubscriptionStatus.ACTIVE) {
+                carryOverCredits(existing, keepSubId);
+            }
+            expireLocally(existing);
+            log.info("Subscription superseded by new activation: user={} oldSubId={} was={} trial={}",
+                    userId, existing.getId(), was, existing.isTrial());
+        }
         reclaimStrandedCredits(userId, keepSubId);
     }
 
