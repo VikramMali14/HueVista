@@ -442,7 +442,7 @@ class BillingServiceLifecycleTest {
 
         assertThatThrownBy(() -> service().reserveProjectUsage(USER))
                 .isInstanceOf(QuotaExceededException.class)
-                .hasMessageContaining("limit reached");
+                .hasMessageContaining("used this month's projects");
     }
 
     @Test

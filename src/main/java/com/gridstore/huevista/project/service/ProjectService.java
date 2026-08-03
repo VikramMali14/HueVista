@@ -1089,7 +1089,7 @@ public class ProjectService {
                 .stream()
                 .findFirst()
                 .orElseThrow(() -> new QuotaExceededException(
-                        "This shop can't run AI previews right now. You can still mark walls by hand."));
+                        "This shop has no rooms left this month. You can still mark the walls by hand."));
     }
 
     private Project findGuestOwned(String accessCodeId, String projectId) {

@@ -126,7 +126,7 @@ public class BillingEmailService {
                 Hi %s,
 
                 Your HueVista %s plan has ended. Your projects and account are safe — only
-                the plan's AI previews and PDF downloads are off.
+                making new rooms and downloading colour boards are switched off.
 
                 You can re-subscribe any time from the pricing page.
 

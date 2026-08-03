@@ -76,14 +76,15 @@ public class BillingService {
     @Transactional
     public SubscriptionResponse createSubscription(String userId, CreateSubscriptionRequest request) {
         if (request.getPlan() == Plan.ENTERPRISE) {
-            throw new IllegalArgumentException("Enterprise plans require manual setup. Please contact sales.");
+            throw new IllegalArgumentException(
+                    "That plan isn't available. Choose Starter, Professional or Business.");
         }
         // The free tier is granted, never sold — there is nothing to charge for, and
         // letting it through would create a Razorpay subscription for Rs. 0.
         if (request.getPlan().isFree()) {
             throw new IllegalArgumentException(
-                    "The free trial is included with your account — there's nothing to pay. "
-                    + "Choose a paid plan to keep going once it ends.");
+                    "The free trial comes with your account — there's nothing to pay for it. "
+                    + "Pick a paid plan to keep going once it ends.");
         }
 
         // An active free trial never blocks buying a plan (the trial is superseded once
@@ -124,8 +125,8 @@ public class BillingService {
         // instead of taking money that unlocks nothing.
         if (user.getRole() == com.gridstore.huevista.auth.model.UserRole.CUSTOMER) {
             throw new SecurityException(
-                    "Subscription plans are for paint shops. If you're visualising your own room, "
-                    + "redeem an access code from your paint shop instead.");
+                    "Plans are for paint shops. To see colours in your own room, redeem the code "
+                    + "your paint shop gave you instead.");
         }
 
         String razorpayPlanId = resolveRazorpayPlanId(request.getPlan());
@@ -787,9 +788,9 @@ public class BillingService {
         if (sub.projectsRemaining() <= 0) {
             Plan pricedAs = sub.isTrial() ? Plan.FREE : sub.getPlan();
             throw new com.gridstore.huevista.common.exception.ProjectLimitReachedException(
-                    "Monthly project limit reached (" + sub.getProjectsLimit() + "). "
-                    + "Spend " + pricedAs.getExtraProjectPoints() + " points on an extra project, "
-                    + "upgrade your plan, or wait for the next billing cycle.");
+                    "You've used this month's projects (" + sub.getProjectsLimit() + "). "
+                    + "Buy one more for " + pricedAs.getExtraProjectPoints() + " points, upgrade "
+                    + "your plan, or wait for next month.");
         }
     }
 
@@ -862,7 +863,7 @@ public class BillingService {
     private Subscription requireBillableSubscription(String userId) {
         return findEntitlingSubscription(userId)
                 .orElseThrow(() -> new QuotaExceededException(
-                        "No active subscription. Subscribe to use AI features."));
+                        "No plan on this account. Pick a plan to start making rooms."));
     }
 
     /**
@@ -884,8 +885,8 @@ public class BillingService {
         int reserved = subscriptionRepository.incrementProjectUsageIfWithinLimit(sub.getId());
         if (reserved == 0) {
             throw new com.gridstore.huevista.common.exception.ProjectLimitReachedException(
-                    "Monthly project limit reached (" + sub.getProjectsLimit() + "). " +
-                    "Buy an extra project, upgrade your plan, or wait for the next billing cycle.");
+                    "You've used this month's projects (" + sub.getProjectsLimit() + "). " +
+                    "Buy one more, upgrade your plan, or wait for next month.");
         }
     }
 
