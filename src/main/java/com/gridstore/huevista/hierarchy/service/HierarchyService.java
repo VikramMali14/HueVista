@@ -14,6 +14,7 @@ import com.gridstore.huevista.account.repository.RetailerFeatureAssignmentReposi
 import com.gridstore.huevista.account.service.AccountService;
 import com.gridstore.huevista.account.service.BrandAccessService;
 import com.gridstore.huevista.account.service.FeatureAccessService;
+import com.gridstore.huevista.account.service.HouseDistributorService;
 import com.gridstore.huevista.auth.dto.AdminUserResponse;
 import com.gridstore.huevista.auth.dto.CreateDistributorRequest;
 import com.gridstore.huevista.auth.dto.CreatePainterRequest;

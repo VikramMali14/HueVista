@@ -24,6 +24,7 @@ public class AccountService {
     private final RetailerBrandAssignmentRepository brandAssignmentRepository;
     private final RetailerFeatureAssignmentRepository featureAssignmentRepository;
     private final UserRepository userRepository;
+    private final HouseDistributorService houseDistributorService;
 
     @Transactional
     public OrgResponse createOrganization(String userId, CreateOrgRequest request) {
@@ -217,8 +218,28 @@ public class AccountService {
             throw new SecurityException("You can only link a retailer organization that you own");
         }
 
-        if (linkRepository.existsByDistributorIdAndRetailerId(distributorOrgId, request.getRetailerOrgId())) {
-            throw new IllegalArgumentException("Retailer is already linked to this distributor");
+        // A shop has exactly one distributor (enforced by a unique index since V38), so
+        // this either refuses or replaces — it can no longer just add a second row.
+        // Taking a shop off the HOUSE distributor is the one replacement allowed: that
+        // link is the platform's fallback rather than a relationship anybody agreed to,
+        // and a distributor picking up a shop HueVista was carrying directly is exactly
+        // what this endpoint is for. Taking one off another distributor is not the
+        // caller's to do — that side has to let go first, or an admin re-files it.
+        List<DistributorRetailerLink> existing = linkRepository.findByRetailerId(request.getRetailerOrgId());
+        for (DistributorRetailerLink current : existing) {
+            String currentId = current.getDistributor().getId();
+            if (currentId.equals(distributorOrgId)) {
+                throw new IllegalArgumentException("Retailer is already linked to this distributor");
+            }
+            if (!houseDistributorService.isHouse(current.getDistributor())) {
+                throw new IllegalStateException(
+                        "That shop is already with another distributor. They need to release it first, "
+                                + "or an administrator can move it.");
+            }
+        }
+        if (!existing.isEmpty()) {
+            linkRepository.deleteAll(existing);
+            linkRepository.flush();
         }
 
         linkRepository.save(DistributorRetailerLink.builder()
@@ -240,10 +261,17 @@ public class AccountService {
      * (owner/manager of the distributor org) or the shop itself (its owner) — because a
      * relationship one party can't leave isn't one.
      *
-     * The shop's brand AND page assignments go with the link: both were granted BY this
-     * distributor, so leaving must not silently leave the shop carrying brands nobody is
-     * supplying, or locked out of pages nobody is administering. Both revert to
-     * unrestricted rather than to zero, so ending a distributor relationship never
+     * The shop does NOT become distributor-less. It moves to the house distributor,
+     * which is the same place a shop nobody else brought in is created. Leaving used to
+     * delete the link and stop, which put the shop exactly where creation no longer
+     * allows: outside every downline, a stray root in the network tree, with nobody
+     * answerable for it. Ending a relationship is a change of distributor, not the
+     * absence of one.
+     *
+     * The shop's brand AND page assignments go with the old link: both were granted BY
+     * that distributor, so leaving must not silently leave the shop carrying brands
+     * nobody is supplying, or locked out of pages nobody is administering. Both revert
+     * to unrestricted rather than to zero, so ending a distributor relationship never
      * quietly empties a working catalogue or strands a shop with no usable app.
      */
     @Transactional
@@ -263,8 +291,34 @@ public class AccountService {
             throw new SecurityException(
                     "Only the distributor or the shop itself can end this link.");
         }
+        // Leaving the house distributor would have nowhere to go — it IS the fallback.
+        if (houseDistributorService.isHouseOrgId(distributorOrgId)) {
+            throw new IllegalStateException(
+                    "This shop is with HueVista directly. Move it to a distributor instead of "
+                            + "ending the link — every shop belongs to one.");
+        }
 
         linkRepository.delete(link);
+        linkRepository.flush();
+        clearDistributorGrants(retailerOrgId);
+        houseDistributorService.ensureHouseOrg().ifPresent(house ->
+                linkRepository.save(DistributorRetailerLink.builder()
+                        .distributor(house)
+                        .retailer(orgRepository.getReferenceById(retailerOrgId))
+                        .build()));
+
+        log.info("Retailer unlinked from distributor={} and moved to the house distributor: retailer={} by={}",
+                distributorOrgId, retailerOrgId, requestingUserId);
+    }
+
+    /**
+     * Drop everything the outgoing distributor granted this shop, back to unrestricted.
+     *
+     * Shared by unlinking and by an admin re-filing a shop, because both leave the
+     * grants pointing at a distributor who no longer supplies the shop — and a
+     * restriction whose author is gone is one nobody can lift.
+     */
+    private void clearDistributorGrants(String retailerOrgId) {
         brandAssignmentRepository.deleteByRetailerId(retailerOrgId);
         featureAssignmentRepository.deleteByRetailerId(retailerOrgId);
         orgRepository.findById(retailerOrgId).ifPresent(retailer -> {
@@ -272,9 +326,54 @@ public class AccountService {
             retailer.setFeaturesRestricted(false);
             orgRepository.save(retailer);
         });
+    }
 
-        log.info("Retailer unlinked: distributor={} retailer={} by={}",
-                distributorOrgId, retailerOrgId, requestingUserId);
+    /**
+     * ADMIN: move a shop to another distributor (or to the house one when blank).
+     *
+     * The distributor chosen when a shop is created was permanent: {@link
+     * #linkRetailer} demands the caller own BOTH organizations, which an admin never
+     * does, so a shop filed under the wrong distributor — or one that changed supplier —
+     * could not be moved at all. Authorisation is the ADMIN role at the endpoint; the
+     * consent check on linkRetailer exists to stop a distributor helping themselves to
+     * someone else's shop, which is not what an admin re-filing one is.
+     *
+     * A no-op when the shop is already there, so pressing it twice does nothing rather
+     * than clearing the shop's grants a second time.
+     */
+    @Transactional
+    public OrgResponse moveRetailerToDistributor(String adminUserId, String retailerOrgId,
+                                                 String distributorOrgId) {
+        Organization retailer = orgRepository.findById(retailerOrgId)
+                .filter(o -> o.getType() == OrgType.RETAILER)
+                .orElseThrow(() -> new ResourceNotFoundException("Shop not found: " + retailerOrgId));
+        Organization target = (distributorOrgId == null || distributorOrgId.isBlank())
+                ? houseDistributorService.ensureHouseOrg().orElseThrow(() -> new IllegalStateException(
+                        "The house distributor could not be provisioned — the platform has no admin account."))
+                : orgRepository.findById(distributorOrgId.trim())
+                        .filter(o -> o.getType() == OrgType.DISTRIBUTOR)
+                        .orElseThrow(() -> new ResourceNotFoundException(
+                                "Distributor not found: " + distributorOrgId));
+
+        List<DistributorRetailerLink> existing = linkRepository.findByRetailerId(retailerOrgId);
+        if (existing.size() == 1 && existing.get(0).getDistributor().getId().equals(target.getId())) {
+            return OrgResponse.from(retailer);
+        }
+
+        linkRepository.deleteAll(existing);
+        linkRepository.flush();
+        // The grants belonged to the previous distributor; the new one starts from
+        // "everything", and tightens it themselves if they want to.
+        if (!existing.isEmpty()) {
+            clearDistributorGrants(retailerOrgId);
+        }
+        linkRepository.save(DistributorRetailerLink.builder()
+                .distributor(target)
+                .retailer(retailer)
+                .build());
+
+        log.info("Admin {} moved shop {} to distributor {}", adminUserId, retailerOrgId, target.getName());
+        return OrgResponse.from(retailer);
     }
 
     @Transactional(readOnly = true)
