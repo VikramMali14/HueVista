@@ -99,7 +99,7 @@ class HierarchyFlowIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"name":"Priya","email":"shop@example.com","password":"password123",
-                                 "shopName":"Mehta Paints","city":"Pune","state":"Maharashtra","tier":"pro"}"""))
+                                 "shopName":"Mehta Paints","city":"Pune","state":"Maharashtra"}"""))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.role").value("RETAILER"));
 
@@ -161,8 +161,13 @@ class HierarchyFlowIntegrationTest {
                 .andExpect(jsonPath("$.roots[0].children[0].role").value("PAINTER"));
     }
 
+    /**
+     * An admin who names no distributor gets the house one, not a dangling shop.
+     * Shops used to be creatable with no distributor at all — outside every downline
+     * and answerable to nobody — so "none" now means "ours" and the tree stays whole.
+     */
     @Test
-    void admin_created_retailer_is_a_direct_root_with_no_distributor() throws Exception {
+    void admin_created_retailer_lands_under_the_house_distributor() throws Exception {
         seedAdmin();
         String adminToken = tokenFor("root@example.com", "password123");
 
@@ -171,19 +176,67 @@ class HierarchyFlowIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"name":"Direct Owner","email":"direct@example.com","password":"password123",
-                                 "shopName":"Direct Paints","tier":"starter"}"""))
+                                 "shopName":"Direct Paints"}"""))
                 .andExpect(status().isCreated());
 
         User retailer = userRepository.findByEmail("direct@example.com").orElseThrow();
         assertThat(retailer.getCreatedById()).isNotNull(); // the admin
         assertThat(retailer.getRole()).isEqualTo(UserRole.RETAILER);
 
+        Organization house = organizationRepository.findBySlug("huevista-direct").orElseThrow();
+        Organization retailerOrg =
+                organizationRepository.findByOwnerIdAndType(retailer.getId(), OrgType.RETAILER).get(0);
+        assertThat(distributorLinkRepository
+                .existsByDistributorIdAndRetailerId(house.getId(), retailerOrg.getId())).isTrue();
+
         mockMvc.perform(get("/api/hierarchy/network")
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.roots[0].role").value("RETAILER"))
+                // The house org is a distributor NODE but not a distributor ACCOUNT,
+                // which is why the total stays at zero.
+                .andExpect(jsonPath("$.roots[0].role").value("DISTRIBUTOR"))
+                .andExpect(jsonPath("$.roots[0].house").value(true))
+                .andExpect(jsonPath("$.roots[0].children[0].role").value("RETAILER"))
                 .andExpect(jsonPath("$.totals.distributors").value(0))
                 .andExpect(jsonPath("$.totals.retailers").value(1));
+    }
+
+    /** An admin can file a new shop under any distributor they choose. */
+    @Test
+    void admin_can_choose_the_distributor_a_new_shop_belongs_under() throws Exception {
+        seedAdmin();
+        String adminToken = tokenFor("root@example.com", "password123");
+
+        mockMvc.perform(post("/api/admin/distributors")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Dist Owner","email":"dist@example.com","password":"password123",
+                                 "companyName":"Western Paints Co","city":"Pune","state":"Maharashtra"}"""))
+                .andExpect(status().isCreated());
+        User distributor = userRepository.findByEmail("dist@example.com").orElseThrow();
+        Organization distOrg =
+                organizationRepository.findByOwnerIdAndType(distributor.getId(), OrgType.DISTRIBUTOR).get(0);
+
+        // The picker offers the house org first, then real distributors.
+        mockMvc.perform(get("/api/admin/distributors").header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].house").value(true))
+                .andExpect(jsonPath("$[1].name").value("Western Paints Co"));
+
+        mockMvc.perform(post("/api/admin/retailers")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Priya","email":"chosen@example.com","password":"password123",
+                                 "shopName":"Chosen Paints","distributorOrgId":"%s"}""".formatted(distOrg.getId())))
+                .andExpect(status().isCreated());
+
+        User retailer = userRepository.findByEmail("chosen@example.com").orElseThrow();
+        Organization retailerOrg =
+                organizationRepository.findByOwnerIdAndType(retailer.getId(), OrgType.RETAILER).get(0);
+        assertThat(distributorLinkRepository
+                .existsByDistributorIdAndRetailerId(distOrg.getId(), retailerOrg.getId())).isTrue();
     }
 
     @Test
@@ -299,7 +352,7 @@ class HierarchyFlowIntegrationTest {
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"" + owner + "\",\"email\":\"" + email
-                                + "\",\"password\":\"password123\",\"shopName\":\"" + shopName + "\",\"tier\":\"pro\"}"))
+                                + "\",\"password\":\"password123\",\"shopName\":\"" + shopName + "\"}"))
                 .andExpect(status().isCreated());
     }
 

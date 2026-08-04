@@ -123,45 +123,68 @@ public class AuthService {
      */
     @Transactional
     public AdminUserResponse adminCreateRetailer(CreateRetailerRequest request) {
-        String email = com.gridstore.huevista.auth.util.Emails.normalize(request.getEmail());
+        return provisionRetailer(request.getName(), request.getEmail(), request.getPhone(),
+                request.getShopName(), request.getCity(), request.getState(),
+                passwordEncoder.encode(request.getPassword()), true);
+    }
+
+    /**
+     * Create a RETAILER account from an ALREADY-HASHED password.
+     *
+     * <p>The shared body of every shop-creation path. Taking the hash rather than the
+     * plaintext is what lets a shop-account request keep the owner's own password:
+     * they choose it on the public form, it is hashed there, and this copies the hash
+     * onto the user row. Nothing in between — not the request row, not the admin
+     * console, not a log line — ever holds the plaintext, so the shop signs in with
+     * the password they picked and no human being has ever seen it.
+     *
+     * @param sendWelcomeEmail false when the caller sends its own, richer mail
+     */
+    @Transactional
+    public AdminUserResponse provisionRetailer(String name, String rawEmail, String phone,
+                                               String shopName, String city, String state,
+                                               String passwordHash, boolean sendWelcomeEmail) {
+        String email = com.gridstore.huevista.auth.util.Emails.normalize(rawEmail);
         if (userRepository.existsByEmail(email)) {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.CONFLICT, "Email already in use: " + email);
         }
         User user = User.builder()
-                .name(request.getName())
+                .name(name)
                 .email(email)
-                .password(passwordEncoder.encode(request.getPassword()))
+                .password(passwordHash)
                 .provider(AuthProvider.LOCAL)
-                .emailVerified(true) // admin-vetted
-                .phoneNumber(blankToNull(request.getPhone()))
+                .emailVerified(true) // vetted by the creator, or by the code the owner confirmed
+                .phoneNumber(blankToNull(phone))
                 .role(com.gridstore.huevista.auth.model.UserRole.RETAILER)
                 .build();
         userRepository.save(user);
-        accountService.provisionRetailerOrg(user.getId(), request.getShopName(), request.getCity(), request.getState());
-        // Every new shop starts on the free tier regardless of the tier they asked for —
-        // the requested tier is a sales note, not an entitlement. An admin can grant a paid
-        // plan outright (adminGrantSubscription) when a shop has actually bought one.
+        accountService.provisionRetailerOrg(user.getId(), shopName, city, state);
+        // Every new shop starts on the free tier. There is no way to be created onto a
+        // paid plan: a plan is bought (billing checkout) or granted deliberately by an
+        // admin afterwards (adminGrantSubscription), never handed out at signup.
         billingService.grantTrial(user.getId(), com.gridstore.huevista.billing.model.Plan.FREE, TRIAL_DAYS);
-        sendShopWelcomeEmail(user, request);
-        log.info("Admin created RETAILER {} (shop: {})", user.getEmail(), request.getShopName());
+        if (sendWelcomeEmail) {
+            sendShopWelcomeEmail(user, shopName);
+        }
+        log.info("Created RETAILER {} (shop: {})", user.getEmail(), shopName);
         return AdminUserResponse.from(user);
     }
 
     /**
      * Best-effort welcome email with the new shop's login — never fails creation.
-     * Deliberately does NOT include the initial password: email is plaintext at
-     * rest with most providers, so the credential would outlive its purpose in an
-     * inbox forever. The admin hands the password over out-of-band (they set it),
-     * and the mail points at "Forgot password" for the owner to mint their own.
+     * Deliberately does NOT include the password: email is plaintext at rest with
+     * most providers, so the credential would outlive its purpose in an inbox
+     * forever. When an admin set the initial password they hand it over out-of-band;
+     * either way the mail points at "Forgot password" to mint a new one.
      */
-    private void sendShopWelcomeEmail(User user, CreateRetailerRequest request) {
+    private void sendShopWelcomeEmail(User user, String shopName) {
         try {
             String url = firstFrontendOrigin();
             emailSender.send(user.getEmail(),
                     "Your HueVista shop account is ready",
-                    "Hi " + request.getName() + ",\n\n"
-                            + "Your HueVista shop account for \"" + request.getShopName() + "\" is ready.\n\n"
+                    "Hi " + user.getName() + ",\n\n"
+                            + "Your HueVista shop account for \"" + shopName + "\" is ready.\n\n"
                             + "Sign in:  " + url + "/sign-in\n"
                             + "Email:    " + user.getEmail() + "\n\n"
                             + "Your initial password comes from the person who set up your account. "
