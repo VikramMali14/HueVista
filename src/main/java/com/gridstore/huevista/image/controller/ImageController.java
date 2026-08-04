@@ -92,7 +92,9 @@ public class ImageController {
         // another user's directory (or, with enough "../", outside the storage root
         // entirely). Reject any traversal / absolute / backslash / NUL payload, then
         // require the (now-clean) key to live under the caller's own prefix.
-        if (!isOwnedKey(storageKey, userId) && !isManagedGuestKey(storageKey, userId)) {
+        if (!isOwnedKey(storageKey, userId)
+                && !isManagedGuestKey(storageKey, userId)
+                && !isFreeLibraryKey(storageKey)) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
@@ -120,6 +122,27 @@ public class ImageController {
             return false;
         }
         return storageKey.startsWith(userId + "/");
+    }
+
+    /**
+     * The free-project library is a shelf, not a user's folder: its photos and
+     * masks belong to no one and are readable by any signed-in caller. They have
+     * to be — a project started from a template points straight at these keys, so
+     * without this the room would 403 for the very person who just opened it.
+     *
+     * Same traversal guard as {@link #isOwnedKey}, and it is a READ allowance only:
+     * nothing here writes, and per-project cleanup refuses to delete these files
+     * (see {@code ProjectService.deleteOwnedBlob}).
+     */
+    static boolean isFreeLibraryKey(String storageKey) {
+        if (storageKey == null || storageKey.isBlank()) return false;
+        if (storageKey.contains("..")
+                || storageKey.contains("\\")
+                || storageKey.indexOf('\0') >= 0
+                || storageKey.startsWith("/")) {
+            return false;
+        }
+        return storageKey.startsWith(com.gridstore.huevista.library.FreeProjectStorage.PREFIX);
     }
 
     /**

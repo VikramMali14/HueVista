@@ -433,31 +433,10 @@ public class ProjectService {
         // original uploaded image is owned by UploadedImage and left intact; only
         // the per-region masks and the (project-specific) cleaned image are removed.
         for (Region region : project.getRegions()) {
-            String maskUrl = region.getMaskUrl();
-            if (maskUrl != null && !maskUrl.isBlank()) {
-                try {
-                    storageService.delete(extractStorageKey(maskUrl));
-                } catch (Exception e) {
-                    log.warn("Failed to delete mask for region {}: {}", region.getId(), e.getMessage());
-                }
-            }
+            deleteOwnedBlob(region.getMaskUrl(), "mask for region " + region.getId());
         }
-        String cleanedKey = project.getCleanedImageStorageKey();
-        if (cleanedKey != null && !cleanedKey.isBlank()) {
-            try {
-                storageService.delete(cleanedKey);
-            } catch (Exception e) {
-                log.warn("Failed to delete cleaned image {}: {}", cleanedKey, e.getMessage());
-            }
-        }
-        String rawMaskKey = project.getRawMaskStorageKey();
-        if (rawMaskKey != null && !rawMaskKey.isBlank()) {
-            try {
-                storageService.delete(rawMaskKey);
-            } catch (Exception e) {
-                log.warn("Failed to delete raw mask {}: {}", rawMaskKey, e.getMessage());
-            }
-        }
+        deleteOwnedBlob(project.getCleanedImageStorageKey(), "cleaned image");
+        deleteOwnedBlob(project.getRawMaskStorageKey(), "raw mask");
         projectRepository.delete(project);
         auditService.record(userId, "PROJECT_DELETE", "PROJECT", projectId, "name=" + project.getName());
         log.info("Project deleted: id={} user={}", projectId, userId);
@@ -801,13 +780,7 @@ public class ProjectService {
         }
         String maskUrl = region.getMaskUrl();
         regionRepository.delete(region);
-        if (maskUrl != null && !maskUrl.isBlank()) {
-            try {
-                storageService.delete(extractStorageKey(maskUrl));
-            } catch (RuntimeException e) {
-                log.warn("Could not delete mask for region {} (row already removed): {}", regionId, e.getMessage());
-            }
-        }
+        deleteOwnedBlob(maskUrl, "mask for region " + regionId);
         log.info("Manual region deleted: project={} region={}", projectId, regionId);
     }
 
@@ -892,12 +865,8 @@ public class ProjectService {
         // Best-effort cleanup of the mask we just replaced (skip foreign URLs and
         // the new key). A failure here is harmless — the row already points at the
         // new mask.
-        if (oldMask != null && !oldMask.isBlank() && !oldMask.equals(key)) {
-            try {
-                storageService.delete(extractStorageKey(oldMask));
-            } catch (RuntimeException e) {
-                log.warn("Could not delete old mask for region {}: {}", regionId, e.getMessage());
-            }
+        if (!key.equals(oldMask)) {
+            deleteOwnedBlob(oldMask, "previous mask for region " + regionId);
         }
 
         log.info("Region mask replaced: project={} region={} category={}",
@@ -1372,6 +1341,35 @@ public class ProjectService {
 
     // Strips host + query from a presigned S3 URL to recover the object key
     // we originally wrote. Falls back to the whole path if parsing fails.
+    /**
+     * Deletes a blob this project OWNS, and deliberately does nothing for one it
+     * merely points at.
+     *
+     * A project started from the free-project library shares the template's photo
+     * and masks with every other copy — those rows name the files, they do not own
+     * them. Run unguarded, the ordinary tidy-up below would let the first user who
+     * deleted their copy (or redrew one wall of it) delete that room out from under
+     * everybody else holding it, and out of the library itself. So library keys are
+     * skipped here; {@code FreeProjectLibraryService.deleteTemplate} is the only
+     * thing that removes them.
+     *
+     * Best-effort otherwise: a stubborn blob must not fail the delete that matters,
+     * which is the row.
+     */
+    private void deleteOwnedBlob(String urlOrKey, String what) {
+        if (urlOrKey == null || urlOrKey.isBlank()) return;
+        String key = extractStorageKey(urlOrKey);
+        if (com.gridstore.huevista.library.FreeProjectStorage.isLibraryKey(key)) {
+            log.debug("Keeping shared free-library file {} ({})", key, what);
+            return;
+        }
+        try {
+            storageService.delete(key);
+        } catch (Exception e) {
+            log.warn("Failed to delete {} ({}): {}", what, key, e.getMessage());
+        }
+    }
+
     private String extractStorageKey(String url) {
         try {
             URI uri = URI.create(url);

@@ -1,0 +1,453 @@
+package com.gridstore.huevista.library.service;
+
+import com.gridstore.huevista.auth.model.User;
+import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.common.audit.AuditService;
+import com.gridstore.huevista.common.exception.ResourceNotFoundException;
+import com.gridstore.huevista.common.exception.StorageException;
+import com.gridstore.huevista.image.model.ImageType;
+import com.gridstore.huevista.image.model.UploadedImage;
+import com.gridstore.huevista.image.repository.ImageRepository;
+import com.gridstore.huevista.image.service.StorageService;
+import com.gridstore.huevista.library.FreeProjectStorage;
+import com.gridstore.huevista.library.dto.*;
+import com.gridstore.huevista.library.model.FreeProjectTemplate;
+import com.gridstore.huevista.library.model.FreeProjectTemplateRegion;
+import com.gridstore.huevista.library.model.TemplateSpace;
+import com.gridstore.huevista.library.repository.FreeProjectTemplateRepository;
+import com.gridstore.huevista.project.model.Project;
+import com.gridstore.huevista.project.model.ProjectStatus;
+import com.gridstore.huevista.project.model.Region;
+import com.gridstore.huevista.project.repository.ProjectRepository;
+import com.gridstore.huevista.project.repository.RegionRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * The free-project library: ready-made rooms an admin publishes once and anyone
+ * can open without uploading a photo or running wall detection.
+ *
+ * Two moves, and the asymmetry between them is the design.
+ *
+ * PUBLISHING is expensive and rare. It takes a project that has already been
+ * through the pipeline — real photo, real masks, tuned by hand if need be — and
+ * copies its files ONCE into {@code free-projects/<slug>/}. That copy is the last
+ * time any image processing happens for this room, ever.
+ *
+ * STARTING A COPY is cheap and constant. It writes rows and nothing else: an
+ * uploaded_images row, a projects row, one regions row per wall, all pointing at
+ * the keys the template already owns. No bytes are read, nothing is uploaded, the
+ * AI is not called, and no credit or quota is touched — a free project is free in
+ * the literal sense. Ten thousand people opening the same living room cost ten
+ * thousand rows of a few hundred bytes over one copy of the pixels.
+ *
+ * What makes that safe is {@link FreeProjectStorage#isLibraryKey}: because the
+ * copies do not own their bytes, the ordinary project cleanup must never delete
+ * them, and it checks before it does.
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class FreeProjectLibraryService {
+
+    private final FreeProjectTemplateRepository templateRepository;
+    private final ProjectRepository projectRepository;
+    private final RegionRepository regionRepository;
+    private final ImageRepository imageRepository;
+    private final UserRepository userRepository;
+    private final StorageService storageService;
+    private final AuditService auditService;
+
+    /** How many of the admin's own projects the publish picker offers. */
+    private static final int PUBLISHABLE_PAGE_SIZE = 60;
+
+    // ─── Reading ─────────────────────────────────────────────────────────────
+
+    /**
+     * The gallery. URLs are minted per call rather than stored: in S3 mode
+     * {@code getPublicUrl} presigns, and a saved link would be dead within the hour.
+     */
+    @Transactional(readOnly = true)
+    public List<FreeProjectTemplateResponse> listTemplates(boolean includeUnpublished) {
+        List<FreeProjectTemplate> templates = includeUnpublished
+                ? templateRepository.findAllByOrderBySpaceAscRoomKeyAscDisplayOrderAscTitleAsc()
+                : templateRepository.findByPublishedTrueOrderBySpaceAscRoomKeyAscDisplayOrderAscTitleAsc();
+        return templates.stream().map(this::toResponse).toList();
+    }
+
+    /** The admin's own projects, marked with whether each one can be published. */
+    @Transactional(readOnly = true)
+    public List<PublishableProjectResponse> listPublishableProjects(String adminUserId) {
+        return projectRepository
+                .findByUserIdWithImage(adminUserId, PageRequest.of(0, PUBLISHABLE_PAGE_SIZE))
+                .stream()
+                .map(p -> {
+                    List<Region> regions = regionRepository.findByProjectIdOrderByDisplayOrderAsc(p.getId());
+                    long withMasks = regions.stream().filter(r -> hasMask(r.getMaskUrl())).count();
+                    String reason = null;
+                    if (withMasks == 0) {
+                        reason = p.getStatus() == ProjectStatus.SEGMENTED
+                                ? "No walls on this project yet — mark some in the studio first."
+                                : "Not segmented yet — run wall detection, or mark the walls by hand.";
+                    }
+                    return PublishableProjectResponse.builder()
+                            .id(p.getId())
+                            .name(p.getName())
+                            .roomType(p.getRoomType())
+                            .status(p.getStatus().name())
+                            .imageUrl(storageService.getPublicUrl(p.getImage().getStorageKey()))
+                            .regionCount((int) withMasks)
+                            .eligible(withMasks > 0)
+                            .ineligibleReason(reason)
+                            .updatedAt(p.getUpdatedAt())
+                            .build();
+                })
+                .toList();
+    }
+
+    // ─── Publishing ──────────────────────────────────────────────────────────
+
+    /**
+     * Freeze one of the admin's projects into the library.
+     *
+     * The files are COPIED rather than referenced, so the template stops depending
+     * on the project it came from: the admin can delete that project, or keep
+     * repainting it, without the shelf changing under anyone.
+     */
+    @Transactional
+    public FreeProjectTemplateResponse publishFromProject(String adminUserId, PublishTemplateRequest request) {
+        Project project = projectRepository.findByIdAndUserId(request.getProjectId(), adminUserId)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Project not found: " + request.getProjectId()));
+
+        List<Region> regions = regionRepository.findByProjectIdOrderByDisplayOrderAsc(project.getId())
+                .stream().filter(r -> hasMask(r.getMaskUrl())).toList();
+        if (regions.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "This project has no walls to copy. Segment it (or mark the walls by hand) before publishing.");
+        }
+
+        TemplateSpace space = parseSpace(request.getSpace());
+        String slug = uniqueSlug(request.getSlug() != null && !request.getSlug().isBlank()
+                ? request.getSlug()
+                : slugify(request.getTitle()));
+        String folder = FreeProjectStorage.folderFor(slug);
+
+        // Copy the photo first: it is the one file the template cannot do without, so
+        // failing here leaves nothing behind but a rolled-back transaction.
+        UploadedImage sourceImage = project.getImage();
+        byte[] photo = read(sourceImage.getStorageKey(), "photo");
+        String imageKey = write(photo, folder, "source" + extensionOf(sourceImage.getOriginalFilename(), ".jpg"),
+                sourceImage.getContentType());
+
+        String cleanedKey = null;
+        if (project.getCleanedImageStorageKey() != null && !project.getCleanedImageStorageKey().isBlank()) {
+            cleanedKey = write(read(project.getCleanedImageStorageKey(), "cleaned photo"),
+                    folder, "cleaned.png", "image/png");
+        }
+
+        // Dimensions are denormalised onto the template so starting a copy never has
+        // to open the file. Read them here, where the bytes are already in hand.
+        Integer width = sourceImage.getWidth();
+        Integer height = sourceImage.getHeight();
+        if (width == null || height == null) {
+            int[] wh = dimensionsOf(photo);
+            if (wh != null) {
+                width = wh[0];
+                height = wh[1];
+            }
+        }
+
+        FreeProjectTemplate template = FreeProjectTemplate.builder()
+                .slug(slug)
+                .title(request.getTitle().trim())
+                .space(space)
+                .roomKey(request.getRoomKey().trim().toUpperCase(Locale.ROOT))
+                .roomLabel(resolveRoomLabel(request))
+                .description(blankToNull(request.getDescription()))
+                .imageStorageKey(imageKey)
+                .imageContentType(sourceImage.getContentType())
+                .imageFileSize(photo.length)
+                .imageWidth(width)
+                .imageHeight(height)
+                .imageType(sourceImage.getImageType() != null ? sourceImage.getImageType() : ImageType.UNKNOWN)
+                .cleanedImageStorageKey(cleanedKey)
+                .published(request.getPublished() == null || request.getPublished())
+                .displayOrder(request.getDisplayOrder() != null ? request.getDisplayOrder() : 0)
+                .sourceProjectId(project.getId())
+                .createdByUserId(adminUserId)
+                .build();
+
+        int order = 0;
+        for (Region region : regions) {
+            byte[] mask = read(storageKeyOf(region.getMaskUrl()), "mask for region " + region.getId());
+            String maskKey = write(mask, folder, "mask-" + order + ".png", "image/png");
+            template.getRegions().add(FreeProjectTemplateRegion.builder()
+                    .template(template)
+                    .label(region.getLabel())
+                    .category(region.getCategory())
+                    .maskStorageKey(maskKey)
+                    .appliedHexCode(region.getAppliedHexCode())
+                    .appliedShadeCode(region.getAppliedShadeCode())
+                    .displayOrder(order++)
+                    .build());
+        }
+
+        FreeProjectTemplate saved = templateRepository.save(template);
+        auditService.record(adminUserId, "FREE_TEMPLATE_PUBLISHED", "FREE_PROJECT_TEMPLATE", saved.getId(),
+                "slug=" + slug + " space=" + space + " room=" + saved.getRoomKey()
+                        + " walls=" + regions.size() + " from=" + project.getId());
+        log.info("[library] published template {} ({} walls) from project {} by {}",
+                slug, regions.size(), project.getId(), adminUserId);
+        return toResponse(saved);
+    }
+
+    // ─── Starting a copy ─────────────────────────────────────────────────────
+
+    /**
+     * Give {@code userId} their own copy of a template.
+     *
+     * Rows only. The new image row and every new region row point at the template's
+     * storage keys, which is what keeps this O(walls) inserts instead of a photo
+     * upload plus a segmentation run. The project is born SEGMENTED because its
+     * walls are already there — there is nothing for the pipeline to do.
+     *
+     * Free by construction: no entitlement is claimed, no plan credit reserved and
+     * no points spent, because nothing expensive happened.
+     */
+    @Transactional
+    public StartedProjectResponse startFromTemplate(String userId, String templateId) {
+        FreeProjectTemplate template = templateRepository.findById(templateId)
+                .orElseThrow(() -> new ResourceNotFoundException("Template not found: " + templateId));
+        if (!template.isPublished()) {
+            throw new IllegalArgumentException("That template is not published yet.");
+        }
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+        // Shares the template's storage key on purpose — this row names the file, it
+        // does not own it. Deleting the project deletes this row and leaves the file.
+        UploadedImage image = imageRepository.save(UploadedImage.builder()
+                .user(user)
+                .originalFilename(template.getSlug() + extensionOf(template.getImageStorageKey(), ".jpg"))
+                .storageKey(template.getImageStorageKey())
+                .contentType(template.getImageContentType())
+                .fileSize(template.getImageFileSize())
+                .width(template.getImageWidth())
+                .height(template.getImageHeight())
+                .imageType(template.getImageType())
+                .build());
+
+        Project project = projectRepository.save(Project.builder()
+                .user(user)
+                .image(image)
+                .name(template.getTitle())
+                .roomType(template.getRoomLabel())
+                .status(ProjectStatus.SEGMENTED)
+                .cleanedImageStorageKey(template.getCleanedImageStorageKey())
+                .build());
+
+        List<Region> copies = new ArrayList<>();
+        for (FreeProjectTemplateRegion tr : template.getRegions()) {
+            copies.add(Region.builder()
+                    .project(project)
+                    .label(tr.getLabel())
+                    .category(tr.getCategory())
+                    // Both columns carry the key, matching how the pipeline writes its
+                    // own regions; the read path presigns whichever it finds.
+                    .maskUrl(tr.getMaskStorageKey())
+                    .maskData(tr.getMaskStorageKey())
+                    .appliedHexCode(tr.getAppliedHexCode())
+                    .appliedShadeCode(tr.getAppliedShadeCode())
+                    .displayOrder(tr.getDisplayOrder())
+                    .manual(false)
+                    .build());
+        }
+        regionRepository.saveAll(copies);
+        templateRepository.incrementTimesUsed(template.getId());
+
+        auditService.record(userId, "FREE_TEMPLATE_STARTED", "PROJECT", project.getId(),
+                "template=" + template.getSlug() + " walls=" + copies.size());
+        log.info("[library] project {} started from template {} by {} ({} walls, no AI, no credit)",
+                project.getId(), template.getSlug(), userId, copies.size());
+
+        return StartedProjectResponse.builder()
+                .projectId(project.getId())
+                .name(project.getName())
+                .status(project.getStatus().name())
+                .regionCount(copies.size())
+                .templateId(template.getId())
+                .templateTitle(template.getTitle())
+                .build();
+    }
+
+    // ─── Editing the shelf ───────────────────────────────────────────────────
+
+    /** Flip a template between listed and hidden without touching its files. */
+    @Transactional
+    public FreeProjectTemplateResponse setPublished(String adminUserId, String templateId, boolean published) {
+        FreeProjectTemplate template = templateRepository.findById(templateId)
+                .orElseThrow(() -> new ResourceNotFoundException("Template not found: " + templateId));
+        template.setPublished(published);
+        auditService.record(adminUserId, published ? "FREE_TEMPLATE_PUBLISHED" : "FREE_TEMPLATE_HIDDEN",
+                "FREE_PROJECT_TEMPLATE", templateId, "slug=" + template.getSlug());
+        return toResponse(templateRepository.save(template));
+    }
+
+    /**
+     * Take a template off the shelf.
+     *
+     * {@code purgeFiles} defaults to false, and that default is the important part:
+     * copies already in people's accounts point at these exact files, so deleting
+     * the blobs would blank out rooms that are open and being worked on. Dropping
+     * the rows alone stops anyone starting a new copy while leaving every existing
+     * one intact. Purge only once you know nobody is holding a copy — this is the
+     * single place in the codebase permitted to delete library files.
+     */
+    @Transactional
+    public void deleteTemplate(String adminUserId, String templateId, boolean purgeFiles) {
+        FreeProjectTemplate template = templateRepository.findById(templateId)
+                .orElseThrow(() -> new ResourceNotFoundException("Template not found: " + templateId));
+
+        List<String> keys = new ArrayList<>();
+        if (purgeFiles) {
+            keys.add(template.getImageStorageKey());
+            if (template.getCleanedImageStorageKey() != null) keys.add(template.getCleanedImageStorageKey());
+            template.getRegions().forEach(r -> keys.add(r.getMaskStorageKey()));
+        }
+
+        templateRepository.delete(template);
+
+        int purged = 0;
+        for (String key : keys) {
+            try {
+                storageService.delete(key);
+                purged++;
+            } catch (Exception e) {
+                // Best-effort: the row is already gone, and a stray blob is a smaller
+                // problem than an error that invites a second delete.
+                log.warn("[library] could not delete {}: {}", key, e.getMessage());
+            }
+        }
+
+        auditService.record(adminUserId, "FREE_TEMPLATE_DELETED", "FREE_PROJECT_TEMPLATE", templateId,
+                "slug=" + template.getSlug() + " filesPurged=" + purged);
+        log.info("[library] template {} deleted by {} (files purged: {})",
+                template.getSlug(), adminUserId, purged);
+    }
+
+    // ─── Helpers ─────────────────────────────────────────────────────────────
+
+    private FreeProjectTemplateResponse toResponse(FreeProjectTemplate t) {
+        List<FreeProjectTemplateRegionResponse> regions = t.getRegions().stream()
+                .map(r -> FreeProjectTemplateRegionResponse.from(r,
+                        storageService.getPublicUrl(r.getMaskStorageKey())))
+                .toList();
+        // The cleaned photo is what the masks line up with, so it is the one to show
+        // when there is one — the same choice the studio makes.
+        String key = t.getCleanedImageStorageKey() != null && !t.getCleanedImageStorageKey().isBlank()
+                ? t.getCleanedImageStorageKey()
+                : t.getImageStorageKey();
+        return FreeProjectTemplateResponse.from(t, storageService.getPublicUrl(key), regions);
+    }
+
+    private byte[] read(String key, String what) {
+        try {
+            return storageService.load(key);
+        } catch (IOException | RuntimeException e) {
+            throw new StorageException("Could not read the " + what + " for this project", e);
+        }
+    }
+
+    private String write(byte[] bytes, String folder, String filename, String contentType) {
+        try {
+            return storageService.store(bytes, folder, filename, contentType);
+        } catch (IOException | RuntimeException e) {
+            throw new StorageException("Could not copy " + filename + " into the free library", e);
+        }
+    }
+
+    private static boolean hasMask(String maskUrl) {
+        return maskUrl != null && !maskUrl.isBlank();
+    }
+
+    /** Region mask columns hold a bare key on new rows and a URL on old ones. */
+    private static String storageKeyOf(String urlOrKey) {
+        try {
+            String path = URI.create(urlOrKey).getRawPath();
+            if (path == null) return urlOrKey;
+            return path.startsWith("/") ? path.substring(1) : path;
+        } catch (IllegalArgumentException e) {
+            return urlOrKey;
+        }
+    }
+
+    private static int[] dimensionsOf(byte[] image) {
+        try {
+            BufferedImage decoded = ImageIO.read(new ByteArrayInputStream(image));
+            return decoded == null ? null : new int[]{decoded.getWidth(), decoded.getHeight()};
+        } catch (IOException e) {
+            return null; // dimensions are a nicety, not a reason to fail a publish
+        }
+    }
+
+    private static String extensionOf(String nameOrKey, String fallback) {
+        if (nameOrKey == null) return fallback;
+        int dot = nameOrKey.lastIndexOf('.');
+        if (dot < 0 || dot == nameOrKey.length() - 1) return fallback;
+        String ext = nameOrKey.substring(dot).toLowerCase(Locale.ROOT);
+        return ext.matches("^\\.[a-z0-9]{1,5}$") ? ext : fallback;
+    }
+
+    private static TemplateSpace parseSpace(String raw) {
+        try {
+            return TemplateSpace.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException | NullPointerException e) {
+            throw new IllegalArgumentException("Space must be INTERIOR or EXTERIOR");
+        }
+    }
+
+    private static String resolveRoomLabel(PublishTemplateRequest request) {
+        if (request.getRoomLabel() != null && !request.getRoomLabel().isBlank()) {
+            return request.getRoomLabel().trim();
+        }
+        // "LIVING_ROOM" → "Living room"
+        String words = request.getRoomKey().trim().toLowerCase(Locale.ROOT).replace('_', ' ');
+        return words.isEmpty() ? "Other" : Character.toUpperCase(words.charAt(0)) + words.substring(1);
+    }
+
+    /** Lowercase, hyphenated, [a-z0-9-] only — it becomes a storage folder. */
+    static String slugify(String title) {
+        String base = title == null ? "" : title.toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("(^-+)|(-+$)", "");
+        if (base.length() > 100) base = base.substring(0, 100).replaceAll("-+$", "");
+        return base.isEmpty() ? "room" : base;
+    }
+
+    private String uniqueSlug(String candidate) {
+        String base = slugify(candidate);
+        if (!templateRepository.existsBySlug(base)) return base;
+        for (int i = 2; i < 500; i++) {
+            String next = base + "-" + i;
+            if (!templateRepository.existsBySlug(next)) return next;
+        }
+        throw new IllegalArgumentException("Too many templates share that name — give this one a different title.");
+    }
+
+    private static String blankToNull(String s) {
+        return (s == null || s.isBlank()) ? null : s.trim();
+    }
+}
