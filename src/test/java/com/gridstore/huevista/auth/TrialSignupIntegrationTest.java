@@ -4,8 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.auth.dto.AuthResponse;
-import com.gridstore.huevista.auth.dto.CreateRetailerRequest;
-import com.gridstore.huevista.auth.dto.RegisterRequest;
 import com.gridstore.huevista.auth.model.AuthProvider;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.model.UserRole;
@@ -65,19 +63,14 @@ class TrialSignupIntegrationTest {
         String adminToken = objectMapper.readValue(
                 login.getResponse().getContentAsString(), AuthResponse.class).getAccessToken();
 
-        CreateRetailerRequest req = new CreateRetailerRequest();
-        req.setName("Shop Owner");
-        req.setEmail("shop@example.com");
-        req.setPassword("password123");
-        req.setShopName("Sharda Paints");
-        req.setCity("Belgavi");
-        req.setState("Karnataka");
-        req.setTier("pro");
-
+        // Written as JSON, not serialized from CreateRetailerRequest: the password
+        // field is write-only, so a serialized DTO would carry no password at all.
         mockMvc.perform(post("/api/admin/retailers")
                         .header("Authorization", "Bearer " + adminToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(req)))
+                        .content("""
+                                {"name":"Shop Owner","email":"shop@example.com","password":"password123",
+                                 "shopName":"Sharda Paints","city":"Belgavi","state":"Karnataka"}"""))
                 .andExpect(status().isCreated());
 
         User retailer = userRepository.findByEmail("shop@example.com").orElseThrow();
@@ -110,14 +103,10 @@ class TrialSignupIntegrationTest {
     /** Public signup creates a plain CUSTOMER — no shop, no subscription. */
     @Test
     void public_signup_creates_a_customer_with_no_subscription() throws Exception {
-        RegisterRequest reg = new RegisterRequest();
-        reg.setName("Plain User");
-        reg.setEmail("plain@example.com");
-        reg.setPassword("password123");
-
         mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(reg)))
+                        .content("""
+                                {"name":"Plain User","email":"plain@example.com","password":"password123"}"""))
                 .andExpect(status().isCreated());
 
         User user = userRepository.findByEmail("plain@example.com").orElseThrow();

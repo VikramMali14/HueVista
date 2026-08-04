@@ -166,7 +166,9 @@ public class AdminController {
     }
 
     @Operation(summary = "Create a shop (retailer) account",
-            description = "Provisions a RETAILER user + organization + free trial. ADMIN only.")
+            description = "Provisions a RETAILER user + organization on the free plan, filed under the "
+                    + "distributor named in `distributorOrgId` — or the house distributor when that is "
+                    + "blank, so no shop is left outside the network. ADMIN only.")
     @PostMapping("/retailers")
     public ResponseEntity<AdminUserResponse> createRetailer(
             @Valid @RequestBody CreateRetailerRequest request,
@@ -176,6 +178,14 @@ public class AdminController {
         auditService.record(auth.getName(), "RETAILER_CREATED", "USER", created.getId(),
                 "shop account created by admin");
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    @Operation(summary = "Distributors a shop can be filed under",
+            description = "Every distributor organization, the platform's own (\"house\") one first — what "
+                    + "the create-shop form and the request queue fill their distributor picker from.")
+    @GetMapping("/distributors")
+    public ResponseEntity<List<com.gridstore.huevista.hierarchy.dto.DistributorOptionResponse>> listDistributors() {
+        return ResponseEntity.ok(hierarchyService.distributorOptions());
     }
 
     @Operation(summary = "Create a distributor account",

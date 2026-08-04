@@ -1,7 +1,6 @@
 package com.gridstore.huevista.admin;
 
 import com.gridstore.huevista.auth.dto.AuthResponse;
-import com.gridstore.huevista.auth.dto.RegisterRequest;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
@@ -163,14 +162,10 @@ class AdminControllerIntegrationTest {
     @Test
     void non_admin_user_cannot_access_admin_endpoints() throws Exception {
         // Register a normal user
-        RegisterRequest reg = new RegisterRequest();
-        reg.setName("Normal User");
-        reg.setEmail("normal@example.com");
-        reg.setPassword("password123");
-
         MvcResult result = mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(reg)))
+                        .content("""
+                                {"name":"Normal User","email":"normal@example.com","password":"password123"}"""))
                 .andExpect(status().isCreated())
                 .andReturn();
 

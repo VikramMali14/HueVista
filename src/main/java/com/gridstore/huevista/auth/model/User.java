@@ -23,7 +23,16 @@ public class User {
     @Column(unique = true, nullable = false)
     private String email;
 
-    // null for OAuth2 users — they have no password
+    /**
+     * BCrypt hash; null for OAuth2 users, who have no password.
+     *
+     * Marked write-only for JSON so the field cannot ride out on a response even if
+     * this entity is ever serialized directly instead of through a DTO. Nothing reads
+     * it but the authentication manager, and no endpoint returns it — not to the owner
+     * and not to an admin.
+     */
+    @com.fasterxml.jackson.annotation.JsonProperty(access =
+            com.fasterxml.jackson.annotation.JsonProperty.Access.WRITE_ONLY)
     private String password;
 
     @Column(nullable = false)

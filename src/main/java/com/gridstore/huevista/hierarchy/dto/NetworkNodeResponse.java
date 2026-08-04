@@ -30,6 +30,17 @@ public class NetworkNodeResponse {
     private String city;
     private String state;
 
+    /**
+     * DISTRIBUTOR nodes: true for the platform's own "house" distributor, which
+     * carries every shop no partner distributor brought in.
+     *
+     * <p>It is a real distributor organization in the tree but not a distributor
+     * ACCOUNT, which is why the distributor total (a count of distributor accounts)
+     * does not include it. The flag is here so the report can say so rather than
+     * leaving a reader to wonder why the numbers differ by one.
+     */
+    private boolean house;
+
     /** Subtree rollups. */
     private long retailerCount;
     private long painterCount;

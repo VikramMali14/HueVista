@@ -20,6 +20,10 @@ public interface UserRepository extends JpaRepository<User, String> {
 
     long countByRole(com.gridstore.huevista.auth.model.UserRole role);
 
+    /** The longest-standing account in a role — used to find the platform admin
+     *  that owns the house distributor organization. */
+    Optional<User> findFirstByRoleOrderByCreatedAtAsc(com.gridstore.huevista.auth.model.UserRole role);
+
     @Query("SELECT COUNT(u) FROM User u WHERE u.createdAt >= :since")
     long countByCreatedAtAfter(@Param("since") LocalDateTime since);
 

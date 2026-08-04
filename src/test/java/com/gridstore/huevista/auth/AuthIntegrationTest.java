@@ -1,9 +1,7 @@
 package com.gridstore.huevista.auth;
 
 import com.gridstore.huevista.auth.dto.AuthResponse;
-import com.gridstore.huevista.auth.dto.LoginRequest;
 import com.gridstore.huevista.auth.dto.RefreshTokenRequest;
-import com.gridstore.huevista.auth.dto.RegisterRequest;
 import com.gridstore.huevista.auth.model.RefreshToken;
 import com.gridstore.huevista.auth.repository.RefreshTokenRepository;
 import com.gridstore.huevista.auth.util.TokenHasher;
@@ -40,14 +38,16 @@ class AuthIntegrationTest {
     @Test
     void register_login_refresh_logout_flow() throws Exception {
         // 1. Register
-        RegisterRequest reg = new RegisterRequest();
-        reg.setName("Test User");
-        reg.setEmail("test@example.com");
-        reg.setPassword("password123");
+        // Bodies are written as JSON rather than serialized from the request DTOs:
+        // password fields are write-only, so a serialized DTO would arrive with no
+        // password at all. That is the point of the annotation, not a nuisance — a
+        // credential must not be able to travel back out of an object that holds one.
+        String reg = json("name", "Test User", "email", "test@example.com",
+                "password", "password123");
 
         MvcResult regResult = mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(reg)))
+                        .content(reg))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.accessToken").isNotEmpty())
                 .andExpect(jsonPath("$.refreshToken").isNotEmpty())
@@ -60,17 +60,13 @@ class AuthIntegrationTest {
         // 2. Duplicate email → 409
         mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(reg)))
+                        .content(reg))
                 .andExpect(status().isConflict());
 
         // 3. Login
-        LoginRequest login = new LoginRequest();
-        login.setEmail("test@example.com");
-        login.setPassword("password123");
-
         MvcResult loginResult = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(login)))
+                        .content(json("email", "test@example.com", "password", "password123")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accessToken").isNotEmpty())
                 .andReturn();
@@ -156,13 +152,10 @@ class AuthIntegrationTest {
     }
 
     private String registerAndGetRefreshToken(String email) throws Exception {
-        RegisterRequest reg = new RegisterRequest();
-        reg.setName("Refresh Tester");
-        reg.setEmail(email);
-        reg.setPassword("password123");
         MvcResult result = mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(reg)))
+                        .content(json("name", "Refresh Tester", "email", email,
+                                "password", "password123")))
                 .andExpect(status().isCreated())
                 .andReturn();
         return objectMapper.readValue(
@@ -179,23 +172,15 @@ class AuthIntegrationTest {
 
     @Test
     void login_with_wrong_password_returns_401() throws Exception {
-        RegisterRequest reg = new RegisterRequest();
-        reg.setName("Test User 2");
-        reg.setEmail("test2@example.com");
-        reg.setPassword("correct-password1");
-
         mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(reg)))
+                        .content(json("name", "Test User 2", "email", "test2@example.com",
+                                "password", "correct-password1")))
                 .andExpect(status().isCreated());
-
-        LoginRequest badLogin = new LoginRequest();
-        badLogin.setEmail("test2@example.com");
-        badLogin.setPassword("wrong-password");
 
         mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(badLogin)))
+                        .content(json("email", "test2@example.com", "password", "wrong-password")))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -207,14 +192,19 @@ class AuthIntegrationTest {
 
     @Test
     void register_with_invalid_email_returns_400() throws Exception {
-        RegisterRequest bad = new RegisterRequest();
-        bad.setName("Test");
-        bad.setEmail("not-an-email");
-        bad.setPassword("password123");
-
         mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(bad)))
+                        .content(json("name", "Test", "email", "not-an-email",
+                                "password", "password123")))
                 .andExpect(status().isBadRequest());
+    }
+
+    /** A JSON body from alternating key/value pairs. */
+    private String json(String... keyValues) throws Exception {
+        java.util.Map<String, String> body = new java.util.LinkedHashMap<>();
+        for (int i = 0; i + 1 < keyValues.length; i += 2) {
+            body.put(keyValues[i], keyValues[i + 1]);
+        }
+        return objectMapper.writeValueAsString(body);
     }
 }

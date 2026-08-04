@@ -24,6 +24,7 @@ import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.auth.service.AuthService;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
+import com.gridstore.huevista.hierarchy.dto.DistributorOptionResponse;
 import com.gridstore.huevista.hierarchy.dto.MyAccessResponse;
 import com.gridstore.huevista.hierarchy.dto.RetailerBrandOption;
 import com.gridstore.huevista.hierarchy.dto.RetailerFeatureOption;
@@ -86,6 +87,7 @@ public class HierarchyService {
     private final CustomerAccessCodeRepository accessCodeRepository;
     private final AccountService accountService;
     private final AuthService authService;
+    private final HouseDistributorService houseDistributorService;
     private final PainterService painterService;
     private final PasswordEncoder passwordEncoder;
     private final EmailSender emailSender;
@@ -165,6 +167,13 @@ public class HierarchyService {
                 com.gridstore.huevista.billing.model.Plan.FREE, FREE_TIER_DAYS);
     }
 
+    /** The distributor a shop is filed under, if any. */
+    @Transactional(readOnly = true)
+    public java.util.Optional<Organization> distributorOf(String retailerOrgId) {
+        return distributorLinkRepository.findByRetailerId(retailerOrgId).stream()
+                .findFirst().map(DistributorRetailerLink::getDistributor);
+    }
+
     /** The shop must sit under this distributor's org, or it is not theirs to change. */
     private void requireManagedShop(String distributorUserId, String retailerUserId) {
         Organization distributorOrg = firstOrgOf(distributorUserId, OrgType.DISTRIBUTOR)
@@ -184,19 +193,67 @@ public class HierarchyService {
     public AdminUserResponse createRetailer(String creatorUserId, CreateRetailerRequest request) {
         User creator = userRepository.findById(creatorUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + creatorUserId));
-
-        Organization distributorOrg = null;
-        if (creator.getRole() == UserRole.DISTRIBUTOR) {
-            distributorOrg = firstOrgOf(creatorUserId, OrgType.DISTRIBUTOR)
-                    .orElseThrow(() -> new IllegalStateException(
-                            "Your distributor organization was not found — contact the administrator."));
-        } else if (creator.getRole() != UserRole.ADMIN) {
-            throw new SecurityException("Only admins and distributors can create shop accounts.");
-        }
+        Organization distributorOrg = resolveCreationDistributor(creator, request.getDistributorOrgId());
 
         AdminUserResponse created = authService.adminCreateRetailer(request);
-        User retailerUser = userRepository.findById(created.getId())
-                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + created.getId()));
+        return finishRetailerSetup(created.getId(), creatorUserId, creator.getRole().name(), distributorOrg,
+                request.getBrandIds(), request.isBrandsUnrestricted(),
+                request.getFeatures(), request.isFeaturesUnrestricted());
+    }
+
+    /**
+     * Which distributor a newly created shop belongs under.
+     *
+     * <p>A DISTRIBUTOR always creates into their own org — they cannot file a shop
+     * under a competitor, so the requested id is ignored rather than validated. An
+     * ADMIN chooses: any distributor org by id, or none, which means the house
+     * distributor. "None" used to mean a shop with no distributor at all, dangling
+     * outside every downline; it now means the platform is the distributor, which is
+     * the same thing said honestly and keeps the network a single tree.
+     */
+    private Organization resolveCreationDistributor(User creator, String requestedOrgId) {
+        if (creator.getRole() == UserRole.DISTRIBUTOR) {
+            return firstOrgOf(creator.getId(), OrgType.DISTRIBUTOR)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "Your distributor organization was not found — contact the administrator."));
+        }
+        if (creator.getRole() != UserRole.ADMIN) {
+            throw new SecurityException("Only admins and distributors can create shop accounts.");
+        }
+        return resolveDistributorOrHouse(requestedOrgId);
+    }
+
+    /**
+     * A distributor org by id, or the house distributor when none was named. Shared
+     * by admin creation and by shop-request approval, so both file a shop the same way.
+     */
+    @Transactional
+    public Organization resolveDistributorOrHouse(String requestedOrgId) {
+        if (requestedOrgId != null && !requestedOrgId.isBlank()) {
+            return orgRepository.findById(requestedOrgId.trim())
+                    .filter(o -> o.getType() == OrgType.DISTRIBUTOR)
+                    .orElseThrow(() -> new ResourceNotFoundException(
+                            "Distributor not found: " + requestedOrgId));
+        }
+        return houseDistributorService.ensureHouseOrg().orElse(null);
+    }
+
+    /**
+     * Link a freshly created shop to its distributor, record who created it, and apply
+     * the brand/page grants — the part every creation path shares once the user exists.
+     *
+     * <p>Grants are applied whether or not a distributor is behind them. Skipping them
+     * for a shop with no distributor left it not merely unrestricted but
+     * UNRESTRICTABLE: this was the only place they were set at creation, and the
+     * editors refused afterwards for want of a distributor to attribute them to. A null
+     * distributor just means "granted by the platform".
+     */
+    private AdminUserResponse finishRetailerSetup(String retailerUserId, String creatorUserId,
+                                                  String creatorLabel, Organization distributorOrg,
+                                                  List<Long> brandIds, boolean brandsUnrestricted,
+                                                  List<String> features, boolean featuresUnrestricted) {
+        User retailerUser = userRepository.findById(retailerUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + retailerUserId));
         retailerUser.setCreatedById(creatorUserId);
         userRepository.save(retailerUser);
 
@@ -209,19 +266,74 @@ public class HierarchyService {
                     .retailer(retailerOrg)
                     .build());
         }
-        // Applied whether or not a distributor is behind them. Skipping the grants for an
-        // admin-created shop left it not merely unrestricted but UNRESTRICTABLE: this was
-        // the only place they were set at creation, and the editors refused afterwards for
-        // want of a distributor to attribute them to. A null distributor now just means
-        // "granted by the platform".
-        applyBrandGrant(distributorOrg, retailerOrg,
-                request.getBrandIds(), request.isBrandsUnrestricted());
-        applyFeatureGrant(distributorOrg, retailerOrg,
-                request.getFeatures(), request.isFeaturesUnrestricted());
-        log.info("{} created RETAILER {} (linked={}, brandsUnrestricted={}, featuresUnrestricted={})",
-                creator.getRole(), retailerUser.getEmail(), distributorOrg != null,
-                request.isBrandsUnrestricted(), request.isFeaturesUnrestricted());
-        return created;
+        applyBrandGrant(distributorOrg, retailerOrg, brandIds, brandsUnrestricted);
+        applyFeatureGrant(distributorOrg, retailerOrg, features, featuresUnrestricted);
+        log.info("{} created RETAILER {} (distributor={}, brandsUnrestricted={}, featuresUnrestricted={})",
+                creatorLabel, retailerUser.getEmail(),
+                distributorOrg != null ? distributorOrg.getName() : "none",
+                brandsUnrestricted, featuresUnrestricted);
+        return AdminUserResponse.from(retailerUser);
+    }
+
+    /**
+     * Provision the shop a verified account request asked for, under {@code
+     * distributorOrgId} (or the house distributor when that is blank).
+     *
+     * <p>Takes the password HASH the requester's own password was stored as, so the
+     * shop signs in with the password they chose on the form. No plaintext exists
+     * anywhere in this path, and no plan beyond the free tier can come out of it.
+     *
+     * @param approverUserId the admin who approved, or null when the 24-hour deadline did
+     */
+    @Transactional
+    public AdminUserResponse createRetailerFromRequest(String approverUserId, String name, String email,
+                                                       String phone, String shopName, String city,
+                                                       String state, String passwordHash,
+                                                       String distributorOrgId) {
+        Organization distributorOrg = resolveDistributorOrHouse(distributorOrgId);
+        AdminUserResponse created = authService.provisionRetailer(
+                name, email, phone, shopName, city, state, passwordHash, false);
+        return finishRetailerSetup(created.getId(), approverUserId,
+                approverUserId != null ? "Admin" : "Auto-approval",
+                distributorOrg, List.of(), true, List.of(), true);
+    }
+
+    /**
+     * Every distributor an admin can file a shop under, house org first.
+     *
+     * <p>The house org is created on demand here rather than only at the first shop
+     * that needs it, so the picker always offers it — an admin should not have to
+     * create a shop before "HueVista Direct" appears as somewhere to put one.
+     */
+    @Transactional
+    public List<DistributorOptionResponse> distributorOptions() {
+        houseDistributorService.ensureHouseOrg();
+        List<Organization> orgs = orgRepository.findAll().stream()
+                .filter(o -> o.getType() == OrgType.DISTRIBUTOR)
+                .toList();
+        Map<String, Long> shopCounts = new HashMap<>();
+        for (DistributorRetailerLink link : distributorLinkRepository.findAll()) {
+            shopCounts.merge(link.getDistributor().getId(), 1L, Long::sum);
+        }
+        Map<String, User> owners = batchUsers(orgs, List.of());
+        return orgs.stream()
+                .map(o -> {
+                    User owner = owners.get(o.getOwner().getId());
+                    return DistributorOptionResponse.builder()
+                            .orgId(o.getId())
+                            .name(o.getName())
+                            .city(o.getCity())
+                            .state(o.getState())
+                            .ownerName(owner != null ? owner.getName() : null)
+                            .ownerEmail(owner != null ? owner.getEmail() : null)
+                            .shopCount(shopCounts.getOrDefault(o.getId(), 0L))
+                            .house(houseDistributorService.isHouse(o))
+                            .build();
+                })
+                // House first, then by name — the default sits at the top of the dropdown.
+                .sorted(Comparator.comparing(DistributorOptionResponse::isHouse).reversed()
+                        .thenComparing(DistributorOptionResponse::getName, String.CASE_INSENSITIVE_ORDER))
+                .toList();
     }
 
     /**
@@ -583,7 +695,12 @@ public class HierarchyService {
         Map<String, NetworkNodeResponse> distributorNodes = new LinkedHashMap<>();
         Map<String, User> owners = batchUsers(distributorOrgs, List.of());
         for (Organization d : distributorOrgs) {
-            distributorNodes.put(d.getId(), orgNode(d, owners.get(d.getOwner().getId()), UserRole.DISTRIBUTOR));
+            NetworkNodeResponse node = orgNode(d, owners.get(d.getOwner().getId()), UserRole.DISTRIBUTOR);
+            // Flagged rather than hidden: the house org carries every shop no partner
+            // brought in, so it belongs in the tree — but it is an organization, not a
+            // distributor account, which is why the distributor total excludes it.
+            node.setHouse(houseDistributorService.isHouse(d));
+            distributorNodes.put(d.getId(), node);
         }
 
         Set<String> linkedRetailerOrgIds = new HashSet<>();

@@ -166,8 +166,12 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 // Paid-classification / storage-write endpoints.
                 new Rule("POST", "/api/images/upload", upload),
                 new Rule("POST", "/api/guest/images/upload", upload),
-                // Public shop-account request form.
+                // Public shop-account request form. The resend costs an email, so it
+                // sits in the otp-send bucket; the confirm is a 6-digit brute force and
+                // sits with the other code confirmations.
                 new Rule("POST", "/api/leads/shop", lead),
+                new Rule("POST", "/api/leads/shop/*/resend", otpSend),
+                new Rule("POST", "/api/leads/shop/*/verify", otpConfirm),
                 // Public monthly-letter sign-up (each new address sends a welcome mail).
                 new Rule("POST", "/api/newsletter/subscribe", newsletter),
                 new Rule("POST", "/api/newsletter/unsubscribe", newsletter),

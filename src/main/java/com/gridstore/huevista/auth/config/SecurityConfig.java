@@ -140,8 +140,12 @@ public class SecurityConfig {
                 // verify it (Razorpay signature is the proof) — per-IP rate-limited.
                 .requestMatchers(HttpMethod.GET, "/api/store/*").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/store/*/order", "/api/store/*/verify").permitAll()
-                // Public "request a shop account" lead form — per-IP rate-limited
-                .requestMatchers(HttpMethod.POST, "/api/leads/shop").permitAll()
+                // Public "request a shop account" form and its email verification —
+                // per-IP rate-limited. The verify/resend steps carry an unguessable
+                // request id and create nothing on their own; the account only exists
+                // once an admin (or the 24-hour deadline) provisions it.
+                .requestMatchers(HttpMethod.POST, "/api/leads/shop",
+                        "/api/leads/shop/*/verify", "/api/leads/shop/*/resend").permitAll()
                 // Monthly-letter sign-up and unsubscribe. Both are public by necessity:
                 // most readers have no account, and an unsubscribe that needed a login
                 // would not be the "cancel quietly, any time" the form promises. The
