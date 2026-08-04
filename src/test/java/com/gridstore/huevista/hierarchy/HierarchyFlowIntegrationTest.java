@@ -3,9 +3,11 @@ package com.gridstore.huevista.hierarchy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gridstore.huevista.account.model.CustomerAccessCode;
+import com.gridstore.huevista.account.model.CustomerEntitlement;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
+import com.gridstore.huevista.account.repository.CustomerEntitlementRepository;
 import com.gridstore.huevista.account.repository.DistributorRetailerLinkRepository;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.auth.dto.AuthResponse;
@@ -29,6 +31,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -59,6 +63,7 @@ class HierarchyFlowIntegrationTest {
     @Autowired DistributorRetailerLinkRepository distributorLinkRepository;
     @Autowired PainterRetailerLinkRepository painterLinkRepository;
     @Autowired CustomerAccessCodeRepository accessCodeRepository;
+    @Autowired CustomerEntitlementRepository entitlementRepository;
     @Autowired BrandRepository brandRepository;
     @Autowired PasswordEncoder passwordEncoder;
 
@@ -369,6 +374,74 @@ class HierarchyFlowIntegrationTest {
                 .andExpect(status().isCreated());
     }
 
+    // ── Customers, the last link in the chain ─────────────────────────────
+
+    /**
+     * A customer used to be a code count and nothing else, so "40 issued" could be a
+     * busy counter or a stack of dead codes and the report could not tell you which.
+     * They are now nodes under their shop, and roll up the whole way.
+     */
+    @Test
+    void customers_appear_under_their_shop_and_roll_up_the_chain() throws Exception {
+        seedAdmin();
+        String adminToken = tokenFor("root@example.com", "password123");
+        createDistributor(adminToken, "Shetty Trade", "dist@example.com");
+        String distToken = tokenFor("dist@example.com", "password123");
+        createRetailer(distToken, "Priya", "shop@example.com", "Mehta Paints");
+        Organization shopOrg = orgOf("shop@example.com");
+
+        seedCustomer(shopOrg, "Anjali", "anjali@example.com", 2, 3, LocalDateTime.now().plusDays(30));
+        seedCustomer(shopOrg, "Farhan", "farhan@example.com", 0, 1, LocalDateTime.now().plusDays(60));
+
+        JsonNode admin = report(adminToken);
+        assertThat(admin.get("totals").get("customers").asLong()).isEqualTo(2);
+
+        JsonNode distNode = admin.get("roots").get(0);
+        assertThat(distNode.get("customerCount").asLong()).isEqualTo(2);
+        JsonNode shopNode = distNode.get("children").get(0);
+        assertThat(shopNode.get("customerCount").asLong()).isEqualTo(2);
+        // Painters and customers are both children now, so the painter count has to be
+        // counted rather than read off children.size().
+        assertThat(shopNode.get("painterCount").asLong()).isZero();
+
+        JsonNode customer = null;
+        for (JsonNode child : shopNode.get("children")) {
+            if ("CUSTOMER".equals(child.get("role").asText())
+                    && "Anjali".equals(child.get("name").asText())) {
+                customer = child;
+            }
+        }
+        assertThat(customer).isNotNull();
+        assertThat(customer.get("projectAllowance").asInt()).isEqualTo(3);
+        assertThat(customer.get("projectsUsed").asInt()).isEqualTo(2);
+        assertThat(customer.get("accessExpiresAt").isNull()).isFalse();
+
+        // A distributor sees their own shops' customers; the shop sees its own.
+        assertThat(report(distToken).get("totals").get("customers").asLong()).isEqualTo(2);
+        assertThat(report(tokenFor("shop@example.com", "password123"))
+                .get("totals").get("customers").asLong()).isEqualTo(2);
+    }
+
+    /** One distributor's customers must never show up in another's report. */
+    @Test
+    void a_distributor_sees_only_the_customers_of_their_own_shops() throws Exception {
+        seedAdmin();
+        String adminToken = tokenFor("root@example.com", "password123");
+        createDistributor(adminToken, "Mine", "mine@example.com");
+        createDistributor(adminToken, "Theirs", "theirs@example.com");
+        createRetailer(tokenFor("mine@example.com", "password123"), "A", "mineshop@example.com", "My Shop");
+        createRetailer(tokenFor("theirs@example.com", "password123"), "B", "theirshop@example.com", "Their Shop");
+
+        seedCustomer(orgOf("mineshop@example.com"), "Mine Cust", "mc@example.com",
+                1, 1, LocalDateTime.now().plusDays(10));
+        seedCustomer(orgOf("theirshop@example.com"), "Their Cust", "tc@example.com",
+                1, 1, LocalDateTime.now().plusDays(10));
+
+        assertThat(report(tokenFor("mine@example.com", "password123"))
+                .get("totals").get("customers").asLong()).isEqualTo(1);
+        assertThat(report(adminToken).get("totals").get("customers").asLong()).isEqualTo(2);
+    }
+
     // ── A shop always has exactly one distributor ─────────────────────────
 
     /**
@@ -527,6 +600,23 @@ class HierarchyFlowIntegrationTest {
     private Organization orgOf(String email) {
         User u = userRepository.findByEmail(email).orElseThrow();
         return organizationRepository.findByOwnerIdAndType(u.getId(), OrgType.RETAILER).get(0);
+    }
+
+    /** A customer managed by this shop, with the allowance/usage pair the report reads. */
+    private void seedCustomer(Organization shopOrg, String name, String email,
+                              int used, int allowance, LocalDateTime expiresAt) {
+        User customer = userRepository.save(User.builder()
+                .name(name).email(email)
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL).emailVerified(true)
+                .role(UserRole.CUSTOMER).build());
+        entitlementRepository.save(CustomerEntitlement.builder()
+                .customer(customer)
+                .retailerOrg(shopOrg)
+                .projectAllowance(allowance)
+                .projectsCreated(used)
+                .accessExpiresAt(expiresAt)
+                .build());
     }
 
     private void seedCode(Organization org, String code, boolean redeemed) {

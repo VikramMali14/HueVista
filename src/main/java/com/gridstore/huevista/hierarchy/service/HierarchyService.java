@@ -1,12 +1,14 @@
 package com.gridstore.huevista.hierarchy.service;
 
 import com.gridstore.huevista.account.model.AppFeature;
+import com.gridstore.huevista.account.model.CustomerEntitlement;
 import com.gridstore.huevista.account.model.DistributorRetailerLink;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.model.RetailerBrandAssignment;
 import com.gridstore.huevista.account.model.RetailerFeatureAssignment;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
+import com.gridstore.huevista.account.repository.CustomerEntitlementRepository;
 import com.gridstore.huevista.account.repository.DistributorRetailerLinkRepository;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.account.repository.RetailerBrandAssignmentRepository;
@@ -86,6 +88,7 @@ public class HierarchyService {
     private final BrandRepository brandRepository;
     private final PainterRetailerLinkRepository painterLinkRepository;
     private final CustomerAccessCodeRepository accessCodeRepository;
+    private final CustomerEntitlementRepository customerEntitlementRepository;
     private final AccountService accountService;
     private final AuthService authService;
     private final HouseDistributorService houseDistributorService;
@@ -723,8 +726,10 @@ public class HierarchyService {
         totals.put("distributors", userRepository.countByRole(UserRole.DISTRIBUTOR));
         totals.put("retailers", userRepository.countByRole(UserRole.RETAILER));
         totals.put("painters", userRepository.countByRole(UserRole.PAINTER));
-        totals.put("customers", userRepository.countByRole(UserRole.CUSTOMER));
-        addCodeTotals(totals, retailerNodes.values());
+        // Summed off the shop nodes, not countByRole: a CUSTOMER account whose shop was
+        // deleted still has the role but no longer belongs to any branch of the tree, so
+        // the old count could exceed everything the report actually showed.
+        addCustomerTotals(totals, retailerNodes.values());
 
         return NetworkReportResponse.builder()
                 .viewerRole(UserRole.ADMIN.name())
@@ -755,7 +760,7 @@ public class HierarchyService {
         Map<String, Long> totals = new LinkedHashMap<>();
         totals.put("retailers", self.getRetailerCount());
         totals.put("painters", self.getPainterCount());
-        addCodeTotals(totals, retailerNodes.values());
+        addCustomerTotals(totals, retailerNodes.values());
 
         return NetworkReportResponse.builder()
                 .viewerRole(UserRole.DISTRIBUTOR.name())
@@ -781,6 +786,7 @@ public class HierarchyService {
 
         Map<String, Long> totals = new LinkedHashMap<>();
         totals.put("painters", self.getPainterCount());
+        totals.put("customers", self.getCustomerCount());
         totals.put("codesIssued", self.getCodesIssued());
         totals.put("codesRedeemed", self.getCodesRedeemed());
 
@@ -793,29 +799,92 @@ public class HierarchyService {
 
     // ── Tree assembly helpers ─────────────────────────────────────────────
 
-    /** Retailer nodes (with painter children + code counts), keyed by retailer org id. */
+    /**
+     * Retailer nodes with their painters AND their customers as children, keyed by
+     * retailer org id.
+     *
+     * <p>Customers are the last link in the chain this report exists to show. They were
+     * represented only as a code count, which says how many were handed out but not who
+     * holds one or whether it did anything — so an admin could see that a shop issued
+     * forty codes and had no way to tell forty working customers from forty dead ones.
+     */
     private Map<String, NetworkNodeResponse> buildRetailerNodes(List<Organization> retailerOrgs,
                                                                 List<PainterRetailerLink> painterLinks,
                                                                 Map<String, User> users) {
-        Map<String, long[]> codeStats = codeStatsByOrg(
-                retailerOrgs.stream().map(Organization::getId).toList());
+        List<String> orgIds = retailerOrgs.stream().map(Organization::getId).toList();
+        Map<String, long[]> codeStats = codeStatsByOrg(orgIds);
 
         Map<String, List<NetworkNodeResponse>> paintersByOrg = painterLinks.stream().collect(
                 Collectors.groupingBy(l -> l.getRetailer().getId(),
                         Collectors.mapping(l -> painterNode(users.get(l.getPainter().getId()), l),
                                 Collectors.toList())));
+        Map<String, List<NetworkNodeResponse>> customersByOrg = customerNodesByOrg(orgIds);
 
         Map<String, NetworkNodeResponse> nodes = new LinkedHashMap<>();
         for (Organization org : retailerOrgs) {
             NetworkNodeResponse node = orgNode(org, users.get(org.getOwner().getId()), UserRole.RETAILER);
-            node.getChildren().addAll(paintersByOrg.getOrDefault(org.getId(), List.of()));
-            node.setPainterCount(node.getChildren().size());
+            List<NetworkNodeResponse> painters = paintersByOrg.getOrDefault(org.getId(), List.of());
+            List<NetworkNodeResponse> customers = customersByOrg.getOrDefault(org.getId(), List.of());
+            node.getChildren().addAll(painters);
+            node.getChildren().addAll(customers);
+            // Counted from the two lists rather than from children.size(), which was
+            // the painter count only while painters were the only children.
+            node.setPainterCount(painters.size());
+            node.setCustomerCount(customers.size());
             long[] codes = codeStats.getOrDefault(org.getId(), new long[]{0, 0});
             node.setCodesIssued(codes[0]);
             node.setCodesRedeemed(codes[1]);
             nodes.put(org.getId(), node);
         }
         return nodes;
+    }
+
+    /**
+     * One batched load of every customer these shops manage, as report nodes.
+     *
+     * <p>Keyed on the entitlement's managing shop, so each customer appears exactly
+     * once. A customer who has redeemed codes from two shops has a real relationship
+     * with both — and both see them in their own portal — but a tree needs one answer
+     * to "whose customer is this?", or the same person is counted at every level above
+     * each shop.
+     */
+    private Map<String, List<NetworkNodeResponse>> customerNodesByOrg(List<String> retailerOrgIds) {
+        if (retailerOrgIds.isEmpty()) return Map.of();
+        List<CustomerEntitlement> entitlements =
+                customerEntitlementRepository.findByRetailerOrgIdIn(retailerOrgIds);
+        if (entitlements.isEmpty()) return Map.of();
+
+        Map<String, User> customers = userRepository
+                .findAllById(entitlements.stream().map(e -> e.getCustomer().getId()).distinct().toList())
+                .stream().collect(Collectors.toMap(User::getId, Function.identity()));
+
+        Map<String, List<NetworkNodeResponse>> byOrg = new LinkedHashMap<>();
+        for (CustomerEntitlement e : entitlements) {
+            byOrg.computeIfAbsent(e.getRetailerOrg().getId(), k -> new java.util.ArrayList<>())
+                    .add(customerNode(customers.get(e.getCustomer().getId()), e));
+        }
+        return byOrg;
+    }
+
+    /**
+     * One customer as a report row.
+     *
+     * <p>The address is withheld for an account created by redeeming a code: it is
+     * synthesised from the code purely to give the row a unique key, and showing it
+     * would present a machine identifier as somewhere a shop could write.
+     */
+    private static NetworkNodeResponse customerNode(User customer, CustomerEntitlement entitlement) {
+        return NetworkNodeResponse.builder()
+                .userId(customer != null ? customer.getId() : null)
+                .name(customer != null ? customer.getName() : "—")
+                .email(customer != null ? com.gridstore.huevista.auth.util.Emails.publicEmailOf(customer) : null)
+                .phone(customer != null ? customer.getPhoneNumber() : null)
+                .role(UserRole.CUSTOMER.name())
+                .joinedAt(entitlement.getCreatedAt())
+                .projectAllowance(entitlement.getProjectAllowance())
+                .projectsUsed(entitlement.getProjectsCreated())
+                .accessExpiresAt(entitlement.getAccessExpiresAt())
+                .build();
     }
 
     private static NetworkNodeResponse orgNode(Organization org, User owner, UserRole role) {
@@ -846,20 +915,32 @@ public class HierarchyService {
 
     /** Sums a parent's direct children into its own rollup counters. */
     private static void rollUp(NetworkNodeResponse parent) {
-        long retailers = 0, painters = 0, issued = 0, redeemed = 0;
+        long retailers = 0, painters = 0, customers = 0, issued = 0, redeemed = 0;
         for (NetworkNodeResponse child : parent.getChildren()) {
             if (UserRole.RETAILER.name().equals(child.getRole())) retailers++;
             painters += child.getPainterCount();
+            customers += child.getCustomerCount();
             issued += child.getCodesIssued();
             redeemed += child.getCodesRedeemed();
         }
         parent.setRetailerCount(retailers);
         parent.setPainterCount(painters);
+        parent.setCustomerCount(customers);
         parent.setCodesIssued(issued);
         parent.setCodesRedeemed(redeemed);
     }
 
-    private static void addCodeTotals(Map<String, Long> totals, Collection<NetworkNodeResponse> retailerNodes) {
+    /**
+     * Customer and code totals for a report header.
+     *
+     * <p>Customers are summed off the shop nodes rather than counted globally, so the
+     * number always agrees with the tree below it: a viewer whose scope is three shops
+     * gets those three shops' customers, and the header can't say 40 while the rows
+     * add up to 12.
+     */
+    private static void addCustomerTotals(Map<String, Long> totals,
+                                          Collection<NetworkNodeResponse> retailerNodes) {
+        totals.put("customers", retailerNodes.stream().mapToLong(NetworkNodeResponse::getCustomerCount).sum());
         totals.put("codesIssued", retailerNodes.stream().mapToLong(NetworkNodeResponse::getCodesIssued).sum());
         totals.put("codesRedeemed", retailerNodes.stream().mapToLong(NetworkNodeResponse::getCodesRedeemed).sum());
     }
