@@ -22,6 +22,8 @@ import com.gridstore.huevista.project.repository.ProjectRepository;
 import com.gridstore.huevista.project.repository.RegionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,8 +34,10 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * The free-project library: ready-made rooms an admin publishes once and anyone
@@ -70,6 +74,15 @@ public class FreeProjectLibraryService {
     private final StorageService storageService;
     private final AuditService auditService;
 
+    /**
+     * This bean through the proxy, so a bulk delete gets one transaction PER
+     * template. Calling deleteTemplate() directly would run every one inside the
+     * caller's transaction, where a single failure takes the whole selection with it.
+     */
+    @Autowired
+    @Lazy
+    private FreeProjectLibraryService self;
+
     /** How many of the admin's own projects the publish picker offers. */
     private static final int PUBLISHABLE_PAGE_SIZE = 60;
 
@@ -84,7 +97,22 @@ public class FreeProjectLibraryService {
         List<FreeProjectTemplate> templates = includeUnpublished
                 ? templateRepository.findAllByOrderBySpaceAscRoomKeyAscDisplayOrderAscTitleAsc()
                 : templateRepository.findByPublishedTrueOrderBySpaceAscRoomKeyAscDisplayOrderAscTitleAsc();
-        return templates.stream().map(this::toResponse).toList();
+        // One grouped query for the whole shelf rather than a count per card.
+        Map<String, Long> copies = countCopies(templates.stream()
+                .map(FreeProjectTemplate::getImageStorageKey).toList());
+        return templates.stream()
+                .map(t -> toResponse(t, copies.getOrDefault(t.getImageStorageKey(), 0L)))
+                .toList();
+    }
+
+    /** Live copies per template photo, keyed by storage key. Absent = none. */
+    private Map<String, Long> countCopies(List<String> imageKeys) {
+        if (imageKeys.isEmpty()) return Map.of();
+        Map<String, Long> counts = new HashMap<>();
+        for (Object[] row : imageRepository.countByStorageKeys(imageKeys)) {
+            counts.put((String) row[0], ((Number) row[1]).longValue());
+        }
+        return counts;
     }
 
     /** The admin's own projects, marked with whether each one can be published. */
@@ -317,9 +345,13 @@ public class FreeProjectLibraryService {
      * single place in the codebase permitted to delete library files.
      */
     @Transactional
-    public void deleteTemplate(String adminUserId, String templateId, boolean purgeFiles) {
+    public TemplateDeletionResponse.Removed deleteTemplate(String adminUserId, String templateId, boolean purgeFiles) {
         FreeProjectTemplate template = templateRepository.findById(templateId)
                 .orElseThrow(() -> new ResourceNotFoundException("Template not found: " + templateId));
+
+        // Counted BEFORE the rows go, so the audit line records how many rooms this
+        // actually cost rather than how many were left afterwards.
+        long copies = purgeFiles ? imageRepository.countByStorageKey(template.getImageStorageKey()) : 0L;
 
         List<String> keys = new ArrayList<>();
         if (purgeFiles) {
@@ -343,14 +375,62 @@ public class FreeProjectLibraryService {
         }
 
         auditService.record(adminUserId, "FREE_TEMPLATE_DELETED", "FREE_PROJECT_TEMPLATE", templateId,
-                "slug=" + template.getSlug() + " filesPurged=" + purged);
-        log.info("[library] template {} deleted by {} (files purged: {})",
-                template.getSlug(), adminUserId, purged);
+                "slug=" + template.getSlug() + " filesPurged=" + purged + " copiesBroken=" + copies);
+        if (purged > 0) {
+            log.warn("[library] template {} deleted by {} — {} shared file(s) purged, {} live copy/copies "
+                            + "now point at nothing", template.getSlug(), adminUserId, purged, copies);
+        } else {
+            log.info("[library] template {} taken off the shelf by {}; files kept",
+                    template.getSlug(), adminUserId);
+        }
+
+        return TemplateDeletionResponse.Removed.builder()
+                .id(templateId)
+                .title(template.getTitle())
+                .filesPurged(purged)
+                .copiesBroken(copies)
+                .build();
+    }
+
+    /**
+     * Delete one or many, reporting each outcome separately.
+     *
+     * Each template is its own transaction (through the self-injected proxy), so one
+     * that has already been deleted in another tab fails alone instead of rolling
+     * back the rest of the selection — a bulk delete that silently did nothing
+     * because of one stale id is worse than a partial one that says so.
+     */
+    public TemplateDeletionResponse deleteTemplates(String adminUserId, List<String> templateIds, boolean purgeFiles) {
+        List<TemplateDeletionResponse.Removed> removed = new ArrayList<>();
+        List<TemplateDeletionResponse.Failure> failed = new ArrayList<>();
+        for (String id : templateIds) {
+            try {
+                removed.add(self.deleteTemplate(adminUserId, id, purgeFiles));
+            } catch (ResourceNotFoundException e) {
+                failed.add(TemplateDeletionResponse.Failure.builder()
+                        .id(id).reason("Already gone.").build());
+            } catch (RuntimeException e) {
+                log.warn("[library] bulk delete failed for {}: {}", id, e.getMessage());
+                failed.add(TemplateDeletionResponse.Failure.builder()
+                        .id(id).reason("Could not be removed.").build());
+            }
+        }
+        return TemplateDeletionResponse.builder()
+                .removed(removed)
+                .failed(failed)
+                .filesPurged(removed.stream().mapToInt(TemplateDeletionResponse.Removed::getFilesPurged).sum())
+                .copiesBroken(removed.stream().mapToLong(TemplateDeletionResponse.Removed::getCopiesBroken).sum())
+                .build();
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
+    /** Single-template variant — counts this one template's copies on its own. */
     private FreeProjectTemplateResponse toResponse(FreeProjectTemplate t) {
+        return toResponse(t, imageRepository.countByStorageKey(t.getImageStorageKey()));
+    }
+
+    private FreeProjectTemplateResponse toResponse(FreeProjectTemplate t, long copiesInUse) {
         List<FreeProjectTemplateRegionResponse> regions = t.getRegions().stream()
                 .map(r -> FreeProjectTemplateRegionResponse.from(r,
                         storageService.getPublicUrl(r.getMaskStorageKey())))
@@ -360,7 +440,7 @@ public class FreeProjectLibraryService {
         String key = t.getCleanedImageStorageKey() != null && !t.getCleanedImageStorageKey().isBlank()
                 ? t.getCleanedImageStorageKey()
                 : t.getImageStorageKey();
-        return FreeProjectTemplateResponse.from(t, storageService.getPublicUrl(key), regions);
+        return FreeProjectTemplateResponse.from(t, storageService.getPublicUrl(key), regions, copiesInUse);
     }
 
     private byte[] read(String key, String what) {

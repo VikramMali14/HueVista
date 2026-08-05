@@ -90,15 +90,29 @@ public class AdminFreeProjectController {
             description = """
                     Takes it off the shelf. By default the stored files are KEPT, because copies
                     already in people's accounts point at them and would otherwise go blank —
-                    pass purgeFiles=true only when you know nobody is holding one.
+                    pass purgeFiles=true only when you know nobody is holding one. The response
+                    says which of the two happened, and how many copies it cost.
                     """)
     @DeleteMapping("/{templateId}")
-    public ResponseEntity<Void> delete(
+    public ResponseEntity<TemplateDeletionResponse.Removed> delete(
             @PathVariable String templateId,
             @Parameter(description = "Also delete the shared photo and masks. Breaks existing copies.")
             @RequestParam(defaultValue = "false") boolean purgeFiles,
             Authentication auth) {
-        libraryService.deleteTemplate(auth.getName(), templateId, purgeFiles);
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(libraryService.deleteTemplate(auth.getName(), templateId, purgeFiles));
+    }
+
+    @Operation(summary = "Delete several templates",
+            description = """
+                    The same operation over a selection. Each template is removed independently,
+                    so one that has already gone is reported as a failure rather than abandoning
+                    the rest. purgeFiles applies to the whole selection.
+                    """)
+    @PostMapping("/delete")
+    public ResponseEntity<TemplateDeletionResponse> deleteMany(
+            @Valid @RequestBody DeleteTemplatesRequest request, Authentication auth) {
+        return ResponseEntity.ok(
+                libraryService.deleteTemplates(auth.getName(), request.getTemplateIds(),
+                        Boolean.TRUE.equals(request.getPurgeFiles())));
     }
 }
