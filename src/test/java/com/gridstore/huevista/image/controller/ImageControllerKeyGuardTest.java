@@ -44,4 +44,32 @@ class ImageControllerKeyGuardTest {
         assertThat(ImageController.isOwnedKey("", USER)).isFalse();
         assertThat(ImageController.isOwnedKey(null, USER)).isFalse();
     }
+
+    // ─── Free-project library ────────────────────────────────────────────────
+    // Library assets belong to no one and are readable by any signed-in caller —
+    // a project started from a template points straight at these keys, so without
+    // the allowance the room 403s for the person who just opened it.
+
+    @Test
+    void allowsFreeLibraryAssets() {
+        assertThat(ImageController.isFreeLibraryKey("free-projects/sunlit-living-room/abc.jpg")).isTrue();
+        assertThat(ImageController.isFreeLibraryKey("free-projects/kitchen-01/mask-2.png")).isTrue();
+    }
+
+    @Test
+    void freeLibraryAllowanceStillRejectsTraversal() {
+        assertThat(ImageController.isFreeLibraryKey("free-projects/../" + USER + "/private.jpg")).isFalse();
+        assertThat(ImageController.isFreeLibraryKey("/free-projects/x.jpg")).isFalse();
+        assertThat(ImageController.isFreeLibraryKey("free-projects\\x.jpg")).isFalse();
+        assertThat(ImageController.isFreeLibraryKey("free-projects/x\0.jpg")).isFalse();
+    }
+
+    @Test
+    void freeLibraryAllowanceDoesNotLeakOtherFolders() {
+        // A user folder that merely starts with the same letters is not the library.
+        assertThat(ImageController.isFreeLibraryKey("free-projects-backup/x.jpg")).isFalse();
+        assertThat(ImageController.isFreeLibraryKey(USER + "/free-projects/x.jpg")).isFalse();
+        assertThat(ImageController.isFreeLibraryKey("")).isFalse();
+        assertThat(ImageController.isFreeLibraryKey(null)).isFalse();
+    }
 }
