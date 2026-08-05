@@ -2,6 +2,9 @@ package com.gridstore.huevista.billing;
 
 import com.razorpay.RazorpayClient;
 import com.razorpay.Utils;
+import jakarta.persistence.EntityManager;
+
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -49,6 +52,7 @@ class BillingWebhookIntegrationTest {
     @Autowired MockMvc mockMvc;
     @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired UserRepository userRepository;
+    @Autowired EntityManager entityManager;
 
     private Subscription testSubscription;
     private MockedStatic<Utils> utilsMock;
@@ -109,6 +113,70 @@ class BillingWebhookIntegrationTest {
 
         Subscription updated = subscriptionRepository.findById(testSubscription.getId()).orElseThrow();
         assertThat(updated.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
+    }
+
+    /**
+     * The SECOND plan a shop buys — the first one that has something to supersede.
+     *
+     * Carrying the old plan's unused allowance across runs a bulk UPDATE declared
+     * {@code clearAutomatically}, which detaches the subscription being activated. The
+     * confirmation email then dereferenced its now-detached lazy {@code user} proxy and
+     * threw LazyInitializationException — inside {@code @Transactional}, so the whole
+     * activation ROLLED BACK after the card had already been charged, the controller
+     * answered 500, and Razorpay retried the event into the same failure again and again.
+     *
+     * The flush + clear is what makes this reproduce at all: without it the handler reuses
+     * the User this fixture just persisted, which is a real initialized instance rather
+     * than the proxy a fresh load produces in production. That is precisely why the
+     * existing activation test above stayed green through the bug.
+     */
+    @Test
+    void webhook_activation_survives_superseding_an_existing_plan() throws Exception {
+        User user = userRepository.findById(testSubscription.getUser().getId()).orElseThrow();
+        // The free trial being upgraded away from, with its allowance unspent so the
+        // carry-over — and the context-clearing UPDATE behind it — actually runs.
+        subscriptionRepository.save(Subscription.builder()
+                .user(user)
+                .plan(Plan.STARTER)
+                .status(SubscriptionStatus.ACTIVE)
+                .trial(true)
+                .projectsLimit(Plan.STARTER.getMonthlyProjectLimit())
+                .projectsUsed(0)
+                .currentPeriodStart(LocalDateTime.now().minusDays(3))
+                .currentPeriodEnd(LocalDateTime.now().plusDays(4))
+                .build());
+        entityManager.flush();
+        entityManager.clear();
+
+        String payload = """
+                {
+                  "event": "subscription.activated",
+                  "payload": {
+                    "subscription": {
+                      "entity": {
+                        "id": "sub_test_123",
+                        "charge_at": 1700000000,
+                        "current_end": 1702592000
+                      }
+                    }
+                  }
+                }
+                """;
+
+        mockMvc.perform(post("/api/billing/webhooks/razorpay")
+                        .header("X-Razorpay-Signature", SIGNATURE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("processed"));
+
+        // Committed, not rolled back: the plan the shop paid for is actually live, and it
+        // inherited the trial's unspent projects.
+        Subscription activated =
+                subscriptionRepository.findById(testSubscription.getId()).orElseThrow();
+        assertThat(activated.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
+        assertThat(activated.getCarriedProjectCredits())
+                .isEqualTo(Plan.STARTER.getMonthlyProjectLimit());
     }
 
     @Test

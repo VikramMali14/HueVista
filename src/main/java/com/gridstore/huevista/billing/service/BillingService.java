@@ -377,8 +377,11 @@ public class BillingService {
                         + (scheduled ? " startsAt=" + sub.getCurrentPeriodStart() : ""));
         log.info("Subscription activated via checkout verify: user={} subId={} scheduled={}",
                 userId, sub.getId(), scheduled);
-        billingEmailService.sendSubscriptionActivated(sub);
-        return SubscriptionResponse.from(sub);
+        // Live entity, and current about any credits the supersede just carried across —
+        // the buyer's client renders this response as the state of their new plan.
+        Subscription activated = reload(sub);
+        billingEmailService.sendSubscriptionActivated(activated);
+        return SubscriptionResponse.from(activated);
     }
 
     /**
@@ -956,7 +959,7 @@ public class BillingService {
             }
             log.info("Subscription activated: {}", razorpaySubscriptionId);
             if (!wasActive) {
-                billingEmailService.sendSubscriptionActivated(sub);
+                billingEmailService.sendSubscriptionActivated(reload(sub));
             }
         });
     }
@@ -1075,9 +1078,9 @@ public class BillingService {
             }
             log.info("Subscription renewed, AI usage reset: {}", razorpaySubscriptionId);
             if (firstCharge && !alreadyAnnounced) {
-                billingEmailService.sendSubscriptionActivated(sub);
+                billingEmailService.sendSubscriptionActivated(reload(sub));
             } else if (!firstCharge) {
-                billingEmailService.sendSubscriptionRenewed(sub);
+                billingEmailService.sendSubscriptionRenewed(reload(sub));
             }
             // else: the charge webhook echoing a just-verified activation — already emailed.
         });
@@ -1122,6 +1125,27 @@ public class BillingService {
      * left the old subscription alive at Razorpay, so a late settlement resurrected it as
      * a second entitlement and a second monthly charge.
      */
+    /**
+     * Read {@code sub} back after a pass that may have cleared the persistence context.
+     *
+     * The carry-over and reclaim steps inside {@link #supersedeActiveSubscriptions} move
+     * credits with bulk UPDATEs, and those queries are declared
+     * {@code clearAutomatically = true} — they have to be, since they write columns the
+     * context is holding. Clearing DETACHES everything read before it, including the
+     * subscription being activated. Two things then broke on the very next line: the
+     * confirmation email dereferenced the now-detached lazy {@code user} proxy and threw
+     * LazyInitializationException, which failed the whole webhook (and the checkout-verify
+     * response) AFTER the plan had already gone live and the card had been charged; and
+     * anything read off that stale instance still showed the credits as they were before
+     * the carry-over added them.
+     *
+     * Reading the row back fixes both. It costs nothing when there was no clear: findById
+     * serves a still-managed entity straight from the persistence context without a query.
+     */
+    private Subscription reload(Subscription sub) {
+        return subscriptionRepository.findById(sub.getId()).orElse(sub);
+    }
+
     private void supersedeActiveSubscriptions(String userId, String keepSubId) {
         List<Subscription> live = new java.util.ArrayList<>(
                 subscriptionRepository.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE));
