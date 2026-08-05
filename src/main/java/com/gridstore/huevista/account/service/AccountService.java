@@ -218,7 +218,7 @@ public class AccountService {
             throw new SecurityException("You can only link a retailer organization that you own");
         }
 
-        // A shop has exactly one distributor (enforced by a unique index since V38), so
+        // A shop has exactly one distributor (enforced by a unique index since V40), so
         // this either refuses or replaces — it can no longer just add a second row.
         // Taking a shop off the HOUSE distributor is the one replacement allowed: that
         // link is the platform's fallback rather than a relationship anybody agreed to,
