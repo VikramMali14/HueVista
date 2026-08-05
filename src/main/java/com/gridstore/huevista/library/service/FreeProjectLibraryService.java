@@ -508,13 +508,37 @@ public class FreeProjectLibraryService {
         return words.isEmpty() ? "Other" : Character.toUpperCase(words.charAt(0)) + words.substring(1);
     }
 
-    /** Lowercase, hyphenated, [a-z0-9-] only — it becomes a storage folder. */
+    /** Longest slug we build. uniqueSlug may add "-<n>" on top, inside the 120-char column. */
+    private static final int MAX_SLUG_LENGTH = 100;
+
+    /**
+     * Lowercase, hyphenated, [a-z0-9-] only — it becomes a storage folder.
+     *
+     * One pass, no regex. The obvious version trimmed its edges with
+     * {@code replaceAll("(^-+)|(-+$)", "")}, and an anchored {@code -+$} is the
+     * textbook quadratic backtrack: given a title that is a long run of hyphens,
+     * the engine retries the run from every position looking for an end that
+     * isn't there. Emitting a separator only once a kept character follows it
+     * gets the same result — runs collapsed, no leading or trailing hyphen —
+     * in linear time, and breaking straight after appending an alphanumeric
+     * means the length cap can never leave a hyphen dangling either.
+     */
     static String slugify(String title) {
-        String base = title == null ? "" : title.toLowerCase(Locale.ROOT)
-                .replaceAll("[^a-z0-9]+", "-")
-                .replaceAll("(^-+)|(-+$)", "");
-        if (base.length() > 100) base = base.substring(0, 100).replaceAll("-+$", "");
-        return base.isEmpty() ? "room" : base;
+        if (title == null) return "room";
+        StringBuilder slug = new StringBuilder();
+        boolean separatorPending = false;
+        for (int i = 0; i < title.length(); i++) {
+            char c = Character.toLowerCase(title.charAt(i));
+            if ((c < 'a' || c > 'z') && (c < '0' || c > '9')) {
+                separatorPending = true;
+                continue;
+            }
+            if (separatorPending && slug.length() > 0) slug.append('-');
+            separatorPending = false;
+            slug.append(c);
+            if (slug.length() >= MAX_SLUG_LENGTH) break;
+        }
+        return slug.length() == 0 ? "room" : slug.toString();
     }
 
     private String uniqueSlug(String candidate) {
