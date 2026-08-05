@@ -188,6 +188,27 @@ public class AdminController {
         return ResponseEntity.ok(hierarchyService.distributorOptions());
     }
 
+    @Operation(summary = "Move a shop to another distributor",
+            description = "Re-files a shop under `distributorOrgId`, or under the house distributor when "
+                    + "that is blank. The previous distributor's brand and page grants are cleared and the "
+                    + "shop reverts to unrestricted — they were that distributor's to make, and a "
+                    + "restriction whose author no longer supplies the shop is one nobody can lift. "
+                    + "ADMIN only: the distributor-facing link endpoint requires ownership of both "
+                    + "organizations, which an admin never has.")
+    @PutMapping("/retailers/{retailerOrgId}/distributor")
+    public ResponseEntity<OrgResponse> moveRetailer(
+            @PathVariable String retailerOrgId,
+            @RequestBody(required = false) Map<String, String> body,
+            Authentication auth) {
+        String distributorOrgId = body != null ? body.get("distributorOrgId") : null;
+        OrgResponse moved = accountService.moveRetailerToDistributor(
+                auth.getName(), retailerOrgId, distributorOrgId);
+        auditService.record(auth.getName(), "RETAILER_DISTRIBUTOR_CHANGED", "ORGANIZATION", retailerOrgId,
+                "moved to " + (distributorOrgId == null || distributorOrgId.isBlank()
+                        ? "the house distributor" : distributorOrgId));
+        return ResponseEntity.ok(moved);
+    }
+
     @Operation(summary = "Create a distributor account",
             description = "Provisions a DISTRIBUTOR user + organization. Distributors then create their "
                     + "own retailers, which land in their downline. ADMIN only.")

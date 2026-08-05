@@ -13,6 +13,25 @@ public interface CustomerEntitlementRepository extends JpaRepository<CustomerEnt
     List<CustomerEntitlement> findByRetailerOrgIdOrderByUpdatedAtDesc(String retailerOrgId);
 
     /**
+     * Every customer managed by any of these shops, in one query — what the network
+     * report builds its customer nodes from.
+     *
+     * Uses {@code retailerOrg} alone rather than the "or holds a code we issued" union
+     * of {@link #findManagedByOrCodedFrom}: the report is a tree, and a customer who
+     * appears under two shops is two nodes, double-counted at every level above them.
+     * The managing shop is the single answer to "whose customer is this?", which is the
+     * question a tree asks. Callers must guard against an empty collection (JPQL
+     * {@code IN ()} is invalid).
+     */
+    @org.springframework.data.jpa.repository.Query("""
+            SELECT e FROM CustomerEntitlement e
+             WHERE e.retailerOrg.id IN :orgIds
+             ORDER BY e.updatedAt DESC
+            """)
+    List<CustomerEntitlement> findByRetailerOrgIdIn(
+            @org.springframework.data.repository.query.Param("orgIds") java.util.Collection<String> orgIds);
+
+    /**
      * Every customer a shop is responsible for: the ones it currently manages, PLUS
      * anyone still holding a code it issued.
      *

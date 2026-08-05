@@ -1,4 +1,4 @@
-package com.gridstore.huevista.hierarchy.service;
+package com.gridstore.huevista.account.service;
 
 import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.model.OrgMembership;
@@ -88,5 +88,12 @@ public class HouseDistributorService {
     /** True for the house org — the admin UI labels it rather than showing it as a company. */
     public boolean isHouse(Organization org) {
         return org != null && HOUSE_SLUG.equals(org.getSlug());
+    }
+
+    /** @see #isHouse(Organization) — by id, for callers that hold one. */
+    @Transactional(readOnly = true)
+    public boolean isHouseOrgId(String orgId) {
+        return orgId != null
+                && orgRepository.findById(orgId).map(this::isHouse).orElse(false);
     }
 }

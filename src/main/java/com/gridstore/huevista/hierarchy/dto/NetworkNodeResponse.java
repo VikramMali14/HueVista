@@ -44,9 +44,32 @@ public class NetworkNodeResponse {
     /** Subtree rollups. */
     private long retailerCount;
     private long painterCount;
+    /**
+     * Customers in this subtree — the walk-ins a shop onboarded with an access code.
+     *
+     * They are the last link in the chain the report exists to show (distributor →
+     * shop → customer), and they used to be represented only as a code count, which
+     * says how many were handed out but not who holds one or whether it did anything.
+     */
+    private long customerCount;
     /** Customer access codes issued / redeemed by shops in this subtree. */
     private long codesIssued;
     private long codesRedeemed;
+
+    // ── CUSTOMER nodes only ───────────────────────────────────────────────
+    //
+    // A customer's projects are assigned and paid for by their shop, so "how many
+    // they were given and how many they have used" is the whole of what there is to
+    // read about one — and the pair is what tells a busy shop from a dormant code.
+
+    /** Projects the shop has given this customer. */
+    private Integer projectAllowance;
+
+    /** Projects they have actually created. Never decreases — deleting one does not refund it. */
+    private Integer projectsUsed;
+
+    /** When their access lapses. Past dates are the point: an expired customer still shows. */
+    private LocalDateTime accessExpiresAt;
 
     /**
      * Paint brands the distributor has granted this shop (RETAILER nodes only);

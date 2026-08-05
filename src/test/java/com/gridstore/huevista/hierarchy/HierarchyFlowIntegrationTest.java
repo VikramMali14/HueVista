@@ -3,9 +3,11 @@ package com.gridstore.huevista.hierarchy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gridstore.huevista.account.model.CustomerAccessCode;
+import com.gridstore.huevista.account.model.CustomerEntitlement;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
+import com.gridstore.huevista.account.repository.CustomerEntitlementRepository;
 import com.gridstore.huevista.account.repository.DistributorRetailerLinkRepository;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.auth.dto.AuthResponse;
@@ -13,6 +15,8 @@ import com.gridstore.huevista.auth.model.AuthProvider;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.paint.model.Brand;
+import com.gridstore.huevista.paint.repository.BrandRepository;
 import com.gridstore.huevista.painter.model.PainterLinkStatus;
 import com.gridstore.huevista.painter.repository.PainterRetailerLinkRepository;
 import com.razorpay.RazorpayClient;
@@ -28,7 +32,11 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -55,6 +63,8 @@ class HierarchyFlowIntegrationTest {
     @Autowired DistributorRetailerLinkRepository distributorLinkRepository;
     @Autowired PainterRetailerLinkRepository painterLinkRepository;
     @Autowired CustomerAccessCodeRepository accessCodeRepository;
+    @Autowired CustomerEntitlementRepository entitlementRepository;
+    @Autowired BrandRepository brandRepository;
     @Autowired PasswordEncoder passwordEncoder;
 
     private String tokenFor(String email, String password) throws Exception {
@@ -364,6 +374,217 @@ class HierarchyFlowIntegrationTest {
                 .andExpect(status().isCreated());
     }
 
+    // ── Customers, the last link in the chain ─────────────────────────────
+
+    /**
+     * A customer used to be a code count and nothing else, so "40 issued" could be a
+     * busy counter or a stack of dead codes and the report could not tell you which.
+     * They are now nodes under their shop, and roll up the whole way.
+     */
+    @Test
+    void customers_appear_under_their_shop_and_roll_up_the_chain() throws Exception {
+        seedAdmin();
+        String adminToken = tokenFor("root@example.com", "password123");
+        createDistributor(adminToken, "Shetty Trade", "dist@example.com");
+        String distToken = tokenFor("dist@example.com", "password123");
+        createRetailer(distToken, "Priya", "shop@example.com", "Mehta Paints");
+        Organization shopOrg = orgOf("shop@example.com");
+
+        seedCustomer(shopOrg, "Anjali", "anjali@example.com", 2, 3, LocalDateTime.now().plusDays(30));
+        seedCustomer(shopOrg, "Farhan", "farhan@example.com", 0, 1, LocalDateTime.now().plusDays(60));
+
+        JsonNode admin = report(adminToken);
+        assertThat(admin.get("totals").get("customers").asLong()).isEqualTo(2);
+
+        JsonNode distNode = admin.get("roots").get(0);
+        assertThat(distNode.get("customerCount").asLong()).isEqualTo(2);
+        JsonNode shopNode = distNode.get("children").get(0);
+        assertThat(shopNode.get("customerCount").asLong()).isEqualTo(2);
+        // Painters and customers are both children now, so the painter count has to be
+        // counted rather than read off children.size().
+        assertThat(shopNode.get("painterCount").asLong()).isZero();
+
+        JsonNode customer = null;
+        for (JsonNode child : shopNode.get("children")) {
+            if ("CUSTOMER".equals(child.get("role").asText())
+                    && "Anjali".equals(child.get("name").asText())) {
+                customer = child;
+            }
+        }
+        assertThat(customer).isNotNull();
+        assertThat(customer.get("projectAllowance").asInt()).isEqualTo(3);
+        assertThat(customer.get("projectsUsed").asInt()).isEqualTo(2);
+        assertThat(customer.get("accessExpiresAt").isNull()).isFalse();
+
+        // A distributor sees their own shops' customers; the shop sees its own.
+        assertThat(report(distToken).get("totals").get("customers").asLong()).isEqualTo(2);
+        assertThat(report(tokenFor("shop@example.com", "password123"))
+                .get("totals").get("customers").asLong()).isEqualTo(2);
+    }
+
+    /** One distributor's customers must never show up in another's report. */
+    @Test
+    void a_distributor_sees_only_the_customers_of_their_own_shops() throws Exception {
+        seedAdmin();
+        String adminToken = tokenFor("root@example.com", "password123");
+        createDistributor(adminToken, "Mine", "mine@example.com");
+        createDistributor(adminToken, "Theirs", "theirs@example.com");
+        createRetailer(tokenFor("mine@example.com", "password123"), "A", "mineshop@example.com", "My Shop");
+        createRetailer(tokenFor("theirs@example.com", "password123"), "B", "theirshop@example.com", "Their Shop");
+
+        seedCustomer(orgOf("mineshop@example.com"), "Mine Cust", "mc@example.com",
+                1, 1, LocalDateTime.now().plusDays(10));
+        seedCustomer(orgOf("theirshop@example.com"), "Their Cust", "tc@example.com",
+                1, 1, LocalDateTime.now().plusDays(10));
+
+        assertThat(report(tokenFor("mine@example.com", "password123"))
+                .get("totals").get("customers").asLong()).isEqualTo(1);
+        assertThat(report(adminToken).get("totals").get("customers").asLong()).isEqualTo(2);
+    }
+
+    // ── A shop always has exactly one distributor ─────────────────────────
+
+    /**
+     * Leaving a distributor is a change of distributor, not the absence of one.
+     *
+     * Unlinking used to delete the row and stop, which put the shop exactly where
+     * creation no longer allows: outside every downline, answerable to nobody.
+     */
+    @Test
+    void unlinking_moves_the_shop_to_the_house_distributor_rather_than_orphaning_it() throws Exception {
+        seedAdmin();
+        String adminToken = tokenFor("root@example.com", "password123");
+        createDistributor(adminToken, "Shetty Trade", "dist@example.com");
+        String distToken = tokenFor("dist@example.com", "password123");
+        createRetailer(distToken, "Priya", "shop@example.com", "Mehta Paints");
+
+        Organization distOrg = distributorOrgOf("dist@example.com");
+        Organization shopOrg = orgOf("shop@example.com");
+
+        mockMvc.perform(delete("/api/organizations/" + distOrg.getId() + "/retailers/" + shopOrg.getId())
+                        .header("Authorization", "Bearer " + distToken))
+                .andExpect(status().isNoContent());
+
+        Organization house = organizationRepository.findBySlug("huevista-direct").orElseThrow();
+        assertThat(distributorLinkRepository.findByRetailerId(shopOrg.getId()))
+                .singleElement()
+                .satisfies(l -> assertThat(l.getDistributor().getId()).isEqualTo(house.getId()));
+    }
+
+    /** The house distributor is the fallback, so there is nowhere to fall back to. */
+    @Test
+    void a_shop_cannot_unlink_from_the_house_distributor() throws Exception {
+        seedAdmin();
+        String adminToken = tokenFor("root@example.com", "password123");
+        mockMvc.perform(post("/api/admin/retailers")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Direct Owner","email":"direct@example.com","password":"password123",
+                                 "shopName":"Direct Paints"}"""))
+                .andExpect(status().isCreated());
+
+        Organization house = organizationRepository.findBySlug("huevista-direct").orElseThrow();
+        Organization shopOrg = orgOf("direct@example.com");
+
+        mockMvc.perform(delete("/api/organizations/" + house.getId() + "/retailers/" + shopOrg.getId())
+                        .header("Authorization", "Bearer " + tokenFor("direct@example.com", "password123")))
+                .andExpect(status().isConflict());
+        assertThat(distributorLinkRepository.findByRetailerId(shopOrg.getId())).hasSize(1);
+    }
+
+    /**
+     * A shop filed under the wrong distributor was stuck there: the distributor-facing
+     * link endpoint demands ownership of both organizations, which an admin never has.
+     */
+    @Test
+    void an_admin_can_move_a_shop_between_distributors() throws Exception {
+        seedAdmin();
+        String adminToken = tokenFor("root@example.com", "password123");
+        createDistributor(adminToken, "First Trade", "first@example.com");
+        createDistributor(adminToken, "Second Trade", "second@example.com");
+        String firstToken = tokenFor("first@example.com", "password123");
+        createRetailer(firstToken, "Priya", "shop@example.com", "Mehta Paints");
+
+        Organization firstOrg = distributorOrgOf("first@example.com");
+        Organization secondOrg = distributorOrgOf("second@example.com");
+        Organization shopOrg = orgOf("shop@example.com");
+
+        // The first distributor limits the shop to a single company.
+        Brand brand = brandRepository.save(Brand.builder().name("Test Colour Co").slug("test-colour-co").build());
+        mockMvc.perform(put("/api/hierarchy/retailers/" + shopOrg.getId() + "/brands")
+                        .header("Authorization", "Bearer " + firstToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"brandIds\":[" + brand.getId() + "],\"unrestricted\":false}"))
+                .andExpect(status().isOk());
+        assertThat(organizationRepository.findById(shopOrg.getId()).orElseThrow().isBrandsRestricted()).isTrue();
+
+        mockMvc.perform(put("/api/admin/retailers/" + shopOrg.getId() + "/distributor")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"distributorOrgId\":\"" + secondOrg.getId() + "\"}"))
+                .andExpect(status().isOk());
+
+        // Exactly one link, and it is the new one — not a second row alongside the old.
+        assertThat(distributorLinkRepository.findByRetailerId(shopOrg.getId()))
+                .singleElement()
+                .satisfies(l -> assertThat(l.getDistributor().getId()).isEqualTo(secondOrg.getId()));
+        assertThat(distributorLinkRepository.findByDistributorId(firstOrg.getId())).isEmpty();
+
+        // The old distributor's restriction went with them — it was theirs to make, and
+        // the new distributor never chose it.
+        assertThat(organizationRepository.findById(shopOrg.getId()).orElseThrow().isBrandsRestricted()).isFalse();
+    }
+
+    /** Blank means the house distributor, the same as everywhere else. */
+    @Test
+    void moving_a_shop_with_no_distributor_named_files_it_under_the_house_one() throws Exception {
+        seedAdmin();
+        String adminToken = tokenFor("root@example.com", "password123");
+        createDistributor(adminToken, "Shetty Trade", "dist@example.com");
+        createRetailer(tokenFor("dist@example.com", "password123"), "Priya", "shop@example.com", "Mehta Paints");
+        Organization shopOrg = orgOf("shop@example.com");
+
+        mockMvc.perform(put("/api/admin/retailers/" + shopOrg.getId() + "/distributor")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isOk());
+
+        Organization house = organizationRepository.findBySlug("huevista-direct").orElseThrow();
+        assertThat(distributorLinkRepository.findByRetailerId(shopOrg.getId()))
+                .singleElement()
+                .satisfies(l -> assertThat(l.getDistributor().getId()).isEqualTo(house.getId()));
+    }
+
+    /** Pressing it twice must not clear the shop's grants a second time. */
+    @Test
+    void moving_a_shop_to_the_distributor_it_already_has_changes_nothing() throws Exception {
+        seedAdmin();
+        String adminToken = tokenFor("root@example.com", "password123");
+        createDistributor(adminToken, "Shetty Trade", "dist@example.com");
+        String distToken = tokenFor("dist@example.com", "password123");
+        createRetailer(distToken, "Priya", "shop@example.com", "Mehta Paints");
+        Organization distOrg = distributorOrgOf("dist@example.com");
+        Organization shopOrg = orgOf("shop@example.com");
+
+        Brand brand = brandRepository.save(Brand.builder().name("Test Colour Co").slug("test-colour-co").build());
+        mockMvc.perform(put("/api/hierarchy/retailers/" + shopOrg.getId() + "/brands")
+                        .header("Authorization", "Bearer " + distToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"brandIds\":[" + brand.getId() + "],\"unrestricted\":false}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(put("/api/admin/retailers/" + shopOrg.getId() + "/distributor")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"distributorOrgId\":\"" + distOrg.getId() + "\"}"))
+                .andExpect(status().isOk());
+
+        assertThat(distributorLinkRepository.findByRetailerId(shopOrg.getId())).hasSize(1);
+        assertThat(organizationRepository.findById(shopOrg.getId()).orElseThrow().isBrandsRestricted()).isTrue();
+    }
+
     private JsonNode report(String token) throws Exception {
         MvcResult res = mockMvc.perform(get("/api/hierarchy/network")
                         .header("Authorization", "Bearer " + token))
@@ -371,9 +592,31 @@ class HierarchyFlowIntegrationTest {
         return objectMapper.readTree(res.getResponse().getContentAsString());
     }
 
+    private Organization distributorOrgOf(String email) {
+        User u = userRepository.findByEmail(email).orElseThrow();
+        return organizationRepository.findByOwnerIdAndType(u.getId(), OrgType.DISTRIBUTOR).get(0);
+    }
+
     private Organization orgOf(String email) {
         User u = userRepository.findByEmail(email).orElseThrow();
         return organizationRepository.findByOwnerIdAndType(u.getId(), OrgType.RETAILER).get(0);
+    }
+
+    /** A customer managed by this shop, with the allowance/usage pair the report reads. */
+    private void seedCustomer(Organization shopOrg, String name, String email,
+                              int used, int allowance, LocalDateTime expiresAt) {
+        User customer = userRepository.save(User.builder()
+                .name(name).email(email)
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL).emailVerified(true)
+                .role(UserRole.CUSTOMER).build());
+        entitlementRepository.save(CustomerEntitlement.builder()
+                .customer(customer)
+                .retailerOrg(shopOrg)
+                .projectAllowance(allowance)
+                .projectsCreated(used)
+                .accessExpiresAt(expiresAt)
+                .build());
     }
 
     private void seedCode(Organization org, String code, boolean redeemed) {
