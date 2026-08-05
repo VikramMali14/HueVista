@@ -253,6 +253,10 @@ class BillingWebhookIntegrationTest {
         testSubscription.setProjectsUsed(9);
         testSubscription.setCarriedProjectCredits(5);
         testSubscription.setPurchasedProjectCredits(4);
+        // A RENEWAL, which is what this test is about: cycle 0 is the charge that starts
+        // the plan. The fixture used to leave this at 0, so it asserted the expiry against
+        // a FIRST charge — see the test below for why that distinction matters.
+        testSubscription.setBillingCyclesCharged(1);
         subscriptionRepository.save(testSubscription);
 
         String payload = """
@@ -283,6 +287,115 @@ class BillingWebhookIntegrationTest {
         // whose quota changes reaches the shops already on it.
         assertThat(updated.getProjectsLimit())
                 .isEqualTo(Plan.STARTER.getMonthlyProjectLimit());
+    }
+
+    /**
+     * The charge that STARTS a plan must not expire the allowance the upgrade just moved
+     * onto it.
+     *
+     * An immediate mid-cycle upgrade carries the old plan's unused projects across during
+     * activation — the checkout-verify path, seconds before Razorpay delivers the first
+     * subscription.charged. That charge is cycle 0, not a renewal, but the handler expired
+     * carried credits on every charge, so the leftover the shop had just been given was
+     * destroyed almost immediately. The Terms promise the opposite: what is left of the old
+     * plan's allowance "moves onto the new one and lasts until that cycle renews".
+     *
+     * Purchased credits are checked here too. They are money and never expire, so this also
+     * pins down that skipping the expiry on cycle 0 did not quietly make them mortal.
+     */
+    @Test
+    void webhook_first_charge_keeps_projects_carried_in_by_an_upgrade() throws Exception {
+        // Exactly the state the verify path leaves behind for an immediate upgrade: live,
+        // never charged, holding the allowance carried off the plan it replaced.
+        testSubscription.setStatus(SubscriptionStatus.ACTIVE);
+        testSubscription.setCarriedProjectCredits(2);
+        testSubscription.setPurchasedProjectCredits(3);
+        testSubscription.setBillingCyclesCharged(0);
+        subscriptionRepository.save(testSubscription);
+
+        String payload = """
+                {
+                  "event": "subscription.charged",
+                  "payload": {
+                    "subscription": {
+                      "entity": {
+                        "id": "sub_test_123",
+                        "current_end": 1702592000
+                      }
+                    }
+                  }
+                }
+                """;
+
+        mockMvc.perform(post("/api/billing/webhooks/razorpay")
+                        .header("X-Razorpay-Signature", SIGNATURE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk());
+
+        Subscription updated =
+                subscriptionRepository.findById(testSubscription.getId()).orElseThrow();
+        assertThat(updated.getCarriedProjectCredits()).isEqualTo(2);
+        assertThat(updated.getPurchasedProjectCredits()).isEqualTo(3);
+        // Still counted as the plan's first charge having happened, so the NEXT one renews.
+        assertThat(updated.getBillingCyclesCharged()).isEqualTo(1);
+    }
+
+    /**
+     * One charge, delivered as two events, must be applied once.
+     *
+     * docs/RAZORPAY_SETUP.md has merchants tick both subscription.charged AND
+     * payment.captured, and Razorpay sends both for the same renewal. They are DIFFERENT
+     * events with different ids, so the event-id replay guard lets both through by design
+     * — it exists to stop a redelivery of one event, not two events describing one charge.
+     *
+     * Applying that charge twice counted two billing cycles for one payment, and the
+     * second pass — no longer the "first" charge — expired the projects an upgrade had
+     * just carried across, which is the very thing the cycle-0 check above protects.
+     */
+    @Test
+    void webhook_one_charge_delivered_as_two_events_is_applied_once() throws Exception {
+        testSubscription.setStatus(SubscriptionStatus.ACTIVE);
+        testSubscription.setCarriedProjectCredits(2);
+        testSubscription.setBillingCyclesCharged(0);
+        subscriptionRepository.save(testSubscription);
+
+        // The authoritative renewal event carries the payment alongside the subscription.
+        String charged = """
+                {
+                  "event": "subscription.charged",
+                  "payload": {
+                    "subscription": {
+                      "entity": { "id": "sub_test_123", "current_end": 1702592000 }
+                    },
+                    "payment": { "entity": { "id": "pay_cycle_one" } }
+                  }
+                }
+                """;
+        // …and the fallback describes the same money a second time.
+        String captured = """
+                {
+                  "event": "payment.captured",
+                  "payload": {
+                    "payment": {
+                      "entity": { "id": "pay_cycle_one", "subscription_id": "sub_test_123" }
+                    }
+                  }
+                }
+                """;
+
+        for (String payload : new String[] { charged, captured }) {
+            mockMvc.perform(post("/api/billing/webhooks/razorpay")
+                            .header("X-Razorpay-Signature", SIGNATURE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(payload))
+                    .andExpect(status().isOk());
+        }
+
+        Subscription updated =
+                subscriptionRepository.findById(testSubscription.getId()).orElseThrow();
+        assertThat(updated.getBillingCyclesCharged()).isEqualTo(1);
+        assertThat(updated.getCarriedProjectCredits()).isEqualTo(2);
     }
 
     @Test

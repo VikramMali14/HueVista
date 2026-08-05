@@ -23,6 +23,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -1024,8 +1025,22 @@ public class BillingService {
      * On successful renewal (payment.captured), reset monthly AI usage and update period dates.
      */
     @Transactional
-    public void handlePaymentCaptured(String razorpaySubscriptionId, long currentEnd) {
+    public void handlePaymentCaptured(String razorpaySubscriptionId, long currentEnd, String paymentId) {
         subscriptionRepository.findByRazorpaySubscriptionId(razorpaySubscriptionId).ifPresent(sub -> {
+            // One charge, two events: subscription.charged and payment.captured both
+            // describe this money, and the setup guide has merchants enable both. They
+            // carry different event ids, so the replay guard upstream passes them both —
+            // correctly, since it stops a redelivery of ONE event, not two events about one
+            // charge. Recognise the charge itself so the second arrival is a no-op; before
+            // this, every renewal counted two billing cycles for one payment, and the
+            // second pass expired credits an upgrade had just carried across.
+            if (StringUtils.hasText(paymentId)
+                    && paymentId.equals(sub.getLastChargePaymentId())) {
+                log.info("Charge {} already applied to subscription {}, skipping duplicate event",
+                        paymentId, razorpaySubscriptionId);
+                return;
+            }
+
             // Classify BEFORE mutating, by counting charges rather than guessing from
             // dates. The old test ("did this period start more than 7 days ago?") had to
             // guess because nothing recorded the charges; it misread a late activation
@@ -1039,6 +1054,9 @@ public class BillingService {
             boolean firstCharge = sub.getBillingCyclesCharged() == 0;
             boolean alreadyAnnounced = previousStatus == SubscriptionStatus.ACTIVE;
             sub.setBillingCyclesCharged(sub.getBillingCyclesCharged() + 1);
+            if (StringUtils.hasText(paymentId)) {
+                sub.setLastChargePaymentId(paymentId);
+            }
 
             sub.setStatus(SubscriptionStatus.ACTIVE);
             sub.setProjectsUsed(0);
@@ -1047,7 +1065,17 @@ public class BillingService {
             // someone's unused monthly allowance, moved across so an upgrade mid-cycle
             // didn't forfeit them — not something bought outright, so they last the cycle
             // they were carried into and no longer.
-            sub.setCarriedProjectCredits(0);
+            //
+            // On RENEWAL, that is — not on cycle 0. An immediate upgrade carries the old
+            // plan's leftover across during activation, and Razorpay delivers the first
+            // charge for the new subscription seconds later; expiring on every charge
+            // destroyed that leftover almost the moment the shop was given it, which is
+            // the opposite of what the Terms promise ("moves onto the new one and lasts
+            // until that cycle renews"). Cycle 0 is the charge that STARTS the plan, so
+            // the cycle those credits were carried into begins here rather than ending.
+            if (!firstCharge) {
+                sub.setCarriedProjectCredits(0);
+            }
             // Purchased project credits deliberately survive renewal — a paid credit never
             // evaporates. reservedProjects is likewise NOT reset: a code issued last cycle
             // is still redeemable this one, so the hold behind it must outlive the counter
