@@ -68,11 +68,20 @@ public class RazorpayWebhookService {
                 String subId = entity.getJSONObject("subscription").getJSONObject("entity").getString("id");
                 billingService.markHalted(subId);
             }
+            // These two describe the SAME money. The setup guide has merchants enable both,
+            // and Razorpay sends both for a renewal, so each carries the payment id along to
+            // let the service recognise a charge it has already applied. Without that the
+            // pair counted two billing cycles for one payment — they are different events
+            // with different ids, so the replay guard above passes them both through, as it
+            // should: it stops a redelivery of ONE event, not two events about one charge.
             case "subscription.charged" -> {
                 // Authoritative renewal event: carries the real current_end so period dates
                 // stay accurate instead of drifting off a 30-day approximation.
                 JSONObject sub = entity.getJSONObject("subscription").getJSONObject("entity");
-                billingService.handlePaymentCaptured(sub.getString("id"), sub.optLong("current_end", 0));
+                billingService.handlePaymentCaptured(
+                        sub.getString("id"),
+                        sub.optLong("current_end", 0),
+                        paymentIdOf(entity));
             }
             case "payment.captured" -> {
                 // Fallback for renewals if subscription.charged isn't delivered. Pass 0 so the
@@ -81,7 +90,7 @@ public class RazorpayWebhookService {
                 JSONObject payment = entity.getJSONObject("payment").getJSONObject("entity");
                 String subId = payment.optString("subscription_id", "");
                 if (!subId.isBlank()) {
-                    billingService.handlePaymentCaptured(subId, 0);
+                    billingService.handlePaymentCaptured(subId, 0, payment.optString("id", ""));
                 }
             }
             case "refund.created", "refund.processed" -> {
@@ -107,6 +116,21 @@ public class RazorpayWebhookService {
             }
             default -> log.debug("Unhandled Razorpay event: {}", eventType);
         }
+    }
+
+    /**
+     * The payment id inside a subscription.charged payload, or "" if it isn't there.
+     *
+     * Razorpay nests the payment alongside the subscription on this event, but treat it as
+     * optional: without an id the service simply applies the charge as it always did,
+     * which is the safe direction — better to risk the old double-apply than to drop a
+     * genuine renewal because a payload shape changed.
+     */
+    private static String paymentIdOf(JSONObject payloadEntity) {
+        JSONObject payment = payloadEntity.optJSONObject("payment");
+        if (payment == null) return "";
+        JSONObject paymentEntity = payment.optJSONObject("entity");
+        return paymentEntity == null ? "" : paymentEntity.optString("id", "");
     }
 
     private void verifySignature(String payload, String signature) {

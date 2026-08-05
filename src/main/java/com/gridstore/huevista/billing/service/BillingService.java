@@ -23,6 +23,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -377,8 +378,11 @@ public class BillingService {
                         + (scheduled ? " startsAt=" + sub.getCurrentPeriodStart() : ""));
         log.info("Subscription activated via checkout verify: user={} subId={} scheduled={}",
                 userId, sub.getId(), scheduled);
-        billingEmailService.sendSubscriptionActivated(sub);
-        return SubscriptionResponse.from(sub);
+        // Live entity, and current about any credits the supersede just carried across —
+        // the buyer's client renders this response as the state of their new plan.
+        Subscription activated = reload(sub);
+        billingEmailService.sendSubscriptionActivated(activated);
+        return SubscriptionResponse.from(activated);
     }
 
     /**
@@ -956,7 +960,7 @@ public class BillingService {
             }
             log.info("Subscription activated: {}", razorpaySubscriptionId);
             if (!wasActive) {
-                billingEmailService.sendSubscriptionActivated(sub);
+                billingEmailService.sendSubscriptionActivated(reload(sub));
             }
         });
     }
@@ -1021,8 +1025,22 @@ public class BillingService {
      * On successful renewal (payment.captured), reset monthly AI usage and update period dates.
      */
     @Transactional
-    public void handlePaymentCaptured(String razorpaySubscriptionId, long currentEnd) {
+    public void handlePaymentCaptured(String razorpaySubscriptionId, long currentEnd, String paymentId) {
         subscriptionRepository.findByRazorpaySubscriptionId(razorpaySubscriptionId).ifPresent(sub -> {
+            // One charge, two events: subscription.charged and payment.captured both
+            // describe this money, and the setup guide has merchants enable both. They
+            // carry different event ids, so the replay guard upstream passes them both —
+            // correctly, since it stops a redelivery of ONE event, not two events about one
+            // charge. Recognise the charge itself so the second arrival is a no-op; before
+            // this, every renewal counted two billing cycles for one payment, and the
+            // second pass expired credits an upgrade had just carried across.
+            if (StringUtils.hasText(paymentId)
+                    && paymentId.equals(sub.getLastChargePaymentId())) {
+                log.info("Charge {} already applied to subscription {}, skipping duplicate event",
+                        paymentId, razorpaySubscriptionId);
+                return;
+            }
+
             // Classify BEFORE mutating, by counting charges rather than guessing from
             // dates. The old test ("did this period start more than 7 days ago?") had to
             // guess because nothing recorded the charges; it misread a late activation
@@ -1036,6 +1054,9 @@ public class BillingService {
             boolean firstCharge = sub.getBillingCyclesCharged() == 0;
             boolean alreadyAnnounced = previousStatus == SubscriptionStatus.ACTIVE;
             sub.setBillingCyclesCharged(sub.getBillingCyclesCharged() + 1);
+            if (StringUtils.hasText(paymentId)) {
+                sub.setLastChargePaymentId(paymentId);
+            }
 
             sub.setStatus(SubscriptionStatus.ACTIVE);
             sub.setProjectsUsed(0);
@@ -1044,7 +1065,17 @@ public class BillingService {
             // someone's unused monthly allowance, moved across so an upgrade mid-cycle
             // didn't forfeit them — not something bought outright, so they last the cycle
             // they were carried into and no longer.
-            sub.setCarriedProjectCredits(0);
+            //
+            // On RENEWAL, that is — not on cycle 0. An immediate upgrade carries the old
+            // plan's leftover across during activation, and Razorpay delivers the first
+            // charge for the new subscription seconds later; expiring on every charge
+            // destroyed that leftover almost the moment the shop was given it, which is
+            // the opposite of what the Terms promise ("moves onto the new one and lasts
+            // until that cycle renews"). Cycle 0 is the charge that STARTS the plan, so
+            // the cycle those credits were carried into begins here rather than ending.
+            if (!firstCharge) {
+                sub.setCarriedProjectCredits(0);
+            }
             // Purchased project credits deliberately survive renewal — a paid credit never
             // evaporates. reservedProjects is likewise NOT reset: a code issued last cycle
             // is still redeemable this one, so the hold behind it must outlive the counter
@@ -1075,9 +1106,9 @@ public class BillingService {
             }
             log.info("Subscription renewed, AI usage reset: {}", razorpaySubscriptionId);
             if (firstCharge && !alreadyAnnounced) {
-                billingEmailService.sendSubscriptionActivated(sub);
+                billingEmailService.sendSubscriptionActivated(reload(sub));
             } else if (!firstCharge) {
-                billingEmailService.sendSubscriptionRenewed(sub);
+                billingEmailService.sendSubscriptionRenewed(reload(sub));
             }
             // else: the charge webhook echoing a just-verified activation — already emailed.
         });
@@ -1122,6 +1153,27 @@ public class BillingService {
      * left the old subscription alive at Razorpay, so a late settlement resurrected it as
      * a second entitlement and a second monthly charge.
      */
+    /**
+     * Read {@code sub} back after a pass that may have cleared the persistence context.
+     *
+     * The carry-over and reclaim steps inside {@link #supersedeActiveSubscriptions} move
+     * credits with bulk UPDATEs, and those queries are declared
+     * {@code clearAutomatically = true} — they have to be, since they write columns the
+     * context is holding. Clearing DETACHES everything read before it, including the
+     * subscription being activated. Two things then broke on the very next line: the
+     * confirmation email dereferenced the now-detached lazy {@code user} proxy and threw
+     * LazyInitializationException, which failed the whole webhook (and the checkout-verify
+     * response) AFTER the plan had already gone live and the card had been charged; and
+     * anything read off that stale instance still showed the credits as they were before
+     * the carry-over added them.
+     *
+     * Reading the row back fixes both. It costs nothing when there was no clear: findById
+     * serves a still-managed entity straight from the persistence context without a query.
+     */
+    private Subscription reload(Subscription sub) {
+        return subscriptionRepository.findById(sub.getId()).orElse(sub);
+    }
+
     private void supersedeActiveSubscriptions(String userId, String keepSubId) {
         List<Subscription> live = new java.util.ArrayList<>(
                 subscriptionRepository.findByUserIdAndStatus(userId, SubscriptionStatus.ACTIVE));

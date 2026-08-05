@@ -144,6 +144,21 @@ public class Subscription {
     @Builder.Default
     private int billingCyclesCharged = 0;
 
+    /**
+     * The Razorpay payment id of the charge most recently applied to this subscription.
+     *
+     * One charge reaches us as TWO events — the setup guide has merchants enable both
+     * subscription.charged and payment.captured, and Razorpay sends both for the same
+     * renewal. Different events with different ids, so the processed-event guard lets both
+     * through; it stops a redelivery of one event, not two events describing one charge.
+     * Applying both counted two cycles per payment and expired credits an upgrade had just
+     * carried across. Recording the payment makes the second one a no-op.
+     *
+     * NULL means no charge has been applied yet, which is also where every row created
+     * before this column existed starts.
+     */
+    private String lastChargePaymentId;
+
     @Builder.Default
     private boolean cancelAtPeriodEnd = false;
 
