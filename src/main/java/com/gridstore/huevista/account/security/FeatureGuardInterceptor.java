@@ -1,6 +1,7 @@
 package com.gridstore.huevista.account.security;
 
 import com.gridstore.huevista.account.service.FeatureAccessService;
+import com.gridstore.huevista.account.service.PlanFeatureService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -26,10 +27,15 @@ import org.springframework.web.servlet.HandlerInterceptor;
  * shared prefixes ({@code /api/organizations/**} covers both the portal and products),
  * so matching by URL would be the kind of second source of truth that drifts.
  *
- * <p>Anonymous and guest callers pass straight through: this is a constraint a
- * distributor places on a SHOP, and it is resolved from a signed-in retailer's own org.
- * A guest is scoped by their access code and a visitor by the public routes; neither has
- * a shop to look up, and failing them here would break the walk-in flows.
+ * <p>Anonymous and guest callers pass straight through: these are constraints placed on a
+ * SHOP, resolved from a signed-in retailer's own org and plan. A guest is scoped by their
+ * access code and a visitor by the public routes; neither has a shop to look up, and
+ * failing them here would break the walk-in flows.
+ *
+ * <p>Two limits are checked, in the order a shop can act on them. The distributor's grant
+ * comes first because only the distributor can lift it; the shop's own PLAN second,
+ * because that one the shop can lift itself. A page missing on both counts should say the
+ * thing the shop cannot fix.
  */
 @Slf4j
 @Component
@@ -37,6 +43,7 @@ import org.springframework.web.servlet.HandlerInterceptor;
 public class FeatureGuardInterceptor implements HandlerInterceptor {
 
     private final FeatureAccessService featureAccessService;
+    private final PlanFeatureService planFeatureService;
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
@@ -57,9 +64,11 @@ public class FeatureGuardInterceptor implements HandlerInterceptor {
         if (auth == null || !auth.isAuthenticated() || isAnonymousOrGuest(auth)) {
             return true;
         }
-        // Throws SecurityException, which the app's handler renders as 403 naming the
-        // page — so the shop knows what to ask its distributor for.
+        // Both throw SecurityException, which the app's handler renders as 403 naming the
+        // page — so the shop knows what to ask its distributor for, or what its own plan
+        // is holding back.
         featureAccessService.assertFeature(auth.getName(), required.value());
+        planFeatureService.assertIncluded(auth.getName(), required.value());
         return true;
     }
 

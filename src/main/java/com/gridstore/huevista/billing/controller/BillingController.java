@@ -95,23 +95,30 @@ public class BillingController {
     }
 
     @Operation(summary = "Get available plans",
-            description = "Returns all plan options with base pricing, GST, monthly project and PDF "
-                    + "limits, and what one extra project costs on that tier in points and in money.")
+            description = "Returns every plan a shop can be on — the free tier included — with base "
+                    + "pricing, GST, monthly project and PDF limits, whether the tier includes colour "
+                    + "matching, and what one extra project costs on it in points and in money. "
+                    + "`purchasable` says whether it is something checkout can sell.")
     @GetMapping("/plans")
     public ResponseEntity<List<Map<String, Object>>> getPlans() {
-        // Only the tiers a shop can actually buy. FREE is granted with a new shop, never
-        // sold — listing it would put a "₹0/mo" card on the pricing page whose button can
-        // only ever answer "there's nothing to pay". ENTERPRISE is not offered at all for
-        // now: it was a "contact sales" card with no price, no checkout path and nothing
-        // behind it, so every surface that listed it was quoting a product a shop could
-        // not have. The enum constant stays for the rows already carrying it and for an
-        // admin grant, but nothing sells it.
+        // FREE is listed. It is a real tier now — granted with the account, renewed every
+        // month, and the plan a lapsed shop falls back to — so a client comparing tiers has
+        // to be able to see it, and `purchasable: false` is what stops a "₹0/mo" card
+        // growing a buy button that can only ever answer "there's nothing to pay".
+        //
+        // ENTERPRISE is still not offered: it was a "contact sales" card with no price, no
+        // checkout path and nothing behind it, so every surface that listed it was quoting
+        // a product a shop could not have. The enum constant stays for the rows already
+        // carrying it and for an admin grant, but nothing sells it.
         var plans = java.util.Arrays.stream(com.gridstore.huevista.billing.model.Plan.values())
-            .filter(p -> !p.isFree() && p != com.gridstore.huevista.billing.model.Plan.ENTERPRISE)
+            .filter(p -> p != com.gridstore.huevista.billing.model.Plan.ENTERPRISE)
             .map(p -> {
                 Map<String, Object> m = new java.util.LinkedHashMap<>();
                 m.put("plan", p.name());
                 m.put("displayName", p.getDisplayName());
+                // Whether checkout can sell this tier. The free one is granted, never
+                // bought, so a client must render it as a card and not as an offer.
+                m.put("purchasable", !p.isFree());
                 // The tier ladder, so a client can tell an upgrade from a downgrade
                 // without hard-coding a copy of the enum order that silently rots when a
                 // tier is added or reordered here.
@@ -135,6 +142,9 @@ public class BillingController {
                 m.put("extraProjectPoints", p.getExtraProjectPoints());
                 m.put("extraProjectPriceInPaise", p.getExtraProjectPricePaise());
                 m.put("extraProjectPriceWithTaxInPaise", p.extraProjectPriceWithTaxInPaise());
+                // The one capability that is a property of the TIER rather than of a
+                // quota: colour matching (the Colour finder) is off on the free plan.
+                m.put("colorMatching", p.isColorMatching());
                 return m;
             }).toList();
         return ResponseEntity.ok(plans);

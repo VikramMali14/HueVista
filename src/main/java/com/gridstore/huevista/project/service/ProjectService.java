@@ -60,6 +60,7 @@ public class ProjectService {
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final OrgMembershipRepository orgMembershipRepository;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
+    private final com.gridstore.huevista.billing.service.FreeTierService freeTierService;
     private final com.gridstore.huevista.paint.service.ShadeCodeSchemeService shadeCodeSchemeService;
     private final com.gridstore.huevista.notification.EmailSender emailSender;
     private final com.gridstore.huevista.account.service.BrandAccessService brandAccessService;
@@ -74,6 +75,14 @@ public class ProjectService {
     public ProjectResponse createProject(String userId, CreateProjectRequest request) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+        // Settle the free tier's cycle BEFORE the "who pays for this?" decision below,
+        // not inside the charge that follows it. That decision reads whether a plan is in
+        // force, so a shop whose free month rolled over last night — or one that has
+        // dropped back to the free tier after a plan lapsed — would otherwise be routed
+        // down the buy-a-project branch and asked to pay for something it already has.
+        // No-op for anyone who is not a retailer on the free tier.
+        freeTierService.ensureCurrentCycle(userId);
 
         // Access-code customers: link the project to the code they redeemed so the
         // issuing retailer keeps visibility of the customer's work (the counter reads

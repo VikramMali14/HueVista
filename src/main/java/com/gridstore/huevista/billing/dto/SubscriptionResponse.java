@@ -45,6 +45,15 @@ public class SubscriptionResponse {
     /** What one extra project costs on this plan — points, and money in paise. */
     private int extraProjectPoints;
     private int extraProjectPricePaise;
+    /**
+     * Whether this plan includes colour matching (the Colour finder). False on the free
+     * tier, true on every paid one.
+     *
+     * Served rather than derived from {@code plan} in the client, because the client
+     * deriving it means a hand-kept copy of which tiers include what — the kind of
+     * duplicate that goes quietly wrong the day a tier changes.
+     */
+    private boolean colorMatching;
     private int pdfDownloadsUsed;
     private int pdfDownloadsLimit;
     private int pdfDownloadsRemaining;
@@ -67,7 +76,9 @@ public class SubscriptionResponse {
                 : Math.max(0, sub.getPdfDownloadsLimit() - sub.getPdfDownloadsUsed());
         // A free trial is not a paid plan, so it buys extras at the no-plan rate — the
         // dearest one. Reading the rate off the row's own plan would quote a trialing
-        // shop the Starter discount it has not bought.
+        // shop the Starter discount it has not bought. (A free-tier row already names
+        // FREE as its plan, so it lands on the same rate through the other branch:
+        // 80 points, or ₹99.)
         Plan pricedAs = sub.isTrial() ? Plan.FREE : sub.getPlan();
 
         return SubscriptionResponse.builder()
@@ -89,6 +100,10 @@ public class SubscriptionResponse {
                 .carriedProjectCredits(sub.getCarriedProjectCredits())
                 .extraProjectPoints(pricedAs.getExtraProjectPoints())
                 .extraProjectPricePaise(pricedAs.extraProjectPriceWithTaxInPaise())
+                // Read off the row's OWN plan, not `pricedAs`: a trial on a paid tier is
+                // charged the no-plan rate for extras but is genuinely running that tier,
+                // so it keeps the tools that come with it.
+                .colorMatching(sub.getPlan().isColorMatching())
                 .pdfDownloadsUsed(sub.getPdfDownloadsUsed())
                 .pdfDownloadsLimit(sub.getPdfDownloadsLimit())
                 .pdfDownloadsRemaining(pdfRemaining)

@@ -61,6 +61,27 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, Stri
 
     List<Subscription> findByStatusAndCurrentPeriodEndBefore(SubscriptionStatus status, LocalDateTime cutoff);
 
+    /**
+     * A user's free-tier subscriptions whose month has run out and which nothing at the
+     * gateway will renew — the rows {@code FreeTierService} rolls into the next cycle.
+     *
+     * Filtered on the PLAN rather than on {@code trial}, because those two came apart when
+     * the free tier stopped being a countdown: a free row is an ordinary non-trial
+     * subscription now, and matching the flag would have skipped every one of them.
+     */
+    @Query("""
+            SELECT s FROM Subscription s
+             WHERE s.user.id = :userId
+               AND s.plan = :free
+               AND s.status = :active
+               AND s.currentPeriodEnd IS NOT NULL
+               AND s.currentPeriodEnd <= :now
+            """)
+    List<Subscription> findDueFreeCycles(@Param("userId") String userId,
+                                         @Param("free") com.gridstore.huevista.billing.model.Plan free,
+                                         @Param("active") SubscriptionStatus active,
+                                         @Param("now") LocalDateTime now);
+
     long countByStatus(SubscriptionStatus status);
 
     /**

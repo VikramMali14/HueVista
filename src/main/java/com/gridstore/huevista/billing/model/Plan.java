@@ -19,8 +19,8 @@ import lombok.RequiredArgsConstructor;
  * the tier's own rate — {@link #getExtraProjectPoints()} in points, or
  * {@link #getExtraProjectPricePaise()} in money. The bigger the plan, the cheaper the
  * extra, so a shop that outgrows its tier is nudged up rather than penalised. An account
- * with no paid plan (including one still on the free trial) pays the FREE tier's rate,
- * which is the dearest — subscribing is always the cheaper way to buy volume.
+ * with no paid plan (including one on the free tier) pays the FREE tier's rate, which is
+ * the dearest — subscribing is always the cheaper way to buy volume.
  *
  * Plan prices are BASE prices in paise; GST ({@link #GST_PERCENT}) is added on top —
  * see {@link #priceWithTaxInPaise()}. GST is currently 0, so the with-tax amounts equal
@@ -33,17 +33,27 @@ public enum Plan {
     // Order matters: ordinal is the upgrade rank (see isUpgradeFrom). FREE sits at the
     // bottom so every paid tier reads as an upgrade from it.
     //
-    // FREE is what a new shop starts on: two complete projects to try the whole pipeline
-    // end to end over a short window. It is sized to be a real taste of the product
-    // rather than a usable month of business, so the shop reaches the subscribe decision
-    // with the thing actually understood.
-    FREE(0, 2, 4, 5, 80, 9900, "Free trial"),
-    STARTER(99900, 15, 4, 25, 60, 6500, "Starter"),
-    PROFESSIONAL(249900, 45, 8, 100, 50, 5500, "Professional"),
-    BUSINESS(499900, 100, 12, 300, 40, 4500, "Business"),
+    // FREE is a PERMANENT tier, not a countdown. Every shop keeps two complete projects a
+    // month for as long as the account exists, renewing on the same monthly cycle a paid
+    // plan does. It replaced a seven-day trial that expired into nothing: a shop that
+    // photographed one room in a quiet week lost the product entirely and had to ask
+    // support (or its distributor) to be let back in, which made the free tier a deadline
+    // to manage rather than a way in. Two a month is small enough that a working counter
+    // outgrows it in days and large enough that the shop is never locked out while
+    // deciding.
+    //
+    // What the free tier does NOT include is colour matching — the Colour finder, which
+    // pulls catalogue shade codes out of any photograph. It is the one tool that is
+    // valuable on its own, without a project behind it, so leaving it on the free tier
+    // meant the most useful thing at the counter cost nothing and nothing above it needed
+    // buying. Everything else the free tier reaches is the same product the paid tiers get.
+    FREE(0, 2, 4, 5, 80, 9900, false, "Free"),
+    STARTER(99900, 15, 4, 25, 60, 6500, true, "Starter"),
+    PROFESSIONAL(249900, 45, 8, 100, 50, 5500, true, "Professional"),
+    BUSINESS(499900, 100, 12, 300, 40, 4500, true, "Business"),
     // Enterprise quota is unlimited, so its extra-project rate is only ever quoted, never
     // charged. It mirrors Business so a quote never reads as dearer than the tier below.
-    ENTERPRISE(-1, Integer.MAX_VALUE, 16, Integer.MAX_VALUE, 40, 4500, "Enterprise");
+    ENTERPRISE(-1, Integer.MAX_VALUE, 16, Integer.MAX_VALUE, 40, 4500, true, "Enterprise");
 
     /** GST rate applied to every plan and all pay-per-use overage. Set to 0 for
      *  now — this runs as an individual (non-GST-registered) project, so prices
@@ -63,6 +73,16 @@ public enum Plan {
     private final int extraProjectPoints;
     /** What one extra project costs in paise when paid with money instead of points. */
     private final int extraProjectPricePaise;
+    /**
+     * Whether this tier includes colour matching — the Colour finder, which reads any
+     * photograph and answers with the nearest catalogue shade codes.
+     *
+     * The only tool this product gates on the tier rather than on a quota, because it is
+     * the only one that produces something a shop can sell from without ever creating a
+     * project: a counter can answer "what shade is this?" all day and never touch the
+     * allowance the tiers are actually priced on.
+     */
+    private final boolean colorMatching;
     private final String displayName;
 
     public double priceInRupees() {
@@ -92,8 +112,8 @@ public enum Plan {
         return current != null && this.ordinal() > current.ordinal();
     }
 
-    /** The starter-for-nothing tier: granted, never sold. Also the rate an account with
-     *  no plan at all pays for a one-off project. */
+    /** The starter-for-nothing tier: granted with the account and renewed monthly, never
+     *  sold. Also the rate an account with no plan at all pays for a one-off project. */
     public boolean isFree() {
         return this == FREE;
     }

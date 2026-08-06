@@ -48,9 +48,9 @@ class TrialSignupIntegrationTest {
     @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired PasswordEncoder passwordEncoder;
 
-    /** Shops are admin-created now: only ROLE_ADMIN can provision a RETAILER + org + trial. */
+    /** Shops are admin-created now: only ROLE_ADMIN can provision a RETAILER + org + plan. */
     @Test
-    void admin_creating_a_retailer_provisions_org_and_trial() throws Exception {
+    void admin_creating_a_retailer_provisions_org_and_free_tier() throws Exception {
         userRepository.save(User.builder()
                 .name("Root Admin").email("root@example.com")
                 .password(passwordEncoder.encode("password123"))
@@ -82,7 +82,9 @@ class TrialSignupIntegrationTest {
         List<Subscription> subs = subscriptionRepository.findByUserIdOrderByCreatedAtDesc(retailer.getId());
         assertThat(subs).hasSize(1);
         Subscription sub = subs.get(0);
-        assertThat(sub.isTrial()).isTrue();
+        // NOT a trial. The free tier is a standing plan now, and the flag is what the
+        // nightly sweep expires on — setting it would put the seven-day countdown back.
+        assertThat(sub.isTrial()).isFalse();
         assertThat(sub.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
         // Every new shop starts on the FREE tier, whatever tier the request named — the
         // requested tier is a sales note. Handing out a month of Professional quota for
@@ -94,10 +96,12 @@ class TrialSignupIntegrationTest {
         // put them through.
         assertThat(sub.getProjectsLimit()).isEqualTo(Plan.FREE.getMonthlyProjectLimit());
         assertThat(sub.getProjectsLimit()).isEqualTo(2);
-        // Seven days, so the decision arrives while the product is still fresh.
+        // A MONTH, not a week: the free tier renews rather than running out, so the shop
+        // gets its two projects back every cycle instead of reaching a deadline.
         assertThat(sub.getCurrentPeriodEnd())
-                .isAfter(sub.getCurrentPeriodStart().plusDays(6))
-                .isBefore(sub.getCurrentPeriodStart().plusDays(8));
+                .isEqualTo(sub.getCurrentPeriodStart().plusMonths(1));
+        // And colour matching is the one thing the free tier does not carry.
+        assertThat(sub.getPlan().isColorMatching()).isFalse();
     }
 
     /** Public signup creates a plain CUSTOMER — no shop, no subscription. */
