@@ -15,6 +15,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    # The suite runs on H2, which infers a type for a null bind parameter where
+    # PostgreSQL refuses to. Queries that gap can hide are tested against the real
+    # engine instead; they skip when this service is absent, so the suite still runs
+    # on a laptop with nothing installed.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: huevista_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -33,7 +52,11 @@ jobs:
         run: ./mvnw -B -ntp -DskipTests package
 
       - name: Run tests
-        run: ./mvnw -B -ntp test
+        run: >-
+          ./mvnw -B -ntp test
+          -Dhuevista.test.postgres.url=jdbc:postgresql://localhost:5432/huevista_test
+          -Dhuevista.test.postgres.username=postgres
+          -Dhuevista.test.postgres.password=postgres
 
       - name: Upload test reports
         if: always()

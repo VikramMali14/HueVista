@@ -1,9 +1,6 @@
 package com.gridstore.huevista.billing.repository;
 
 import com.gridstore.huevista.billing.model.PaymentAttempt;
-import com.gridstore.huevista.billing.model.PaymentAttemptStatus;
-import com.gridstore.huevista.billing.model.PaymentFlow;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -13,46 +10,25 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
-public interface PaymentAttemptRepository extends JpaRepository<PaymentAttempt, String> {
+public interface PaymentAttemptRepository extends JpaRepository<PaymentAttempt, String>,
+        PaymentAttemptSearchRepository {
 
     Optional<PaymentAttempt> findByReference(String reference);
 
     /**
-     * The admin report's one query. Every filter is optional and switched off by
-     * passing null, which keeps this to a single statement instead of a Specification
-     * tree — there are only six filters and they never combine in interesting ways.
+     * Counts per status over a window — the report's headline tiles.
      *
-     * <p>{@code q} matches the free-text fields an admin actually has to hand when
-     * someone reports a problem: the email they signed up with, the reference their
-     * bank statement shows, the payment id from a Razorpay dashboard, or a fragment of
-     * the URL they were on.
+     * <p>The {@code CAST} is not decoration. {@code :from} is null for the all-time
+     * window, and PostgreSQL refuses to prepare a statement whose parameter type it
+     * cannot infer: a bare {@code ? IS NULL} gives it nothing to infer from, and the
+     * whole report 500s with "could not determine data type of parameter $1". Naming
+     * the type in the SQL settles it. H2 — what the tests run on — infers the type
+     * happily either way, so nothing here fails until it reaches production.
      */
-    @Query("""
-            SELECT a FROM PaymentAttempt a
-            WHERE (:status IS NULL OR a.status = :status)
-              AND (:flow IS NULL OR a.flow = :flow)
-              AND (:userId IS NULL OR a.userId = :userId)
-              AND (:from IS NULL OR a.createdAt >= :from)
-              AND (:to IS NULL OR a.createdAt <= :to)
-              AND (:q IS NULL OR LOWER(a.userEmail) LIKE LOWER(CONCAT('%', :q, '%'))
-                              OR LOWER(a.reference) LIKE LOWER(CONCAT('%', :q, '%'))
-                              OR LOWER(a.paymentId) LIKE LOWER(CONCAT('%', :q, '%'))
-                              OR LOWER(a.pageUrl)   LIKE LOWER(CONCAT('%', :q, '%')))
-            ORDER BY a.createdAt DESC, a.id DESC
-            """)
-    Page<PaymentAttempt> search(@Param("status") PaymentAttemptStatus status,
-                                @Param("flow") PaymentFlow flow,
-                                @Param("userId") String userId,
-                                @Param("from") LocalDateTime from,
-                                @Param("to") LocalDateTime to,
-                                @Param("q") String q,
-                                Pageable pageable);
-
-    /** Counts per status over a window — the report's headline tiles. */
     @Query("""
             SELECT a.status, COUNT(a), COALESCE(SUM(a.amountPaise), 0)
             FROM PaymentAttempt a
-            WHERE (:from IS NULL OR a.createdAt >= :from)
+            WHERE (CAST(:from AS LocalDateTime) IS NULL OR a.createdAt >= :from)
             GROUP BY a.status
             """)
     List<Object[]> countByStatusSince(@Param("from") LocalDateTime from);
@@ -61,7 +37,7 @@ public interface PaymentAttemptRepository extends JpaRepository<PaymentAttempt, 
     @Query("""
             SELECT a.flow, COUNT(a), COALESCE(SUM(a.amountPaise), 0)
             FROM PaymentAttempt a
-            WHERE (:from IS NULL OR a.createdAt >= :from)
+            WHERE (CAST(:from AS LocalDateTime) IS NULL OR a.createdAt >= :from)
             GROUP BY a.flow
             """)
     List<Object[]> countByFlowSince(@Param("from") LocalDateTime from);
@@ -77,7 +53,7 @@ public interface PaymentAttemptRepository extends JpaRepository<PaymentAttempt, 
               AND a.status IN (com.gridstore.huevista.billing.model.PaymentAttemptStatus.ABANDONED,
                                com.gridstore.huevista.billing.model.PaymentAttemptStatus.FAILED,
                                com.gridstore.huevista.billing.model.PaymentAttemptStatus.VERIFY_FAILED)
-              AND (:from IS NULL OR a.createdAt >= :from)
+              AND (CAST(:from AS LocalDateTime) IS NULL OR a.createdAt >= :from)
             GROUP BY a.pageUrl
             ORDER BY COUNT(a) DESC
             """)
@@ -88,7 +64,7 @@ public interface PaymentAttemptRepository extends JpaRepository<PaymentAttempt, 
             SELECT COALESCE(a.errorCode, 'UNKNOWN'), COALESCE(a.errorDescription, ''), COUNT(a)
             FROM PaymentAttempt a
             WHERE a.status = com.gridstore.huevista.billing.model.PaymentAttemptStatus.FAILED
-              AND (:from IS NULL OR a.createdAt >= :from)
+              AND (CAST(:from AS LocalDateTime) IS NULL OR a.createdAt >= :from)
             GROUP BY a.errorCode, a.errorDescription
             ORDER BY COUNT(a) DESC
             """)

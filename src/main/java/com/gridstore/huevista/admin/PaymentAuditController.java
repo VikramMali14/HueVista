@@ -71,12 +71,13 @@ public class PaymentAuditController {
             @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0") int page,
             @Parameter(description = "Page size, max 500") @RequestParam(defaultValue = "50") int size) {
 
-        Pageable pageable = PageRequest.of(Math.max(0, page), Math.min(Math.max(1, size), MAX_PAGE_SIZE));
+        int capped = Math.min(Math.max(1, size), MAX_PAGE_SIZE);
         var rows = attemptRepository.search(
                 parseStatus(status), parseFlow(flow), blankToNull(userId),
-                startOf(from), endOf(to), blankToNull(q), pageable);
+                startOf(from), endOf(to), blankToNull(q),
+                Math.max(0, page) * capped, capped);
 
-        return ResponseEntity.ok(rows.getContent().stream().map(PaymentAuditController::toRow).toList());
+        return ResponseEntity.ok(rows.stream().map(PaymentAuditController::toRow).toList());
     }
 
     @Operation(summary = "Payment audit summary",
@@ -189,16 +190,16 @@ public class PaymentAuditController {
             @RequestParam(required = false) String q,
             @Parameter(description = "Row cap, max 20000") @RequestParam(defaultValue = "5000") int limit) {
 
-        Pageable pageable = PageRequest.of(0, Math.min(Math.max(1, limit), MAX_EXPORT_ROWS));
         var rows = attemptRepository.search(
                 parseStatus(status), parseFlow(flow), blankToNull(userId),
-                startOf(from), endOf(to), blankToNull(q), pageable);
+                startOf(from), endOf(to), blankToNull(q),
+                0, Math.min(Math.max(1, limit), MAX_EXPORT_ROWS));
 
         StringBuilder csv = new StringBuilder(
                 "created_at,status,flow,reference,payment_id,buyer,amount_inr,currency,description,"
                 + "plan,page_url,ip_address,user_agent,error_code,error_description,error_source,"
                 + "error_step,duration_seconds,closed_at\n");
-        for (PaymentAttempt a : rows.getContent()) {
+        for (PaymentAttempt a : rows) {
             csv.append(csvCell(a.getCreatedAt())).append(',')
                .append(csvCell(a.getStatus())).append(',')
                .append(csvCell(a.getFlow())).append(',')
