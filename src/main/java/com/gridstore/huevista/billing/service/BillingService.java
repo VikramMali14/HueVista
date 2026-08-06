@@ -633,17 +633,51 @@ public class BillingService {
             JSONObject cancelRequest = new JSONObject();
             cancelRequest.put("cancel_at_cycle_end", 1);
             razorpayClient.subscriptions.cancel(sub.getRazorpaySubscriptionId(), cancelRequest);
-            sub.setCancelAtPeriodEnd(true);
-            subscriptionRepository.save(sub);
-            auditService.record(userId, "SUBSCRIPTION_CANCEL", "SUBSCRIPTION", sub.getId(), "plan=" + sub.getPlan());
-            log.info("Subscription cancel-at-period-end set: user={} subId={}", userId, sub.getId());
-            billingEmailService.sendCancellationScheduled(sub);
         } catch (RazorpayException e) {
-            log.error("Razorpay cancel failed: {}", e.getMessage());
-            throw new IllegalStateException("Payment gateway error: " + e.getMessage());
+            // A gateway that cannot find the subscription is not a reason to refuse the
+            // cancellation — it is the reason there is nothing left to cancel there. This
+            // used to rethrow, which left the retailer permanently unable to stop a plan:
+            // every press of "Cancel subscription" returned "Payment gateway error: The ID
+            // provided is invalid or could not be found", and the local row stayed ACTIVE
+            // and renewing. Blocking protected nobody — if that id really were still
+            // charging a card somewhere, refusing to record the cancellation would not
+            // have stopped it either. So finish locally and shout about it in the log.
+            //
+            // Everything else — network trouble, auth failure, a Razorpay outage — still
+            // fails loudly: those the customer can meaningfully retry, and reporting
+            // "cancelled" while the gateway is untouched would be a lie about their money.
+            if (!unknownAtGateway(e)) {
+                log.error("Razorpay cancel failed: {}", e.getMessage());
+                throw new IllegalStateException("Payment gateway error: " + e.getMessage());
+            }
+            log.error("Razorpay does not recognise subscription {} (cancelling locally anyway — "
+                    + "check the dashboard that nothing is still charging this customer): {}",
+                    sub.getRazorpaySubscriptionId(), e.getMessage());
         }
 
+        sub.setCancelAtPeriodEnd(true);
+        subscriptionRepository.save(sub);
+        auditService.record(userId, "SUBSCRIPTION_CANCEL", "SUBSCRIPTION", sub.getId(), "plan=" + sub.getPlan());
+        log.info("Subscription cancel-at-period-end set: user={} subId={}", userId, sub.getId());
+        billingEmailService.sendCancellationScheduled(sub);
+
         return SubscriptionResponse.from(sub);
+    }
+
+    /**
+     * True when Razorpay's rejection means "no such subscription in this account".
+     *
+     * The usual cause is a key rotation or a test/live switch: the row was created under
+     * one merchant account and the app now talks to another, so every id it holds is a
+     * stranger. Razorpay has no error code for this beyond a BAD_REQUEST_ERROR, so the
+     * message text is all there is to match on — kept deliberately narrow, because
+     * anything that falls through here is treated as a real, retryable gateway failure.
+     */
+    private static boolean unknownAtGateway(RazorpayException e) {
+        String message = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
+        return message.contains("could not be found")
+                || message.contains("does not exist")
+                || message.contains("no such subscription");
     }
 
     /**

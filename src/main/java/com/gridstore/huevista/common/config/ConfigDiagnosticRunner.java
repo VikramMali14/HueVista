@@ -99,6 +99,30 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
     @Value("${spring.security.oauth2.client.registration.google.client-secret:NOT SET}")
     private String googleClientSecret;
 
+    // --- Razorpay ---
+    // Billing is the other subsystem that starts cleanly and fails later, and its
+    // commonest failure is silent: a webhook secret that does not match the one on
+    // the dashboard endpoint makes every delivery bounce with a 401, so renewals,
+    // cancellations and halts simply never arrive and the app's idea of who is
+    // subscribed quietly drifts away from what Razorpay is charging.
+    @Value("${razorpay.key-id:}")
+    private String razorpayKeyId;
+
+    @Value("${razorpay.key-secret:}")
+    private String razorpayKeySecret;
+
+    @Value("${razorpay.webhook-secret:}")
+    private String razorpayWebhookSecret;
+
+    @Value("${razorpay.plan.starter:}")
+    private String razorpayPlanStarter;
+
+    @Value("${razorpay.plan.professional:}")
+    private String razorpayPlanProfessional;
+
+    @Value("${razorpay.plan.business:}")
+    private String razorpayPlanBusiness;
+
     // --- Mail / SMTP ---
     // Mail is the one subsystem that fails *after* a clean startup: a bad relay
     // only announces itself when the first 2FA / reset / verification code is
@@ -168,6 +192,15 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
             "\n── GOOGLE OAUTH2 ─────────────────────────────────────────────\n" +
             "  Client ID    : {}\n" +
             "  Secret       : {}\n" +
+            "\n── RAZORPAY / BILLING ────────────────────────────────────────\n" +
+            "  Mode           : {}\n" +
+            "  Key ID         : {}\n" +
+            "  Key Secret     : {}\n" +
+            "  Webhook Secret : {}\n" +
+            "  Plan Starter   : {}\n" +
+            "  Plan Pro       : {}\n" +
+            "  Plan Business  : {}\n" +
+            "{}" +
             "\n── MAIL / SMTP ───────────────────────────────────────────────\n" +
             "  Enabled      : {}\n" +
             "  Host         : {}\n" +
@@ -204,6 +237,11 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
             imageCleanerEnabled, imageCleanerModel,
             // Google
             mask(googleClientId), isSet(googleClientSecret),
+            // Razorpay — the key id carries its own mode prefix and is half of a public
+            // Checkout payload, so a prefix is safe to print; the two secrets never are.
+            razorpayMode(), mask(razorpayKeyId), isSet(razorpayKeySecret), isSet(razorpayWebhookSecret),
+            blank(razorpayPlanStarter), blank(razorpayPlanProfessional), blank(razorpayPlanBusiness),
+            razorpayWarnings(),
             // Mail — username is an account identity, so mask rather than print;
             // the password never appears, only SET / NOT SET.
             mailEnabled, blank(mailHost), blank(mailPort), mask(mailUsername), isSet(mailPassword),
@@ -269,6 +307,52 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
             }
         }
         return sb.isEmpty() ? "  ✓  Mail delivery configured\n" : sb.toString();
+    }
+
+    /** Test or Live, read off the key id's own prefix — Razorpay has no separate flag. */
+    private String razorpayMode() {
+        if (isBlank(razorpayKeyId)) return "NOT SET — billing disabled";
+        if (razorpayKeyId.startsWith("rzp_test_")) return "TEST (no real money moves)";
+        if (razorpayKeyId.startsWith("rzp_live_")) return "LIVE (real charges)";
+        return "UNKNOWN (key id has no rzp_test_/rzp_live_ prefix)";
+    }
+
+    /**
+     * Flags the billing misconfigurations that let the app start, take payments, and
+     * still lose events. Each branch corresponds to a failure we have actually hit in
+     * a deployed environment.
+     */
+    private String razorpayWarnings() {
+        if (isBlank(razorpayKeyId) || isBlank(razorpayKeySecret)) {
+            return "  ⚠  Razorpay keys not set — subscriptions, points and project purchases\n"
+                 + "     all fail at the gateway. Set RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET.\n";
+        }
+        StringBuilder sb = new StringBuilder();
+        if (isBlank(razorpayWebhookSecret)) {
+            sb.append("  ⚠  RAZORPAY_WEBHOOK_SECRET is empty — the webhook endpoint fails CLOSED and\n")
+              .append("     rejects every delivery, so renewals, cancellations and halts never reach\n")
+              .append("     this app. Copy the secret from Razorpay → Settings → Webhooks.\n");
+        } else if (razorpayWebhookSecret.equals(razorpayKeySecret)) {
+            // They are two different secrets that look alike, sit next to each other in the
+            // dashboard, and produce a 401 on every delivery when confused for each other.
+            sb.append("  ⚠  RAZORPAY_WEBHOOK_SECRET is identical to RAZORPAY_KEY_SECRET. These are\n")
+              .append("     different secrets — the webhook one is set per endpoint under Settings →\n")
+              .append("     Webhooks. Every delivery will be rejected as an invalid signature.\n");
+        }
+        // Test keys with a public base URL means real customers are being handed a
+        // sandbox checkout: payments "succeed" and no money ever arrives.
+        if (razorpayKeyId.startsWith("rzp_test_") && !isBlank(baseUrl)
+                && !baseUrl.contains("localhost") && !baseUrl.contains("127.0.0.1")) {
+            sb.append("  ⚠  TEST keys are in use on a public base URL (").append(baseUrl).append(").\n")
+              .append("     Checkout will complete without charging anyone. Switch to Live keys —\n")
+              .append("     and remember Live mode needs its own webhook, with its own secret.\n");
+        }
+        if (isBlank(razorpayPlanStarter) && isBlank(razorpayPlanProfessional) && isBlank(razorpayPlanBusiness)) {
+            sb.append("  ⚠  No Razorpay plan IDs configured — every subscribe attempt fails. Create the\n")
+              .append("     plans (see docs/RAZORPAY_SETUP.md) and set RAZORPAY_PLAN_*. Plan IDs are\n")
+              .append("     mode-specific: Test-mode plans do not exist under Live keys.\n");
+        }
+        return sb.isEmpty() ? "  ✓  Razorpay configured\n" : sb.toString();
     }
 
     // Returns the domain part of an e-mail address, or null when the value is not

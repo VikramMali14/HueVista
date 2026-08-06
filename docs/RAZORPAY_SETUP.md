@@ -159,6 +159,32 @@ Then in the dashboard (still Test Mode): **Settings → Webhooks → Add New Web
 Each tunnel restart gives a new URL — update the webhook, or keep a reserved
 ngrok domain.
 
+### When the log says `Invalid Razorpay webhook signature`
+
+Every delivery is being rejected with 401 and the payload is being thrown away.
+The signature check itself is not the problem — that line means the secret this
+app is running with is not the secret Razorpay signed the event with. In order
+of how often it turns out to be the cause:
+
+1. **The wrong secret is in the environment.** Each webhook *endpoint* has its
+   own secret, set when the endpoint is created. There is no page that shows it
+   again afterwards — if you did not save it, edit the webhook, set a new secret,
+   and put that value in `RAZORPAY_WEBHOOK_SECRET`.
+2. **Test/live mismatch.** A live webhook signs with the live endpoint's secret.
+   Running live keys against the secret from the test-mode webhook fails exactly
+   like a typo would. The startup diagnostic prints the key mode
+   (`RAZORPAY / BILLING → Mode`) — check it matches the mode you created the
+   webhook in.
+3. **`RAZORPAY_KEY_SECRET` was pasted in by mistake.** They sit near each other
+   in the dashboard and look alike. The startup diagnostic flags this one
+   outright.
+4. **The container is still running the old value.** `docker compose up -d`
+   re-reads `.env`; a plain `restart` does not. Confirm with
+   `docker compose exec backend printenv RAZORPAY_WEBHOOK_SECRET`.
+
+Redeliver a failed event from **Settings → Webhooks → the endpoint → Recent
+Deliveries** to test a fix without making another payment.
+
 ---
 
 ## 4. Test each flow
