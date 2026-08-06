@@ -5,6 +5,7 @@ import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.billing.dto.CreateSubscriptionRequest;
 import com.gridstore.huevista.billing.dto.SubscriptionResponse;
 import com.gridstore.huevista.billing.dto.VerifySubscriptionRequest;
+import com.gridstore.huevista.billing.model.PaymentFlow;
 import com.gridstore.huevista.billing.model.Plan;
 import com.gridstore.huevista.billing.model.Subscription;
 import com.gridstore.huevista.billing.model.SubscriptionPayment;
@@ -39,6 +40,7 @@ public class BillingService {
     private final RazorpayClient razorpayClient;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final BillingEmailService billingEmailService;
+    private final PaymentAttemptService paymentAttemptService;
 
     @Value("${razorpay.plan.starter:}")
     private String planIdStarter;
@@ -139,6 +141,12 @@ public class BillingService {
         // second one, and retire the attempts for plans the shop moved on from.
         SubscriptionResponse pending = reusePendingAttempt(userId, request);
         if (pending != null) {
+            // Re-offering an existing checkout is still a buyer standing in front of one,
+            // so it belongs in the audit trail. open() recognises the reference and notes
+            // the re-offer on the existing row rather than starting a second one.
+            paymentAttemptService.open(pending.getRazorpaySubscriptionId(), PaymentFlow.SUBSCRIPTION,
+                    userId, request.getPlan().priceWithTaxInPaise() * Math.max(1, request.getQuantity()),
+                    "INR", request.getPlan().getDisplayName() + " plan", request.getPlan().name());
             return pending;
         }
 
@@ -192,6 +200,12 @@ public class BillingService {
             subscriptionRepository.save(sub);
             log.info("Subscription created: user={} plan={} rzpId={} startsAt={}",
                     userId, request.getPlan(), rzpSubId, scheduledStart);
+            // The checkout audit row, opened while the buyer's own request is still on the
+            // thread — the only point at which their IP, browser and page are visible.
+            // Keyed by the subscription id, which is what Checkout quotes back for a plan.
+            paymentAttemptService.open(rzpSubId, PaymentFlow.SUBSCRIPTION, userId,
+                    request.getPlan().priceWithTaxInPaise() * Math.max(1, request.getQuantity()),
+                    "INR", request.getPlan().getDisplayName() + " plan", request.getPlan().name());
             // razorpayKeyId lets the browser open the in-app Checkout for this subscription;
             // paymentUrl (hosted short_url) is kept as a fallback for clients that can't.
             return SubscriptionResponse.from(sub, paymentUrl, keyId);

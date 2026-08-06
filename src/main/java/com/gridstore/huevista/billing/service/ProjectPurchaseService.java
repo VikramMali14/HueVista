@@ -4,6 +4,7 @@ import com.gridstore.huevista.billing.dto.ProjectOrderResponse;
 import com.gridstore.huevista.billing.dto.ProjectReopenResponse;
 import com.gridstore.huevista.billing.dto.VerifyProjectPurchaseRequest;
 import com.gridstore.huevista.billing.model.Plan;
+import com.gridstore.huevista.billing.model.PaymentFlow;
 import com.gridstore.huevista.billing.model.ProjectCredit;
 import com.gridstore.huevista.billing.model.ProjectPurchase;
 import com.gridstore.huevista.billing.repository.ProjectPurchaseRepository;
@@ -43,6 +44,7 @@ public class ProjectPurchaseService {
     private final ProjectCreditService projectCreditService;
     private final PricingService pricingService;
     private final BillingEmailService billingEmailService;
+    private final PaymentAttemptService paymentAttemptService;
 
     @Value("${razorpay.key-id:}")
     private String keyId;
@@ -79,6 +81,10 @@ public class ProjectPurchaseService {
             String orderId = order.get("id");
             log.info("Project order created: user={} order={} plan={} amountPaise={}",
                     userId, orderId, pricedAs, amountPaise);
+            // Open the audit row here, while the buyer's request is still on the thread —
+            // it is the only moment we can see their IP, browser and originating page.
+            paymentAttemptService.open(orderId, PaymentFlow.PROJECT, userId, amountPaise,
+                    pricingService.currency(), "1 extra project", pricedAs.name());
 
             return ProjectOrderResponse.builder()
                     .orderId(orderId)
@@ -167,6 +173,8 @@ public class ProjectPurchaseService {
             String orderId = order.get("id");
             log.info("Reopen order created: user={} order={} project={} amountPaise={}",
                     userId, orderId, projectId, amountPaise);
+            paymentAttemptService.open(orderId, PaymentFlow.REOPEN, userId, amountPaise,
+                    pricingService.currency(), "Reopen project " + projectId, null);
 
             return ProjectOrderResponse.builder()
                     .orderId(orderId)

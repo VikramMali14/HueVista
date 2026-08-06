@@ -89,7 +89,8 @@ class StoreKioskServiceTest {
                 .thenReturn(java.util.List.of(OWNER));
 
         points = mock(com.gridstore.huevista.billing.service.RewardPointsService.class);
-        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing, points);
+        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing, points,
+                mock(com.gridstore.huevista.billing.service.PaymentAttemptService.class));
         ReflectionTestUtils.setField(svc, "keyId", "key");
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
         ReflectionTestUtils.setField(svc, "currency", "INR");
@@ -249,7 +250,8 @@ class StoreKioskServiceTest {
                 "org-1", com.gridstore.huevista.account.model.OrgMemberRole.OWNER))
                 .thenReturn(java.util.List.of());   // nobody to pay points to
         var ownerless = mock(com.gridstore.huevista.billing.service.RewardPointsService.class);
-        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing, ownerless);
+        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing, ownerless,
+                mock(com.gridstore.huevista.billing.service.PaymentAttemptService.class));
         ReflectionTestUtils.setField(svc, "keyId", "key");
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
         ReflectionTestUtils.setField(svc, "currency", "INR");

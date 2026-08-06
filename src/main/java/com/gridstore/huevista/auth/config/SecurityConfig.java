@@ -161,6 +161,13 @@ public class SecurityConfig {
                 // address; both are per-IP rate-limited against sign-up bombing.
                 .requestMatchers(HttpMethod.POST,
                         "/api/newsletter/subscribe", "/api/newsletter/unsubscribe").permitAll()
+                // Checkout telemetry — the browser saying whether the buyer saw, closed or
+                // was refused at a Razorpay Checkout. Public because the kiosk buyer is a
+                // walk-in with no session at all; an attempt that DOES belong to an account
+                // is ownership-checked in the controller. It writes nothing but an audit
+                // note and can never mark a payment good, so the worst a prober can do is
+                // add noise to a report — per-IP rate-limited on top.
+                .requestMatchers(HttpMethod.POST, "/api/billing/attempts/*/events").permitAll()
                 // Guest-scoped endpoints (image upload + project create/recolour) — guests only
                 .requestMatchers("/api/guest/**").hasRole("GUEST")
                 // Razorpay webhook — no user auth, signature-verified in service

@@ -58,6 +58,7 @@ public class StoreKioskService {
     private final AccessCodeService accessCodeService;
     private final com.gridstore.huevista.billing.service.PricingService pricingService;
     private final com.gridstore.huevista.billing.service.RewardPointsService rewardPointsService;
+    private final com.gridstore.huevista.billing.service.PaymentAttemptService paymentAttemptService;
 
     @Value("${razorpay.key-id:}")
     private String keyId;
@@ -96,6 +97,14 @@ public class StoreKioskService {
             String orderId = order.get("id");
             log.info("Store kiosk order created: slug={} order={} amount={}",
                     slug, orderId, chargePaise);
+            // No buyer id to record — a kiosk customer is a walk-in with no account — so
+            // the attempt is attributed to the SHOP instead. Which is the more useful
+            // attribution anyway: a kiosk abandoning every sale is a broken counter, and
+            // this is the only place that would show it.
+            paymentAttemptService.open(orderId,
+                    com.gridstore.huevista.billing.model.PaymentFlow.STORE_KIOSK, null, chargePaise,
+                    currency, "One room visualisation · " + link.getOrganization().getName(), null);
+            paymentAttemptService.attachOrganization(orderId, link.getOrganization().getId());
 
             return StoreOrderResponse.builder()
                     .orderId(orderId)

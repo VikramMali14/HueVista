@@ -66,7 +66,8 @@ class PointsPurchaseServiceTest {
         ReflectionTestUtils.setField(pricing, "currency", "INR");
 
         svc = new PointsPurchaseService(razorpay, purchases, points, pricing,
-                mock(BillingEmailService.class), users);
+                mock(BillingEmailService.class), users,
+                mock(com.gridstore.huevista.billing.service.PaymentAttemptService.class));
         ReflectionTestUtils.setField(svc, "keyId", "rzp_key");
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
     }

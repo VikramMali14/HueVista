@@ -9,6 +9,7 @@ import com.gridstore.huevista.billing.dto.SubscriptionResponse;
 import com.gridstore.huevista.billing.dto.VerifyProjectPurchaseRequest;
 import com.gridstore.huevista.billing.dto.VerifySubscriptionRequest;
 import com.gridstore.huevista.billing.service.BillingService;
+import com.gridstore.huevista.billing.service.PaymentAttemptService;
 import com.gridstore.huevista.billing.service.PdfQuotaService;
 import com.gridstore.huevista.billing.service.ProjectCreditService;
 import com.gridstore.huevista.billing.service.ProjectPurchaseService;
@@ -35,6 +36,7 @@ public class BillingController {
     private final PdfQuotaService pdfQuotaService;
     private final ProjectPurchaseService projectPurchaseService;
     private final ProjectCreditService projectCreditService;
+    private final PaymentAttemptService paymentAttemptService;
 
     @Operation(summary = "Create subscription",
             description = "Creates a Razorpay subscription and returns a payment URL for checkout.")
@@ -52,8 +54,9 @@ public class BillingController {
     public ResponseEntity<SubscriptionResponse> verifySubscription(
             @AuthenticationPrincipal UserDetails userDetails,
             @Valid @RequestBody VerifySubscriptionRequest request) {
-        return ResponseEntity.ok(
-                billingService.verifyAndActivateSubscription(userDetails.getUsername(), request));
+        return ResponseEntity.ok(paymentAttemptService.recordVerification(
+                request.getSubscriptionId(), request.getPaymentId(),
+                () -> billingService.verifyAndActivateSubscription(userDetails.getUsername(), request)));
     }
 
     @Operation(summary = "Get current subscription", description = "Returns the current (or most recent) subscription with usage stats.")
@@ -160,7 +163,8 @@ public class BillingController {
             @AuthenticationPrincipal UserDetails userDetails,
             @Valid @RequestBody VerifyProjectPurchaseRequest request) {
         String userId = userDetails.getUsername();
-        projectPurchaseService.verifyAndCredit(userId, request);
+        paymentAttemptService.recordVerification(request.getOrderId(), request.getPaymentId(),
+                () -> { projectPurchaseService.verifyAndCredit(userId, request); return null; });
         return ResponseEntity.ok(projectCreditService.getOptions(userId));
     }
 
@@ -186,8 +190,8 @@ public class BillingController {
     public ResponseEntity<ProjectReopenResponse> verifyReopen(
             @AuthenticationPrincipal UserDetails userDetails,
             @Valid @RequestBody VerifyProjectPurchaseRequest request) {
-        return ResponseEntity.ok(
-                projectPurchaseService.verifyAndCreditReopen(userDetails.getUsername(), request));
+        return ResponseEntity.ok(paymentAttemptService.recordVerification(request.getOrderId(), request.getPaymentId(),
+                () -> projectPurchaseService.verifyAndCreditReopen(userDetails.getUsername(), request)));
     }
 
     @Operation(summary = "Get my colour-board PDF allowance",
