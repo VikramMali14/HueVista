@@ -129,6 +129,14 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/**").permitAll()
                 // Shade catalog — public read-only
                 .requestMatchers(HttpMethod.GET, "/api/shades", "/api/shades/**").permitAll()
+                // The marketing site's own images, and the manifest naming them. Public
+                // because the pages that show them — the home page above all — are seen
+                // by people who have never signed in; requiring auth would mean the
+                // hero image could not load for the visitors it exists for. Reads only:
+                // the matching writes live under /api/admin/site-assets, which the
+                // hasRole("ADMIN") rule below covers. Slots are addressed by name and
+                // resolved against one table, so this exposes no way to name a file.
+                .requestMatchers(HttpMethod.GET, "/api/site-assets", "/api/site-assets/**").permitAll()
                 // Shared project view — public, no auth
                 .requestMatchers(HttpMethod.GET, "/api/share/**").permitAll()
                 // Anonymous guest redemption of a shop access code — issues a guest token
