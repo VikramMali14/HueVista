@@ -141,10 +141,24 @@ public class RazorpayWebhookService {
             log.error("Razorpay webhook secret not configured — rejecting webhook. Set RAZORPAY_WEBHOOK_SECRET.");
             throw new SecurityException("Webhook signature verification is not configured.");
         }
+        if (!StringUtils.hasText(signature)) {
+            // Nothing signed it. Worth separating from a mismatch: it usually means the
+            // caller is not Razorpay at all (a scanner, a health check, a hand-rolled
+            // curl), not that the secret is wrong — so it should not send anyone off
+            // rotating a perfectly good secret.
+            throw new SecurityException("Razorpay webhook has no X-Razorpay-Signature header");
+        }
         try {
             boolean valid = Utils.verifyWebhookSignature(payload, signature, webhookSecret);
             if (!valid) {
-                throw new SecurityException("Invalid Razorpay webhook signature");
+                // Say what to actually change. A bare "invalid signature", repeated on every
+                // delivery, reads like a code fault when it is nearly always configuration:
+                // each webhook endpoint gets its OWN secret, and Test and Live mode keep
+                // entirely separate webhooks.
+                throw new SecurityException("Invalid Razorpay webhook signature — the configured "
+                        + "RAZORPAY_WEBHOOK_SECRET does not match the secret on the webhook that sent "
+                        + "this event. Copy it from Razorpay dashboard → Settings → Webhooks, from the "
+                        + "endpoint pointing at this host, in the same mode (Test/Live) as the API keys.");
             }
         } catch (com.razorpay.RazorpayException e) {
             throw new SecurityException("Webhook signature verification failed: " + e.getMessage());

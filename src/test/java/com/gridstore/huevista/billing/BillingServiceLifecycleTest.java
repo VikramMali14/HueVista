@@ -327,6 +327,58 @@ class BillingServiceLifecycleTest {
         verifyNoInteractions(razorpay);
     }
 
+    /**
+     * A subscription Razorpay has never heard of must not trap the retailer on it.
+     *
+     * After a key rotation (or a test/live switch) every id stored against the old
+     * merchant account comes back "The ID provided is invalid or could not be found".
+     * That rethrew as a 500, so "Cancel subscription" failed forever and the row stayed
+     * ACTIVE and renewing — with no self-serve way out. There is nothing to cancel at a
+     * gateway that does not know the subscription, so the cancellation lands locally.
+     */
+    @Test
+    void cancelStillSucceedsWhenRazorpayDoesNotRecogniseTheSubscription() throws Exception {
+        Subscription paid = activePaid(3, 15);
+        paid.setCurrentPeriodEnd(LocalDateTime.now().plusDays(20));
+        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
+                .thenReturn(Optional.of(paid));
+        razorpay.subscriptions = mock(SubscriptionClient.class);
+        when(razorpay.subscriptions.cancel(eq("rzp_sub_1"), any(JSONObject.class)))
+                .thenThrow(new com.razorpay.RazorpayException(
+                        "BAD_REQUEST_ERROR:The ID provided is invalid or could not be found."));
+
+        SubscriptionResponse out = service().cancelSubscription(USER);
+
+        // Stops renewing, and keeps the days already paid for — same outcome as a
+        // cancellation the gateway accepted.
+        assertThat(out.isCancelAtPeriodEnd()).isTrue();
+        assertThat(out.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
+        verify(subs).save(paid);
+        verify(emails).sendCancellationScheduled(paid);
+    }
+
+    /**
+     * ...but a gateway that is merely unreachable still fails loudly. Recording a
+     * cancellation Razorpay never received would tell the customer their card is safe
+     * while it goes on being charged; a 5xx they can retry is the honest answer.
+     */
+    @Test
+    void cancelStillFailsWhenTheGatewayIsSimplyUnreachable() throws Exception {
+        Subscription paid = activePaid(3, 15);
+        when(subs.findTopByUserIdAndStatusOrderByCreatedAtDesc(USER, SubscriptionStatus.ACTIVE))
+                .thenReturn(Optional.of(paid));
+        razorpay.subscriptions = mock(SubscriptionClient.class);
+        when(razorpay.subscriptions.cancel(eq("rzp_sub_1"), any(JSONObject.class)))
+                .thenThrow(new com.razorpay.RazorpayException("connect timed out"));
+
+        assertThatThrownBy(() -> service().cancelSubscription(USER))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Payment gateway error");
+        assertThat(paid.isCancelAtPeriodEnd()).isFalse();
+        verify(subs, never()).save(paid);
+        verifyNoInteractions(emails);
+    }
+
     // ---- a HALTED plan is still live at the gateway ----
 
     /**
