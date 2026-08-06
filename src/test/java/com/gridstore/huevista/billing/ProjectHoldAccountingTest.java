@@ -42,7 +42,8 @@ class ProjectHoldAccountingTest {
             mock(com.gridstore.huevista.auth.repository.UserRepository.class),
             mock(RazorpayClient.class),
             mock(com.gridstore.huevista.common.audit.AuditService.class),
-            mock(com.gridstore.huevista.billing.service.BillingEmailService.class));
+            mock(com.gridstore.huevista.billing.service.BillingEmailService.class),
+            mock(com.gridstore.huevista.billing.service.PaymentAttemptService.class));
 
     private Subscription sub(int used, int held, int limit) {
         return Subscription.builder()

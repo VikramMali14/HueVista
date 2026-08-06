@@ -7,6 +7,7 @@ import com.gridstore.huevista.billing.dto.ProjectReopenResponse;
 import com.gridstore.huevista.billing.dto.RewardPointsSummaryResponse;
 import com.gridstore.huevista.billing.dto.VerifyPointsPurchaseRequest;
 import com.gridstore.huevista.billing.model.RewardPointsLot;
+import com.gridstore.huevista.billing.service.PaymentAttemptService;
 import com.gridstore.huevista.billing.service.PricingService;
 import com.gridstore.huevista.billing.service.ProjectCreditService;
 import com.gridstore.huevista.billing.service.PointsPurchaseService;
@@ -42,6 +43,7 @@ public class RewardPointsController {
     private final PricingService pricingService;
     private final ProjectCreditService projectCreditService;
     private final PointsPurchaseService pointsPurchaseService;
+    private final PaymentAttemptService paymentAttemptService;
 
     @Operation(summary = "My reward points",
             description = "Spendable balance, the point price of each purchase, and every live "
@@ -102,7 +104,8 @@ public class RewardPointsController {
     public ResponseEntity<RewardPointsSummaryResponse> verifyPurchase(
             @AuthenticationPrincipal UserDetails userDetails,
             @Valid @RequestBody VerifyPointsPurchaseRequest request) {
-        pointsPurchaseService.verifyAndCredit(userDetails.getUsername(), request);
+        paymentAttemptService.recordVerification(request.getOrderId(), request.getPaymentId(),
+                () -> { pointsPurchaseService.verifyAndCredit(userDetails.getUsername(), request); return null; });
         return summary(userDetails);
     }
 

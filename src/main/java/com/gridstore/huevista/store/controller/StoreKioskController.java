@@ -27,6 +27,7 @@ public class StoreKioskController {
 
     private final StoreLinkService storeLinkService;
     private final StoreKioskService storeKioskService;
+    private final com.gridstore.huevista.billing.service.PaymentAttemptService paymentAttemptService;
 
     @Operation(summary = "View a store link",
             description = "Public. The shop name and price for a kiosk page; 404 for an unknown slug.")
@@ -53,6 +54,8 @@ public class StoreKioskController {
     public ResponseEntity<StoreCheckoutResponse> verify(
             @PathVariable String slug,
             @Valid @RequestBody VerifyStoreOrderRequest request) {
-        return ResponseEntity.ok(storeKioskService.verifyAndIssue(slug, request));
+        return ResponseEntity.ok(paymentAttemptService.recordVerification(
+                request.getOrderId(), request.getPaymentId(),
+                () -> storeKioskService.verifyAndIssue(slug, request)));
     }
 }

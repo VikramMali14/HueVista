@@ -22,7 +22,8 @@ class SensitiveEndpointRateLimitFilterTest {
                 5, 3600,   // shop lead
                 10, 3600,  // newsletter subscribe/unsubscribe
                 60, 3600,  // store kiosk order/verify
-                20, 3600); // subscription create/verify
+                20, 3600,  // subscription create/verify
+                240, 3600); // checkout telemetry
     }
 
     private MockHttpServletRequest req(String method, String path) {

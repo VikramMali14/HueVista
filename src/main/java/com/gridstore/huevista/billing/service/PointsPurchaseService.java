@@ -2,6 +2,7 @@ package com.gridstore.huevista.billing.service;
 
 import com.gridstore.huevista.billing.dto.PointsOrderResponse;
 import com.gridstore.huevista.billing.dto.VerifyPointsPurchaseRequest;
+import com.gridstore.huevista.billing.model.PaymentFlow;
 import com.gridstore.huevista.billing.model.PointsPurchase;
 import com.gridstore.huevista.billing.repository.PointsPurchaseRepository;
 import com.razorpay.Order;
@@ -39,6 +40,7 @@ public class PointsPurchaseService {
     private final PricingService pricingService;
     private final BillingEmailService billingEmailService;
     private final com.gridstore.huevista.auth.repository.UserRepository userRepository;
+    private final PaymentAttemptService paymentAttemptService;
 
     @Value("${razorpay.key-id:}")
     private String keyId;
@@ -83,6 +85,8 @@ public class PointsPurchaseService {
             String orderId = order.get("id");
             log.info("Points order created: user={} order={} points={} amountPaise={}",
                     userId, orderId, points, amountPaise);
+            paymentAttemptService.open(orderId, PaymentFlow.POINTS, userId, amountPaise,
+                    pricingService.currency(), String.format("%,d points", points), null);
 
             return PointsOrderResponse.builder()
                     .orderId(orderId)

@@ -68,7 +68,8 @@ class BillingSubscriptionVerifyTest {
     private static BillingService service(SubscriptionRepository subs, SubscriptionPaymentRepository payments) {
         BillingService svc = new BillingService(subs, payments, mock(UserRepository.class),
                 mock(RazorpayClient.class), mock(AuditService.class),
-                mock(com.gridstore.huevista.billing.service.BillingEmailService.class));
+                mock(com.gridstore.huevista.billing.service.BillingEmailService.class),
+                mock(com.gridstore.huevista.billing.service.PaymentAttemptService.class));
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
         return svc;
     }

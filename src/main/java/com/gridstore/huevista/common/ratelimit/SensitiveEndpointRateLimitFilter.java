@@ -124,7 +124,14 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             // stored Checkout payload would be replayed. A shop subscribes once a month;
             // 20/h is nothing but leaves scripted abuse nowhere to go.
             @Value("${app.rate-limit.subscription.max-attempts:20}") int subscriptionMax,
-            @Value("${app.rate-limit.subscription.window-seconds:3600}") long subscriptionWindow) {
+            @Value("${app.rate-limit.subscription.window-seconds:3600}") long subscriptionWindow,
+            // checkout telemetry: public, and a shared kiosk or office IP legitimately
+            // reports several events per attempt (opened, then closed or refused) across
+            // several attempts. Generous enough never to drop a real report — losing those
+            // silently corrupts the very report they feed — while capping a script that
+            // wants to fill the payment audit with invented rows.
+            @Value("${app.rate-limit.attempt-event.max-attempts:240}") int attemptEventMax,
+            @Value("${app.rate-limit.attempt-event.window-seconds:3600}") long attemptEventWindow) {
         this.redis = redis;
         this.enabled = enabled;
         this.trustForwardedHeaders = trustForwardedHeaders;
@@ -142,6 +149,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
         Policy newsletter = new Policy("newsletter", newsletterMax, Duration.ofSeconds(newsletterWindow));
         Policy storeOrder = new Policy("storeorder", storeOrderMax, Duration.ofSeconds(storeOrderWindow));
         Policy subscription = new Policy("subscription", subscriptionMax, Duration.ofSeconds(subscriptionWindow));
+        Policy attemptEvent = new Policy("attemptevent", attemptEventMax, Duration.ofSeconds(attemptEventWindow));
 
         this.rules = List.of(
                 // Same Redis key namespace ("ratelimit:signup:<ip>") the old dedicated
@@ -180,7 +188,9 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 new Rule("POST", "/api/store/*/verify", storeOrder),
                 // Gateway-subscription creation and the Checkout-payload verify.
                 new Rule("POST", "/api/billing/subscriptions", subscription),
-                new Rule("POST", "/api/billing/subscriptions/verify", subscription)
+                new Rule("POST", "/api/billing/subscriptions/verify", subscription),
+                // Public checkout telemetry (Razorpay reference in the middle).
+                new Rule("POST", "/api/billing/attempts/*/events", attemptEvent)
         );
     }
 
