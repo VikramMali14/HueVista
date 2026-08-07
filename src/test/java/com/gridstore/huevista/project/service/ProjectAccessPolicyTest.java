@@ -42,16 +42,26 @@ class ProjectAccessPolicyTest {
                 .build();
     }
 
-    private Subscription sub(boolean trial) {
-        // A trial runs on the FREE tier and its project allowance IS that tier's image
-        // quota, so the limit has to come off the subscription rather than a constant.
-        Plan plan = trial ? Plan.FREE : Plan.PROFESSIONAL;
+    private Subscription sub(Plan plan, boolean trial) {
+        // A trial's project allowance IS its tier's monthly quota, so the limit has to
+        // come off the subscription rather than a constant.
         return Subscription.builder()
                 .plan(plan)
                 .status(SubscriptionStatus.ACTIVE)
                 .trial(trial)
                 .projectsLimit(plan.getMonthlyProjectLimit())
                 .build();
+    }
+
+    /** A time-boxed trial, which since the free tier started renewing only ever runs on a
+     *  PAID tier — the free plan is a standing subscription, not a trial. */
+    private Subscription trialSub() {
+        return sub(Plan.STARTER, true);
+    }
+
+    /** The plan a new shop is on: FREE, renewing, and NOT a trial. */
+    private Subscription freeTierSub() {
+        return sub(Plan.FREE, false);
     }
 
     /** The trial gate claims a slot via a conditional UPDATE now, so stub that instead
@@ -93,7 +103,7 @@ class ProjectAccessPolicyTest {
         // not demand it (previously this deadlocked every retailer at launch).
         ProjectAccessPolicy policy =
                 new ProjectAccessPolicy(subscriptionRepository, projectRepository, true, false);
-        activeSub(sub(true));
+        activeSub(trialSub());
         trialSlotAvailable(true);
         assertThatCode(() -> policy.assertCanCreateProject(retailer(true, false)))
                 .doesNotThrowAnyException();
@@ -103,7 +113,7 @@ class ProjectAccessPolicyTest {
     void email_gate_is_skipped_when_mail_channel_is_not_configured() {
         ProjectAccessPolicy policy =
                 new ProjectAccessPolicy(subscriptionRepository, projectRepository, false, true);
-        activeSub(sub(true));
+        activeSub(trialSub());
         trialSlotAvailable(true);
         assertThatCode(() -> policy.assertCanCreateProject(retailer(false, true)))
                 .doesNotThrowAnyException();
@@ -127,34 +137,52 @@ class ProjectAccessPolicyTest {
     }
 
     @Test
-    void trial_retailer_can_create_a_project_within_the_free_tiers_allowance() {
-        activeSub(sub(true));
+    void trial_retailer_can_create_a_project_within_the_tiers_allowance() {
+        activeSub(trialSub());
         trialSlotAvailable(true);
         assertThatCode(() -> fullGate().assertCanCreateProject(retailer(true, true))).doesNotThrowAnyException();
     }
 
     @Test
-    void trial_retailer_blocked_once_the_free_tiers_projects_are_used() {
-        activeSub(sub(true));
+    void trial_retailer_blocked_once_the_tiers_projects_are_used() {
+        activeSub(trialSub());
         trialSlotAvailable(false);
         assertThatThrownBy(() -> fullGate().assertCanCreateProject(retailer(true, true)))
                 .isInstanceOf(SubscriptionRequiredException.class)
-                .hasMessageContaining("free trial includes 2 projects");
+                .hasMessageContaining("Your trial includes 15 projects");
     }
 
     /** The cap is read off the plan, so it moves with the tier instead of a constant. */
     @Test
-    void theTrialCapIsTheFreeTiersProjectQuota() {
-        activeSub(sub(true));
+    void theTrialCapIsTheTiersProjectQuota() {
+        activeSub(trialSub());
         trialSlotAvailable(true);
         fullGate().assertCanCreateProject(retailer(true, true));
         verify(subscriptionRepository)
-                .claimTrialProjectSlot(any(), eq(Plan.FREE.getMonthlyProjectLimit()));
+                .claimTrialProjectSlot(any(), eq(Plan.STARTER.getMonthlyProjectLimit()));
+    }
+
+    /**
+     * The free tier is NOT policed here.
+     *
+     * Its two projects renew every month, so they are an ordinary monthly allowance and
+     * belong to the monthly quota gate in BillingService, which resets with the cycle.
+     * The counter behind claimTrialProjectSlot is monotonic by design and never comes
+     * back — claiming against it would have capped every free shop at two projects for
+     * the life of the account, whatever the calendar said.
+     */
+    @Test
+    void free_tier_retailer_is_left_to_the_monthly_quota_gate() {
+        activeSub(freeTierSub());
+        assertThatCode(() -> fullGate().assertCanCreateProject(retailer(true, true)))
+                .doesNotThrowAnyException();
+        verify(subscriptionRepository, org.mockito.Mockito.never())
+                .claimTrialProjectSlot(any(), org.mockito.ArgumentMatchers.anyInt());
     }
 
     @Test
     void paid_retailer_is_not_limited_to_one_project() {
-        activeSub(sub(false));
+        activeSub(sub(Plan.PROFESSIONAL, false));
         // Paid path must not consult the project count at all.
         assertThatCode(() -> fullGate().assertCanCreateProject(retailer(true, true))).doesNotThrowAnyException();
     }

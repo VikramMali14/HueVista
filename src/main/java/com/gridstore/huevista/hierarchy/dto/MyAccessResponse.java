@@ -40,4 +40,27 @@ public class MyAccessResponse {
 
     /** Routes for {@link #allowedFeatures}, so the frontend needn't hardcode the mapping. */
     private List<String> allowedPaths;
+
+    /**
+     * The tier the shop's own plan withholds pages on — its live plan, or {@code FREE}
+     * when nothing is in force. Null for anyone this limit does not apply to.
+     */
+    private String plan;
+    private String planDisplayName;
+
+    /**
+     * {@code AppFeature} names the shop's PLAN does not include — {@code COLOR_FINDER} on
+     * the free tier, empty on every paid one.
+     *
+     * A separate list from {@link #allowedFeatures} rather than subtracted out of it, and
+     * the reason is what the frontend has to SAY. Both lists close a page, but one is
+     * lifted by ringing the distributor and the other by pressing subscribe; collapsing
+     * them would have sent a free shop to its distributor for something no distributor can
+     * switch on. The frontend hides a tab that fails either and words the denial from
+     * whichever list caught it.
+     */
+    private List<String> planLockedFeatures;
+
+    /** Routes for {@link #planLockedFeatures}, on the same terms as {@link #allowedPaths}. */
+    private List<String> planLockedPaths;
 }

@@ -69,7 +69,7 @@ class ProjectFlowIntegrationTest {
     @BeforeEach
     void setUp() throws Exception {
         // A retailer who can create projects under the new rules: email + mobile
-        // verified, with an active free-trial subscription (one project included).
+        // verified, on an active trial of a paid tier with its full monthly allowance.
         User user = userRepository.save(User.builder()
                 .name("Project User")
                 .email("projectuser@example.com")

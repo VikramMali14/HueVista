@@ -41,6 +41,7 @@ public class BillingService {
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final BillingEmailService billingEmailService;
     private final PaymentAttemptService paymentAttemptService;
+    private final FreeTierService freeTierService;
 
     @Value("${razorpay.plan.starter:}")
     private String planIdStarter;
@@ -86,12 +87,12 @@ public class BillingService {
         // letting it through would create a Razorpay subscription for Rs. 0.
         if (request.getPlan().isFree()) {
             throw new IllegalArgumentException(
-                    "The free trial comes with your account — there's nothing to pay for it. "
-                    + "Pick a paid plan to keep going once it ends.");
+                    "The free plan comes with your account and renews every month on its own — "
+                    + "there's nothing to pay for it. Pick a paid plan for more projects.");
         }
 
-        // An active free trial never blocks buying a plan (the trial is superseded once
-        // the plan activates). An active PAID subscription allows exactly one in-place
+        // The free tier never blocks buying a plan (it is superseded once the plan
+        // activates), and neither does a trial. An active PAID subscription allows exactly one in-place
         // change: an UPGRADE to a higher tier — the old plan is cancelled and replaced
         // the moment the new one activates (see verifyAndActivateSubscription /
         // activateSubscription). Same tier or a downgrade still requires cancelling
@@ -102,7 +103,7 @@ public class BillingService {
         // back was to wait for the period to run out.
         Subscription activePaid = subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(userId, SubscriptionStatus.ACTIVE)
-                .filter(s -> !s.isTrial())
+                .filter(BillingService::isPaidPlan)
                 .filter(s -> !s.isCancelAtPeriodEnd())
                 .orElse(null);
         if (activePaid != null) {
@@ -220,14 +221,14 @@ public class BillingService {
      * When the caller already holds a PAID plan that is winding down, the moment its paid
      * period ends — otherwise null (start now).
      *
-     * Only a paid plan defers: a free trial costs nothing to walk away from, and making a
-     * shop wait out its trial before the plan they just bought begins would be worse for
-     * them, not better.
+     * Only a paid plan defers: the free tier (and a trial) costs nothing to walk away from,
+     * and making a shop wait out a free month before the plan they just bought begins would
+     * be worse for them, not better.
      */
     private LocalDateTime scheduledStartFor(String userId) {
         LocalDateTime now = LocalDateTime.now();
         return findEntitlingSubscription(userId)
-                .filter(s -> !s.isTrial())
+                .filter(BillingService::isPaidPlan)
                 .filter(Subscription::isCancelAtPeriodEnd)
                 .map(Subscription::getCurrentPeriodEnd)
                 // Razorpay rejects a start_at that isn't comfortably in the future, and a
@@ -419,16 +420,18 @@ public class BillingService {
     }
 
     /**
-     * Grant a free trial subscription (no Razorpay) so a newly-signed-up retailer can
-     * use AI features immediately. Status is ACTIVE with a {@code trialDays} window;
-     * the daily {@link #expireStaleSubscriptions()} job flips it to EXPIRED at the end.
-     * Idempotent — no-op (returns the existing one) if the user already has an active sub.
+     * Put {@code userId} on the free tier (no Razorpay) so a newly-provisioned shop can
+     * work the moment it signs in. Status is ACTIVE with a one-month period that
+     * {@link FreeTierService} rolls over for as long as the account exists — this is a
+     * standing plan, not a countdown, so nothing ever expires it.
+     *
+     * Idempotent — no-op (returns the existing one) if the user already has a live plan.
      */
     @Transactional
-    public SubscriptionResponse grantTrial(String userId, Plan plan, int trialDays) {
+    public SubscriptionResponse grantFreeTier(String userId) {
         // "Already has a live plan" means entitled, not merely ACTIVE. A shop that
         // cancelled a paid plan still has every day it paid for; handing it the free tier
-        // on top put a 3-image row in front of a Business one (findEntitling prefers
+        // on top put a 2-project row in front of a Business one (findEntitling prefers
         // ACTIVE), silently downgrading a paying customer through the distributor's
         // "grant free tier" button.
         if (findEntitlingSubscription(userId).isPresent()) {
@@ -436,9 +439,50 @@ public class BillingService {
         }
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
-        // A trial on a PAID tier handed out a month of Professional quota for nothing and
-        // made the subscribe decision feel like a downgrade. The free tier is the trial.
+        LocalDateTime now = LocalDateTime.now();
+        Subscription sub = Subscription.builder()
+                .user(user)
+                .plan(Plan.FREE)
+                .status(SubscriptionStatus.ACTIVE)
+                // NOT a trial. The flag means "granted for a fixed window and then gone",
+                // and the free tier is neither: everything that reads it — the extra-project
+                // rate, the daily expiry sweep, what blocks buying a plan — wants the tier,
+                // which the plan itself already says.
+                .trial(false)
+                .currentPeriodStart(now)
+                .currentPeriodEnd(now.plusMonths(1))
+                .projectsUsed(0)
+                .projectsLimit(Plan.FREE.getMonthlyProjectLimit())
+                .pdfDownloadsLimit(Plan.FREE.getMonthlyPdfLimit())
+                .pdfImageLimit(Plan.FREE.getPdfImageLimit())
+                .build();
+        subscriptionRepository.save(sub);
+        log.info("Free tier granted: user={} projects={}/month", userId, sub.getProjectsLimit());
+        return SubscriptionResponse.from(sub);
+    }
+
+    /**
+     * Grant a time-boxed trial on a PAID tier (no Razorpay) — a comp, or a demo account.
+     * Status is ACTIVE with a {@code trialDays} window; the daily
+     * {@link #expireStaleSubscriptions()} job flips it to EXPIRED at the end.
+     * Idempotent — no-op (returns the existing one) if the user already has an active sub.
+     *
+     * A request for the free tier is answered with {@link #grantFreeTier(String)} instead.
+     * The free tier used to BE the trial, so every caller that wanted "start this shop off
+     * with something" came through here; now that it renews monthly, granting it with an
+     * expiry date would quietly re-create the dead end it replaced.
+     */
+    @Transactional
+    public SubscriptionResponse grantTrial(String userId, Plan plan, int trialDays) {
         Plan p = (plan == null || plan == Plan.ENTERPRISE) ? Plan.FREE : plan;
+        if (p.isFree()) {
+            return grantFreeTier(userId);
+        }
+        if (findEntitlingSubscription(userId).isPresent()) {
+            return getCurrentSubscription(userId);
+        }
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
         LocalDateTime now = LocalDateTime.now();
         Subscription sub = Subscription.builder()
                 .user(user)
@@ -592,6 +636,10 @@ public class BillingService {
      */
     @Transactional(readOnly = true)
     public SubscriptionResponse getCurrentSubscription(String userId) {
+        // The free tier's month turns over here as well as in the nightly sweep, so a shop
+        // opening its plan page on the 1st reads the allowance it actually has rather than
+        // last month's spent counter with a renewal still hours away.
+        freeTierService.ensureCurrentCycle(userId);
         Subscription sub = findEntitlingSubscription(userId)
                 .orElseGet(() -> subscriptionRepository
                         .findByUserIdOrderByCreatedAtDesc(userId)
@@ -624,6 +672,17 @@ public class BillingService {
         // period it was paid for has lapsed — so it ends NOW rather than at cycle end.
         if (sub.getStatus() == SubscriptionStatus.HALTED) {
             return cancelHaltedSubscription(userId, sub);
+        }
+
+        // The free tier has nothing to cancel: no card, no renewal to stop, no money to
+        // save. Honouring the press would have set it not to renew and then let the daily
+        // sweep take the account's only plan away — a shop pressing the button beside a
+        // ₹0 plan is not asking to be locked out of the product. Say so and leave it alone.
+        if (sub.getPlan().isFree() && !sub.isTrial()) {
+            throw new IllegalStateException(
+                    "The free plan costs nothing and renews on its own, so there's nothing to "
+                    + "cancel. It simply stays on your account — and if you'd rather close the "
+                    + "account entirely, that's on your account page.");
         }
 
         // A free trial has no Razorpay subscription to cancel — calling the gateway with a
@@ -838,11 +897,8 @@ public class BillingService {
             return;
         }
         if (sub.projectsRemaining() <= 0) {
-            Plan pricedAs = sub.isTrial() ? Plan.FREE : sub.getPlan();
             throw new com.gridstore.huevista.common.exception.ProjectLimitReachedException(
-                    "You've used this month's projects (" + sub.getProjectsLimit() + "). "
-                    + "Buy one more for " + pricedAs.getExtraProjectPoints() + " points, upgrade "
-                    + "your plan, or wait for next month.");
+                    outOfProjectsMessage(sub));
         }
     }
 
@@ -913,9 +969,27 @@ public class BillingService {
     }
 
     private Subscription requireBillableSubscription(String userId) {
+        // Before the allowance is read or spent, not after: a free shop's first project of
+        // the month must be charged against the new cycle, not refused against the old one.
+        freeTierService.ensureCurrentCycle(userId);
         return findEntitlingSubscription(userId)
                 .orElseThrow(() -> new QuotaExceededException(
                         "No plan on this account. Pick a plan to start making rooms."));
+    }
+
+    /**
+     * True when this row is a plan somebody is BEING BILLED for — the test behind every
+     * "does buying a plan have to work around what they already hold?" decision.
+     *
+     * Two things fail it, for the same reason: a trial and the free tier are both granted
+     * rather than bought, so neither should defer a purchase's start date, block a
+     * checkout, or be treated as money at the gateway. The free tier had to be named
+     * explicitly once it stopped setting {@code trial} — testing that flag alone would
+     * have made every free shop look like a paying one and refused it the plan it was
+     * trying to buy ("You're already on the Free plan").
+     */
+    private static boolean isPaidPlan(Subscription sub) {
+        return !sub.isTrial() && !sub.getPlan().isFree();
     }
 
     /**
@@ -937,9 +1011,29 @@ public class BillingService {
         int reserved = subscriptionRepository.incrementProjectUsageIfWithinLimit(sub.getId());
         if (reserved == 0) {
             throw new com.gridstore.huevista.common.exception.ProjectLimitReachedException(
-                    "You've used this month's projects (" + sub.getProjectsLimit() + "). " +
-                    "Buy one more, upgrade your plan, or wait for next month.");
+                    outOfProjectsMessage(sub));
         }
+    }
+
+    /**
+     * What to tell a shop that has run out of projects, priced at ITS rate.
+     *
+     * The free tier is the one that reaches this most, and it is the one the message has
+     * to be most careful with: the shop has not run out of the product, it has run out of
+     * this month. So both ways forward are named at their real prices — the extra project
+     * the tier charges for, and the month that arrives on its own — before an upgrade is
+     * mentioned at all.
+     */
+    private static String outOfProjectsMessage(Subscription sub) {
+        Plan pricedAs = sub.isTrial() ? Plan.FREE : sub.getPlan();
+        String priced = "Buy one more for " + pricedAs.getExtraProjectPoints() + " points or ₹"
+                + (pricedAs.extraProjectPriceWithTaxInPaise() / 100);
+        return "You've used this month's projects (" + sub.getProjectsLimit() + "). "
+                + priced
+                + (pricedAs.isFree()
+                    ? ", subscribe to a plan for more every month, or wait for next month — "
+                      + "your free projects come back then."
+                    : ", upgrade your plan, or wait for next month.");
     }
 
     /**
@@ -1163,11 +1257,20 @@ public class BillingService {
     }
 
     /**
-     * Safety net: expire subscriptions whose period has ended and weren't renewed.
-     * Runs daily at 01:00. Queries only the already-lapsed rows instead of scanning the
-     * whole table. A free trial has no renewal so it expires the moment its window passes;
-     * a PAID plan is renewed by webhook, so it is only hard-expired after a grace period —
-     * otherwise a delayed renewal webhook would cut off a customer who has actually paid.
+     * The nightly pass over subscriptions whose period has run out. Runs daily at 01:00,
+     * querying only the already-lapsed rows instead of scanning the whole table.
+     *
+     * Three outcomes, because a lapsed period means three different things:
+     * <ul>
+     *   <li>the FREE tier is rolled into its next month — nothing at the gateway renews it,
+     *       so this job (and the lazy path in {@link FreeTierService}) is the only thing
+     *       that does. It is never expired: the free plan is what an account falls back to,
+     *       and taking it away would leave the shop with nothing to fall back to;</li>
+     *   <li>a TRIAL expires the moment its window passes — that is what a trial is;</li>
+     *   <li>a PAID plan is renewed by webhook, so it is only hard-expired after a grace
+     *       period — otherwise a delayed renewal webhook would cut off a customer who has
+     *       actually paid.</li>
+     * </ul>
      */
     @Scheduled(cron = "0 0 1 * * *")
     @Transactional
@@ -1176,6 +1279,10 @@ public class BillingService {
         LocalDateTime paidCutoff = now.minusDays(RENEWAL_GRACE_DAYS);
         subscriptionRepository.findByStatusAndCurrentPeriodEndBefore(SubscriptionStatus.ACTIVE, now)
                 .forEach(s -> {
+                    if (s.getPlan().isFree() && !s.isTrial()) {
+                        freeTierService.renew(s);
+                        return;
+                    }
                     boolean expire = s.isTrial() || s.getCurrentPeriodEnd().isBefore(paidCutoff);
                     if (expire) {
                         s.setStatus(SubscriptionStatus.EXPIRED);

@@ -13,7 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Project-creation policy for RETAILER accounts (the signup → trial →
+ * Project-creation policy for RETAILER accounts (the signup → free tier →
  * subscription funnel). CUSTOMER accounts are governed separately by
  * {@link com.gridstore.huevista.account.service.CustomerEntitlementService}
  * (redeemed access codes), so they are intentionally skipped here.
@@ -26,12 +26,19 @@ import org.springframework.transaction.annotation.Transactional;
  *     when {@code app.mail.enabled=false}. Production turns both flags on and
  *     gets the full gate; a bare environment degrades to no verification gate
  *     rather than a deadlock.
- *  2. An active subscription is required — the free trial counts as active —
+ *  2. An active subscription is required — the free tier counts as active —
  *     UNLESS the retailer has bought a project outright. A standalone project
  *     purchase is exactly the escape hatch for a shop whose plan has lapsed:
  *     refusing it here would have sold them something they then could not use.
- *  3. The free trial includes as many projects as its plan's image quota — three
- *     on the free tier. Past that it takes a paid plan, or a bought project.
+ *  3. A time-boxed TRIAL on a paid tier gets as many projects as that tier's
+ *     monthly quota, claimed against a counter that never resets — see below.
+ *
+ * <p>The free tier is deliberately NOT policed here. It renews every month, so its
+ * two projects are an ordinary monthly allowance and belong to the ordinary monthly
+ * gate ({@code BillingService#reserveProjectUsage}), which resets with the cycle. It
+ * was policed here while it was a seven-day trial, against a monotonic counter that
+ * by design could never come back — carrying that over would have left every free
+ * shop stuck at two projects for the life of the account, whatever the calendar said.
  */
 @Service
 public class ProjectAccessPolicy {
@@ -80,7 +87,7 @@ public class ProjectAccessPolicy {
                     "Verify your " + what + " before creating a project.");
         }
 
-        // 2) Must have an active subscription — the trial granted at signup counts —
+        // 2) Must have an active subscription — the free tier granted at signup counts —
         //    or a project they have already paid for outright.
         Subscription sub = subscriptionRepository
                 .findEntitling(user.getId(), SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED,
@@ -92,28 +99,33 @@ public class ProjectAccessPolicy {
                 return; // paid for; nothing left to check
             }
             throw new SubscriptionRequiredException(
-                    "Your trial has ended. Subscribe to a plan, or buy a single project, to keep going.");
+                    "There's no plan on this account. Subscribe to a plan, or buy a single "
+                    + "project, to keep going.");
         }
         if (holdsPurchasedProject) {
             return; // an extra project bought on top of a plan bypasses the trial allowance
         }
 
-        // 3) The trial's project allowance IS its monthly project quota — two on the free
-        //    tier — rather than a second constant that can drift from the plan it
-        //    describes. Claimed against a MONOTONIC counter on the subscription, not a live
-        //    count of rows: counting live projects meant deleting the trial project handed
-        //    the slot straight back, so a trial account could create unlimited projects one
-        //    at a time while the message promised a fixed number. The conditional UPDATE
-        //    also makes parallel creates safe.
+        // 3) A TRIAL's project allowance IS its tier's monthly quota, rather than a second
+        //    constant that can drift from the plan it describes. Claimed against a
+        //    MONOTONIC counter on the subscription, not a live count of rows: counting live
+        //    projects meant deleting the trial project handed the slot straight back, so a
+        //    trial account could create unlimited projects one at a time while the message
+        //    promised a fixed number. The conditional UPDATE also makes parallel creates
+        //    safe.
+        //
+        //    A trial never renews, which is exactly why the counter must not reset — and
+        //    exactly why the free tier, which does renew, is gated by the monthly quota
+        //    instead and passes straight through here.
         int trialProjects = Math.max(1, sub.getProjectsLimit());
         if (sub.isTrial()
                 && subscriptionRepository.claimTrialProjectSlot(sub.getId(), trialProjects) == 0) {
             throw new SubscriptionRequiredException(
-                    "Your free trial includes " + trialProjects + " project"
+                    "Your trial includes " + trialProjects + " project"
                     + (trialProjects == 1 ? "" : "s")
                     + ". Subscribe to a plan to create more, or buy a single project.");
         }
-        // Paid subscription → allowed. (A per-plan project cap with one-time
-        // top-ups once it's reached is a planned follow-on.)
+        // Free tier or paid subscription → allowed; the monthly quota gate in
+        // BillingService is what counts the projects and refuses the one past the limit.
     }
 }

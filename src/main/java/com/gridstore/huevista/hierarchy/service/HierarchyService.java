@@ -85,6 +85,7 @@ public class HierarchyService {
     private final RetailerFeatureAssignmentRepository featureAssignmentRepository;
     private final BrandAccessService brandAccessService;
     private final FeatureAccessService featureAccessService;
+    private final com.gridstore.huevista.account.service.PlanFeatureService planFeatureService;
     private final BrandRepository brandRepository;
     private final PainterRetailerLinkRepository painterLinkRepository;
     private final CustomerAccessCodeRepository accessCodeRepository;
@@ -96,9 +97,6 @@ public class HierarchyService {
     private final PasswordEncoder passwordEncoder;
     private final EmailSender emailSender;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
-
-    /** The free tier runs for a week — same window a new shop gets. */
-    private static final int FREE_TIER_DAYS = 7;
 
     @Value("${app.cors.allowed-origins:http://localhost:3000}")
     private String allowedOrigins;
@@ -143,14 +141,18 @@ public class HierarchyService {
      * unrestricted, so callers that don't send them are unaffected.
      */
     /**
-     * Put an existing shop back on the free tier: seven days, three projects.
+     * Put an existing shop back on the free tier: two projects a month, renewing.
      *
-     * A distributor onboarding shops needs a way to restart the trial for one that let it
-     * lapse before deciding — that conversation happens at the distributor, not at
-     * support. Scoped to shops the distributor actually manages; admins can do it for any.
+     * Far less load-bearing than it was. The free tier used to be a seven-day trial that
+     * expired into nothing, so this button was how a shop that had let it lapse got back
+     * into the product at all; now the tier renews on its own and a lapsed plan falls back
+     * to it, so this is the repair for the rare account that has ended up with no
+     * subscription row at all. Scoped to shops the distributor actually manages; admins
+     * can do it for any.
      *
-     * Deliberately a no-op when the shop already holds a live plan (grantTrial returns the
-     * existing one): handing a paying shop a free tier would supersede what they bought.
+     * Deliberately a no-op when the shop already holds a live plan (grantFreeTier returns
+     * the existing one): handing a paying shop the free tier would supersede what they
+     * bought.
      */
     @Transactional
     public com.gridstore.huevista.billing.dto.SubscriptionResponse grantFreeTier(
@@ -167,8 +169,7 @@ public class HierarchyService {
         } else if (actor.getRole() != UserRole.ADMIN) {
             throw new SecurityException("Only admins and distributors can assign the free tier.");
         }
-        return billingService.grantTrial(retailerUserId,
-                com.gridstore.huevista.billing.model.Plan.FREE, FREE_TIER_DAYS);
+        return billingService.grantFreeTier(retailerUserId);
     }
 
     /** The distributor a shop is filed under, if any. */
@@ -595,9 +596,15 @@ public class HierarchyService {
 
     /**
      * The signed-in caller's own brand + page access — one call the frontend makes to
-     * decide which nav tabs to render and which pages to admit. Non-retailers always
-     * come back unrestricted; this is a distributor→shop constraint and never applies
-     * upward.
+     * decide which nav tabs to render and which pages to admit.
+     *
+     * Two independent limits come back, because a shop can be short of a page for two
+     * unrelated reasons: its distributor did not grant it, or its own plan does not
+     * include it. Both are reported; neither is folded into the other, so the frontend can
+     * word a closed page as "ask your distributor" or "subscribe" correctly.
+     *
+     * Non-retailers always come back unrestricted on both counts — these are shop
+     * constraints and never apply upward.
      */
     @Transactional(readOnly = true)
     public MyAccessResponse myAccess(String userId) {
@@ -609,7 +616,9 @@ public class HierarchyService {
                 .allowedBrands(List.of())
                 .featuresRestricted(false)
                 .allowedFeatures(List.of())
-                .allowedPaths(List.of());
+                .allowedPaths(List.of())
+                .planLockedFeatures(List.of())
+                .planLockedPaths(List.of());
 
         Organization shop = featureAccessService.retailerOrgOf(userId).orElse(null);
         if (shop == null) {
@@ -623,6 +632,15 @@ public class HierarchyService {
                 .featuresRestricted(true)
                 .allowedFeatures(features.stream().map(AppFeature::name).toList())
                 .allowedPaths(features.stream().map(AppFeature::getPath).toList()));
+
+        // The shop's own tier. Named even when it withholds nothing, so a client can show
+        // which plan an open page is open BECAUSE of.
+        com.gridstore.huevista.billing.model.Plan plan = planFeatureService.planOf(userId);
+        java.util.Set<AppFeature> locked = planFeatureService.withheldBy(plan);
+        out.plan(plan.name())
+                .planDisplayName(plan.getDisplayName())
+                .planLockedFeatures(locked.stream().map(AppFeature::name).toList())
+                .planLockedPaths(locked.stream().map(AppFeature::getPath).toList());
         return out.build();
     }
 

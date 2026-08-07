@@ -36,14 +36,6 @@ public class AuthService {
     private final com.gridstore.huevista.notification.EmailSender emailSender;
     private final com.gridstore.huevista.billing.service.RewardPointsService rewardPointsService;
 
-    /**
-     * How long a new shop's free trial runs. Seven days with three projects on it: long
-     * enough to photograph a real room, mask it and show a customer, short enough that the
-     * subscribe decision arrives while the product is still fresh. The quota that goes
-     * with it lives on {@link com.gridstore.huevista.billing.model.Plan#FREE}.
-     */
-    private static final int TRIAL_DAYS = 7;
-
     public AuthService(UserRepository userRepository,
                        RefreshTokenRepository refreshTokenRepository,
                        com.gridstore.huevista.auth.repository.OAuthExchangeCodeRepository oauthExchangeCodeRepository,
@@ -101,7 +93,7 @@ public class AuthService {
 
         // Public signup ALWAYS creates a CUSTOMER. Shops/retailers are provisioned by an
         // admin only (see adminCreateRetailer), so the public path can never make a RETAILER
-        // or self-provision a shop org/trial.
+        // or self-provision a shop org/free-tier subscription.
         User user = User.builder()
                 .name(request.getName())
                 .email(email)
@@ -118,8 +110,8 @@ public class AuthService {
     }
 
     /**
-     * ADMIN-only: create a RETAILER (shop) account with a provisioned org + free trial.
-     * Atomic — if org/trial provisioning fails, the whole creation rolls back.
+     * ADMIN-only: create a RETAILER (shop) account with a provisioned org + the free tier.
+     * Atomic — if org/subscription provisioning fails, the whole creation rolls back.
      */
     @Transactional
     public AdminUserResponse adminCreateRetailer(CreateRetailerRequest request) {
@@ -160,10 +152,12 @@ public class AuthService {
                 .build();
         userRepository.save(user);
         accountService.provisionRetailerOrg(user.getId(), shopName, city, state);
-        // Every new shop starts on the free tier. There is no way to be created onto a
-        // paid plan: a plan is bought (billing checkout) or granted deliberately by an
-        // admin afterwards (adminGrantSubscription), never handed out at signup.
-        billingService.grantTrial(user.getId(), com.gridstore.huevista.billing.model.Plan.FREE, TRIAL_DAYS);
+        // Every new shop starts on the free tier — two projects a month, renewing for as
+        // long as the account exists rather than the seven-day countdown this used to be.
+        // There is no way to be created onto a paid plan: a plan is bought (billing
+        // checkout) or granted deliberately by an admin afterwards
+        // (adminGrantSubscription), never handed out at signup.
+        billingService.grantFreeTier(user.getId());
         if (sendWelcomeEmail) {
             sendShopWelcomeEmail(user, shopName);
         }
