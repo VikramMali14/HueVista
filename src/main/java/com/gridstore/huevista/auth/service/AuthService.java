@@ -34,6 +34,7 @@ public class AuthService {
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final com.gridstore.huevista.notification.EmailSender emailSender;
+    private final AccountSecurityEmailService securityEmailService;
     private final com.gridstore.huevista.billing.service.RewardPointsService rewardPointsService;
 
     public AuthService(UserRepository userRepository,
@@ -47,6 +48,7 @@ public class AuthService {
                        com.gridstore.huevista.billing.service.BillingService billingService,
                        com.gridstore.huevista.common.audit.AuditService auditService,
                        com.gridstore.huevista.notification.EmailSender emailSender,
+                       AccountSecurityEmailService securityEmailService,
                        @Lazy com.gridstore.huevista.billing.service.RewardPointsService rewardPointsService) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
@@ -59,6 +61,7 @@ public class AuthService {
         this.billingService = billingService;
         this.auditService = auditService;
         this.emailSender = emailSender;
+        this.securityEmailService = securityEmailService;
         this.rewardPointsService = rewardPointsService;
     }
 
@@ -514,6 +517,10 @@ public class AuthService {
         userRepository.save(user);
         refreshTokenRepository.deleteByUser(user);
         auditService.record(userId, "PASSWORD_CHANGE", "USER", userId, "all sessions revoked");
+        // Revoking the sessions is silent by design, which is the problem: without this
+        // mail the owner of a stolen account learns nothing, and the one signal they could
+        // have acted on is a log line only we can read.
+        securityEmailService.sendPasswordChanged(user);
         log.info("Password changed, all sessions revoked: {}", user.getEmail());
     }
 

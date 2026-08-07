@@ -45,6 +45,9 @@ class PainterFlowIntegrationTest {
 
     @MockitoBean RazorpayClient razorpayClient;
 
+    /** Mocked so the assignment notification can be read back. */
+    @MockitoBean com.gridstore.huevista.notification.EmailSender emailSender;
+
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
     @Autowired UserRepository userRepository;
@@ -342,6 +345,29 @@ class PainterFlowIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].status").value("DECLINED"))
                 .andExpect(jsonPath("$[0].declineReason").value(decline.getReason()));
+    }
+
+    /**
+     * Nothing else tells the painter a job exists — the shop assigns it into a list the
+     * painter has to already be looking at, so without this the feature depends on them
+     * happening to open the app.
+     */
+    @Test
+    void assigning_a_job_emails_the_painter() throws Exception {
+        linkPainterToRetailer();
+        createJob();
+
+        org.mockito.ArgumentCaptor<String> subject = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.ArgumentCaptor<String> body = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.Mockito.verify(emailSender, org.mockito.Mockito.atLeastOnce())
+                .send(org.mockito.ArgumentMatchers.eq("painter@example.com"),
+                        subject.capture(), body.capture());
+
+        org.assertj.core.api.Assertions.assertThat(subject.getValue()).contains("Sharda Paints");
+        // The estimates the shop filled in travel with it — the point is that the painter
+        // can size the job from the mail without signing in to find out.
+        org.assertj.core.api.Assertions.assertThat(body.getValue())
+                .contains("420.00").contains("7.00");
     }
 
     @Test
