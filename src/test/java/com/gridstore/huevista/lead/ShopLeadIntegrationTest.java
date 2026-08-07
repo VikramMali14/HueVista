@@ -39,6 +39,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -307,6 +309,47 @@ class ShopLeadIntegrationTest {
         assertThat(dismissed.getAutoApproveAt()).isNull();
     }
 
+    /**
+     * The acknowledgement mail promises an account "by this time tomorrow, either way".
+     * A dismissal that says nothing leaves the applicant waiting on it forever.
+     */
+    @Test
+    void a_dismissed_request_is_told_it_is_not_going_ahead() throws Exception {
+        String adminToken = seedAdminAndLogin();
+        String requestId = submit(REQUEST_BODY);
+        verifyRequest(requestId, "priya@mehtapaints.in");
+
+        mockMvc.perform(post("/api/admin/leads/" + requestId + "/dismiss")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk());
+
+        String body = lastEmailTo("priya@mehtapaints.in");
+        assertThat(body).contains("not going ahead");
+        // The address is genuinely free to try again (dismiss drops the hash, it does not
+        // block the email), so the mail has to say so rather than read as a permanent no.
+        assertThat(body).contains("ask again");
+    }
+
+    /**
+     * An unverified request was never promised anything — it only ever got a code it
+     * ignored — so dismissing it must not put a second mail in a mailbox that may not
+     * have asked for the first.
+     */
+    @Test
+    void dismissing_an_unverified_request_emails_nobody() throws Exception {
+        String adminToken = seedAdminAndLogin();
+        String requestId = submit(REQUEST_BODY);
+        // Deliberately NOT verified: the only mail so far is the verification code.
+        clearInvocations(emailSender);
+
+        mockMvc.perform(post("/api/admin/leads/" + requestId + "/dismiss")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DISMISSED"));
+
+        verify(emailSender, never()).send(eq("priya@mehtapaints.in"), anyString(), anyString());
+    }
+
     // ── The 24-hour deadline ──────────────────────────────────────────────
 
     /** A shop that did everything asked of it does not wait on an admin being awake. */
@@ -378,6 +421,13 @@ class ShopLeadIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk());
+    }
+
+    /** The body of the most recent mail "sent" to {@code to}. */
+    private String lastEmailTo(String to) {
+        ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
+        verify(emailSender, atLeastOnce()).send(eq(to), anyString(), body.capture());
+        return body.getAllValues().get(body.getAllValues().size() - 1);
     }
 
     /** Pull the 6-digit code out of the verification mail the service "sent". */

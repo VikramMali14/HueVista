@@ -42,6 +42,9 @@ public class PaintJobService {
     private final UserRepository userRepository;
     private final com.gridstore.huevista.account.repository.OrgMembershipRepository orgMembershipRepository;
     private final com.gridstore.huevista.account.repository.CustomerEntitlementRepository entitlementRepository;
+    private final com.gridstore.huevista.notification.EmailSender emailSender;
+    /** The painter's "open my jobs" link has to be the website, not this API — see SiteUrls. */
+    private final com.gridstore.huevista.common.web.SiteUrls siteUrls;
 
     @Transactional
     public PaintJobResponse createJob(String requesterUserId, CreatePaintJobRequest req) {
@@ -99,8 +102,66 @@ public class PaintJobService {
                 .notes(req.getNotes())
                 .build();
         job = jobRepository.save(job);
+        notifyPainterOfNewJob(job, retailer, painter);
         log.info("Created paint job {} for project {} → painter {}", job.getId(), project.getId(), painter.getId());
         return PaintJobResponse.from(job);
+    }
+
+    /**
+     * Tell the painter a job is waiting for them.
+     *
+     * <p>Nothing else does. A job is created by the shop and lands in a list the painter
+     * has to already be looking at, so until this mail the feature relied on the painter
+     * happening to open the app — and a NEW job nobody opens is indistinguishable from no
+     * job at all. The shop, meanwhile, sees it assigned and assumes it was received.
+     *
+     * <p>Best-effort: the job is already saved, and a mail outage must not roll back an
+     * assignment the shop has been told succeeded.
+     */
+    private void notifyPainterOfNewJob(PaintJob job, Organization retailer, User painter) {
+        try {
+            if (painter.getEmail() == null || painter.getEmail().isBlank()
+                    || com.gridstore.huevista.auth.util.Emails.isSynthetic(painter)) {
+                return;
+            }
+            StringBuilder body = new StringBuilder()
+                    .append("Hi ").append(firstName(painter)).append(",\n\n")
+                    .append(retailer.getName()).append(" has assigned you a painting job.\n\n");
+            if (job.getSiteAddress() != null && !job.getSiteAddress().isBlank()) {
+                body.append("Site:      ").append(job.getSiteAddress()).append('\n');
+            }
+            if (job.getEstimatedAreaSqft() != null) {
+                body.append("Area:      ").append(job.getEstimatedAreaSqft()).append(" sq ft\n");
+            }
+            if (job.getEstimatedPaintLiters() != null) {
+                body.append("Paint:     ").append(job.getEstimatedPaintLiters()).append(" litres (estimated)\n");
+            }
+            if (job.getNotes() != null && !job.getNotes().isBlank()) {
+                body.append("\nNotes:\n").append(job.getNotes()).append('\n');
+            }
+            // Deliberately the dashboard and not a jobs page: the painter-facing job UI
+            // does not exist in the web app yet (the accept/decline endpoints are API-only,
+            // see PaintJobController), and a mail that sends someone to a 404 is worse than
+            // one that sends them nowhere. Point at the door they can actually open, and let
+            // the shop be the fallback. Repoint this at the jobs page when it ships.
+            body.append("\nSign in to HueVista:\n")
+                    .append(siteUrls.on("/dashboard")).append("\n\n")
+                    .append(retailer.getName())
+                    .append(" is waiting on your answer — get in touch with them to accept it "
+                            + "or turn it down.\n\n")
+                    .append("— HueVista");
+            emailSender.send(painter.getEmail(),
+                    "New painting job from " + retailer.getName(),
+                    body.toString());
+        } catch (Exception e) {
+            log.warn("New-job email for job {} failed: {}", job.getId(), e.getMessage());
+        }
+    }
+
+    private static String firstName(User user) {
+        String name = user != null ? user.getName() : null;
+        if (name == null || name.isBlank()) return "there";
+        return name.strip().split("\\s+")[0];
     }
 
     @Transactional(readOnly = true)

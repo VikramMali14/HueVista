@@ -322,6 +322,10 @@ public class ShopLeadService {
         if (lead.getStatus() == ShopLead.Status.APPROVED) {
             throw new IllegalStateException("This request already has an account — dismissing it would change nothing.");
         }
+        // Only a verified request was ever told to expect an account, and that promise is
+        // the whole reason this mail exists — see sendDismissedEmail.
+        boolean wasPromisedAnAccount = lead.isEmailVerified();
+
         lead.setStatus(ShopLead.Status.DISMISSED);
         lead.setAutoApproveAt(null);
         // The password was only ever held to create the account this request will now
@@ -329,6 +333,9 @@ public class ShopLeadService {
         lead.setPasswordHash(null);
         lead.setVerificationCodeHash(null);
         leadRepository.save(lead);
+        if (wasPromisedAnAccount) {
+            sendDismissedEmail(lead);
+        }
         log.info("Shop request {} dismissed by {}", leadId, adminUserId);
         return ShopLeadResponse.from(lead);
     }
@@ -436,6 +443,38 @@ public class ShopLeadService {
                             + "— HueVista");
         } catch (Exception e) {
             log.warn("Acknowledgement email for request {} failed: {}", lead.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * "It isn't going ahead." The close of the loop {@link #sendVerifiedAcknowledgement}
+     * opens: that mail promises an account "by this time tomorrow, either way", so a
+     * dismissal that says nothing leaves someone waiting indefinitely for something that
+     * is never coming. Sent only to a verified address — an unverified request was never
+     * promised anything, and mailing it again is noise to someone who may not have
+     * asked in the first place.
+     *
+     * <p>Carries no reason: the admin isn't asked for one, so inventing a specific
+     * explanation here would risk telling the applicant something untrue. It says the
+     * decision, and where to take it if they disagree.
+     */
+    private void sendDismissedEmail(ShopLead lead) {
+        try {
+            String inbox = leadInbox();
+            emailSender.send(lead.getEmail(),
+                    "About your HueVista shop account request",
+                    "Hi " + lead.getName() + ",\n\n"
+                            + "Thanks for asking about a HueVista account for \""
+                            + lead.getShopName() + "\".\n\n"
+                            + "We're not going ahead with this one, so the account we said would be "
+                            + "ready isn't coming — we're sorry to have kept you waiting for it.\n\n"
+                            + "If you think that's a mistake, or your details have changed since you "
+                            + "wrote to us, do ask again"
+                            + (inbox != null && !inbox.isBlank() ? " or reply to " + inbox : "")
+                            + " — this address isn't blocked and a fresh request is welcome.\n\n"
+                            + "— HueVista");
+        } catch (Exception e) {
+            log.warn("Dismissal email for request {} failed: {}", lead.getId(), e.getMessage());
         }
     }
 

@@ -40,6 +40,7 @@ public class PasswordResetService {
     private final PasswordEncoder passwordEncoder;
     private final EmailSender emailSender;
     private final SmsSender smsSender;
+    private final AccountSecurityEmailService securityEmailService;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
     private final SecureRandom random = new SecureRandom();
 
@@ -117,17 +118,18 @@ public class PasswordResetService {
     public void resetPassword(String email, String codeInput, String newPassword) {
         User user = userRepository.findByEmail(email == null ? "" : email.trim().toLowerCase())
                 .orElseThrow(() -> new IllegalArgumentException("Incorrect or expired code."));
-        applyReset(user, codeInput, newPassword, "emailed reset code");
+        applyReset(user, codeInput, newPassword, Channel.EMAIL);
     }
 
     @Transactional(noRollbackFor = IllegalArgumentException.class)
     public void resetPasswordByPhone(String phone, String codeInput, String newPassword) {
         User user = userRepository.findByPhoneNumberAndPhoneVerifiedTrue(phone == null ? "" : phone.trim())
                 .orElseThrow(() -> new IllegalArgumentException("Incorrect or expired code."));
-        applyReset(user, codeInput, newPassword, "SMS reset code");
+        applyReset(user, codeInput, newPassword, Channel.SMS);
     }
 
-    private void applyReset(User user, String codeInput, String newPassword, String via) {
+    private void applyReset(User user, String codeInput, String newPassword, Channel channel) {
+        String via = channel == Channel.SMS ? "SMS reset code" : "emailed reset code";
         List<PasswordResetCode> active = codeRepository.findActiveForUpdate(user.getId());
         if (active.isEmpty()) {
             throw new IllegalArgumentException("Request a reset code first.");
@@ -161,6 +163,10 @@ public class PasswordResetService {
         refreshTokenRepository.deleteByUser(user);
         auditService.record(user.getId(), "PASSWORD_RESET", "USER", user.getId(),
                 "via " + via + "; all sessions revoked");
+        // Always by email, even when the code travelled by SMS: a reset the account owner
+        // did not ask for is exactly the case where the channel the attacker used is the
+        // one they control, so the warning has to go somewhere else.
+        securityEmailService.sendPasswordReset(user, channel == Channel.SMS);
         log.info("Password reset for {} ({})", user.getId(), via);
     }
 }

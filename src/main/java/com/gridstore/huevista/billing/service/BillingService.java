@@ -1288,6 +1288,14 @@ public class BillingService {
                         s.setStatus(SubscriptionStatus.EXPIRED);
                         subscriptionRepository.save(s);
                         log.info("Subscription expired: id={} trial={}", s.getId(), s.isTrial());
+                        // The same event by a different route: a gateway-confirmed end mails
+                        // the customer (see markCancelled), so a plan that ran out instead of
+                        // being cancelled has to as well. Without this, whether a shop is told
+                        // its plan ended depends on which code path happened to end it — and
+                        // the silent path is the commoner one, since it is what a lapsed trial
+                        // and an unpaid renewal both fall through to. Best-effort: deliver()
+                        // swallows failures, so one bad address cannot halt the sweep.
+                        billingEmailService.sendSubscriptionEnded(s);
                     }
                 });
     }

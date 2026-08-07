@@ -529,4 +529,42 @@ class BillingServiceLifecycleTest {
 
         verify(subs).decrementProjectUsage(eq(SUB_ID));
     }
+
+    // ---- the nightly expiry sweep tells the customer, like every other ending does ----
+
+    /**
+     * A lapsed trial is the commonest way a plan ends, and it ends here rather than at the
+     * gateway — so if this path stays quiet, "were you told your plan ended?" comes down to
+     * which code path happened to end it.
+     */
+    @Test
+    void expiringALapsedTrialEmailsTheCustomer() {
+        Subscription trial = activeTrial();
+        trial.setCurrentPeriodEnd(LocalDateTime.now().minusMinutes(1));
+        when(subs.findByStatusAndCurrentPeriodEndBefore(eq(SubscriptionStatus.ACTIVE), any()))
+                .thenReturn(java.util.List.of(trial));
+
+        service().expireStaleSubscriptions();
+
+        assertThat(trial.getStatus()).isEqualTo(SubscriptionStatus.EXPIRED);
+        verify(emails).sendSubscriptionEnded(trial);
+    }
+
+    /**
+     * A paid plan inside the renewal grace window has NOT ended — its webhook may still be
+     * in flight. Mailing "your plan has ended" to a customer whose card just went through
+     * would be worse than saying nothing.
+     */
+    @Test
+    void aPaidPlanStillInsideTheGraceWindowIsNeitherExpiredNorEmailed() {
+        Subscription paid = activePaid(0, 20);
+        paid.setCurrentPeriodEnd(LocalDateTime.now().minusDays(1)); // grace is 3 days
+        when(subs.findByStatusAndCurrentPeriodEndBefore(eq(SubscriptionStatus.ACTIVE), any()))
+                .thenReturn(java.util.List.of(paid));
+
+        service().expireStaleSubscriptions();
+
+        assertThat(paid.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
+        verifyNoInteractions(emails);
+    }
 }
