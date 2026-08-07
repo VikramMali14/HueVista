@@ -165,6 +165,7 @@ class ProjectCreditServiceTest {
     @Test
     void optionsQuoteThePointPricesAndTheBalance() {
         when(points.balance(USER)).thenReturn(200);
+        when(points.canSpendPoints(USER)).thenReturn(true);
         when(ledger.available(USER)).thenReturn(2);
 
         var options = svc.getOptions(USER);
@@ -179,6 +180,27 @@ class ProjectCreditServiceTest {
         assertThat(options.getAvailableCredits()).isEqualTo(2);
         assertThat(options.getValidDays()).isEqualTo(VALID_DAYS);
         assertThat(options.isSubscribed()).isFalse();
+        assertThat(options.isPointsEligible()).isTrue();
+    }
+
+    /**
+     * An account that cannot hold points is told so, separately from its balance.
+     *
+     * A CUSTOMER reads a balance of zero either way, and "zero" alone reads as "top up" —
+     * which is how a self-signed-up customer ended up being offered a points button that
+     * could only ever come back 403. The cash price is still quoted, because money IS
+     * their rail: it is the one that lands them a credit to create a project with.
+     */
+    @Test
+    void optionsSayWhenThePointsRailIsClosedToThisAccount() {
+        when(points.balance(USER)).thenReturn(0);
+        when(points.canSpendPoints(USER)).thenReturn(false);
+
+        var options = svc.getOptions(USER);
+
+        assertThat(options.isPointsEligible()).isFalse();
+        assertThat(options.getProjectPricePaise())
+                .isEqualTo(Plan.FREE.extraProjectPriceWithTaxInPaise());
     }
 
     // ── Assigning a bought project to a customer ────────────────────────────

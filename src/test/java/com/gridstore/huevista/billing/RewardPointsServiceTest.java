@@ -162,6 +162,27 @@ class RewardPointsServiceTest {
                 .hasMessageContaining("paint shops");
     }
 
+    /**
+     * The same rule, asked before anything is spent. This is what a UI reads to decide
+     * whether to offer the points rail at all — a customer shown that button can only ever
+     * be refused by {@link #nonRetailersCannotSpendPoints}, so the two must agree.
+     */
+    @Test
+    void eligibilityMatchesWhoIsAllowedToSpend() {
+        assertThat(svc.canSpendPoints(SHOP)).isTrue();  // RETAILER, per setUp
+
+        when(users.findById(SHOP)).thenReturn(Optional.of(
+                User.builder().id(SHOP).role(UserRole.CUSTOMER).build()));
+        assertThat(svc.canSpendPoints(SHOP)).isFalse();
+    }
+
+    /** Eligibility is about the ROLE, not the wallet: a shop with nothing left can top up. */
+    @Test
+    void aShopWithAnEmptyBalanceIsStillEligible() {
+        assertThat(svc.balance(SHOP)).isZero();
+        assertThat(svc.canSpendPoints(SHOP)).isTrue();
+    }
+
     // ── Refunds ─────────────────────────────────────────────────────────────
 
     @Test

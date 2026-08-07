@@ -107,7 +107,10 @@ class ApiContractTest {
         assertThat(propsOf("ProjectPurchaseOptionsResponse")).containsExactlyInAnyOrder(
                 "subscribed", "pricingPlan", "projectPricePoints", "projectPricePaise",
                 "reopenPricePoints", "reopenPricePaise",
-                "pointsBalance", "validDays", "availableCredits");
+                // Whether the points rail is open to this account at all, separately from
+                // whether the balance covers it: a CUSTOMER cannot hold points, so the UI
+                // needs to drop that button rather than offer one the server refuses.
+                "pointsBalance", "pointsEligible", "validDays", "availableCredits");
     }
 
     @Test

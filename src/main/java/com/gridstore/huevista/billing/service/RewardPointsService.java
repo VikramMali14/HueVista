@@ -266,6 +266,18 @@ public class RewardPointsService {
                 .userId(userId).points(points).type(type).reference(reference).build());
     }
 
+    /**
+     * Can this account use points at all? The same rule {@link #spend} enforces, asked
+     * ahead of time so a UI can decline to offer the rail rather than showing a button
+     * that comes back a 403. Says nothing about the balance — an eligible shop with no
+     * points still reads true, because "top up" is a real answer for it and is not one
+     * for a customer.
+     */
+    @Transactional(readOnly = true)
+    public boolean canSpendPoints(String userId) {
+        return isRetailer(userId);
+    }
+
     private boolean isRetailer(String userId) {
         return userRepository.findById(userId).map(User::getRole).orElse(null) == UserRole.RETAILER;
     }

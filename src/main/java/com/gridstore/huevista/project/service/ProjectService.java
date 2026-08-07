@@ -217,25 +217,43 @@ public class ProjectService {
     /**
      * Nothing covers this project: no plan, no shop code, no credit bought.
      *
-     * A shop and a walk-in need different answers, and the exception TYPE is what routes
-     * them — SUBSCRIPTION_REQUIRED sends the studio to the plans page, which is where a
-     * lapsed shop belongs, while a plain quota refusal points at the one-off purchase,
-     * which is the only route a customer has (they cannot buy a plan at all). Both
-     * messages name the standalone price either way, so neither is a dead end.
+     * Three kinds of account land here and they do NOT have the same way out, so the
+     * exception type routes them as much as the words do:
+     *
+     * <ul>
+     *   <li><b>RETAILER</b> — SUBSCRIPTION_REQUIRED, which sends the studio to the plans
+     *       page. A lapsed shop's answer is a plan; the one-off is the aside.</li>
+     *   <li><b>CUSTOMER</b> — a plain quota refusal, which points at the one-off purchase.
+     *       Reaching here means they hold NO entitlement row at all: a shop-onboarded
+     *       customer takes the {@code shopEntitled} branch in {@link #createProject} and is
+     *       refused with "ask your shop" long before this. So this is somebody who signed
+     *       up on their own — nobody issued them a code and there is no counter to send
+     *       them back to, which is what made naming one a dead end. Points are not the
+     *       answer either (a shop currency; RewardPointsService refuses them outright), so
+     *       the message quotes the cash rail: {@code /api/billing/projects} prices one
+     *       project off the FREE tier and lands it in the credit ledger, which is exactly
+     *       what the branch above spends.</li>
+     *   <li><b>Anyone else</b> — a painter or a distributor, who work under a shop and
+     *       have no checkout of their own to be pointed at. Their answer is that shop.</li>
+     * </ul>
      */
     private RuntimeException noWayToPayFor(User user) {
-        if (user.getRole() == com.gridstore.huevista.auth.model.UserRole.RETAILER) {
+        com.gridstore.huevista.auth.model.UserRole role = user.getRole();
+        if (role == com.gridstore.huevista.auth.model.UserRole.RETAILER) {
             return new com.gridstore.huevista.common.exception.SubscriptionRequiredException(
                     "Your subscription has ended. Subscribe to keep creating projects, or spend "
                     + pricingService.pointsPriceProject(user.getId()) + " points on a single project — it "
                     + "stays open for " + pricingService.projectValidDays() + " days.");
         }
-        // A customer holds no points and cannot buy any — points are a shop currency, and
-        // there is no cash checkout to fall back on. Their route back in is the shop, so
-        // say that rather than quoting a price they can never pay.
+        if (role == com.gridstore.huevista.auth.model.UserRole.CUSTOMER) {
+            return new QuotaExceededException(
+                    "Buy a single project for ₹" + rupees(pricingService.projectPricePaise(user.getId()))
+                    + " to keep going — it stays open for " + pricingService.projectValidDays()
+                    + " days. If your paint shop has given you an access code, redeem that instead.");
+        }
         return new QuotaExceededException(
-                "This project needs a new access code. Ask your paint shop for one, or use "
-                + "their in-store link to buy another visualisation.");
+                "There's nothing covering this project yet. Ask the shop you work with to "
+                + "set you up before creating one.");
     }
 
     /** Paise → a rupee figure for a user-facing message ("99", "9", "50"). */

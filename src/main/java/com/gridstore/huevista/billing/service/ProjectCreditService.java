@@ -63,6 +63,7 @@ public class ProjectCreditService {
                 .reopenPricePoints(pricingService.pointsPriceReopen())
                 .reopenPricePaise(pricingService.reopenPricePaise())
                 .pointsBalance(rewardPointsService.balance(userId))
+                .pointsEligible(rewardPointsService.canSpendPoints(userId))
                 .validDays(pricingService.projectValidDays())
                 .availableCredits(creditLedger.available(userId))
                 .build();

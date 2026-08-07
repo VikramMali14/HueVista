@@ -36,6 +36,18 @@ public class ProjectPurchaseOptionsResponse {
     /** The account's spendable balance, so the caller can say whether it is enough. */
     private int pointsBalance;
 
+    /**
+     * Whether this account can spend points at ALL — not whether it happens to hold enough.
+     *
+     * Points are a shop currency: RewardPointsService refuses every non-retailer, so a
+     * CUSTOMER reads false here however the balance looks. Without it a client has only the
+     * price and the balance to go on, and the honest reading of "80 points, 0 held" is
+     * "top up" — which is why a self-signed-up customer was being offered a points button
+     * that could only ever come back 403. False means: money is the only rail, don't offer
+     * the other one.
+     */
+    private boolean pointsEligible;
+
     /** Days of access a purchase (or a reopen) opens. */
     private int validDays;
 
