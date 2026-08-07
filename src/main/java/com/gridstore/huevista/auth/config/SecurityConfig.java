@@ -137,6 +137,11 @@ public class SecurityConfig {
                 // hasRole("ADMIN") rule below covers. Slots are addressed by name and
                 // resolved against one table, so this exposes no way to name a file.
                 .requestMatchers(HttpMethod.GET, "/api/site-assets", "/api/site-assets/**").permitAll()
+                // The published rooms behind the public gallery. Read-only and published-only:
+                // the controller never offers the unpublished shelf, so hiding a room in the
+                // admin console is what takes it off the site. Writing, starting a copy and
+                // seeing hidden rooms all stay under /api/admin/free-projects below.
+                .requestMatchers(HttpMethod.GET, "/api/free-projects", "/api/free-projects/**").permitAll()
                 // Shared project view — public, no auth
                 .requestMatchers(HttpMethod.GET, "/api/share/**").permitAll()
                 // Anonymous guest redemption of a shop access code — issues a guest token
