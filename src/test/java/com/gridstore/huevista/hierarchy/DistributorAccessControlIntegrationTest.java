@@ -98,6 +98,41 @@ class DistributorAccessControlIntegrationTest {
         return new Brand[]{granted, withheld};
     }
 
+    /**
+     * A real Asian Paints shade, on the brand row the paint-line seeder already creates.
+     *
+     * The free tier carries exactly one paint company and that company is Asian Paints
+     * (Plan.FREE_TIER_BRAND_SLUG), so any test about the plan cap needs it to be a
+     * company with shades in it rather than an empty brand row.
+     */
+    private Brand seedAsianPaints() {
+        Brand ap = brandRepository.findBySlug("asian-paints")
+                .orElseGet(() -> brandRepository.save(
+                        Brand.builder().name("Asian Paints").slug("asian-paints").build()));
+        shadeRepository.save(Shade.builder().brand(ap).shadeCode("AP1").name("ivory mist")
+                .hexCode("#EFE7D8").shadeFamily("off whites").popularity(3).build());
+        return ap;
+    }
+
+    /**
+     * Put a shop on a paid tier.
+     *
+     * The tests in this class are about what a DISTRIBUTOR grants, and the free tier
+     * applies a company cap of its own on top (see {@code BrandAccessService.capToPlan})
+     * — which would otherwise narrow the shop before the grant under test had a chance
+     * to. Paying takes the plan out of the picture so each assertion is about one thing.
+     * The plan cap has its own tests further down.
+     */
+    private void putShopOnAPaidPlan(String shopEmail) throws Exception {
+        String adminToken = tokenFor("root@example.com", "password123");
+        String userId = userRepository.findByEmail(shopEmail).orElseThrow().getId();
+        mockMvc.perform(post("/api/admin/users/" + userId + "/subscription")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"plan\":\"STARTER\",\"days\":30}"))
+                .andExpect(status().isCreated());
+    }
+
     /** The brand slugs present in a JSON array response, for content-based assertions. */
     private java.util.List<String> slugsIn(MvcResult result, String field) throws Exception {
         com.fasterxml.jackson.databind.JsonNode body =
@@ -227,6 +262,9 @@ class DistributorAccessControlIntegrationTest {
                                 {"name":"Priya","email":"shop@example.com","password":"password123",
                                  "shopName":"Mehta Paint House"}"""))
                 .andExpect(status().isCreated());
+        // "Unrestricted" here means by the DISTRIBUTOR. A free shop is still capped to one
+        // company by its own plan, which is a separate rule with its own tests below.
+        putShopOnAPaidPlan("shop@example.com");
 
         MvcResult shopView = mockMvc.perform(get("/api/shades/mine")
                         .header("Authorization", "Bearer " + tokenFor("shop@example.com", "password123")))
@@ -264,6 +302,9 @@ class DistributorAccessControlIntegrationTest {
                                  "brandIds":[%d,%d],"brandsUnrestricted":false}"""
                                 .formatted(brands[0].getId(), brands[1].getId())))
                 .andExpect(status().isCreated());
+        // The shop carries two companies only because it pays for them: the free tier
+        // caps a shop at one, which is a separate rule with its own tests below.
+        putShopOnAPaidPlan("shop@example.com");
         String shopToken = tokenFor("shop@example.com", "password123");
         String orgId = shopOrgId("shop@example.com");
 
@@ -310,6 +351,9 @@ class DistributorAccessControlIntegrationTest {
                                  "brandIds":[%d,%d],"brandsUnrestricted":false}"""
                                 .formatted(brands[0].getId(), brands[1].getId())))
                 .andExpect(status().isCreated());
+        // The shop carries two companies only because it pays for them: the free tier
+        // caps a shop at one, which is a separate rule with its own tests below.
+        putShopOnAPaidPlan("shop@example.com");
         String shopToken = tokenFor("shop@example.com", "password123");
         String orgId = shopOrgId("shop@example.com");
 
@@ -626,5 +670,128 @@ class DistributorAccessControlIntegrationTest {
         mockMvc.perform(get("/api/hierarchy/network")
                         .header("Authorization", "Bearer " + distToken))
                 .andExpect(status().isOk());
+    }
+
+    // ── The plan's own company cap ────────────────────────────────────────
+    //
+    // A second limit sits on top of the distributor's: the free tier carries ONE paint
+    // company. The catalogue is the thing besides colour matching that is worth money
+    // without a project behind it, so a free counter gets a shop it can run end to end
+    // — not one it can sell four brands from.
+
+    /**
+     * A shop its distributor has not restricted at all is still capped by its own plan,
+     * to the free tier's company. This is the case a plain intersection gets wrong: no
+     * assignment rows means "no distributor limit", which must not read as "everything".
+     */
+    @Test
+    void a_free_shop_carries_one_company_even_when_its_distributor_restricts_nothing() throws Exception {
+        seedCatalogue();
+        seedAsianPaints();
+        String distToken = seedDistributor();
+        mockMvc.perform(post("/api/hierarchy/retailers")
+                        .header("Authorization", "Bearer " + distToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Priya","email":"shop@example.com","password":"password123",
+                                 "shopName":"Mehta Paint House"}"""))
+                .andExpect(status().isCreated());
+
+        MvcResult mine = mockMvc.perform(get("/api/shades/mine")
+                        .header("Authorization", "Bearer " + tokenFor("shop@example.com", "password123")))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(slugsIn(mine, "brandSlug")).containsOnly("asian-paints");
+    }
+
+    /** Subscribing opens the rest of the catalogue to the very same shop. */
+    @Test
+    void paying_lifts_the_company_cap() throws Exception {
+        seedCatalogue();
+        seedAsianPaints();
+        String distToken = seedDistributor();
+        mockMvc.perform(post("/api/hierarchy/retailers")
+                        .header("Authorization", "Bearer " + distToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Priya","email":"shop@example.com","password":"password123",
+                                 "shopName":"Mehta Paint House"}"""))
+                .andExpect(status().isCreated());
+        putShopOnAPaidPlan("shop@example.com");
+
+        MvcResult mine = mockMvc.perform(get("/api/shades/mine")
+                        .header("Authorization", "Bearer " + tokenFor("shop@example.com", "password123")))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(slugsIn(mine, "brandSlug"))
+                .contains("testco-paints", "rivalco-paints", "asian-paints");
+    }
+
+    /**
+     * A free shop whose distributor never assigned it Asian Paints is capped at one of
+     * the companies it DOES carry — not left with an empty catalogue over a company it
+     * was never given. Still one company, which is what the tier says.
+     */
+    @Test
+    void a_free_shop_without_asian_paints_keeps_one_of_the_companies_it_does_carry() throws Exception {
+        Brand[] brands = seedCatalogue();
+        seedAsianPaints();
+        String distToken = seedDistributor();
+        mockMvc.perform(post("/api/hierarchy/retailers")
+                        .header("Authorization", "Bearer " + distToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Priya","email":"shop@example.com","password":"password123",
+                                 "shopName":"Mehta Paint House",
+                                 "brandIds":[%d,%d],"brandsUnrestricted":false}"""
+                                .formatted(brands[0].getId(), brands[1].getId())))
+                .andExpect(status().isCreated());
+
+        MvcResult mine = mockMvc.perform(get("/api/shades/mine")
+                        .header("Authorization", "Bearer " + tokenFor("shop@example.com", "password123")))
+                .andExpect(status().isOk()).andReturn();
+        // Exactly one company, drawn from what the distributor assigned — never the
+        // free tier's own, which this shop does not carry.
+        assertThat(java.util.Set.copyOf(slugsIn(mine, "brandSlug")))
+                .hasSize(1)
+                .isSubsetOf(java.util.Set.of("testco-paints", "rivalco-paints"));
+    }
+
+    /**
+     * The cap reaches the shop's customers too. A walk-in redeeming a free shop's code
+     * gets that shop's one company — the code cannot hand out what the shop itself may
+     * not offer, and the plan limit is applied in the same place the distributor's is.
+     */
+    @Test
+    void a_free_shops_customer_inherits_the_single_company() throws Exception {
+        seedCatalogue();
+        seedAsianPaints();
+        String distToken = seedDistributor();
+        mockMvc.perform(post("/api/hierarchy/retailers")
+                        .header("Authorization", "Bearer " + distToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"Priya","email":"shop@example.com","password":"password123",
+                                 "shopName":"Mehta Paint House"}"""))
+                .andExpect(status().isCreated());
+        String orgId = shopOrgId("shop@example.com");
+
+        MvcResult issued = mockMvc.perform(post("/api/organizations/" + orgId + "/access-codes")
+                        .header("Authorization", "Bearer " + tokenFor("shop@example.com", "password123"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerName\":\"Anjali\",\"projectQuota\":1}"))
+                .andExpect(status().isCreated()).andReturn();
+        String code = objectMapper.readTree(issued.getResponse().getContentAsString())
+                .path("code").asText();
+
+        MvcResult redeemed = mockMvc.perform(post("/api/access-codes/redeem-account")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + code + "\"}"))
+                .andExpect(status().isOk()).andReturn();
+        String customerToken = objectMapper.readTree(redeemed.getResponse().getContentAsString())
+                .path("accessToken").asText();
+
+        MvcResult customerView = mockMvc.perform(get("/api/shades/mine")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk()).andReturn();
+        assertThat(slugsIn(customerView, "brandSlug")).containsOnly("asian-paints");
     }
 }

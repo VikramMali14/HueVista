@@ -105,6 +105,54 @@ public class FreeProjectLibraryService {
                 .toList();
     }
 
+    /**
+     * The public gallery: published rooms only, in shelf order.
+     *
+     * A separate method from {@link #listTemplates} rather than that one with the
+     * flag set, because the two are answering different people. This one can never
+     * be asked for the unpublished shelf — there is no parameter to get it wrong
+     * with — and it maps to the trimmed {@link PublicFreeProjectResponse}, so a field
+     * added to the admin DTO does not appear on the marketing site by default.
+     */
+    @Transactional(readOnly = true)
+    public List<PublicFreeProjectResponse> listPublished() {
+        return templateRepository.findByPublishedTrueOrderBySpaceAscRoomKeyAscDisplayOrderAscTitleAsc()
+                .stream()
+                .map(t -> PublicFreeProjectResponse.from(t, publicImageUrl(t)))
+                .toList();
+    }
+
+    /** One published room by slug, for its own page. Hidden ones read as absent. */
+    @Transactional(readOnly = true)
+    public PublicFreeProjectResponse getPublished(String slug) {
+        return templateRepository.findBySlug(slug)
+                .filter(FreeProjectTemplate::isPublished)
+                .map(t -> PublicFreeProjectResponse.from(t, publicImageUrl(t)))
+                .orElseThrow(() -> new ResourceNotFoundException("No published room: " + slug));
+    }
+
+    /**
+     * The picture to show for a template, as an ANONYMOUS browser can load it.
+     *
+     * The cleaned photo when there is one, since that is what the masks line up with
+     * and what the studio itself draws.
+     *
+     * The rewrite at the end is the part that matters. In S3 mode
+     * {@code getPublicUrl} presigns and the link works for anybody. In local-storage
+     * mode it returns {@code /api/images/files/<key>}, which is behind
+     * authentication — so on the public gallery every photograph would 403 for
+     * exactly the visitors the page exists for. Those keys are pointed at
+     * {@link com.gridstore.huevista.library.controller.FreeProjectController}'s own
+     * public file route instead, which serves library keys and nothing else.
+     */
+    private String publicImageUrl(FreeProjectTemplate t) {
+        String key = t.getCleanedImageStorageKey() != null && !t.getCleanedImageStorageKey().isBlank()
+                ? t.getCleanedImageStorageKey()
+                : t.getImageStorageKey();
+        String url = storageService.getPublicUrl(key);
+        return url != null && url.startsWith("http") ? url : "/api/free-projects/files/" + key;
+    }
+
     /** Live copies per template photo, keyed by storage key. Absent = none. */
     private Map<String, Long> countCopies(List<String> imageKeys) {
         if (imageKeys.isEmpty()) return Map.of();
@@ -242,6 +290,122 @@ public class FreeProjectLibraryService {
         return toResponse(saved);
     }
 
+    /**
+     * Re-freeze a template from the project it was published from.
+     *
+     * Publishing copies the masks, which is what makes a template independent of the
+     * project behind it — and also what made a published room permanently
+     * un-editable. There was no way to widen a wall, fix an edge the AI overshot, or
+     * add a surface that had been missed: the only route was delete and publish
+     * again, which loses the slug (so every link to it), the display order, the
+     * usage count and the shelf position. This is that route without the loss. The
+     * studio stays the one place masks are drawn; this pushes the result out.
+     *
+     * What is kept: id, slug, title, room, space, description, display order,
+     * published state and usage count. What is replaced: the photo, the cleaned
+     * photo, and every wall.
+     *
+     * Copies people have already started are deliberately NOT changed. They point at
+     * the old keys, and {@code storageService.store} mints a fresh key for every
+     * write, so the new files land beside the old ones rather than over them —
+     * somebody halfway through painting a room does not have its walls move under
+     * them mid-session. The superseded files are then deleted only when nothing is
+     * holding them, the same rule {@link #deleteTemplate} purges under.
+     */
+    @Transactional
+    public FreeProjectTemplateResponse refreshFromSource(String adminUserId, String templateId) {
+        FreeProjectTemplate template = templateRepository.findById(templateId)
+                .orElseThrow(() -> new ResourceNotFoundException("Template not found: " + templateId));
+        if (template.getSourceProjectId() == null || template.getSourceProjectId().isBlank()) {
+            throw new IllegalArgumentException(
+                    "This one was published before we started recording which project it came from, "
+                    + "so there is nothing to refresh it against. Publish it again from the studio.");
+        }
+        Project project = projectRepository
+                .findByIdAndUserId(template.getSourceProjectId(), adminUserId)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "The project this was published from is gone, or belongs to another account. "
+                        + "Publish a new one from the studio instead."));
+
+        List<Region> regions = regionRepository.findByProjectIdOrderByDisplayOrderAsc(project.getId())
+                .stream().filter(r -> hasMask(r.getMaskUrl())).toList();
+        if (regions.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "That project has no walls on it any more, so refreshing would empty the room. "
+                    + "Mark its walls in the studio first.");
+        }
+
+        // Held so they can be cleaned up after the swap — never before it, because a
+        // failure anywhere below has to leave the template serving its old files.
+        List<String> superseded = new ArrayList<>();
+        superseded.add(template.getImageStorageKey());
+        if (template.getCleanedImageStorageKey() != null) superseded.add(template.getCleanedImageStorageKey());
+        template.getRegions().forEach(r -> superseded.add(r.getMaskStorageKey()));
+        String oldImageKey = template.getImageStorageKey();
+
+        String folder = FreeProjectStorage.folderFor(template.getSlug());
+        UploadedImage sourceImage = project.getImage();
+        byte[] photo = read(sourceImage.getStorageKey(), "photo");
+        String imageKey = write(photo, folder, "source" + extensionOf(sourceImage.getOriginalFilename(), ".jpg"),
+                sourceImage.getContentType());
+
+        String cleanedKey = null;
+        if (project.getCleanedImageStorageKey() != null && !project.getCleanedImageStorageKey().isBlank()) {
+            cleanedKey = write(read(project.getCleanedImageStorageKey(), "cleaned photo"),
+                    folder, "cleaned.png", "image/png");
+        }
+
+        Integer width = sourceImage.getWidth();
+        Integer height = sourceImage.getHeight();
+        if (width == null || height == null) {
+            int[] wh = dimensionsOf(photo);
+            if (wh != null) {
+                width = wh[0];
+                height = wh[1];
+            }
+        }
+
+        template.setImageStorageKey(imageKey);
+        template.setImageContentType(sourceImage.getContentType());
+        template.setImageFileSize((long) photo.length);
+        template.setImageWidth(width);
+        template.setImageHeight(height);
+        if (sourceImage.getImageType() != null) template.setImageType(sourceImage.getImageType());
+        template.setCleanedImageStorageKey(cleanedKey);
+
+        // orphanRemoval drops the old rows; the files they named are handled below.
+        template.getRegions().clear();
+        int order = 0;
+        for (Region region : regions) {
+            byte[] mask = read(storageKeyOf(region.getMaskUrl()), "mask for region " + region.getId());
+            String maskKey = write(mask, folder, "mask-" + order + ".png", "image/png");
+            template.getRegions().add(FreeProjectTemplateRegion.builder()
+                    .template(template)
+                    .label(region.getLabel())
+                    .category(region.getCategory())
+                    .maskStorageKey(maskKey)
+                    .appliedHexCode(region.getAppliedHexCode())
+                    .appliedShadeCode(region.getAppliedShadeCode())
+                    .displayOrder(order++)
+                    .build());
+        }
+
+        FreeProjectTemplate saved = templateRepository.save(template);
+
+        // Only once nothing is holding the old room. A copy still open on it keeps
+        // every one of these files alive, stale or not.
+        long stillInUse = imageRepository.countByStorageKey(oldImageKey);
+        int purged = stillInUse == 0 ? purge(superseded) : 0;
+
+        auditService.record(adminUserId, "FREE_TEMPLATE_REFRESHED", "FREE_PROJECT_TEMPLATE", saved.getId(),
+                "slug=" + saved.getSlug() + " walls=" + regions.size() + " from=" + project.getId()
+                        + " oldFilesPurged=" + purged + " copiesOnOldFiles=" + stillInUse);
+        log.info("[library] template {} refreshed from project {} by {} ({} walls, {} old file(s) purged, "
+                        + "{} copy/copies left on the previous version)",
+                saved.getSlug(), project.getId(), adminUserId, regions.size(), purged, stillInUse);
+        return toResponse(saved);
+    }
+
     // ─── Starting a copy ─────────────────────────────────────────────────────
 
     /**
@@ -362,17 +526,7 @@ public class FreeProjectLibraryService {
 
         templateRepository.delete(template);
 
-        int purged = 0;
-        for (String key : keys) {
-            try {
-                storageService.delete(key);
-                purged++;
-            } catch (Exception e) {
-                // Best-effort: the row is already gone, and a stray blob is a smaller
-                // problem than an error that invites a second delete.
-                log.warn("[library] could not delete {}: {}", key, e.getMessage());
-            }
-        }
+        int purged = purge(keys);
 
         auditService.record(adminUserId, "FREE_TEMPLATE_DELETED", "FREE_PROJECT_TEMPLATE", templateId,
                 "slug=" + template.getSlug() + " filesPurged=" + purged + " copiesBroken=" + copies);
@@ -457,6 +611,27 @@ public class FreeProjectLibraryService {
         } catch (IOException | RuntimeException e) {
             throw new StorageException("Could not copy " + filename + " into the free library", e);
         }
+    }
+
+    /**
+     * Delete library files, reporting how many actually went.
+     *
+     * Best-effort per key: the rows that named them are already gone (or already
+     * point elsewhere), and a stray blob is a smaller problem than an error that
+     * invites a second delete against a template that is no longer there.
+     */
+    private int purge(List<String> keys) {
+        int purged = 0;
+        for (String key : keys) {
+            if (key == null || key.isBlank()) continue;
+            try {
+                storageService.delete(key);
+                purged++;
+            } catch (Exception e) {
+                log.warn("[library] could not delete {}: {}", key, e.getMessage());
+            }
+        }
+        return purged;
     }
 
     private static boolean hasMask(String maskUrl) {

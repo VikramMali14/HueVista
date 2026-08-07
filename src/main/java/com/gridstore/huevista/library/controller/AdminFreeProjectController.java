@@ -76,6 +76,23 @@ public class AdminFreeProjectController {
                 .body(libraryService.startFromTemplate(auth.getName(), templateId));
     }
 
+    @Operation(summary = "Refresh a template from the project it came from",
+            description = """
+                    Re-copies the photo and every mask from the source project, so a wall that
+                    was widened, an edge that was fixed or a surface that was missed reaches the
+                    published room. The template keeps its id, slug, shelf position, published
+                    state and usage count — only the pictures change.
+
+                    Copies people have already started are left on the old files on purpose:
+                    their walls must not move mid-session. Those files are deleted only once no
+                    copy is holding them.
+                    """)
+    @PostMapping("/{templateId}/refresh")
+    public ResponseEntity<FreeProjectTemplateResponse> refresh(
+            @PathVariable String templateId, Authentication auth) {
+        return ResponseEntity.ok(libraryService.refreshFromSource(auth.getName(), templateId));
+    }
+
     @Operation(summary = "Show or hide a template",
             description = "Hidden templates stay in this list but are refused by 'start a copy'. Files are untouched.")
     @PatchMapping("/{templateId}/published")

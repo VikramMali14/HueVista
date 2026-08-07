@@ -46,14 +46,27 @@ public enum Plan {
     // pulls catalogue shade codes out of any photograph. It is the one tool that is
     // valuable on its own, without a project behind it, so leaving it on the free tier
     // meant the most useful thing at the counter cost nothing and nothing above it needed
-    // buying. Everything else the free tier reaches is the same product the paid tiers get.
-    FREE(0, 2, 4, 5, 80, 9900, false, "Free"),
-    STARTER(99900, 15, 4, 25, 60, 6500, true, "Starter"),
-    PROFESSIONAL(249900, 45, 8, 100, 50, 5500, true, "Professional"),
-    BUSINESS(499900, 100, 12, 300, 40, 4500, true, "Business"),
+    // buying. Nor does it include the whole catalogue: a free shop works with ONE paint
+    // company (see fullCatalogue). Everything else the free tier reaches is the same
+    // product the paid tiers get.
+    FREE(0, 2, 4, 5, 80, 9900, false, false, "Free"),
+    STARTER(99900, 15, 4, 25, 60, 6500, true, true, "Starter"),
+    PROFESSIONAL(249900, 45, 8, 100, 50, 5500, true, true, "Professional"),
+    BUSINESS(499900, 100, 12, 300, 40, 4500, true, true, "Business"),
     // Enterprise quota is unlimited, so its extra-project rate is only ever quoted, never
     // charged. It mirrors Business so a quote never reads as dearer than the tier below.
-    ENTERPRISE(-1, Integer.MAX_VALUE, 16, Integer.MAX_VALUE, 40, 4500, true, "Enterprise");
+    ENTERPRISE(-1, Integer.MAX_VALUE, 16, Integer.MAX_VALUE, 40, 4500, true, true, "Enterprise");
+
+    /**
+     * The one paint company a tier without {@link #fullCatalogue} works with.
+     *
+     * Asian Paints because it is the catalogue every shop in this market already sells
+     * from, so the free tier is a usable shop rather than a demo. A shop whose
+     * distributor has NOT assigned it this company is not left with an empty catalogue —
+     * see {@code BrandAccessService}, which caps such a shop at one of the companies it
+     * does carry instead.
+     */
+    public static final String FREE_TIER_BRAND_SLUG = "asian-paints";
 
     /** GST rate applied to every plan and all pay-per-use overage. Set to 0 for
      *  now — this runs as an individual (non-GST-registered) project, so prices
@@ -83,6 +96,18 @@ public enum Plan {
      * allowance the tiers are actually priced on.
      */
     private final boolean colorMatching;
+    /**
+     * Whether this tier may work with every paint company its distributor assigned it.
+     *
+     * The free tier may not — it carries a single company ({@link #FREE_TIER_BRAND_SLUG}).
+     * The catalogue is the other thing besides colour matching that is worth money on its
+     * own: a shop that can show a customer any shade from any company has the whole
+     * product, and pricing the tiers on project volume alone left nothing to buy for a
+     * counter that photographs two rooms a month but sells four brands. One company is
+     * enough to run the studio end to end and see what it does; more than one is what the
+     * paid tiers are for.
+     */
+    private final boolean fullCatalogue;
     private final String displayName;
 
     public double priceInRupees() {
