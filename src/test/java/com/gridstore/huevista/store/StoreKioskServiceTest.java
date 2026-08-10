@@ -81,7 +81,8 @@ class StoreKioskServiceTest {
                                       StorePaymentRepository payments, AccessCodeService codes) {
         var billing = mock(com.gridstore.huevista.billing.service.BillingService.class);
         var memberships = mock(com.gridstore.huevista.account.repository.OrgMembershipRepository.class);
-        var pricing = new com.gridstore.huevista.billing.service.PricingService(billing, memberships);
+        var pricing = new com.gridstore.huevista.billing.service.PricingService(billing,
+                mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class), memberships);
         ReflectionTestUtils.setField(pricing, "kioskPricePaise", KIOSK_PRICE);
         ReflectionTestUtils.setField(pricing, "kioskBonusPoints", BONUS_POINTS);
         when(memberships.findUserIdsByOrganizationIdAndRole(
@@ -243,7 +244,8 @@ class StoreKioskServiceTest {
 
         var billing = mock(com.gridstore.huevista.billing.service.BillingService.class);
         var memberships = mock(com.gridstore.huevista.account.repository.OrgMembershipRepository.class);
-        var pricing = new com.gridstore.huevista.billing.service.PricingService(billing, memberships);
+        var pricing = new com.gridstore.huevista.billing.service.PricingService(billing,
+                mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class), memberships);
         ReflectionTestUtils.setField(pricing, "kioskPricePaise", KIOSK_PRICE);
         ReflectionTestUtils.setField(pricing, "kioskBonusPoints", BONUS_POINTS);
         when(memberships.findUserIdsByOrganizationIdAndRole(

@@ -71,6 +71,25 @@ public class Organization {
     private boolean featuresRestricted = false;
 
     /**
+     * RETAILER only: whether the shop has narrowed its catalogue to the companies it
+     * chose to show (see {@link ShopVisibleBrand}).
+     *
+     * The shop's own storefront decision, and a different question from
+     * {@link #brandsRestricted} — that one is the distributor's grant, deciding what
+     * this shop is PERMITTED to carry. This one decides what it actually puts in front
+     * of people, and applies everywhere at once: the counter's own studio, the kiosk,
+     * every access code it issues, every customer it onboards. A shop can only narrow
+     * its grant here; the two are intersected, so selecting a company the distributor
+     * never assigned changes nothing.
+     *
+     * Same explicit flag as the two above, for the same reason: "no rows" cannot tell
+     * "never configured" from "the shop turned every company off".
+     */
+    @Column(nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean visibleBrandsRestricted = false;
+
+    /**
      * RETAILER only: whether paint NAMES are shown to anyone working under this shop.
      *
      * A shop that has built its own shade-code scheme is usually hiding which paint

@@ -42,6 +42,7 @@ public class BillingService {
     private final BillingEmailService billingEmailService;
     private final PaymentAttemptService paymentAttemptService;
     private final FreeTierService freeTierService;
+    private final UnbilledAccounts unbilledAccounts;
 
     @Value("${razorpay.plan.starter:}")
     private String planIdStarter;
@@ -636,6 +637,14 @@ public class BillingService {
      */
     @Transactional(readOnly = true)
     public SubscriptionResponse getCurrentSubscription(String userId) {
+        // An administrator holds no subscription and is not meant to. Answering 404 was
+        // true but unusable: every client read it as "unpaid" and showed the person who
+        // runs the platform a prompt to subscribe to it. Checked BEFORE the free-tier
+        // rollover below: an unbilled account has no cycle to settle, so settling one
+        // would be work done on behalf of an account that holds no plan at all.
+        if (unbilledAccounts.covers(userId)) {
+            return SubscriptionResponse.unbilled();
+        }
         // The free tier's month turns over here as well as in the nightly sweep, so a shop
         // opening its plan page on the 1st reads the allowance it actually has rather than
         // last month's spent counter with a renewal still hours away.

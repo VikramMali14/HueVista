@@ -25,6 +25,7 @@ import org.springframework.stereotype.Service;
 public class PricingService {
 
     private final BillingService billingService;
+    private final UnbilledAccounts unbilledAccounts;
     private final com.gridstore.huevista.account.repository.OrgMembershipRepository membershipRepository;
 
     /** Days of access a purchased project (or a reopen) opens. */
@@ -62,7 +63,7 @@ public class PricingService {
 
     /** What a reopen costs in money. Flat, like its point price — a reopen buys another
      *  window on work already paid for once, so there is nothing tier-shaped about it. */
-    @Value("${app.project-credit.reopen-price-paise:1000}")
+    @Value("${app.project-credit.reopen-price-paise:900}")
     private int reopenPricePaise;
 
     @Value("${app.points.reopen:9}")
@@ -77,8 +78,16 @@ public class PricingService {
     @Value("${app.project-credit.currency:INR}")
     private String currency;
 
+    /**
+     * Is this account's work covered right now?
+     *
+     * An administrator always is, without holding a subscription — see
+     * {@link UnbilledAccounts}. Answering "no" here was what put an admin's own projects
+     * behind a validity window and a reopen button.
+     */
     public boolean isSubscribed(String userId) {
-        return billingService.findEntitlingSubscription(userId).isPresent();
+        return unbilledAccounts.covers(userId)
+                || billingService.findEntitlingSubscription(userId).isPresent();
     }
 
     /**
