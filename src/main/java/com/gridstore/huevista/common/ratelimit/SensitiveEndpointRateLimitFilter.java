@@ -30,6 +30,7 @@ import java.util.Map;
  *   - OTP confirm          — 6-digit verification-code brute force
  *   - access-code redeem   — 8-char code brute force / griefing (burn a shop's code)
  *   - subscribe / verify   — gateway subscription spam + Checkout-payload replay
+ *   - gallery room start   — free project creation (authenticated, but charges nothing)
  *
  * INCR+EXPIRE fixed window, real client IP from the frontend-forwarded header,
  * 429 + Retry-After when over the limit, and FAIL-OPEN if Redis is unreachable
@@ -139,7 +140,13 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             // silently corrupts the very report they feed — while capping a script that
             // wants to fill the payment audit with invented rows.
             @Value("${app.rate-limit.attempt-event.max-attempts:240}") int attemptEventMax,
-            @Value("${app.rate-limit.attempt-event.window-seconds:3600}") long attemptEventWindow) {
+            @Value("${app.rate-limit.attempt-event.window-seconds:3600}") long attemptEventWindow,
+            // gallery "paint this room": authenticated, and each call is only a handful of
+            // rows — but it is the one project-creating endpoint that costs the caller
+            // nothing at all, so a script could otherwise fill the projects table for free.
+            // A visitor browsing the gallery opens a few rooms; 40/h leaves that alone.
+            @Value("${app.rate-limit.free-start.max-attempts:40}") int freeStartMax,
+            @Value("${app.rate-limit.free-start.window-seconds:3600}") long freeStartWindow) {
         this.redis = redis;
         this.enabled = enabled;
         this.trustForwardedHeaders = trustForwardedHeaders;
@@ -159,6 +166,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
         Policy subscription = new Policy("subscription", subscriptionMax, Duration.ofSeconds(subscriptionWindow));
         Policy attemptEvent = new Policy("attemptevent", attemptEventMax, Duration.ofSeconds(attemptEventWindow));
         Policy render = new Policy("render", renderMax, Duration.ofSeconds(renderWindow));
+        Policy freeStart = new Policy("freestart", freeStartMax, Duration.ofSeconds(freeStartWindow));
 
         this.rules = List.of(
                 // Same Redis key namespace ("ratelimit:signup:<ip>") the old dedicated
@@ -201,7 +209,10 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 new Rule("POST", "/api/billing/subscriptions", subscription),
                 new Rule("POST", "/api/billing/subscriptions/verify", subscription),
                 // Public checkout telemetry (Razorpay reference in the middle).
-                new Rule("POST", "/api/billing/attempts/*/events", attemptEvent)
+                new Rule("POST", "/api/billing/attempts/*/events", attemptEvent),
+                // Gallery "paint this room" (slug in the middle). Signed-in, but free —
+                // nothing is charged for it, so the cap is what bounds it.
+                new Rule("POST", "/api/free-projects/*/start", freeStart)
         );
     }
 

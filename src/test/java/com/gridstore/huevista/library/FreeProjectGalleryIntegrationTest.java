@@ -18,6 +18,7 @@ import com.gridstore.huevista.project.model.RegionCategory;
 import com.gridstore.huevista.project.repository.ProjectRepository;
 import com.gridstore.huevista.project.repository.RegionRepository;
 import com.razorpay.RazorpayClient;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -67,6 +68,7 @@ class FreeProjectGalleryIntegrationTest {
     @Autowired StorageService storageService;
     @Autowired FreeProjectTemplateRepository templateRepository;
     @Autowired PasswordEncoder passwordEncoder;
+    @Autowired EntityManager entityManager;
 
     // ── Fixtures ──────────────────────────────────────────────────────────
 
@@ -79,11 +81,29 @@ class FreeProjectGalleryIntegrationTest {
     }
 
     private String adminToken() throws Exception {
+        return tokenFor("root@example.com");
+    }
+
+    /** An ordinary signed-in visitor — the person the gallery's paint button is for. */
+    private User customer() {
+        return userRepository.save(User.builder()
+                .name("Asha Rao").email("asha@example.com")
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL).emailVerified(true)
+                .role(UserRole.CUSTOMER).build());
+    }
+
+    private String tokenFor(String email) throws Exception {
         MvcResult login = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"email\":\"root@example.com\",\"password\":\"password123\"}"))
+                        .content("{\"email\":\"%s\",\"password\":\"password123\"}".formatted(email)))
                 .andExpect(status().isOk()).andReturn();
         return objectMapper.readTree(login.getResponse().getContentAsString()).path("accessToken").asText();
+    }
+
+    /** The slug the gallery card carries — the only handle a visitor ever holds. */
+    private String slugOf(String templateId) {
+        return templateRepository.findById(templateId).orElseThrow().getSlug();
     }
 
     /** A tiny stored file, so the copy the library makes has real bytes to read. */
@@ -338,5 +358,135 @@ class FreeProjectGalleryIntegrationTest {
 
         mockMvc.perform(post("/api/admin/free-projects/" + templateId + "/refresh"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    // ── Painting a room from the gallery ──────────────────────────────────
+    //
+    // The shelf was readable by everyone and startable by nobody but an admin, so
+    // the gallery was a page you could look at and not use. These cover the route
+    // that opened it: by SLUG (the only handle a card carries), signed-in, free.
+
+    @Test
+    void an_ordinary_visitor_can_take_a_room_from_the_gallery_and_paint_it() throws Exception {
+        User root = admin();
+        String adminToken = adminToken();
+        String slug = slugOf(publish(adminToken, projectWith(root, 2), true));
+
+        customer();
+        String token = tokenFor("asha@example.com");
+
+        MvcResult res = mockMvc.perform(post("/api/free-projects/" + slug + "/start")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isCreated())
+                // Born SEGMENTED with its walls already on it: the studio can open it
+                // straight away, with no upload and no wall detection in between.
+                .andExpect(jsonPath("$.status").value("SEGMENTED"))
+                .andExpect(jsonPath("$.regionCount").value(2))
+                .andExpect(jsonPath("$.projectId").isNotEmpty())
+                .andReturn();
+
+        String projectId = objectMapper.readTree(res.getResponse().getContentAsString())
+                .path("projectId").asText();
+        Project copy = projectRepository.findById(projectId).orElseThrow();
+        // It belongs to the visitor, not to the admin who published the room.
+        assertThat(copy.getUser().getEmail()).isEqualTo("asha@example.com");
+        assertThat(regionRepository.findByProjectIdOrderByDisplayOrderAsc(projectId)).hasSize(2);
+    }
+
+    /**
+     * The copy names the library's files rather than owning new ones — that is what
+     * makes it free, and it is the reason the ordinary project cleanup has to check
+     * before deleting anything under {@code free-projects/}.
+     */
+    @Test
+    void the_copy_reuses_the_librarys_files_instead_of_uploading_its_own() throws Exception {
+        User root = admin();
+        String adminToken = adminToken();
+        String templateId = publish(adminToken, projectWith(root, 1), true);
+        String slug = slugOf(templateId);
+
+        customer();
+        String token = tokenFor("asha@example.com");
+
+        MvcResult res = mockMvc.perform(post("/api/free-projects/" + slug + "/start")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isCreated()).andReturn();
+        String projectId = objectMapper.readTree(res.getResponse().getContentAsString())
+                .path("projectId").asText();
+
+        String templateKey = templateRepository.findById(templateId).orElseThrow().getImageStorageKey();
+        Project copy = projectRepository.findById(projectId).orElseThrow();
+        assertThat(copy.getImage().getStorageKey()).isEqualTo(templateKey);
+        assertThat(templateKey).startsWith(FreeProjectStorage.PREFIX);
+    }
+
+    @Test
+    void an_anonymous_visitor_is_refused_and_the_gallery_stays_readable() throws Exception {
+        User root = admin();
+        String adminToken = adminToken();
+        String slug = slugOf(publish(adminToken, projectWith(root, 1), true));
+
+        // Reading the shelf needs no session…
+        mockMvc.perform(get("/api/free-projects")).andExpect(status().isOk());
+        // …but taking a room away does. Otherwise this is a free project factory
+        // for anyone who can reach the site.
+        mockMvc.perform(post("/api/free-projects/" + slug + "/start"))
+                .andExpect(status().isUnauthorized());
+        assertThat(projectRepository.count()).isEqualTo(1); // only the admin's own
+    }
+
+    /**
+     * A hidden room reads as ABSENT, not as forbidden — the same answer GET gives.
+     * Whether an unpublished draft sits behind a guessed slug is not a public fact,
+     * and this endpoint is reachable by anyone who can make an account.
+     */
+    @Test
+    void a_hidden_room_cannot_be_painted_and_does_not_admit_that_it_exists() throws Exception {
+        User root = admin();
+        String adminToken = adminToken();
+        String slug = slugOf(publish(adminToken, projectWith(root, 1), false));
+
+        customer();
+        String token = tokenFor("asha@example.com");
+
+        mockMvc.perform(post("/api/free-projects/" + slug + "/start")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void a_slug_that_names_nothing_is_a_404_rather_than_a_500() throws Exception {
+        customer();
+        String token = tokenFor("asha@example.com");
+
+        mockMvc.perform(post("/api/free-projects/no-such-room/start")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isNotFound());
+    }
+
+    /** Two people opening the same room get two projects, not one shared one. */
+    @Test
+    void the_same_room_can_be_painted_by_more_than_one_person() throws Exception {
+        User root = admin();
+        String adminToken = adminToken();
+        String slug = slugOf(publish(adminToken, projectWith(root, 1), true));
+
+        customer();
+        String first = tokenFor("asha@example.com");
+        mockMvc.perform(post("/api/free-projects/" + slug + "/start")
+                        .header("Authorization", "Bearer " + first))
+                .andExpect(status().isCreated());
+        mockMvc.perform(post("/api/free-projects/" + slug + "/start")
+                        .header("Authorization", "Bearer " + first))
+                .andExpect(status().isCreated());
+
+        // The admin's source project, plus one per copy.
+        assertThat(projectRepository.count()).isEqualTo(3);
+
+        // The usage counter is bumped by a @Modifying JPQL update, which writes past
+        // the persistence context — inside this test's transaction the cached entity
+        // still reads 0. Clear it so the assertion sees the row, not the cache.
+        entityManager.clear();
+        assertThat(templateRepository.findBySlug(slug).orElseThrow().getTimesUsed()).isEqualTo(2);
     }
 }

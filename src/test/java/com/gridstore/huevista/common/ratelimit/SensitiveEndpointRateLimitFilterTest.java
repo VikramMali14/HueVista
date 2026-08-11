@@ -24,7 +24,8 @@ class SensitiveEndpointRateLimitFilterTest {
                 10, 3600,  // newsletter subscribe/unsubscribe
                 60, 3600,  // store kiosk order/verify
                 20, 3600,  // subscription create/verify
-                240, 3600); // checkout telemetry
+                240, 3600, // checkout telemetry
+                40, 3600); // gallery "paint this room"
     }
 
     private MockHttpServletRequest req(String method, String path) {
@@ -55,6 +56,9 @@ class SensitiveEndpointRateLimitFilterTest {
         // Each create opens a real gateway subscription; verify is the replay surface.
         assertThat(f.shouldNotFilter(req("POST", "/api/billing/subscriptions"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/billing/subscriptions/verify"))).isFalse();
+        // Gallery "paint this room" — signed-in, but charges nothing, so the cap is
+        // the only thing bounding how many projects one caller can conjure up.
+        assertThat(f.shouldNotFilter(req("POST", "/api/free-projects/spice-market/start"))).isFalse();
     }
 
     @Test
@@ -67,6 +71,9 @@ class SensitiveEndpointRateLimitFilterTest {
         // The kiosk wildcard is one segment only — deeper paths don't match.
         assertThat(f.shouldNotFilter(req("GET", "/api/store/some-slug"))).isTrue();
         assertThat(f.shouldNotFilter(req("POST", "/api/store/a/b/order"))).isTrue();
+        // Reading the gallery is free and unthrottled; only taking a copy is capped.
+        assertThat(f.shouldNotFilter(req("GET", "/api/free-projects"))).isTrue();
+        assertThat(f.shouldNotFilter(req("GET", "/api/free-projects/spice-market"))).isTrue();
     }
 
     @Test

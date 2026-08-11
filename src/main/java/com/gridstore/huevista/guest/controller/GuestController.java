@@ -4,6 +4,9 @@ import com.gridstore.huevista.billing.dto.PdfAllowanceResponse;
 import com.gridstore.huevista.billing.service.PdfQuotaService;
 import com.gridstore.huevista.image.dto.ImageResponse;
 import com.gridstore.huevista.image.service.ImageService;
+import com.gridstore.huevista.maskreport.dto.CreateMaskReportRequest;
+import com.gridstore.huevista.maskreport.dto.MaskReportResponse;
+import com.gridstore.huevista.maskreport.service.MaskReportService;
 import com.gridstore.huevista.project.dto.ColourBoardResponse;
 import com.gridstore.huevista.project.dto.CreateProjectRequest;
 import com.gridstore.huevista.project.dto.CustomMaskRequest;
@@ -41,6 +44,7 @@ public class GuestController {
     private final ImageService imageService;
     private final ProjectService projectService;
     private final PdfQuotaService pdfQuotaService;
+    private final MaskReportService maskReportService;
 
     @Operation(summary = "Upload a room photo (guest)")
     @PostMapping(value = "/images/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -130,6 +134,19 @@ public class GuestController {
     @PostMapping("/projects/{id}/send-to-shop")
     public ResponseEntity<ProjectResponse> sendToShop(@PathVariable String id, Authentication auth) {
         return ResponseEntity.ok(projectService.sendGuestProjectToShop(accessCodeId(auth), id));
+    }
+
+    @Operation(summary = "Report an AI run that came out wrong (guest)",
+            description = "Same channel as the signed-in studio's report button. The guest has no "
+                    + "account, so the report is filed against the access code and the admin "
+                    + "follows up through the shop that issued it.")
+    @PostMapping("/projects/{id}/mask-reports")
+    public ResponseEntity<MaskReportResponse> reportMask(
+            @PathVariable String id,
+            @Valid @RequestBody CreateMaskReportRequest request,
+            Authentication auth) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(maskReportService.reportAsGuest(accessCodeId(auth), id, request));
     }
 
     @Operation(summary = "Get the colour-board PDF allowance (guest) — the issuing shop's quota")
