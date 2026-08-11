@@ -1770,6 +1770,13 @@ upgrade-insecure-requests</code></pre>
 <tr><td>Razorpay hosts enumerated exactly</td><td>Checkout needs a script, a frame and a connect target. Each is whitelisted individually rather than opening a category.</td></tr>
 </table>
 
+<div class="box warn">
+<div class="t">A CSP is baked at build time, not at run time — strong material</div>
+<p><code>next build</code> evaluates <code>headers()</code> once and writes the result into <code>routes-manifest.json</code>. The policy a container serves is therefore the policy its <b>image</b> was built with; passing <code>NEXT_PUBLIC_API_ORIGIN</code> to <code>docker run</code> is too late.</p>
+<p>That asymmetry shipped a real outage on the marketing pages. The runtime environment had the variable, so server-rendered <code>&lt;img&gt;</code> tags pointed at <code>https://api.huevista.org</code>; the build did not, so the baked CSP fell back to a development default and allowed only <code>http://localhost:8080</code>. Every site-asset image was blocked in the browser, with no server-side error anywhere to show for it.</p>
+<p>Two fixes, because either alone is a trap. The fallback is now per-environment — localhost is a <i>development</i> default; a production build with nothing configured defaults to the public API host, so the failure mode is a correct policy rather than an impossible one. And the Dockerfile takes the origin as a <code>build-arg</code>, so a stack that differs can say so at the only moment it still matters. The general lesson: <b>configuration read at build time and configuration read at run time can disagree, and the ones that disagree silently are the expensive ones.</b></p>
+</div>
+
 <h2>17.2 · Other headers</h2>
 <table>
 <tr><th style="width:38%">Header</th><th>Value</th></tr>
@@ -1777,10 +1784,12 @@ upgrade-insecure-requests</code></pre>
 <tr><td><code>X-Frame-Options</code></td><td><code>DENY</code></td></tr>
 <tr><td><code>X-Content-Type-Options</code></td><td><code>nosniff</code></td></tr>
 <tr><td><code>Referrer-Policy</code></td><td><code>strict-origin-when-cross-origin</code></td></tr>
-<tr><td><code>Permissions-Policy</code></td><td><code>camera=(self), microphone=(), geolocation=(), interest-cohort=(), payment=(self "https://checkout.razorpay.com")</code></td></tr>
+<tr><td><code>Permissions-Policy</code></td><td><code>camera=(self), microphone=(), geolocation=(), payment=(self "https://checkout.razorpay.com")</code></td></tr>
 <tr><td><code>Cross-Origin-Opener-Policy</code></td><td><code>same-origin</code></td></tr>
 <tr><td><code>Cross-Origin-Resource-Policy</code></td><td><code>same-origin</code></td></tr>
 </table>
+
+<p><code>Permissions-Policy</code> no longer carries <code>interest-cohort=()</code>. That was the FLoC opt-out; Chrome abandoned FLoC for the Topics API and the feature name went with it, so browsers now reject the entry and log <code>Unrecognized feature: 'interest-cohort'</code> on every page load. It protected against nothing that still exists and cost a permanent error in every visitor's console — which is precisely where a real error needs to be visible.</p>
 
 <div class="box warn">
 <div class="t">An SSRF I closed in the image optimiser — strong material</div>

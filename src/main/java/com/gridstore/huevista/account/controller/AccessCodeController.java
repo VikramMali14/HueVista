@@ -57,7 +57,7 @@ public class AccessCodeController {
     @Operation(summary = "Cancel an unredeemed access code",
             description = "Cancels a code nobody has redeemed yet and returns its held image "
                     + "credits to the shop's monthly quota. Owners/managers of the issuing org "
-                    + "only. A code that has already been redeemed cannot be cancelled.")
+                    + "only. A code that has already been used cannot be cancelled.")
     @DeleteMapping("/api/organizations/{orgId}/access-codes/{codeId}")
     public ResponseEntity<AccessCodeResponse> revokeCode(
             @AuthenticationPrincipal UserDetails userDetails,
@@ -81,7 +81,7 @@ public class AccessCodeController {
 
     @Operation(summary = "Add projects to a code already issued",
             description = "Tops up a code the customer already holds with more projects, so they don't "
-                    + "need a second code. Works on redeemed codes — that is the point. Each added "
+                    + "need a second code. Works on used codes — that is the point. Each added "
                     + "project reserves one image credit, so an ACTIVE subscription is required "
                     + "(402 SUBSCRIPTION_REQUIRED without one).")
     @PostMapping("/api/organizations/{orgId}/access-codes/{codeId}/projects")
@@ -96,7 +96,7 @@ public class AccessCodeController {
 
     @Operation(summary = "Give a code another 10 days",
             description = "Resets the code's validity to a fresh 10 days from now (never more, however "
-                    + "often it is renewed) and moves the redeeming customer's access window with it. "
+                    + "often it is renewed) and moves the unlocking customer's access window with it. "
                     + "Nothing is charged — the projects were already paid for. Requires an ACTIVE "
                     + "subscription (402 SUBSCRIPTION_REQUIRED without one).")
     @PostMapping("/api/organizations/{orgId}/access-codes/{codeId}/extend")

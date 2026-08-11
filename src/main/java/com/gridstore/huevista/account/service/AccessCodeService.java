@@ -203,11 +203,11 @@ public class AccessCodeService {
 
         if (code.isUsed()) {
             throw new IllegalStateException(
-                    "This code has already been redeemed, so it can't be cancelled. "
+                    "This code has already been used, so it can't be cancelled. "
                     + "The customer's access ends on its own when the code expires.");
         }
         if (codeRepository.revokeIfUnused(codeId, LocalDateTime.now()) == 0) {
-            throw new IllegalStateException("This code was already cancelled or redeemed.");
+            throw new IllegalStateException("This code was already cancelled or used.");
         }
         int returned = releaseHeldQuota(code);
 
@@ -234,7 +234,7 @@ public class AccessCodeService {
 
         if (code.isUsed()) {
             throw new IllegalStateException(
-                    "This code has already been redeemed — its assignment can no longer be changed.");
+                    "This code has already been used — its assignment can no longer be changed.");
         }
         if (code.isRevoked()) {
             throw new IllegalStateException("This code was cancelled.");
@@ -495,7 +495,7 @@ public class AccessCodeService {
             throw new IllegalStateException(
                     "This account is a " + user.getRole().name().toLowerCase()
                     + " account — access codes are for walk-in customers. "
-                    + "Ask your customer to redeem it, or open it in a private window.");
+                    + "Ask your customer to unlock with it, or open it in a private window.");
         }
 
         // Compare-and-set consumption: if a concurrent request redeemed this code
@@ -606,7 +606,7 @@ public class AccessCodeService {
             // poisoned at this point, so it cannot be recovered in place — the customer retries
             // and the pre-check above signs them into the winner's account.
             log.warn("Concurrent redeem of access code {}: {}", code, race.getMostSpecificCause().getMessage());
-            throw new IllegalStateException("This access code is being redeemed. Please try again.");
+            throw new IllegalStateException("This access code is being used. Please try again.");
         }
 
         LocalDateTime now = LocalDateTime.now();

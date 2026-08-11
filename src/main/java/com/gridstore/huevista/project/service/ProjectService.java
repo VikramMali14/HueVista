@@ -35,6 +35,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -101,28 +102,9 @@ public class ProjectService {
         //  c) Neither, so it has to be a project the account bought outright. That is the
         //     ONLY route for a self-signed-up account (which holds no entitlement and
         //     cannot buy a plan) and for a shop whose plan has lapsed.
-        boolean shopEntitled = entitlementService.hasEntitlement(userId);
-        boolean subscribed = pricingService.isSubscribed(userId);
-        com.gridstore.huevista.billing.model.ProjectCredit credit = null;
-
-        if (shopEntitled) {
-            // Claim the customer's project slot ATOMICALLY (expiry + included/granted/purchased
-            // allowance). Previously this checked the allowance here and incremented after the
-            // insert, so two parallel requests could both pass on the last remaining slot.
-            entitlementService.claimProjectSlot(userId);
-        } else if (subscribed) {
-            // The plan's project credit is spent HERE, at creation — the moment the shop
-            // commits to a room — rather than when the AI later runs. Charging at the run
-            // meant "15 projects a month" gated nothing a shop could see: it could create
-            // any number, and only discovered the ceiling once a photo was already
-            // uploaded and a customer was watching. A single conditional UPDATE, so two
-            // parallel creates can never both take the last credit. It runs in THIS
-            // transaction, so a creation that fails after this point rolls the charge back
-            // with it — there is nothing to hand back by hand.
-            billingService.reserveProjectUsage(userId);
-        } else {
-            credit = projectCreditLedger.claim(userId).orElseThrow(() -> noWayToPayFor(user));
-        }
+        Payment payment = claimPayment(user);
+        boolean subscribed = payment.subscribed();
+        com.gridstore.huevista.billing.model.ProjectCredit credit = payment.credit();
 
         try {
             // Retailer funnel gate: email+mobile verified, and the free trial includes
@@ -167,8 +149,7 @@ public class ProjectService {
                 spendShopCredit(linkedCode);
             }
 
-            log.info("Project created: id={} user={} paidBy={}", project.getId(), userId,
-                    shopEntitled ? "shop-code" : credit != null ? "purchase" : "subscription");
+            log.info("Project created: id={} user={} paidBy={}", project.getId(), userId, payment.describe());
             return toResponse(project, image);
         } catch (RuntimeException failed) {
             // The credit is claimed BEFORE the project exists, because the compare-and-set
@@ -183,6 +164,214 @@ public class ProjectService {
             }
             throw failed;
         }
+    }
+
+    /**
+     * Which of the three ways a new project is paid for, already charged.
+     *
+     * @param credit non-null only on the bought-outright route, and the ONLY one that
+     *               can be handed back — the other two are conditional UPDATEs that the
+     *               enclosing transaction rolls back on its own.
+     */
+    private record Payment(boolean shopEntitled, boolean subscribed,
+                           com.gridstore.huevista.billing.model.ProjectCredit credit) {
+        String describe() {
+            return shopEntitled ? "shop-code" : credit != null ? "purchase" : "subscription";
+        }
+    }
+
+    /**
+     * Charge one project to whoever is actually paying for this account, and say which
+     * of the three routes it went down.
+     *
+     * <ul>
+     *   <li>A shop onboarded this customer — the entitlement they unlocked carries the
+     *       allowance, and the shop already reserved the image credit behind it.</li>
+     *   <li>A live subscription covers it.</li>
+     *   <li>Neither, so it has to be a project the account bought outright. That is the
+     *       ONLY route for a self-signed-up account (which holds no entitlement and
+     *       cannot buy a plan) and for a shop whose plan has lapsed.</li>
+     * </ul>
+     *
+     * Every route charges ATOMICALLY, before the project row exists: the compare-and-set
+     * that decides which of two parallel requests gets the last credit needs a row to
+     * guard, and two creations must never both take it. The charge runs in the CALLER's
+     * transaction, so anything that fails afterwards rolls it back.
+     *
+     * Shared by every way a project comes into being — uploading a photo, and claiming a
+     * shared room — so that "one project" means the same thing and costs the same thing
+     * however the room got here.
+     */
+    private Payment claimPayment(User user) {
+        String userId = user.getId();
+        boolean shopEntitled = entitlementService.hasEntitlement(userId);
+        boolean subscribed = pricingService.isSubscribed(userId);
+        if (shopEntitled) {
+            entitlementService.claimProjectSlot(userId);
+            return new Payment(true, subscribed, null);
+        }
+        if (subscribed) {
+            // The plan's project credit is spent HERE, at creation — the moment the shop
+            // commits to a room — rather than when the AI later runs. Charging at the run
+            // meant "15 projects a month" gated nothing a shop could see: it could create
+            // any number, and only discovered the ceiling once a photo was already
+            // uploaded and a customer was watching.
+            billingService.reserveProjectUsage(userId);
+            return new Payment(false, true, null);
+        }
+        return new Payment(false, false,
+                projectCreditLedger.claim(userId).orElseThrow(() -> noWayToPayFor(user)));
+    }
+
+    /**
+     * Take a copy of a shared room into the viewer's own account, for one project.
+     *
+     * The room already exists: it was photographed, cleaned and masked when its owner
+     * made it, and none of that work is repeated here. What the viewer is buying is a
+     * room of their own to repaint and keep — the same unit of billing as any other
+     * project, charged the same way, because "one project" should not mean two different
+     * things depending on how the room arrived.
+     *
+     * The BYTES are duplicated rather than pointed at, which is the difference between
+     * this and starting from the free-project library. A library template is a shared
+     * asset with a guard around it ({@code deleteOwnedBlob} skips library keys); a shared
+     * room belongs to the person who made it, and they may delete it tomorrow. Pointing
+     * at their storage keys would leave every copy of the room broken behind them, and
+     * would hand one account's blobs to another's project — so each copy gets its own
+     * files, owned outright by the account that paid for it.
+     *
+     * Born SEGMENTED: its walls are already there and there is nothing for the pipeline
+     * to do. No AI runs, no auto-mask credit is spent.
+     */
+    @Transactional
+    public ProjectResponse claimSharedProject(String userId, String shareToken) {
+        Project source = projectRepository.findByShareToken(shareToken)
+                .filter(p -> p.getShareExpiresAt() == null
+                        || p.getShareExpiresAt().isAfter(LocalDateTime.now()))
+                .orElseThrow(() -> new ResourceNotFoundException("Share link not found or expired."));
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+
+        // Their own room, reached through their own link. Charging for a copy of
+        // something they already own would be taking a project for nothing.
+        if (source.getUser() != null && userId.equals(source.getUser().getId())) {
+            throw new IllegalStateException("This is already your room — open it from your projects.");
+        }
+
+        freeTierService.ensureCurrentCycle(userId);
+
+        CustomerAccessCode linkedCode =
+                user.getRole() == com.gridstore.huevista.auth.model.UserRole.CUSTOMER
+                        ? accessCodeRepository.findFirstByUsedByUserIdOrderByCreatedAtDesc(userId).orElse(null)
+                        : null;
+
+        Payment payment = claimPayment(user);
+        com.gridstore.huevista.billing.model.ProjectCredit credit = payment.credit();
+
+        try {
+            projectAccessPolicy.assertCanCreateProject(user, credit != null);
+
+            UploadedImage sourceImage = source.getImage();
+            UploadedImage image = imageRepository.save(UploadedImage.builder()
+                    .user(user)
+                    .originalFilename(sourceImage.getOriginalFilename())
+                    .storageKey(copyBlob(sourceImage.getStorageKey(), userId,
+                            "room", sourceImage.getContentType()))
+                    .contentType(sourceImage.getContentType())
+                    .fileSize(sourceImage.getFileSize())
+                    .width(sourceImage.getWidth())
+                    .height(sourceImage.getHeight())
+                    .imageType(sourceImage.getImageType())
+                    .build());
+
+            Project project = Project.builder()
+                    .user(user)
+                    .image(image)
+                    .name(source.getName())
+                    .roomType(source.getRoomType())
+                    // SEGMENTED, not CREATED: the walls arrive with it.
+                    .status(ProjectStatus.SEGMENTED)
+                    .cleanedImageStorageKey(
+                            copyBlob(source.getCleanedImageStorageKey(), userId, "cleaned", "image/jpeg"))
+                    .accessCode(linkedCode)
+                    .build();
+
+            if (credit != null) {
+                projectAccessService.openWindow(project, credit.getValidDays(),
+                        credit.getPointsSpent(), payment.subscribed());
+            }
+
+            project = projectRepository.save(project);
+            if (credit != null) {
+                projectCreditLedger.attach(credit.getId(), project.getId());
+            }
+
+            List<Region> copies = new ArrayList<>();
+            for (Region r : source.getRegions()) {
+                // Both columns carry the key, matching how the pipeline writes its own
+                // regions; the read path presigns whichever it finds.
+                String maskKey = copyBlob(extractStorageKey(r.getMaskUrl()), userId, "mask", "image/png");
+                copies.add(Region.builder()
+                        .project(project)
+                        .label(r.getLabel())
+                        .category(r.getCategory())
+                        .maskUrl(maskKey != null ? maskKey : r.getMaskUrl())
+                        .maskData(maskKey != null ? maskKey : r.getMaskData())
+                        .appliedShadeCode(r.getAppliedShadeCode())
+                        .appliedHexCode(r.getAppliedHexCode())
+                        .displayOrder(r.getDisplayOrder())
+                        .manual(r.isManual())
+                        .build());
+            }
+            regionRepository.saveAll(copies);
+
+            if (linkedCode != null) {
+                spendShopCredit(linkedCode);
+            }
+
+            auditService.record(userId, "SHARED_PROJECT_CLAIMED", "PROJECT", project.getId(),
+                    "from=" + source.getId() + " walls=" + copies.size());
+            log.info("Shared project {} claimed as {} by {} ({} walls, no AI, paidBy={})",
+                    source.getId(), project.getId(), userId, copies.size(), payment.describe());
+
+            project.setRegions(copies);
+            return toResponse(project, image);
+        } catch (RuntimeException failed) {
+            if (credit != null) {
+                projectCreditLedger.release(credit.getId());
+            }
+            throw failed;
+        }
+    }
+
+    /**
+     * Duplicate one stored object under the claiming account, returning the new key.
+     *
+     * Null in, null out — a room with no cleaned image and a region with no mask are
+     * both ordinary. A copy that FAILS is not ordinary, so it throws: a claimed room
+     * missing its walls is worse than a claim that did not happen, and the enclosing
+     * transaction hands the project credit back.
+     */
+    private String copyBlob(String sourceKey, String userId, String what, String contentType) {
+        if (sourceKey == null || sourceKey.isBlank()) return null;
+        if (sourceKey.startsWith("http://") || sourceKey.startsWith("https://")) {
+            // A foreign URL (a Replicate output that was never re-stored) is not ours to
+            // copy. Leave the row pointing where it pointed.
+            if (!sourceKey.contains("amazonaws.com")) return null;
+        }
+        String key = extractStorageKey(sourceKey);
+        try {
+            byte[] bytes = storageService.load(key);
+            return storageService.store(bytes, userId, what + extensionOf(key), contentType);
+        } catch (IOException e) {
+            throw new StorageException("Could not copy the shared room's " + what + ".", e);
+        }
+    }
+
+    private static String extensionOf(String key) {
+        int dot = key.lastIndexOf('.');
+        return dot > -1 && dot > key.lastIndexOf('/') ? key.substring(dot) : ".png";
     }
 
     /**

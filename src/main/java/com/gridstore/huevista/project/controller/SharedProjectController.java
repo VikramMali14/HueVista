@@ -10,6 +10,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Duration;
@@ -66,6 +68,22 @@ public class SharedProjectController {
                 .header("X-Content-Type-Options", "nosniff")
                 .cacheControl(CacheControl.maxAge(Duration.ofMinutes(10)).cachePublic())
                 .body(bytes);
+    }
+
+    @Operation(summary = "Claim a shared room as your own project",
+            description = "Authenticated. Copies the shared room — its photo, its cleaned image and "
+                    + "every wall mask — into the caller's account as a new project, and charges ONE "
+                    + "project against whatever pays for them (their shop's code, their plan, or a "
+                    + "project they bought). No AI runs: the walls already exist, so the copy is born "
+                    + "segmented. 402 when there is no project left to spend.")
+    @ApiResponse(responseCode = "200", description = "The caller's new copy of the room")
+    @ApiResponse(responseCode = "402", description = "No project allowance left")
+    @ApiResponse(responseCode = "404", description = "Share link not found or expired")
+    @PostMapping("/{token}/claim")
+    public ResponseEntity<ProjectResponse> claimSharedProject(
+            @PathVariable String token,
+            @AuthenticationPrincipal UserDetails userDetails) {
+        return ResponseEntity.ok(projectService.claimSharedProject(userDetails.getUsername(), token));
     }
 
     private ResponseEntity<byte[]> stream(ProjectService.SharedImage image) {

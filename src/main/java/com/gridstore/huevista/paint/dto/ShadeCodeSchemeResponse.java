@@ -34,6 +34,15 @@ public class ShadeCodeSchemeResponse {
     @Builder.Default
     private boolean showNames = true;
     private LocalDateTime updatedAt;
+    /**
+     * When this shop first set up customer codes at all.
+     *
+     * The anchor the checker's history hangs off: every pattern's active window runs
+     * from the moment the one before it was retired, and the OLDEST pattern has
+     * nothing before it — without this its window would have to start at "unknown"
+     * and the whole timeline would read as guesswork.
+     */
+    private LocalDateTime firstSetAt;
 
     /**
      * Patterns this shop has stopped using, newest first.
@@ -76,6 +85,7 @@ public class ShadeCodeSchemeResponse {
                 .suffix(scheme.getSuffix())
                 .showNames(showNames)
                 .updatedAt(scheme.getUpdatedAt())
+                .firstSetAt(scheme.getCreatedAt())
                 .retired(retired)
                 .build();
     }
