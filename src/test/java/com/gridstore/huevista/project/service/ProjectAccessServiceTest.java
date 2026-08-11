@@ -43,7 +43,8 @@ class ProjectAccessServiceTest {
     @BeforeEach
     void setUp() {
         billing = mock(BillingService.class);
-        pricing = new PricingService(billing, mock(OrgMembershipRepository.class));
+        pricing = new PricingService(billing, mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class),
+                mock(OrgMembershipRepository.class));
         ReflectionTestUtils.setField(pricing, "pointsPriceReopen", REOPEN_POINTS);
         ReflectionTestUtils.setField(pricing, "projectValidDays", 30);
         access = new ProjectAccessService(mock(ProjectRepository.class), billing, pricing);

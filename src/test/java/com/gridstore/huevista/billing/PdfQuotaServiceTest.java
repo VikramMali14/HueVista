@@ -50,7 +50,8 @@ class PdfQuotaServiceTest {
     private final OrgMembershipRepository memberships = mock(OrgMembershipRepository.class);
 
     private final PdfQuotaService service =
-            new PdfQuotaService(subs, users, entitlements, codes, memberships);
+            new PdfQuotaService(subs, users, entitlements, codes, memberships,
+                    mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class));
 
     private static User user(String id, UserRole role) {
         User u = new User();

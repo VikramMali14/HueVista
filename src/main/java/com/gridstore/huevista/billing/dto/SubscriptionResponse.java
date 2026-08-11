@@ -60,10 +60,53 @@ public class SubscriptionResponse {
     private int pdfImageLimit;
     private boolean cancelAtPeriodEnd;
     private boolean trial;
+    /**
+     * This account is exempt from billing entirely — there is no subscription behind
+     * these numbers and never will be (see {@code UnbilledAccounts}).
+     *
+     * Distinct from {@code trial}, which is a real row on a real clock. An unbilled
+     * account has no period, nothing to renew and nothing to cancel, so a client must
+     * not offer it any of those; it exists so the UI can say "no subscription needed"
+     * instead of rendering a plan card that cannot be acted on.
+     */
+    private boolean unbilled;
     private LocalDateTime createdAt;
 
     public static SubscriptionResponse from(Subscription sub) {
         return from(sub, null, null);
+    }
+
+    /**
+     * The answer for an account the platform does not bill.
+     *
+     * Returned instead of the 404 an administrator used to get from
+     * {@code /subscriptions/current} — an account with no subscription row asked for its
+     * subscription, and "not found" is technically true and practically useless: it made
+     * every client treat the person who administers the payments as an unpaid user, and
+     * put a "your trial has ended" banner in the console.
+     *
+     * Not a granted ENTERPRISE row, which was the other way to fix it. A real row would
+     * expire, renew, and turn up in revenue reports as a plan nobody paid for. This
+     * carries the unlimited quotas the gates need while remaining, in every report that
+     * counts money, exactly what it is: no subscription.
+     */
+    public static SubscriptionResponse unbilled() {
+        return SubscriptionResponse.builder()
+                .plan(Plan.ENTERPRISE)
+                .planDisplayName("Platform administrator")
+                .status(SubscriptionStatus.ACTIVE)
+                .unbilled(true)
+                .quantity(1)
+                .projectsUsed(0)
+                .projectsLimit(Integer.MAX_VALUE)
+                .projectsRemaining(Integer.MAX_VALUE)
+                .pdfDownloadsUsed(0)
+                .pdfDownloadsLimit(Integer.MAX_VALUE)
+                .pdfDownloadsRemaining(Integer.MAX_VALUE)
+                // The per-document cap is a browser-memory guard rather than a
+                // commercial limit, so it applies here like everywhere else.
+                .pdfImageLimit(Plan.ENTERPRISE.getPdfImageLimit())
+                .build();
     }
 
     public static SubscriptionResponse from(Subscription sub, String paymentUrl) {
