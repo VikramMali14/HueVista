@@ -409,7 +409,37 @@ public class FreeProjectLibraryService {
     // ─── Starting a copy ─────────────────────────────────────────────────────
 
     /**
-     * Give {@code userId} their own copy of a template.
+     * Give {@code userId} their own copy of a template, named by its internal id.
+     *
+     * The admin console's route in — it lists the whole shelf, hidden rooms and all,
+     * so it holds ids rather than slugs. Visitors come through
+     * {@link #startFromPublishedSlug} instead.
+     */
+    @Transactional
+    public StartedProjectResponse startFromTemplate(String userId, String templateId) {
+        return startCopy(userId, templateRepository.findById(templateId)
+                .orElseThrow(() -> new ResourceNotFoundException("Template not found: " + templateId)));
+    }
+
+    /**
+     * The same copy, reached the way a visitor reaches it: by the slug already on
+     * the gallery card, with no internal id to hold.
+     *
+     * A hidden room reads as ABSENT rather than as refused, matching
+     * {@link #getPublished} — whether an unpublished draft exists behind a guessed
+     * slug is not a public fact, and this endpoint is reachable by anyone with an
+     * account. The published filter therefore sits in the lookup, before
+     * {@link #startCopy} is ever reached.
+     */
+    @Transactional
+    public StartedProjectResponse startFromPublishedSlug(String userId, String slug) {
+        return startCopy(userId, templateRepository.findBySlug(slug)
+                .filter(FreeProjectTemplate::isPublished)
+                .orElseThrow(() -> new ResourceNotFoundException("No published room: " + slug)));
+    }
+
+    /**
+     * The copy itself.
      *
      * Rows only. The new image row and every new region row point at the template's
      * storage keys, which is what keeps this O(walls) inserts instead of a photo
@@ -417,12 +447,10 @@ public class FreeProjectLibraryService {
      * walls are already there — there is nothing for the pipeline to do.
      *
      * Free by construction: no entitlement is claimed, no plan credit reserved and
-     * no points spent, because nothing expensive happened.
+     * no points spent, because nothing expensive happened. That is what makes it
+     * safe to offer to every signed-in visitor and not only to an admin.
      */
-    @Transactional
-    public StartedProjectResponse startFromTemplate(String userId, String templateId) {
-        FreeProjectTemplate template = templateRepository.findById(templateId)
-                .orElseThrow(() -> new ResourceNotFoundException("Template not found: " + templateId));
+    private StartedProjectResponse startCopy(String userId, FreeProjectTemplate template) {
         if (!template.isPublished()) {
             throw new IllegalArgumentException("That template is not published yet.");
         }
