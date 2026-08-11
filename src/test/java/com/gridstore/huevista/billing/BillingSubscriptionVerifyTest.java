@@ -70,7 +70,8 @@ class BillingSubscriptionVerifyTest {
                 mock(RazorpayClient.class), mock(AuditService.class),
                 mock(com.gridstore.huevista.billing.service.BillingEmailService.class),
                 mock(com.gridstore.huevista.billing.service.PaymentAttemptService.class),
-                mock(com.gridstore.huevista.billing.service.FreeTierService.class));
+                mock(com.gridstore.huevista.billing.service.FreeTierService.class),
+                mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class));
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
         return svc;
     }

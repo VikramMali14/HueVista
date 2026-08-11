@@ -413,18 +413,23 @@ public class ProjectService {
      * messages name the standalone price either way, so neither is a dead end.
      */
     private RuntimeException noWayToPayFor(User user) {
+        int days = pricingService.projectValidDays();
         if (user.getRole() == com.gridstore.huevista.auth.model.UserRole.RETAILER) {
             return new com.gridstore.huevista.common.exception.SubscriptionRequiredException(
                     "Your subscription has ended. Subscribe to keep creating projects, or spend "
                     + pricingService.pointsPriceProject(user.getId()) + " points on a single project — it "
-                    + "stays open for " + pricingService.projectValidDays() + " days.");
+                    + "stays open for " + days + " days.");
         }
-        // A customer holds no points and cannot buy any — points are a shop currency, and
-        // there is no cash checkout to fall back on. Their route back in is the shop, so
-        // say that rather than quoting a price they can never pay.
+        // A customer who reaches here holds no shop entitlement at all — one that does is
+        // served by its shop above, and one that has run out is told to ask that shop.
+        // So this is someone who signed up on their own, with nobody to ask. Sending them
+        // to "your paint shop" named a party that does not exist for them and left the
+        // account with no route forward whatsoever; they buy the project directly.
         return new QuotaExceededException(
-                "This project needs a new access code. Ask your paint shop for one, or use "
-                + "their in-store link to buy another visualisation.");
+                "Buy a project for ₹" + rupees(pricingService.projectPricePaise(user.getId()))
+                + " to start this one — it stays open for " + days + " days, and you can reopen it "
+                + "for ₹" + rupees(pricingService.reopenPricePaise()) + " for another " + days
+                + ". If a paint shop gave you an access code, redeem that instead.");
     }
 
     /** Paise → a rupee figure for a user-facing message ("99", "9", "50"). */

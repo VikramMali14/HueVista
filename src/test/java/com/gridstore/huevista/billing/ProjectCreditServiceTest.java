@@ -67,7 +67,8 @@ class ProjectCreditServiceTest {
         billing = mock(BillingService.class);
         points = mock(RewardPointsService.class);
 
-        pricing = new PricingService(billing, mock(OrgMembershipRepository.class));
+        pricing = new PricingService(billing, mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class),
+                mock(OrgMembershipRepository.class));
         ReflectionTestUtils.setField(pricing, "projectValidDays", VALID_DAYS);
         ReflectionTestUtils.setField(pricing, "pointsPriceReopen", POINTS_REOPEN);
         ReflectionTestUtils.setField(pricing, "reopenPricePaise", REOPEN_PAISE);

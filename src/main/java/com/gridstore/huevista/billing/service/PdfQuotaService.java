@@ -36,9 +36,13 @@ public class PdfQuotaService {
     private final CustomerEntitlementRepository entitlementRepository;
     private final CustomerAccessCodeRepository accessCodeRepository;
     private final OrgMembershipRepository orgMembershipRepository;
+    private final UnbilledAccounts unbilledAccounts;
 
     @Transactional(readOnly = true)
     public PdfAllowanceResponse allowanceForUser(String userId) {
+        if (unbilledAccounts.covers(userId)) {
+            return PdfAllowanceResponse.unmetered();
+        }
         return PdfAllowanceResponse.from(billableSubscriptionForUser(userId));
     }
 
@@ -54,6 +58,11 @@ public class PdfQuotaService {
     /** Reserve one download for an account holder; returns the post-charge allowance. */
     @Transactional
     public PdfAllowanceResponse reserveForUser(String userId) {
+        // Nothing to reserve against: an unbilled account has no subscription row, and
+        // inventing one to decrement would put a phantom plan in the billing tables.
+        if (unbilledAccounts.covers(userId)) {
+            return PdfAllowanceResponse.unmetered();
+        }
         return reserve(billableSubscriptionForUser(userId));
     }
 

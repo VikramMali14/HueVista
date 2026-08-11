@@ -20,6 +20,23 @@ public class PdfAllowanceResponse {
     private int remaining;
     private boolean unlimited;
 
+    /**
+     * The allowance of an account the platform does not bill — see
+     * {@code UnbilledAccounts}. No subscription is consulted and none is charged.
+     *
+     * The per-document image cap still applies: it is a browser-memory guard rather
+     * than a commercial limit, which is why even ENTERPRISE carries a finite one.
+     */
+    public static PdfAllowanceResponse unmetered() {
+        return PdfAllowanceResponse.builder()
+                .imagesPerPdf(com.gridstore.huevista.billing.model.Plan.ENTERPRISE.getPdfImageLimit())
+                .monthlyLimit(Integer.MAX_VALUE)
+                .used(0)
+                .remaining(Integer.MAX_VALUE)
+                .unlimited(true)
+                .build();
+    }
+
     public static PdfAllowanceResponse from(Subscription sub) {
         boolean unlimited = sub.getPdfDownloadsLimit() == Integer.MAX_VALUE;
         int remaining = unlimited
