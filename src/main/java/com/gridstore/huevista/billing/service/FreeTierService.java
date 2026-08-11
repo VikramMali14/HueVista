@@ -172,7 +172,7 @@ public class FreeTierService {
      * <p>What moves and what does not follows the paid renewal exactly, because these are
      * the same two kinds of credit:
      * <ul>
-     *   <li>{@code purchasedProjectCredits} survive — a shop that paid ₹99 for an extra
+     *   <li>{@code purchasedProjectCredits} survive — a shop that paid ₹199 for an extra
      *       project owns it, and a free month turning over is not a reason to take it;</li>
      *   <li>{@code reservedProjects} survive — a code issued last month is still redeemable
      *       this one, and zeroing the hold would give that project away twice;</li>

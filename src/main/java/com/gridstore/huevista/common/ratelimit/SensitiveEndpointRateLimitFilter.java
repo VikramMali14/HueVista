@@ -106,6 +106,14 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
             // handful of photos an hour; 30/h leaves generous headroom.
             @Value("${app.rate-limit.image-upload.max-attempts:30}") int uploadMax,
             @Value("${app.rate-limit.image-upload.window-seconds:3600}") long uploadWindow,
+            // AI render: the single most expensive call in the product (~$0.10 of Nano
+            // Banana Pro per image), and the only one a signed-in user can trigger in a
+            // loop. The project's own render allowance is the real limit — this only has
+            // to stop a script hammering the endpoint past it, since every refused
+            // request still costs a database round trip and a 402. Twelve an hour is far
+            // more than any one customer's project can legitimately consume.
+            @Value("${app.rate-limit.render.max-attempts:12}") int renderMax,
+            @Value("${app.rate-limit.render.window-seconds:3600}") long renderWindow,
             // shop-account lead form: public write endpoint — anti-spam.
             @Value("${app.rate-limit.lead.max-attempts:5}") int leadMax,
             @Value("${app.rate-limit.lead.window-seconds:3600}") long leadWindow,
@@ -157,6 +165,7 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
         Policy storeOrder = new Policy("storeorder", storeOrderMax, Duration.ofSeconds(storeOrderWindow));
         Policy subscription = new Policy("subscription", subscriptionMax, Duration.ofSeconds(subscriptionWindow));
         Policy attemptEvent = new Policy("attemptevent", attemptEventMax, Duration.ofSeconds(attemptEventWindow));
+        Policy render = new Policy("render", renderMax, Duration.ofSeconds(renderWindow));
         Policy freeStart = new Policy("freestart", freeStartMax, Duration.ofSeconds(freeStartWindow));
 
         this.rules = List.of(
@@ -182,6 +191,8 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 // Paid-classification / storage-write endpoints.
                 new Rule("POST", "/api/images/upload", upload),
                 new Rule("POST", "/api/guest/images/upload", upload),
+                // AI render (project id in the middle) — the priciest call we make.
+                new Rule("POST", "/api/projects/*/renders", render),
                 // Public shop-account request form. The resend costs an email, so it
                 // sits in the otp-send bucket; the confirm is a 6-digit brute force and
                 // sits with the other code confirmations.

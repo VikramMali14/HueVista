@@ -246,12 +246,13 @@ class FreeTierServiceTest {
         assertThat(Plan.BUSINESS.isColorMatching()).isTrue();
     }
 
-    /** ₹99, or 80 points — the dearest extra-project rate on the ladder, which is what
-     *  makes subscribing the cheaper way to buy volume. */
+    /** ₹199, or 80 points — the dearest extra-project rate on the ladder, which is what
+     *  makes subscribing the cheaper way to buy volume. This is also the price a customer
+     *  buying a project of their own pays, since a customer account never holds a plan. */
     @Test
-    void an_extra_project_on_the_free_tier_costs_99_rupees_or_80_points() {
+    void an_extra_project_on_the_free_tier_costs_199_rupees_or_80_points() {
         assertThat(Plan.FREE.getExtraProjectPoints()).isEqualTo(80);
-        assertThat(Plan.FREE.extraProjectPriceWithTaxInPaise()).isEqualTo(9900);
+        assertThat(Plan.FREE.extraProjectPriceWithTaxInPaise()).isEqualTo(19900);
         assertThat(Plan.FREE.getExtraProjectPoints())
                 .isGreaterThan(Plan.STARTER.getExtraProjectPoints());
     }

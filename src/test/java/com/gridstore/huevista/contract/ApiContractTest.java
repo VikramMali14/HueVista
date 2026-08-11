@@ -85,9 +85,16 @@ class ApiContractTest {
                 // Shared view only: how the issuing shop presents a colour. The share
                 // viewer has no session, so it travels with the project.
                 "shadeCodeScheme",
+                // Closing: when the job finished, how many colour boards it has handed
+                // over of the ones it gets, and what is left of its AI render allowance.
+                "closedAt", "boardsUsed", "boardsAllowed",
+                "rendersAllowed", "rendersUsed", "renderPricePaise",
                 // Access: the studio disables the palette on readOnly rather than letting
                 // the user paint and then fail on autosave.
-                "readOnly", "readOnlyReason", "accessExpiresAt", "reopenPricePoints");
+                "readOnly", "readOnlyReason", "accessExpiresAt",
+                // Both rails, quoted from the PROJECT: a lapsed window and a closed
+                // project are different purchases at different prices.
+                "reopenPricePoints", "reopenPricePaise");
     }
 
     @Test
@@ -97,7 +104,10 @@ class ApiContractTest {
                 "regionCount", "hasShareLink", "createdAt", "updatedAt",
                 // Dashboard filtering: OWN vs CUSTOMER rooms, and who each one belongs to.
                 "source", "customerName", "accessCode", "accessCodeId",
-                "readOnly", "accessExpiresAt");
+                "readOnly", "accessExpiresAt",
+                // A closed room is finished, not merely locked — the dashboard badges the
+                // two differently.
+                "closedAt");
     }
 
     @Test
@@ -106,6 +116,9 @@ class ApiContractTest {
         // the buyer's plan, so it is quoted per account rather than stated as a constant.
         assertThat(propsOf("ProjectPurchaseOptionsResponse")).containsExactlyInAnyOrder(
                 "subscribed", "pricingPlan", "projectPricePoints", "projectPricePaise",
+                // The bundle is quoted beside the single price, never instead of it: the
+                // saving is only legible next to the thing it discounts.
+                "bundleCredits", "bundlePricePaise",
                 "reopenPricePoints", "reopenPricePaise",
                 // Whether the points rail is open to this account at all, separately from
                 // whether the balance covers it: a CUSTOMER cannot hold points, so the UI

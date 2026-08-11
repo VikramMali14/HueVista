@@ -27,9 +27,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -49,6 +51,9 @@ class ProjectCreditServiceTest {
     private static final int POINTS_PROJECT = Plan.FREE.getExtraProjectPoints();
     private static final int POINTS_REOPEN = 9;
     private static final int REOPEN_PAISE = 1000;
+    private static final int REOPEN_CLOSED_PAISE = 9900;
+    private static final int POINTS_REOPEN_CLOSED = 99;
+    private static final int RENDER_PAISE = 9900;
 
     private ProjectCreditLedger ledger;
     private com.gridstore.huevista.billing.repository.SubscriptionRepository subscriptions;
@@ -72,6 +77,9 @@ class ProjectCreditServiceTest {
         ReflectionTestUtils.setField(pricing, "projectValidDays", VALID_DAYS);
         ReflectionTestUtils.setField(pricing, "pointsPriceReopen", POINTS_REOPEN);
         ReflectionTestUtils.setField(pricing, "reopenPricePaise", REOPEN_PAISE);
+        ReflectionTestUtils.setField(pricing, "reopenClosedPricePaise", REOPEN_CLOSED_PAISE);
+        ReflectionTestUtils.setField(pricing, "pointsPriceReopenClosed", POINTS_REOPEN_CLOSED);
+        ReflectionTestUtils.setField(pricing, "renderTopUpPricePaise", RENDER_PAISE);
         ReflectionTestUtils.setField(pricing, "currency", "INR");
 
         users = mock(com.gridstore.huevista.auth.repository.UserRepository.class);
@@ -345,5 +353,87 @@ class ProjectCreditServiceTest {
                 RewardPointsTransaction.Type.SPENT_ON_PROJECT_REOPEN, "proj-2");
         assertThat(res.getPointsSpent()).isEqualTo(POINTS_REOPEN);
         assertThat(res.getDaysAdded()).isEqualTo(VALID_DAYS);
+    }
+
+    // ─── The three-project bundle ────────────────────────────────────────────
+
+    @Test
+    void aBundleCostsTwoProjectsAndGrantsThree() {
+        assertThat(pricing.bundlePricePaise(USER))
+                .isEqualTo(Plan.FREE.extraProjectPriceWithTaxInPaise() * 2);
+        assertThat(PricingService.BUNDLE_CREDITS).isEqualTo(3);
+    }
+
+    @Test
+    void aBundleIssuesTwoPurchasedCreditsAndOneGranted() {
+        // The free one is not a PURCHASE: the ledger has to keep telling the truth about
+        // what money actually bought, and GRANT already means "issued without a payment".
+        svc.creditPurchasedBundle(USER);
+
+        verify(ledger, times(2))
+                .issue(eq(USER), eq(0), eq(VALID_DAYS), eq(ProjectCredit.Source.PURCHASE));
+        verify(ledger, times(1))
+                .issue(eq(USER), eq(0), eq(VALID_DAYS), eq(ProjectCredit.Source.GRANT));
+    }
+
+    @Test
+    void aSubscribedShopsBundleLandsOnItsPlanInstead() {
+        // On a plan there is nowhere for the purchased/granted distinction to live, so all
+        // three simply become allowance — the same trade a single purchase already makes.
+        when(billing.creditPurchasedProjects(any(), anyInt()))
+                .thenReturn(Optional.of(mock(com.gridstore.huevista.billing.dto.SubscriptionResponse.class)));
+
+        svc.creditPurchasedBundle(USER);
+
+        verify(billing, times(3)).creditPurchasedProjects(USER, 1);
+        verify(ledger, never()).issue(any(), anyInt(), anyInt(), any());
+    }
+
+    // ─── Reopening: two prices wearing one name ──────────────────────────────
+
+    @Test
+    void reopeningAClosedProjectCostsMoreThanReopeningALapsedOne() {
+        assertThat(pricing.reopenPricePaise(false)).isEqualTo(REOPEN_PAISE);
+        assertThat(pricing.reopenPricePaise(true)).isEqualTo(REOPEN_CLOSED_PAISE);
+        assertThat(pricing.pointsPriceReopen(false)).isEqualTo(POINTS_REOPEN);
+        assertThat(pricing.pointsPriceReopen(true)).isEqualTo(POINTS_REOPEN_CLOSED);
+    }
+
+    @Test
+    void theNoArgReopenPriceStillMeansALapsedWindow() {
+        // Existing callers must keep quoting the cheap reopen, not silently start
+        // charging the closed rate.
+        assertThat(pricing.reopenPricePaise()).isEqualTo(REOPEN_PAISE);
+        assertThat(pricing.pointsPriceReopen()).isEqualTo(POINTS_REOPEN);
+    }
+
+    // ─── Extra AI renders ────────────────────────────────────────────────────
+
+    @Test
+    void aProjectThatStillHasARenderCannotBuyAnother() {
+        com.gridstore.huevista.project.model.Project project =
+                new com.gridstore.huevista.project.model.Project();
+        project.setRendersAllowed(1);
+        project.setRendersUsed(0);
+        when(projects.findByIdAndUserId("p1", USER)).thenReturn(Optional.of(project));
+
+        assertThatThrownBy(() -> svc.requireRenderTopUp(USER, "p1"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("nothing to buy");
+    }
+
+    @Test
+    void aSpentProjectMayBuyAnotherRenderAndGetsExactlyOne() {
+        com.gridstore.huevista.project.model.Project project =
+                new com.gridstore.huevista.project.model.Project();
+        project.setRendersAllowed(1);
+        project.setRendersUsed(1);
+        when(projects.findByIdAndUserId("p1", USER)).thenReturn(Optional.of(project));
+
+        assertThat(svc.requireRenderTopUp(USER, "p1")).isSameAs(project);
+
+        svc.creditExtraRender(USER, "p1");
+        assertThat(project.getRendersAllowed()).isEqualTo(2);
+        assertThat(project.hasRenderLeft()).isTrue();
     }
 }

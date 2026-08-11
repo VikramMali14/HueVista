@@ -6,7 +6,7 @@ import lombok.Data;
 /**
  * What one extra project costs THIS account, on both rails, and what it buys.
  *
- * The price moves with the buyer's plan — 80 points / ₹99 with no plan, down to
+ * The price moves with the buyer's plan — 80 points / ₹199 with no plan, down to
  * 40 points / ₹45 on Business — so it is quoted per account rather than stated as a
  * constant anywhere. Points are the cheaper rail on every tier; that gap is the whole
  * reason a shop bothers to top up or run a kiosk.
@@ -26,6 +26,16 @@ public class ProjectPurchaseOptionsResponse {
 
     /** What one project costs in money, in paise, GST included. */
     private int projectPricePaise;
+
+    /**
+     * The bundle: how many projects it grants, and what it costs in paise.
+     *
+     * Quoted alongside the single price rather than instead of it, because the saving is
+     * only legible next to the thing it discounts — "3 for ₹398" means nothing without
+     * "₹199 each" beside it. Money-only: the points rail already discounts by tier.
+     */
+    private int bundleCredits;
+    private int bundlePricePaise;
 
     /** What another window on a lapsed project costs — points, and money in paise.
      *  Flat on both rails: a reopen buys more time on work already paid for once, so

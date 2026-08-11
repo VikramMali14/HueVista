@@ -62,8 +62,17 @@ public class ProjectAccessService {
         VIEW_ONLY
     }
 
-    /** Why a project is view-only, and what it would take to unlock it. */
-    public record Access(Mode mode, String reason, LocalDateTime expiresAt, int reopenPricePoints) {
+    /**
+     * Why a project is view-only, and what it would take to unlock it.
+     *
+     * BOTH rails are quoted, and both are read from the project rather than from the
+     * account, because reopening no longer has one price. A lapsed window costs ₹9 and a
+     * closed project ₹99, and the account-level quote cannot tell which this is — it
+     * knows the buyer, not the room. Quoting the wrong one puts a price on the banner
+     * that the payment then refuses to match.
+     */
+    public record Access(Mode mode, String reason, LocalDateTime expiresAt,
+                         int reopenPricePoints, int reopenPricePaise) {
         public boolean editable() {
             return mode == Mode.FULL;
         }
@@ -72,6 +81,11 @@ public class ProjectAccessService {
     private static final String NO_SUBSCRIPTION =
             "Your subscription has ended, so this project is view-only — you can still see the "
             + "colours that were last applied. Subscribe to keep working on it.";
+
+    private static final String CLOSED =
+            "This project is closed. The shades from your colour boards are still here, and so "
+            + "is your render — but the rest of the catalogue is locked. Reopen it to start "
+            + "choosing again.";
 
     /** The window length is configured, so the sentence quoting it has to be built. */
     private String windowLapsedMessage() {
@@ -105,6 +119,17 @@ public class ProjectAccessService {
         if (role == UserRole.ADMIN || role == UserRole.DISTRIBUTOR) {
             return full();
         }
+        // Closure outranks every way of paying, which is why it is asked FIRST and not
+        // somewhere below. A closed project is finished: the customer took their colour
+        // boards and their render off it and said so. Whether a plan or a shop's access
+        // code happens to be covering the account is a question about who pays for work,
+        // and there is no more work — putting this check under the subscription branch
+        // would have left a subscribed shop, and every customer on a live code, able to
+        // keep editing a job they had already closed and been rendered for.
+        if (project.isClosed()) {
+            return new Access(Mode.VIEW_ONLY, CLOSED, project.getAccessExpiresAt(),
+                    pricingService.pointsPriceReopen(true), pricingService.reopenPricePaise(true));
+        }
         if (subscribed) {
             return full();
         }
@@ -116,18 +141,19 @@ public class ProjectAccessService {
         }
         if (project.isAccessWindowOpen()) {
             return new Access(Mode.FULL, null, project.getAccessExpiresAt(),
-                    pricingService.pointsPriceReopen());
+                    pricingService.pointsPriceReopen(), pricingService.reopenPricePaise());
         }
         // A project that never carried a window at all belongs to an account that used to
         // be covered by a plan. It reads as subscription-lapsed rather than expired,
         // because buying a reopen would not be the right advice — resubscribing is.
         String reason = project.hasAccessWindow() ? windowLapsedMessage() : NO_SUBSCRIPTION;
         return new Access(Mode.VIEW_ONLY, reason, project.getAccessExpiresAt(),
-                pricingService.pointsPriceReopen());
+                pricingService.pointsPriceReopen(), pricingService.reopenPricePaise());
     }
 
     private Access full() {
-        return new Access(Mode.FULL, null, null, pricingService.pointsPriceReopen());
+        return new Access(Mode.FULL, null, null,
+                pricingService.pointsPriceReopen(), pricingService.reopenPricePaise());
     }
 
     /**
@@ -187,6 +213,40 @@ public class ProjectAccessService {
             project.setAccessPausedAt(null);
             project.setAccessRemainingSeconds(null);
         }
+    }
+
+    /**
+     * Finish a project. Idempotent: the first close wins and keeps its timestamp, so a
+     * customer who presses the button just as their second colour board lands does not
+     * get two closures with two different times on them.
+     *
+     * Returns true when this call is the one that closed it — the caller uses that to
+     * decide whether to send the customer on to the render step.
+     */
+    public boolean close(Project project) {
+        if (project.isClosed()) {
+            return false;
+        }
+        project.setClosedAt(LocalDateTime.now());
+        return true;
+    }
+
+    /**
+     * Undo a closure, as part of a paid reopen.
+     *
+     * The colour-board count goes back to zero with it. A reopened project is being
+     * bought a second run at the same job — the catalogue comes back, so the two boards
+     * that produce the next set of combos have to come back too, or the customer pays ₹99
+     * for a project that can no longer hand them anything. The pages already recorded are
+     * kept: they are what the customer was given the first time round, and the next boards
+     * are numbered after them.
+     *
+     * The render allowance is deliberately NOT reset. Renders are bought per image, and a
+     * reopen buys catalogue access, not another ₹99 render on top.
+     */
+    public void reopenClosed(Project project) {
+        project.setClosedAt(null);
+        project.setColourBoardsUsed(0);
     }
 
     /**

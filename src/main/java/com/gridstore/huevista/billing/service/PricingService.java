@@ -17,7 +17,7 @@ import org.springframework.stereotype.Service;
  * (a lapsed one, or one still on the free trial) pays the FREE tier's rate, the dearest.
  *
  * Cash amounts are in paise (Rs. 1 = 100 paise) to match Razorpay; point prices are in
- * whole points. Points are the cheaper rail by design — 80 points against ₹99 with no
+ * whole points. Points are the cheaper rail by design — 80 points against ₹199 with no
  * plan — because they are bought in bulk or earned at the kiosk.
  */
 @Service
@@ -42,7 +42,7 @@ public class PricingService {
      * price the link and keep the excess is what made this a third-party collection, and
      * that is the thing this design removes.
      */
-    @Value("${app.store.price-paise:9900}")
+    @Value("${app.store.price-paise:19900}")
     private int kioskPricePaise;
 
     /** Reward points awarded to the shop whose link made the sale. */
@@ -68,6 +68,18 @@ public class PricingService {
 
     @Value("${app.points.reopen:9}")
     private int pointsPriceReopen;
+
+    /** What reopening a CLOSED project costs — half a project, against a lapsed window's
+     *  flat ₹9. See {@link #reopenPricePaise(boolean)} for why the two differ. */
+    @Value("${app.project-credit.reopen-closed-price-paise:9900}")
+    private int reopenClosedPricePaise;
+
+    @Value("${app.points.reopen-closed:99}")
+    private int pointsPriceReopenClosed;
+
+    /** A second AI render on a project that already spent its included one. Flat. */
+    @Value("${app.render.top-up-price-paise:9900}")
+    private int renderTopUpPricePaise;
 
     @Value("${app.points.validity-days:365}")
     private int pointsValidityDays;
@@ -147,13 +159,61 @@ public class PricingService {
         return pricingPlanFor(userId).extraProjectPriceWithTaxInPaise();
     }
 
-    /** What one reopen costs in paise, GST included. */
+    /** Projects a bundle grants. */
+    public static final int BUNDLE_CREDITS = 3;
+
+    /** Projects a bundle charges for. */
+    public static final int BUNDLE_PAID_FOR = 2;
+
+    /**
+     * What three projects cost bought together, in paise (GST included), at this account's
+     * rate. Two projects' money for {@link #BUNDLE_CREDITS} projects.
+     *
+     * The discount is expressed as a smaller price for a fixed quantity rather than as a
+     * free credit granted after the second purchase, because the two behave differently
+     * when someone stops buying: a bundle is settled the moment it is paid for, while an
+     * earn-your-third rule leaves an obligation hanging over an account that may never
+     * come back. It also quotes honestly — the buyer sees ₹398 before paying it, not a
+     * promise about a purchase they have not made yet.
+     */
+    public int bundlePricePaise(String userId) {
+        return projectPricePaise(userId) * BUNDLE_PAID_FOR;
+    }
+
+    /** What one reopen costs in paise, GST included, for a project whose window lapsed. */
     public int reopenPricePaise() {
-        return reopenPricePaise * (100 + Plan.GST_PERCENT) / 100;
+        return reopenPricePaise(false);
+    }
+
+    /**
+     * What reopening this project costs in paise, GST included.
+     *
+     * Two different purchases wear the same name. A LAPSED project ran out of days with
+     * the work unfinished, and ₹9 buys the clock back. A CLOSED one is finished — the
+     * customer took two colour boards and an AI render off it and said so — and reopening
+     * unlocks the whole catalogue again on a job that already delivered. That is half a
+     * project's worth of product, so it is priced at half a project.
+     *
+     * Both the order and the verify side must call this with the same project, or a
+     * correctly-paid reopen fails signature verification on an amount mismatch.
+     */
+    public int reopenPricePaise(boolean closed) {
+        int base = closed ? reopenClosedPricePaise : reopenPricePaise;
+        return base * (100 + Plan.GST_PERCENT) / 100;
     }
 
     public int pointsPriceReopen() {
-        return pointsPriceReopen;
+        return pointsPriceReopen(false);
+    }
+
+    /** The points twin of {@link #reopenPricePaise(boolean)}, on the same split. */
+    public int pointsPriceReopen(boolean closed) {
+        return closed ? pointsPriceReopenClosed : pointsPriceReopen;
+    }
+
+    /** What one more AI render on an already-rendered project costs, in paise. */
+    public int renderTopUpPricePaise() {
+        return renderTopUpPricePaise * (100 + Plan.GST_PERCENT) / 100;
     }
 
     public int pointsValidityDays() {

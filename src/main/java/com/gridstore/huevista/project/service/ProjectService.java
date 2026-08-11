@@ -20,6 +20,11 @@ import com.gridstore.huevista.project.model.Project;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
 import com.gridstore.huevista.project.model.RegionCategory;
+import com.gridstore.huevista.project.dto.ColourBoardResponse;
+import com.gridstore.huevista.project.dto.CreateRenderRequest;
+import com.gridstore.huevista.project.dto.ProjectComboResponse;
+import com.gridstore.huevista.project.dto.ProjectRenderResponse;
+import com.gridstore.huevista.project.dto.RecordColourBoardRequest;
 import com.gridstore.huevista.project.queue.SegmentationJobQueue;
 import com.gridstore.huevista.project.repository.ProjectRepository;
 import com.gridstore.huevista.project.repository.RegionRepository;
@@ -62,6 +67,9 @@ public class ProjectService {
     private final OrgMembershipRepository orgMembershipRepository;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final com.gridstore.huevista.billing.service.FreeTierService freeTierService;
+    private final com.gridstore.huevista.billing.service.PdfQuotaService pdfQuotaService;
+    private final ProjectBoardService boardService;
+    private final ProjectRenderService renderService;
     private final com.gridstore.huevista.paint.service.ShadeCodeSchemeService shadeCodeSchemeService;
     private final com.gridstore.huevista.notification.EmailSender emailSender;
     private final com.gridstore.huevista.account.service.BrandAccessService brandAccessService;
@@ -566,7 +574,7 @@ public class ProjectService {
         ProjectAccessService.Access access =
                 projectAccessService.accessFor(userId, user.getRole(), project);
         return response.withAccess(!access.editable(), access.reason(),
-                access.expiresAt(), access.reopenPricePoints());
+                access.expiresAt(), access.reopenPricePoints(), access.reopenPricePaise());
     }
 
     /**
@@ -580,6 +588,88 @@ public class ProjectService {
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
         projectAccessService.assertEditable(userId, user.getRole(), project);
         return project;
+    }
+
+    // ─── Colour boards and closing ───────────────────────────────────────────
+
+    /**
+     * Charge for a colour board this project just handed over, record what was on it, and
+     * close the project when it was the last one.
+     *
+     * Gated on {@code findEditable} rather than {@code findOwned}: handing over a board is
+     * something a project DOES, and a view-only project — lapsed, unsubscribed or already
+     * closed — has nothing left to hand over. It also means the "already closed" refusal
+     * arrives as the studio's own view-only message rather than as a second, differently
+     * worded one.
+     */
+    @Transactional
+    public ColourBoardResponse recordColourBoard(String userId, String projectId,
+                                                 RecordColourBoardRequest request) {
+        Project project = findEditable(userId, projectId);
+        return boardService.recordBoard(project, request,
+                () -> pdfQuotaService.reserveForUser(userId));
+    }
+
+    /**
+     * The guest twin, billed to whoever the access code says pays.
+     *
+     * A guest room records its boards but never CLOSES on them. Closing exists to unlock
+     * the render, and the render page is behind a sign-in a walk-in does not have — so it
+     * would take the studio away from them and give nothing back. How many boards they get
+     * is already governed by the code they were sold.
+     */
+    @Transactional
+    public ColourBoardResponse recordGuestColourBoard(String accessCodeId, String projectId,
+                                                      RecordColourBoardRequest request) {
+        Project project = findGuestOwned(accessCodeId, projectId);
+        return boardService.recordBoard(project, request,
+                () -> pdfQuotaService.reserveForGuest(accessCodeId), false);
+    }
+
+    /**
+     * Close a project on its owner's say-so, before it has spent both boards.
+     *
+     * Deliberately NOT gated on {@code findEditable}. Closing an already-closed project is
+     * a no-op rather than an error, and refusing it because the project is view-only would
+     * mean the one action whose whole purpose is to make a project view-only could not be
+     * taken on a project whose window had happened to lapse first.
+     */
+    @Transactional
+    public ProjectResponse closeProject(String userId, String projectId) {
+        Project project = findOwned(userId, projectId);
+        boardService.close(project);
+        return withAccess(userId, project, toResponse(project));
+    }
+
+    /** The combos this project handed over — what a closed project still shows. */
+    @Transactional(readOnly = true)
+    public List<ProjectComboResponse> getCombos(String userId, String projectId) {
+        findOwned(userId, projectId);
+        return boardService.combos(projectId);
+    }
+
+    // ─── AI renders ──────────────────────────────────────────────────────────
+    //
+    // Read paths, so findOwned and not findEditable: a render is made FROM a closed
+    // project, and a closed project is view-only by definition. Gating these on
+    // editability would make the one thing closing unlocks impossible to reach.
+
+    @Transactional
+    public ProjectRenderResponse requestRender(String userId, String projectId,
+                                               CreateRenderRequest request) {
+        return renderService.request(findOwned(userId, projectId), request);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ProjectRenderResponse> listRenders(String userId, String projectId) {
+        findOwned(userId, projectId);
+        return renderService.list(projectId);
+    }
+
+    @Transactional(readOnly = true)
+    public ProjectRenderResponse getRender(String userId, String projectId, String renderId) {
+        findOwned(userId, projectId);
+        return renderService.get(projectId, renderId);
     }
 
     /**
@@ -1479,7 +1569,8 @@ public class ProjectService {
         String originalUrl = storageService.getPublicUrl(image.getStorageKey());
         String cleanedUrl = project.getCleanedImageStorageKey() != null
                 ? storageService.getPublicUrl(project.getCleanedImageStorageKey()) : null;
-        ProjectResponse r = ProjectResponse.from(project, originalUrl);
+        ProjectResponse r = ProjectResponse.from(project, originalUrl,
+                boardService.boardsPerProject(), pricingService.renderTopUpPricePaise());
         r.setCleanedImageUrl(cleanedUrl);
         if (project.getRawMaskStorageKey() != null) {
             r.setRawMaskUrl(storageService.getPublicUrl(project.getRawMaskStorageKey()));

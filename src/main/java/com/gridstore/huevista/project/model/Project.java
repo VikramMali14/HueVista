@@ -162,6 +162,61 @@ public class Project {
     @Builder.Default
     private int purchasePoints = 0;
 
+    // ─── Closure ─────────────────────────────────────────────────────────────
+    // When the job FINISHED. Deliberately a timestamp beside the access window rather
+    // than a value on ProjectStatus, which tracks where the segmentation pipeline got
+    // to (CREATED → SEGMENTING → SEGMENTED) and would lose that meaning if a lifecycle
+    // state were mixed into it. The same reason sentToShopAt is a timestamp.
+    //
+    // Closure is NOT expiry. A lapsed window is a clock running out on unfinished work,
+    // and reopening it costs ₹9. Closing is the customer saying they are done: they have
+    // taken their colour boards and the AI render off it, and what stays visible
+    // afterwards is only the shades that went into those boards. Reopening THAT unlocks
+    // the whole catalogue again on a job that already delivered, so it costs ₹99.
+    //
+    // It also outranks every other kind of access. A closed project is read-only for its
+    // owner whether or not a plan or a shop's code is covering them — see
+    // ProjectAccessService.evaluate.
+    private LocalDateTime closedAt;
+
+    /**
+     * Colour boards (PDFs) handed over from this project so far.
+     *
+     * The cap lives in configuration, not here, but the count has to be per PROJECT: the
+     * plan's own pdfDownloadsUsed is a monthly figure across every room a shop touches,
+     * and closing one job cannot be driven off that. Reset to zero when a closed project
+     * is reopened, so a reopened job gets its boards back with its catalogue.
+     */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int colourBoardsUsed = 0;
+
+    /**
+     * AI renders this project may produce, and how many it has.
+     *
+     * One is included, and a project only ever earns the right to it by closing. Further
+     * renders are bought one at a time; the allowance is stored per project rather than
+     * as an account balance because a render is only meaningful against the eight combos
+     * of the project that produced it.
+     */
+    @Column(nullable = false, columnDefinition = "integer not null default 1")
+    @Builder.Default
+    private int rendersAllowed = 1;
+
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int rendersUsed = 0;
+
+    /** Has the customer finished with this project? */
+    public boolean isClosed() {
+        return closedAt != null;
+    }
+
+    /** Is there an AI render left to spend on this project? */
+    public boolean hasRenderLeft() {
+        return rendersUsed < rendersAllowed;
+    }
+
     /** True when this project carries a paid window at all (running or paused). */
     public boolean hasAccessWindow() {
         return accessExpiresAt != null || accessPausedAt != null;

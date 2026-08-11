@@ -121,7 +121,7 @@ public class SubscriptionResponse {
         // dearest one. Reading the rate off the row's own plan would quote a trialing
         // shop the Starter discount it has not bought. (A free-tier row already names
         // FREE as its plan, so it lands on the same rate through the other branch:
-        // 80 points, or ₹99.)
+        // 80 points, or ₹199.)
         Plan pricedAs = sub.isTrial() ? Plan.FREE : sub.getPlan();
 
         return SubscriptionResponse.builder()

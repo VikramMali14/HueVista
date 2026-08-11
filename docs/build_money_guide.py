@@ -205,7 +205,7 @@ s += [
         ["Who they are", "A shop that sells paint. They have an account and sign in.",
          "Someone who walks into that shop wanting to see a colour on their wall."],
         ["What they pay", "A monthly plan &mdash; and extras when they want more.",
-         "Nothing, usually. The shop covers it. Or a one-off &#8377;99 at the shop's counter link."],
+         "Nothing, usually. The shop covers it. Or a one-off &#8377;199 at the shop's counter link."],
         ["What they get", "Photo makeovers, colour boards, a counter link, and points.",
          "A picture of their own room in the colour they picked."],
     ], [26 * mm, W / 2 - 13 * mm, W / 2 - 13 * mm]),
@@ -418,7 +418,7 @@ s += [
         ["Situation", "What a project costs", "How long it stays open"],
         ["On a paid plan", "Nothing extra &mdash; make as many as you want", "30 days"],
         ["On the free trial", "First 3 free, then &#8377;50 each", "30 days"],
-        ["No plan at all", "&#8377;99 each", "30 days"],
+        ["No plan at all", "&#8377;199 each (or &#8377;398 for three)", "30 days"],
         ["Reopening an old one", "&#8377;9", "another 30 days"],
     ], [40 * mm, W - 40 * mm - 38 * mm, 38 * mm], align_right=(1, 2)),
     Spacer(1, 8),
@@ -453,7 +453,7 @@ s += [
 ]
 
 s += bullets([
-    "The customer pays <b>&#8377;99</b>, once. Card, UPI or QR.",
+    "The customer pays <b>&#8377;199</b>, once. Card, UPI or QR.",
     "They get a code and land straight in the app &mdash; no sign-up, no password.",
     "They upload one photo of their room and try colours on it.",
     "The code also appears in your <i>Active codes</i> list, so you can see what they chose.",
@@ -462,10 +462,10 @@ s += bullets([
 
 s.append(Spacer(1, 8))
 s.append(box([
-    Paragraph("Why the shop doesn't get a share of the &#8377;99", NOTE_B),
+    Paragraph("Why the shop doesn't get a share of the &#8377;199", NOTE_B),
     Spacer(1, 5),
     Paragraph(
-        "The &#8377;99 is a payment from the customer to HueVista, for a HueVista service. "
+        "The &#8377;199 is a payment from the customer to HueVista, for a HueVista service. "
         "You don't set that price and you don't take a cut of it &mdash; you get points instead. "
         "This is deliberate. Collecting money on someone else's behalf and passing it on is a "
         "regulated activity in India with its own licences and rules. Rewarding you in points "

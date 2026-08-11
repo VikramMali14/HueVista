@@ -49,7 +49,13 @@ public enum Plan {
     // buying. Nor does it include the whole catalogue: a free shop works with ONE paint
     // company (see fullCatalogue). Everything else the free tier reaches is the same
     // product the paid tiers get.
-    FREE(0, 2, 4, 5, 80, 9900, false, false, "Free"),
+    // The FREE tier's extra-project rate is also the price a walk-in customer pays for a
+    // project of their own, since a customer account never holds a plan. It is quoted at
+    // ₹199 rather than the ₹99 it began at: a project now ends in a colour board and a
+    // photorealistic AI render, and the render alone costs more to produce than the whole
+    // ₹99 project used to. Shops buying volume are unaffected — their tiers are unchanged,
+    // and the gap between ₹199 and a plan's own rate is the point.
+    FREE(0, 2, 4, 5, 80, 19900, false, false, "Free"),
     STARTER(99900, 15, 4, 25, 60, 6500, true, true, "Starter"),
     PROFESSIONAL(249900, 45, 8, 100, 50, 5500, true, true, "Professional"),
     BUSINESS(499900, 100, 12, 300, 40, 4500, true, true, "Business"),

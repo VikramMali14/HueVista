@@ -51,6 +51,24 @@ public class ProjectResponse {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
+    // ─── Closing ─────────────────────────────────────────────────────────────
+    // When the job finished — by the customer closing it, or by its last colour board.
+    // Null while it is still running. A closed project is view-only whatever else is
+    // covering it, and the studio shows only the combinations from its boards.
+    private LocalDateTime closedAt;
+    // Colour boards handed over, and how many this project gets. The studio counts down
+    // with these so "one board left" can be said before the last one closes the project.
+    private int boardsUsed;
+    private int boardsAllowed;
+    // AI renders this project may still produce, and how many it has. One is included
+    // and unlocked by closing; the rest are bought one at a time.
+    private int rendersAllowed;
+    private int rendersUsed;
+    // What one more costs, in paise. Quoted here rather than left for the studio to infer
+    // from the reopen price they happen to share today: they are two settings, and a
+    // button that names a price the payment then refuses is worse than no price at all.
+    private int renderPricePaise;
+
     // ─── Access ──────────────────────────────────────────────────────────────
     // True when the viewer may look but not touch: the colours last applied are all
     // here and render normally, but every write is refused. The studio uses this to
@@ -63,20 +81,30 @@ public class ProjectResponse {
     private LocalDateTime accessExpiresAt;
     // What reopening a lapsed project costs, in paise — so the studio can name the
     // price on the banner instead of sending the user off to find it.
-    /** What reopening this project costs, in POINTS. */
+    /** What reopening THIS project costs, on both rails. Read from the project rather
+     *  than from the account: a lapsed window and a closed project are two different
+     *  purchases at two different prices, and only the project knows which this is. */
     private int reopenPricePoints;
+    private int reopenPricePaise;
 
     /** Stamp the viewer's access onto an owner-view response. */
     public ProjectResponse withAccess(boolean readOnly, String reason,
-                                      LocalDateTime accessExpiresAt, int reopenPricePoints) {
+                                      LocalDateTime accessExpiresAt,
+                                      int reopenPricePoints, int reopenPricePaise) {
         this.readOnly = readOnly;
         this.readOnlyReason = reason;
         this.accessExpiresAt = accessExpiresAt;
         this.reopenPricePoints = reopenPricePoints;
+        this.reopenPricePaise = reopenPricePaise;
         return this;
     }
 
     public static ProjectResponse from(Project project, String imageUrl) {
+        return from(project, imageUrl, 0, 0);
+    }
+
+    public static ProjectResponse from(Project project, String imageUrl,
+                                       int boardsAllowed, int renderPricePaise) {
         List<RegionResponse> regions = project.getRegions().stream()
                 .map(RegionResponse::from)
                 .toList();
@@ -95,6 +123,12 @@ public class ProjectResponse {
                 .hasShareLink(project.getShareToken() != null)
                 .shareExpiresAt(project.getShareExpiresAt())
                 .sentToShopAt(project.getSentToShopAt())
+                .closedAt(project.getClosedAt())
+                .boardsUsed(project.getColourBoardsUsed())
+                .boardsAllowed(boardsAllowed)
+                .rendersAllowed(project.getRendersAllowed())
+                .rendersUsed(project.getRendersUsed())
+                .renderPricePaise(renderPricePaise)
                 .createdAt(project.getCreatedAt())
                 .updatedAt(project.getUpdatedAt())
                 .build();
