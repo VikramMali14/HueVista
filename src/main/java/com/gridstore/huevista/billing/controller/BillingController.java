@@ -150,17 +150,19 @@ public class BillingController {
         return ResponseEntity.ok(plans);
     }
 
-    @Operation(summary = "Buy one extra project with money (order)",
-            description = "Creates a Razorpay order for one project at the CALLER'S plan rate — "
-                    + "₹99 with no plan, ₹65 / ₹55 / ₹45 on Starter / Professional / Business. The "
-                    + "amount is derived server-side from the plan, so the client never names a "
+    @Operation(summary = "Buy extra projects with money (order)",
+            description = "Creates a Razorpay order at the CALLER'S plan rate — ₹199 with no plan, "
+                    + "₹65 / ₹55 / ₹45 on Starter / Professional / Business. `credits` buys either "
+                    + "one project or a bundle of three for two projects' money; no other quantity "
+                    + "is priced. The amount is derived server-side, so the client never names a "
                     + "price. Points are the cheaper rail for the same thing (see "
                     + "/api/billing/points/pay/project-credit).")
     @PostMapping("/projects/order")
     public ResponseEntity<ProjectOrderResponse> createProjectOrder(
-            @AuthenticationPrincipal UserDetails userDetails) {
+            @AuthenticationPrincipal UserDetails userDetails,
+            @RequestParam(defaultValue = "1") int credits) {
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(projectPurchaseService.createOrder(userDetails.getUsername()));
+                .body(projectPurchaseService.createOrder(userDetails.getUsername(), credits));
     }
 
     @Operation(summary = "Buy one extra project with money (verify)",
@@ -202,6 +204,32 @@ public class BillingController {
             @Valid @RequestBody VerifyProjectPurchaseRequest request) {
         return ResponseEntity.ok(paymentAttemptService.recordVerification(request.getOrderId(), request.getPaymentId(),
                 () -> projectPurchaseService.verifyAndCreditReopen(userDetails.getUsername(), request)));
+    }
+
+    @Operation(summary = "Buy one more AI render (order)",
+            description = "Creates a Razorpay order for another AI image on a project that has "
+                    + "spent the one it came with. Flat price. Refused up-front (409) when the "
+                    + "project still has a render left, so nobody buys one they already have.")
+    @PostMapping("/projects/{projectId}/renders/order")
+    public ResponseEntity<ProjectOrderResponse> createRenderOrder(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String projectId) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(projectPurchaseService.createRenderOrder(userDetails.getUsername(), projectId));
+    }
+
+    @Operation(summary = "Buy one more AI render (verify)",
+            description = "Verifies the Razorpay Checkout signature and adds one render to the "
+                    + "project the ORDER named — read back from the order, not from the client. "
+                    + "Replay-protected: one payment buys exactly one image.")
+    @PostMapping("/projects/renders/verify")
+    public ResponseEntity<Void> verifyRenderPurchase(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Valid @RequestBody VerifyProjectPurchaseRequest request) {
+        String userId = userDetails.getUsername();
+        paymentAttemptService.recordVerification(request.getOrderId(), request.getPaymentId(),
+                () -> { projectPurchaseService.verifyAndCreditRender(userId, request); return null; });
+        return ResponseEntity.noContent().build();
     }
 
     @Operation(summary = "Get my colour-board PDF allowance",

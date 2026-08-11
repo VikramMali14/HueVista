@@ -40,6 +40,11 @@ public class ProjectSummaryResponse {
 
     /** Look-but-don't-touch (subscription lapsed, or the project's own validity ran out). */
     private boolean readOnly;
+
+    // When the job finished, so the dashboard can badge a closed room as done rather
+    // than as merely view-only — the two look the same otherwise and mean opposite
+    // things: one is finished, the other ran out.
+    private LocalDateTime closedAt;
     /** When this room's paid validity ends; null when it has no window of its own. */
     private LocalDateTime accessExpiresAt;
 
@@ -60,6 +65,7 @@ public class ProjectSummaryResponse {
                 .updatedAt(project.getUpdatedAt())
                 .source(SOURCE_OWN)
                 .accessExpiresAt(project.getAccessExpiresAt())
+                .closedAt(project.getClosedAt())
                 .build();
     }
 

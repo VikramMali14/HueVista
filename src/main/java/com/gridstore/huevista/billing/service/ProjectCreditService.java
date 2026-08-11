@@ -60,6 +60,8 @@ public class ProjectCreditService {
                 .pricingPlan(pricedAs.name())
                 .projectPricePoints(pricedAs.getExtraProjectPoints())
                 .projectPricePaise(pricedAs.extraProjectPriceWithTaxInPaise())
+                .bundleCredits(PricingService.BUNDLE_CREDITS)
+                .bundlePricePaise(pricingService.bundlePricePaise(userId))
                 .reopenPricePoints(pricingService.pointsPriceReopen())
                 .reopenPricePaise(pricingService.reopenPricePaise())
                 .pointsBalance(rewardPointsService.balance(userId))
@@ -106,6 +108,29 @@ public class ProjectCreditService {
     @Transactional
     public void creditPurchasedProject(String userId, ProjectCredit.Source source) {
         grantOneProject(userId, 0, source);
+    }
+
+    /**
+     * Credit a three-project bundle: two projects the buyer paid for, and one they did not.
+     *
+     * The free one is issued as a {@link ProjectCredit.Source#GRANT} rather than a third
+     * PURCHASE so the ledger keeps telling the truth about what money bought. GRANT already
+     * means "issued without a payment behind it", which is exactly what this is, and it
+     * costs no new enum value — and so no new value in a column a CHECK constraint might
+     * be watching.
+     *
+     * A subscribed shop's credits land on the plan instead of in the ledger, where the
+     * distinction has nowhere to live; there the bundle is simply three added to the
+     * allowance. That is the same trade {@link #grantOneProject} already makes.
+     */
+    @Transactional
+    public void creditPurchasedBundle(String userId) {
+        for (int i = 0; i < PricingService.BUNDLE_PAID_FOR; i++) {
+            grantOneProject(userId, 0, ProjectCredit.Source.PURCHASE);
+        }
+        for (int i = PricingService.BUNDLE_PAID_FOR; i < PricingService.BUNDLE_CREDITS; i++) {
+            grantOneProject(userId, 0, ProjectCredit.Source.GRANT);
+        }
     }
 
     /**
@@ -196,6 +221,7 @@ public class ProjectCreditService {
     public ProjectReopenResponse creditReopen(String userId, String projectId, int amountPaise) {
         Project project = projectRepository.findByIdAndUserId(projectId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+        projectAccessService.reopenClosed(project);
         projectAccessService.extendWindow(project, pricingService.projectValidDays());
         projectRepository.save(project);
         log.info("Project reopened with money: user={} project={} until={} paise={}",
@@ -219,6 +245,37 @@ public class ProjectCreditService {
         return project;
     }
 
+    // ── Extra AI renders ────────────────────────────────────────────────────
+
+    /**
+     * Refuse a render top-up this project does not need, BEFORE any money moves.
+     *
+     * Mirrors {@link #requireReopenable}: a project with a render still unspent is not
+     * something to sell another one for, and finding that out after the payment sheet has
+     * closed is the failure this exists to prevent.
+     */
+    @Transactional(readOnly = true)
+    public Project requireRenderTopUp(String userId, String projectId) {
+        Project project = projectRepository.findByIdAndUserId(projectId, userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+        if (project.hasRenderLeft()) {
+            throw new IllegalStateException(
+                    "This project still has an AI image to make — there's nothing to buy yet.");
+        }
+        return project;
+    }
+
+    /** Add one render to a project after a verified payment. */
+    @Transactional
+    public void creditExtraRender(String userId, String projectId) {
+        Project project = projectRepository.findByIdAndUserId(projectId, userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+        project.setRendersAllowed(project.getRendersAllowed() + 1);
+        projectRepository.save(project);
+        log.info("Extra AI render credited: user={} project={} allowed={}",
+                userId, projectId, project.getRendersAllowed());
+    }
+
     /**
      * Give a project another validity window, paid in points.
      *
@@ -233,10 +290,14 @@ public class ProjectCreditService {
     public ProjectReopenResponse reopenWithPoints(String userId, String projectId) {
         Project project = requireReopenable(userId, projectId);
 
-        int points = pricingService.pointsPriceReopen();
+        // Priced off the project, not off a flat number: reopening a CLOSED project is a
+        // different purchase from reopening a lapsed one, and the two rails have to agree
+        // about which is which or the points path undercuts the cash path.
+        int points = pricingService.pointsPriceReopen(project.isClosed());
         rewardPointsService.spend(userId, points,
                 RewardPointsTransaction.Type.SPENT_ON_PROJECT_REOPEN, project.getId());
 
+        projectAccessService.reopenClosed(project);
         projectAccessService.extendWindow(project, pricingService.projectValidDays());
         projectRepository.save(project);
         log.info("Project reopened with points: user={} project={} until={} points={}",

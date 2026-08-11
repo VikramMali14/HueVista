@@ -51,6 +51,20 @@ public class ProjectResponse {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
+    // ─── Closing ─────────────────────────────────────────────────────────────
+    // When the job finished — by the customer closing it, or by its last colour board.
+    // Null while it is still running. A closed project is view-only whatever else is
+    // covering it, and the studio shows only the combinations from its boards.
+    private LocalDateTime closedAt;
+    // Colour boards handed over, and how many this project gets. The studio counts down
+    // with these so "one board left" can be said before the last one closes the project.
+    private int boardsUsed;
+    private int boardsAllowed;
+    // AI renders this project may still produce, and how many it has. One is included
+    // and unlocked by closing; the rest are bought one at a time.
+    private int rendersAllowed;
+    private int rendersUsed;
+
     // ─── Access ──────────────────────────────────────────────────────────────
     // True when the viewer may look but not touch: the colours last applied are all
     // here and render normally, but every write is refused. The studio uses this to
@@ -77,6 +91,10 @@ public class ProjectResponse {
     }
 
     public static ProjectResponse from(Project project, String imageUrl) {
+        return from(project, imageUrl, 0);
+    }
+
+    public static ProjectResponse from(Project project, String imageUrl, int boardsAllowed) {
         List<RegionResponse> regions = project.getRegions().stream()
                 .map(RegionResponse::from)
                 .toList();
@@ -95,6 +113,11 @@ public class ProjectResponse {
                 .hasShareLink(project.getShareToken() != null)
                 .shareExpiresAt(project.getShareExpiresAt())
                 .sentToShopAt(project.getSentToShopAt())
+                .closedAt(project.getClosedAt())
+                .boardsUsed(project.getColourBoardsUsed())
+                .boardsAllowed(boardsAllowed)
+                .rendersAllowed(project.getRendersAllowed())
+                .rendersUsed(project.getRendersUsed())
                 .createdAt(project.getCreatedAt())
                 .updatedAt(project.getUpdatedAt())
                 .build();

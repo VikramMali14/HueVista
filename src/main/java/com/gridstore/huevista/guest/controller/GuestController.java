@@ -4,10 +4,12 @@ import com.gridstore.huevista.billing.dto.PdfAllowanceResponse;
 import com.gridstore.huevista.billing.service.PdfQuotaService;
 import com.gridstore.huevista.image.dto.ImageResponse;
 import com.gridstore.huevista.image.service.ImageService;
+import com.gridstore.huevista.project.dto.ColourBoardResponse;
 import com.gridstore.huevista.project.dto.CreateProjectRequest;
 import com.gridstore.huevista.project.dto.CustomMaskRequest;
 import com.gridstore.huevista.project.dto.ProjectResponse;
 import com.gridstore.huevista.project.dto.ProjectSummaryResponse;
+import com.gridstore.huevista.project.dto.RecordColourBoardRequest;
 import com.gridstore.huevista.project.dto.RegionColorUpdate;
 import com.gridstore.huevista.project.dto.RegionResponse;
 import com.gridstore.huevista.project.service.ProjectService;
@@ -142,6 +144,21 @@ public class GuestController {
     @PostMapping("/pdf-downloads")
     public ResponseEntity<PdfAllowanceResponse> chargePdfDownload(Authentication auth) {
         return ResponseEntity.ok(pdfQuotaService.reserveForGuest(accessCodeId(auth)));
+    }
+
+    @Operation(summary = "Record and charge for a colour board (guest)",
+            description = "The guest twin of the account holder's endpoint: reserves one "
+                    + "download against whoever the access code says pays, records the shades "
+                    + "that were on each page, and closes the project when it was the last "
+                    + "board. Prefer this over /pdf-downloads — a board charged through that "
+                    + "one is not recorded and never closes anything.")
+    @PostMapping("/projects/{id}/colour-boards")
+    public ResponseEntity<ColourBoardResponse> recordColourBoard(
+            @PathVariable String id,
+            @Valid @RequestBody RecordColourBoardRequest request,
+            Authentication auth) {
+        return ResponseEntity.ok(
+                projectService.recordGuestColourBoard(accessCodeId(auth), id, request));
     }
 
     /** For a guest, the principal name is the access code id (set by GuestAuthFilter). */

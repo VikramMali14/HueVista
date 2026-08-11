@@ -322,6 +322,115 @@ public class ProjectController {
         return ResponseEntity.ok(projectService.generateShareLink(userId(auth), id, days, brandList));
     }
 
+    @Operation(
+            summary = "Record and charge for a colour board",
+            description = """
+                    Reserves one colour-board download against whichever plan pays for the
+                    caller, then records the pages that were on it — the shades, per region,
+                    exactly as the customer received them.
+
+                    Recording is the point. The PDF is built in the browser and the server
+                    never sees it, so this is the only moment the combinations that went onto
+                    paper can be captured; everything the closing flow does afterwards is
+                    built on them.
+
+                    When this was the project's last board (two by default, four images each)
+                    the project CLOSES and the response says so — that is the signal to send
+                    the customer on to choose a combination and render it.
+                    """
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Charged and recorded"),
+            @ApiResponse(responseCode = "402", description = "The paying plan has no downloads left"),
+            @ApiResponse(responseCode = "409", description = "The project is closed, or has no boards left")
+    })
+    @PostMapping("/{id}/colour-boards")
+    public ResponseEntity<ColourBoardResponse> recordColourBoard(
+            @PathVariable String id,
+            @Valid @RequestBody RecordColourBoardRequest request,
+            Authentication auth
+    ) {
+        return ResponseEntity.ok(projectService.recordColourBoard(userId(auth), id, request));
+    }
+
+    @Operation(
+            summary = "Close the project",
+            description = """
+                    Marks the job finished before it has spent both colour boards — the
+                    customer saying "this is the one" rather than running out.
+
+                    A closed project is view-only for everyone but an administrator, whatever
+                    plan or access code is covering it, and only the combinations from its
+                    colour boards stay visible. Reopening is a paid step and costs more than
+                    a lapsed window does.
+
+                    Idempotent: closing an already-closed project changes nothing.
+                    """
+    )
+    @PostMapping("/{id}/close")
+    public ResponseEntity<ProjectResponse> closeProject(@PathVariable String id, Authentication auth) {
+        return ResponseEntity.ok(projectService.closeProject(userId(auth), id));
+    }
+
+    @Operation(
+            summary = "List the combinations this project handed over",
+            description = "Every page of every colour board, in the order the customer saw "
+                    + "them — the set a closed project still shows, and the set an AI render "
+                    + "may be made from.")
+    @GetMapping("/{id}/combos")
+    public ResponseEntity<List<ProjectComboResponse>> getCombos(
+            @PathVariable String id, Authentication auth) {
+        return ResponseEntity.ok(projectService.getCombos(userId(auth), id));
+    }
+
+    @Operation(
+            summary = "Generate an AI render of one colour-board combination",
+            description = """
+                    Makes a photorealistic image of the room in one of the combinations this
+                    project handed over, through Nano Banana Pro.
+
+                    Only on a CLOSED project, and only from a combination that was actually on
+                    one of its colour boards. One render is included; each further one is
+                    bought (see /api/billing/projects/{id}/renders/order). The allowance is
+                    spent as the request is accepted and handed back if the image cannot be
+                    made, so a failure never costs anything.
+
+                    Returns immediately with status QUEUED — poll the render until it reaches
+                    READY or FAILED.
+                    """
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "202", description = "Accepted; poll for the image"),
+            @ApiResponse(responseCode = "402", description = "This project's renders are used up"),
+            @ApiResponse(responseCode = "404", description = "No such project, or no such combination on it"),
+            @ApiResponse(responseCode = "409", description = "The project is not closed yet")
+    })
+    @PostMapping("/{id}/renders")
+    public ResponseEntity<ProjectRenderResponse> requestRender(
+            @PathVariable String id,
+            @Valid @RequestBody CreateRenderRequest request,
+            Authentication auth
+    ) {
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(projectService.requestRender(userId(auth), id, request));
+    }
+
+    @Operation(summary = "List this project's AI renders", description = "Newest first.")
+    @GetMapping("/{id}/renders")
+    public ResponseEntity<List<ProjectRenderResponse>> listRenders(
+            @PathVariable String id, Authentication auth) {
+        return ResponseEntity.ok(projectService.listRenders(userId(auth), id));
+    }
+
+    @Operation(summary = "Poll one AI render",
+            description = "The image URL appears once the status reaches READY; a FAILED "
+                    + "render carries the reason and has already returned its credit.")
+    @GetMapping("/{id}/renders/{renderId}")
+    public ResponseEntity<ProjectRenderResponse> getRender(
+            @PathVariable String id, @PathVariable String renderId, Authentication auth) {
+        return ResponseEntity.ok(projectService.getRender(userId(auth), id, renderId));
+    }
+
     @Operation(summary = "Withdraw the project's share link",
             description = "Invalidates the public link immediately. Sharing again mints a new "
                     + "token; until then the old URL answers 404.")

@@ -35,6 +35,7 @@ import static org.mockito.Mockito.when;
 class ProjectAccessServiceTest {
 
     private static final int REOPEN_POINTS = 9;
+    private static final int REOPEN_CLOSED_POINTS = 99;
 
     private BillingService billing;
     private PricingService pricing;
@@ -46,6 +47,7 @@ class ProjectAccessServiceTest {
         pricing = new PricingService(billing, mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class),
                 mock(OrgMembershipRepository.class));
         ReflectionTestUtils.setField(pricing, "pointsPriceReopen", REOPEN_POINTS);
+        ReflectionTestUtils.setField(pricing, "pointsPriceReopenClosed", REOPEN_CLOSED_POINTS);
         ReflectionTestUtils.setField(pricing, "projectValidDays", 30);
         access = new ProjectAccessService(mock(ProjectRepository.class), billing, pricing);
         when(billing.findEntitlingSubscription(any())).thenReturn(Optional.empty());
@@ -251,5 +253,91 @@ class ProjectAccessServiceTest {
         access.extendWindow(paused, 30);
         assertThat(paused.getAccessRemainingSeconds()).isEqualTo(Duration.ofDays(35).toSeconds());
         assertThat(paused.getAccessPausedAt()).isNotNull();
+    }
+
+    // ─── Closing ─────────────────────────────────────────────────────────────
+
+    @Test
+    void aClosedProjectIsViewOnlyEvenWhileItsOwnerIsSubscribed() {
+        subscribed(true);
+        Project project = new Project();
+        access.close(project);
+
+        ProjectAccessService.Access result = access.evaluate(UserRole.RETAILER, project, true);
+
+        assertThat(result.editable()).isFalse();
+        assertThat(result.reason()).contains("closed");
+    }
+
+    @Test
+    void aClosedProjectIsViewOnlyEvenOnAShopsAccessCode() {
+        Project project = new Project();
+        project.setAccessCode(new CustomerAccessCode());
+        access.close(project);
+
+        assertThat(access.evaluate(UserRole.CUSTOMER, project, false).editable()).isFalse();
+    }
+
+    @Test
+    void aClosedProjectQuotesTheDearerReopen() {
+        Project project = new Project();
+        access.close(project);
+
+        assertThat(access.evaluate(UserRole.CUSTOMER, project, false).reopenPricePoints())
+                .isEqualTo(REOPEN_CLOSED_POINTS);
+    }
+
+    @Test
+    void aMerelyLapsedProjectStillQuotesTheCheapReopen() {
+        Project project = new Project();
+        project.setAccessExpiresAt(LocalDateTime.now().minusDays(1));
+
+        ProjectAccessService.Access result = access.evaluate(UserRole.CUSTOMER, project, false);
+
+        assertThat(result.editable()).isFalse();
+        assertThat(result.reopenPricePoints()).isEqualTo(REOPEN_POINTS);
+    }
+
+    @Test
+    void anAdministratorCanStillWorkOnAClosedProject() {
+        Project project = new Project();
+        access.close(project);
+
+        assertThat(access.evaluate(UserRole.ADMIN, project, false).editable()).isTrue();
+    }
+
+    @Test
+    void closingTwiceKeepsTheFirstTime() {
+        Project project = new Project();
+        assertThat(access.close(project)).isTrue();
+        LocalDateTime first = project.getClosedAt();
+
+        assertThat(access.close(project)).isFalse();
+        assertThat(project.getClosedAt()).isEqualTo(first);
+    }
+
+    @Test
+    void reopeningAClosedProjectGivesItsColourBoardsBack() {
+        Project project = new Project();
+        project.setColourBoardsUsed(2);
+        access.close(project);
+
+        access.reopenClosed(project);
+
+        assertThat(project.isClosed()).isFalse();
+        assertThat(project.getColourBoardsUsed()).isZero();
+    }
+
+    @Test
+    void reopeningDoesNotHandBackTheRenderThatWasSpent() {
+        // Renders are bought per image; a reopen buys catalogue access, not another one.
+        Project project = new Project();
+        project.setRendersUsed(1);
+        access.close(project);
+
+        access.reopenClosed(project);
+
+        assertThat(project.getRendersUsed()).isEqualTo(1);
+        assertThat(project.hasRenderLeft()).isFalse();
     }
 }

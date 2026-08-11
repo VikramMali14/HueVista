@@ -19,6 +19,7 @@ class SensitiveEndpointRateLimitFilterTest {
                 12, 900,   // otp confirm
                 12, 900,   // code redeem
                 30, 3600,  // image upload
+                12, 3600,  // AI render
                 5, 3600,   // shop lead
                 10, 3600,  // newsletter subscribe/unsubscribe
                 60, 3600,  // store kiosk order/verify

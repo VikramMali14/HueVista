@@ -19,8 +19,11 @@ public enum PaymentFlow {
     /** One extra project at the buyer's plan rate. */
     PROJECT("Extra project"),
 
-    /** Another validity window on a lapsed project. */
+    /** Another validity window on a lapsed project, or a closed one opened back up. */
     REOPEN("Project reopen"),
+
+    /** One more AI render on a project that already spent its included one. */
+    RENDER("Extra AI image"),
 
     /** In-store kiosk — the buyer is a walk-in customer, not a signed-in user. */
     STORE_KIOSK("Store kiosk");
