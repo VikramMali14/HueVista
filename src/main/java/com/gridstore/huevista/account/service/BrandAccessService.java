@@ -3,9 +3,15 @@ package com.gridstore.huevista.account.service;
 import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.OrgType;
 import com.gridstore.huevista.account.model.Organization;
+import com.gridstore.huevista.account.model.RetailerBrandAssignment;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
+import com.gridstore.huevista.account.dto.ShopBrandVisibilityResponse;
+import com.gridstore.huevista.account.dto.SetVisibleBrandsRequest;
+import com.gridstore.huevista.account.model.ShopVisibleBrand;
+import com.gridstore.huevista.account.repository.OrgMembershipRepository;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.account.repository.RetailerBrandAssignmentRepository;
+import com.gridstore.huevista.account.repository.ShopVisibleBrandRepository;
 import com.gridstore.huevista.paint.model.Brand;
 import com.gridstore.huevista.paint.repository.BrandRepository;
 import com.gridstore.huevista.auth.model.User;
@@ -55,6 +61,8 @@ public class BrandAccessService {
 
     private final OrganizationRepository orgRepository;
     private final RetailerBrandAssignmentRepository brandAssignmentRepository;
+    private final ShopVisibleBrandRepository visibleBrandRepository;
+    private final OrgMembershipRepository membershipRepository;
     private final UserRepository userRepository;
     private final CustomerAccessCodeRepository codeRepository;
     private final BrandRepository brandRepository;
@@ -64,22 +72,14 @@ public class BrandAccessService {
      * The brand display names a shop may offer.
      *
      * @return empty when nothing limits the shop (browse everything); otherwise the exact
-     *         set it carries, after both the distributor's assignment and the shop's plan
-     *         have had their say. That set may legitimately be EMPTY, meaning the
-     *         distributor has revoked every brand.
+     *         set it may offer, after the distributor's assignment, the shop's own
+     *         selection and its plan have all had their say. That set may legitimately be
+     *         EMPTY — the distributor has revoked every brand, or the shop has switched
+     *         them all off.
      */
     @Transactional(readOnly = true)
     public Optional<Set<String>> allowedBrandNames(String retailerOrgId) {
-        Organization org = orgRepository.findById(retailerOrgId)
-                .orElseThrow(() -> new ResourceNotFoundException("Organization not found: " + retailerOrgId));
-        if (!org.isBrandsRestricted()) {
-            return capToPlan(org, Optional.empty(), Brand::getName);
-        }
-        Set<String> names = brandAssignmentRepository.findWithBrandByRetailerIdIn(List.of(retailerOrgId))
-                .stream()
-                .map(a -> a.getBrand().getName())
-                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-        return capToPlan(org, Optional.of(names), Brand::getName);
+        return effectiveBrands(retailerOrgId, Brand::getName);
     }
 
     /**
@@ -93,16 +93,76 @@ public class BrandAccessService {
      */
     @Transactional(readOnly = true)
     public Optional<Set<String>> allowedBrandSlugs(String retailerOrgId) {
+        return effectiveBrands(retailerOrgId, Brand::getSlug);
+    }
+
+    /**
+     * The one place every brand restriction meets, keyed however the caller needs.
+     *
+     * A shop's catalogue is narrowed from three directions, and all of them hold:
+     *
+     * <ol>
+     *   <li>The DISTRIBUTOR's grant ({@code brandsRestricted} +
+     *       {@link com.gridstore.huevista.account.model.RetailerBrandAssignment}) — what
+     *       this shop is permitted to carry. Decided above the shop, and not its to widen.</li>
+     *   <li>The SHOP's own selection ({@code visibleBrandsRestricted} +
+     *       {@link com.gridstore.huevista.account.model.ShopVisibleBrand}) — of what it may
+     *       carry, which companies it actually stocks and wants shown.</li>
+     *   <li>The PLAN's cap ({@link #capToPlan}) — the free tier carries one company.</li>
+     * </ol>
+     *
+     * The order is not arbitrary. Grant before selection is what makes a revoke bite: the
+     * shop's choice can only ever remove companies, never add one back, so a shop that
+     * selected Berger and later lost Berger upstream shows no Berger whatever its own
+     * table still holds.
+     *
+     * Selection before the plan cap matters just as much, and in the other direction. The
+     * cap keeps ONE company, and letting the shop choose first means that one is drawn
+     * from what it actually stocks. Capping first would pin the free tier's nominated
+     * company and then intersect the shop's list against it — leaving a free shop that
+     * stocks anything else with an empty catalogue, unable to sell, over a company it
+     * never chose to carry.
+     *
+     * Resolving all three here rather than at each call site is the whole point —
+     * everything downstream (the counter's studio, the kiosk, every access code, every
+     * onboarded customer) reads through {@code allowedBrandSlugs} /
+     * {@code allowedBrandNames}, so each limit lands in all of them at once and cannot be
+     * forgotten in one.
+     */
+    private Optional<Set<String>> effectiveBrands(String retailerOrgId,
+                                                  java.util.function.Function<Brand, String> key) {
         Organization org = orgRepository.findById(retailerOrgId)
                 .orElseThrow(() -> new ResourceNotFoundException("Organization not found: " + retailerOrgId));
-        if (!org.isBrandsRestricted()) {
-            return capToPlan(org, Optional.empty(), Brand::getSlug);
+        // 1) The DISTRIBUTOR's grant — what this shop is permitted to carry at all.
+        //    Decided above the shop, and never widened by anything below.
+        Optional<Set<String>> allowed = org.isBrandsRestricted()
+                ? Optional.of(brandAssignmentRepository.findWithBrandByRetailerIdIn(List.of(retailerOrgId))
+                        .stream()
+                        .map(a -> key.apply(a.getBrand()))
+                        .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new)))
+                : Optional.empty();
+
+        // 2) The SHOP's own selection, narrowing that grant to what it actually stocks.
+        if (org.isVisibleBrandsRestricted()) {
+            Set<String> shown = visibleBrandRepository.findWithBrandByRetailerId(retailerOrgId).stream()
+                    .map(v -> key.apply(v.getBrand()))
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            if (allowed.isPresent()) {
+                Set<String> narrowed = new LinkedHashSet<>(allowed.get());
+                narrowed.retainAll(shown);
+                allowed = Optional.of(narrowed);
+            } else {
+                allowed = Optional.of(shown);
+            }
         }
-        Set<String> slugs = brandAssignmentRepository.findWithBrandByRetailerIdIn(List.of(retailerOrgId))
-                .stream()
-                .map(a -> a.getBrand().getSlug())
-                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-        return capToPlan(org, Optional.of(slugs), Brand::getSlug);
+
+        // 3) The PLAN's cap, applied LAST and deliberately so. The free tier allows one
+        //    company, and capping after the shop has chosen means that one is picked from
+        //    what the shop actually stocks. The other order caps to the free tier's
+        //    nominated company first and then intersects the shop's list with it — which
+        //    yields NOTHING for a free shop that stocks anything else, stranding it with a
+        //    catalogue it cannot sell from over a company it never chose to carry.
+        return capToPlan(org, allowed, key);
     }
 
     /**
@@ -255,9 +315,14 @@ public class BrandAccessService {
     }
 
     /**
-     * Reject any requested brand the shop does not carry, so a crafted (or simply stale)
-     * access-code request can't unlock a company the distributor never assigned. A blank
-     * request is always fine — it means "no company filter", not "every company".
+     * Reject any requested brand the shop does not offer, so a crafted (or simply stale)
+     * access-code request can't unlock a company the distributor never assigned, or one
+     * the shop itself has switched off. A blank request is always fine — it means "no
+     * company filter", not "every company".
+     *
+     * The two refusals need different words. "Ask your distributor" is useless advice for
+     * a company the shop is holding back by its own setting — that one it can turn on
+     * itself, and telling it otherwise sends it to argue with the wrong party.
      */
     @Transactional(readOnly = true)
     public void assertBrandsOfferable(String retailerOrgId, List<String> requestedBrands) {
@@ -275,12 +340,151 @@ public class BrandAccessService {
                 .filter(b -> carried.stream().noneMatch(c -> c.equalsIgnoreCase(b)))
                 .distinct()
                 .toList();
-        if (!rejected.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "Your shop doesn't carry " + String.join(", ", rejected)
-                    + ". Ask your distributor to assign "
-                    + (rejected.size() == 1 ? "it" : "them") + " before offering "
-                    + (rejected.size() == 1 ? "it" : "them") + " to a customer.");
+        if (rejected.isEmpty()) {
+            return;
+        }
+        String it = rejected.size() == 1 ? "it" : "them";
+        String named = String.join(", ", rejected);
+
+        // Three different things can withhold a company, and they are fixed by three
+        // different people — so the refusal has to say which one actually bit. Inferring
+        // "the shop hid it" from "granted but not offered" was right while those were the
+        // only two limits; the plan cap made it wrong, and told a free-tier shop to go and
+        // untick a box that was never ticked.
+        Organization org = requireOrg(retailerOrgId);
+        Set<String> granted = grantedBrandNames(retailerOrgId);
+        boolean anyUngranted = rejected.stream()
+                .anyMatch(b -> granted.stream().noneMatch(g -> g.equalsIgnoreCase(b)));
+        if (anyUngranted) {
+            throw new IllegalArgumentException("Your shop doesn't carry " + named
+                    + ". Ask your distributor to assign " + it + " before offering "
+                    + it + " to a customer.");
+        }
+
+        // Granted, so it is either the shop's own selection or the plan.
+        if (org.isVisibleBrandsRestricted()) {
+            Set<String> shown = visibleBrandRepository.findWithBrandByRetailerId(retailerOrgId).stream()
+                    .map(v -> v.getBrand().getName())
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            boolean shopHidSome = rejected.stream()
+                    .anyMatch(b -> shown.stream().noneMatch(s -> s.equalsIgnoreCase(b)));
+            if (shopHidSome) {
+                throw new IllegalArgumentException("Your shop isn't showing " + named
+                        + ". Turn " + it + " back on in Shop settings → Paint companies, or leave "
+                        + it + " off for customers too.");
+            }
+        }
+
+        // Granted and not hidden: the plan is what is holding it back.
+        throw new IllegalArgumentException("Your plan covers one paint company, so "
+                + named + " can't be offered to a customer. Upgrade to a paid plan to use "
+                + "everything your distributor has assigned you.");
+    }
+
+    // ── The shop's own selection ──────────────────────────────────────────────
+
+    /**
+     * What the shop's settings page renders: every company it is permitted to carry, each
+     * flagged with whether it is currently shown.
+     *
+     * The option list is the DISTRIBUTOR's grant, not the whole platform catalogue. A shop
+     * cannot show a company it was never assigned, so offering one as a checkbox would be
+     * a control that silently does nothing.
+     */
+    @Transactional(readOnly = true)
+    public ShopBrandVisibilityResponse visibilityFor(String userId, String retailerOrgId) {
+        requireOwnerOrManager(userId, retailerOrgId);
+        Organization org = requireOrg(retailerOrgId);
+        List<Brand> grantable = grantableBrands(org);
+        Set<Long> shown = visibleBrandRepository.findWithBrandByRetailerId(retailerOrgId).stream()
+                .map(v -> v.getBrand().getId())
+                .collect(java.util.stream.Collectors.toSet());
+        boolean restricted = org.isVisibleBrandsRestricted();
+        return ShopBrandVisibilityResponse.of(restricted, grantable,
+                brand -> !restricted || shown.contains(brand.getId()));
+    }
+
+    /**
+     * Replace the shop's selection wholesale.
+     *
+     * {@code showAll} lifts the shop's own limit entirely — back to "everything my
+     * distributor granted me". Otherwise {@code brandIds} IS the selection, and an empty
+     * one really does mean no companies at all rather than a reset; that ambiguity is
+     * exactly what the flag on the organization exists to settle.
+     *
+     * Ids that the distributor has not granted are dropped rather than rejected. The
+     * alternative is a settings page that 400s because the distributor revoked something
+     * between the page loading and Save being pressed, and the shop's intent — "show these
+     * of mine" — survives the drop intact.
+     */
+    @Transactional
+    public ShopBrandVisibilityResponse setVisibility(String userId, String retailerOrgId,
+                                                     SetVisibleBrandsRequest request) {
+        requireOwnerOrManager(userId, retailerOrgId);
+        Organization org = requireOrg(retailerOrgId);
+
+        visibleBrandRepository.deleteByRetailerId(retailerOrgId);
+        if (!request.isShowAll()) {
+            Set<Long> wanted = request.getBrandIds() == null
+                    ? Set.of() : Set.copyOf(request.getBrandIds());
+            List<Brand> grantable = grantableBrands(org);
+            List<ShopVisibleBrand> rows = grantable.stream()
+                    .filter(b -> wanted.contains(b.getId()))
+                    .map(b -> ShopVisibleBrand.builder().retailer(org).brand(b).build())
+                    .toList();
+            visibleBrandRepository.saveAll(rows);
+            log.info("Shop {} now shows {} of the {} companies it carries",
+                    retailerOrgId, rows.size(), grantable.size());
+        } else {
+            log.info("Shop {} now shows every company it carries", retailerOrgId);
+        }
+        org.setVisibleBrandsRestricted(!request.isShowAll());
+        orgRepository.save(org);
+        return visibilityFor(userId, retailerOrgId);
+    }
+
+    /** The companies the distributor has granted this shop — the pool it may choose from. */
+    private List<Brand> grantableBrands(Organization org) {
+        if (!org.isBrandsRestricted()) {
+            return brandRepository.findAllByOrderByNameAsc();
+        }
+        return brandAssignmentRepository.findWithBrandByRetailerIdIn(List.of(org.getId())).stream()
+                .map(RetailerBrandAssignment::getBrand)
+                .sorted(java.util.Comparator.comparing(Brand::getName, String.CASE_INSENSITIVE_ORDER))
+                .toList();
+    }
+
+    /** Grant-only view, ignoring the shop's own selection — used to word a refusal. */
+    private Set<String> grantedBrandNames(String retailerOrgId) {
+        Organization org = requireOrg(retailerOrgId);
+        return grantableBrands(org).stream()
+                .map(Brand::getName)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private Organization requireOrg(String retailerOrgId) {
+        return orgRepository.findById(retailerOrgId)
+                .orElseThrow(() -> new ResourceNotFoundException("Organization not found: " + retailerOrgId));
+    }
+
+    /**
+     * Who may change what the shop shows: its owner or a manager.
+     *
+     * An admin passes too — they operate every shop's settings from the console, and
+     * locking them out of a per-shop switch means the only way to fix a shop that has hidden
+     * every company is a database edit.
+     */
+    private void requireOwnerOrManager(String userId, String orgId) {
+        User user = userRepository.findById(userId).orElse(null);
+        if (user != null && user.getRole() == UserRole.ADMIN) {
+            return;
+        }
+        boolean owner = membershipRepository.existsByUserIdAndOrganizationIdAndRole(
+                userId, orgId, com.gridstore.huevista.account.model.OrgMemberRole.OWNER);
+        boolean manager = membershipRepository.existsByUserIdAndOrganizationIdAndRole(
+                userId, orgId, com.gridstore.huevista.account.model.OrgMemberRole.MANAGER);
+        if (!owner && !manager) {
+            throw new SecurityException("Only the shop's owner or a manager can change what it shows.");
         }
     }
 }

@@ -58,7 +58,8 @@ class PointsPurchaseServiceTest {
         // and order creation refuses anyone who could never be credited.
         when(users.findById(USER)).thenReturn(java.util.Optional.of(retailer()));
 
-        pricing = new PricingService(mock(BillingService.class), mock(OrgMembershipRepository.class));
+        pricing = new PricingService(mock(BillingService.class), mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class),
+                mock(OrgMembershipRepository.class));
         ReflectionTestUtils.setField(pricing, "rupeesPerPoint", 1);
         ReflectionTestUtils.setField(pricing, "pointsMinPurchase", MIN);
         ReflectionTestUtils.setField(pricing, "pointsMaxPurchase", MAX);

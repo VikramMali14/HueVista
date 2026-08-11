@@ -219,6 +219,22 @@ public class GlobalExceptionHandler {
                 "The resource was modified at the same time by another request. Please retry.");
     }
 
+    /**
+     * A URL that matches no handler is a 404, not a server fault.
+     *
+     * Without this it fell through to the catch-all below and came back as 500 "An
+     * unexpected error occurred." — which is wrong twice over: it tells a caller that
+     * mistyped a path that OUR server broke, and it logs their typo at ERROR with a full
+     * stack trace, so a scanner probing for {@code /wp-login.php} fills the error budget
+     * and buries the failures that are real.
+     */
+    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleNoResource(
+            org.springframework.web.servlet.resource.NoResourceFoundException ex) {
+        log.debug("No handler for {}", ex.getResourcePath());
+        return errorResponse(HttpStatus.NOT_FOUND, "No such endpoint.");
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleGeneric(Exception ex) {
         log.error("Unhandled exception: {}", ex.getMessage(), ex);
