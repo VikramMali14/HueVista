@@ -132,6 +132,23 @@ class ApiContractTest {
                 "shareUrl", "shareToken", "expiresAt");
     }
 
+    @Test
+    void mask_report_shapes_match_frontend_MaskReport() {
+        // One DTO serves two audiences: the reporter gets the first line back as a
+        // receipt, the admin queue reads the rest. Both are pinned together because
+        // both are mirrored by one interface in types.ts.
+        assertThat(propsOf("MaskReportResponse")).containsExactlyInAnyOrder(
+                "id", "issues", "note", "status", "createdAt",
+                "projectId", "projectName",
+                "reporterName", "reporterEmail", "reporterRole", "shopName",
+                // The reported RUN, snapshotted — re-running segmentation overwrites
+                // every one of these on the project itself.
+                "projectStatus", "maskMode", "regionCount", "hadCleanedImage",
+                "adminNote", "resolvedByName", "resolvedAt", "updatedAt");
+        assertThat(propsOf("CreateMaskReportRequest")).containsExactlyInAnyOrder("issues", "note");
+        assertThat(propsOf("UpdateMaskReportRequest")).containsExactlyInAnyOrder("status", "adminNote");
+    }
+
     // ---- Claude recommendations (AI Suggest tab) ---------------------------
 
     @Test
