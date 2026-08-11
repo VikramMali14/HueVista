@@ -54,6 +54,38 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
     @Query("SELECT p FROM Project p WHERE p.accessPausedAt IS NOT NULL AND p.user IS NOT NULL")
     List<Project> findPausedWindows();
 
+    /**
+     * Every project on the platform, whoever owns it — the admin mask browser.
+     *
+     * Ownership is deliberately not a filter here, which is the whole point: a room is
+     * owned by a user OR (for a walk-in who redeemed a code) by the code alone, and the
+     * admin looking into a reported bad run has to be able to reach both. The owner and
+     * the issuing shop are LEFT JOINed for exactly that reason — either side can be
+     * absent — and fetch-joined along with the image so listing a page of rooms is one
+     * query rather than four per row.
+     *
+     * {@code q} matches the room name, the owner's name/email, the shop's name, or the
+     * code itself, so an admin can start from whatever the report gave them. Blank
+     * matches everything.
+     */
+    @Query("""
+            SELECT p FROM Project p
+              JOIN FETCH p.image
+              LEFT JOIN FETCH p.user u
+              LEFT JOIN FETCH p.accessCode c
+              LEFT JOIN FETCH c.organization o
+             WHERE :q = ''
+                OR LOWER(p.name) LIKE :q
+                OR LOWER(p.id) LIKE :q
+                OR LOWER(COALESCE(u.name, '')) LIKE :q
+                OR LOWER(COALESCE(u.email, '')) LIKE :q
+                OR LOWER(COALESCE(o.name, '')) LIKE :q
+                OR LOWER(COALESCE(c.code, '')) LIKE :q
+             ORDER BY p.updatedAt DESC
+            """)
+    List<Project> searchAll(@Param("q") String lowercasedLikePattern,
+                            org.springframework.data.domain.Pageable pageable);
+
     Optional<Project> findByShareToken(String shareToken);
 
     Optional<Project> findByReplicatePredictionId(String predictionId);

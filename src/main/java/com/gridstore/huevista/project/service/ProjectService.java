@@ -567,6 +567,47 @@ public class ProjectService {
         return withAccess(userId, project, toResponse(project));
     }
 
+    // ─── Admin: every room, whoever owns it ──────────────────────────────────
+
+    /**
+     * Rooms across the whole platform, newest first, for the admin mask browser.
+     *
+     * <p>Callers are gated to ROLE_ADMIN at the controller. There is no ownership filter
+     * on purpose: the failure this exists to investigate — a run that put the walls in
+     * the wrong places — is invisible to the backend and only ever reported by the person
+     * whose room it is, so the admin has to be able to open somebody else's room to see
+     * what they saw.
+     *
+     * @param q free text matched against the room name or id, the owner's name or email,
+     *          the shop's name, or the access code. Blank returns everything.
+     */
+    @Transactional(readOnly = true)
+    public List<AdminProjectRow> searchAllProjects(String q, int page, int size) {
+        String pattern = (q == null || q.isBlank())
+                ? "" : "%" + q.trim().toLowerCase(java.util.Locale.ROOT) + "%";
+        var pageable = org.springframework.data.domain.PageRequest.of(
+                Math.max(0, page), Math.min(Math.max(1, size), 200));
+        return projectRepository.searchAll(pattern, pageable).stream()
+                .map(AdminProjectRow::from)
+                .toList();
+    }
+
+    /**
+     * One room's full detail — regions, masks, both canvases — with no ownership check.
+     *
+     * <p>Marked read-only in the response whatever its real state is. An admin is here to
+     * look at what the pipeline produced, not to paint in somebody else's room, and the
+     * studio disables every write path on that flag. The room's own access window is
+     * deliberately not consulted: a lapsed or closed project is exactly the kind that
+     * gets reported, and it would be no use if the report could not then be opened.
+     */
+    @Transactional(readOnly = true)
+    public ProjectResponse getProjectAsAdmin(String projectId) {
+        Project project = projectRepository.findById(projectId)
+                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+        return toResponse(project).withAccess(true, "Admin view — read only.", null, 0, 0);
+    }
+
     /** Attach the viewer's access to an owner-view response. */
     private ProjectResponse withAccess(String userId, Project project, ProjectResponse response) {
         User user = userRepository.findById(userId).orElse(null);
