@@ -70,11 +70,27 @@ public class ProjectBoardService {
     @Transactional
     public ColourBoardResponse recordBoard(Project project, RecordColourBoardRequest request,
                                            java.util.function.Supplier<PdfAllowanceResponse> billed) {
+        return recordBoard(project, request, billed, true);
+    }
+
+    /**
+     * @param mayClose whether running out of boards should CLOSE this project.
+     *
+     * False for a guest room, and the reason is that closing has to leave somewhere to go.
+     * What closing buys is the render, and the render page is behind a sign-in a walk-in on
+     * a shop's code does not have — so closing one of their rooms would take the studio away
+     * and hand back nothing. Their boards are already capped by the code's own allowance,
+     * which is the limit that was actually sold to them.
+     */
+    @Transactional
+    public ColourBoardResponse recordBoard(Project project, RecordColourBoardRequest request,
+                                           java.util.function.Supplier<PdfAllowanceResponse> billed,
+                                           boolean mayClose) {
         if (project.isClosed()) {
             throw new IllegalStateException(
                     "This project is closed. Reopen it to make another colour board.");
         }
-        if (project.getColourBoardsUsed() >= boardsPerProject) {
+        if (mayClose && project.getColourBoardsUsed() >= boardsPerProject) {
             throw new IllegalStateException(
                     "This project has already handed over all " + boardsPerProject
                     + " of its colour boards.");
@@ -87,7 +103,8 @@ public class ProjectBoardService {
         recordPages(project, request, boardIndex);
 
         project.setColourBoardsUsed(boardIndex);
-        boolean closed = boardIndex >= boardsPerProject && projectAccessService.close(project);
+        boolean closed = mayClose && boardIndex >= boardsPerProject
+                && projectAccessService.close(project);
         projectRepository.save(project);
 
         if (closed) {

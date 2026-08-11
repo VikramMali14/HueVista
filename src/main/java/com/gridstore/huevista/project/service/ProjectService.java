@@ -574,7 +574,7 @@ public class ProjectService {
         ProjectAccessService.Access access =
                 projectAccessService.accessFor(userId, user.getRole(), project);
         return response.withAccess(!access.editable(), access.reason(),
-                access.expiresAt(), access.reopenPricePoints());
+                access.expiresAt(), access.reopenPricePoints(), access.reopenPricePaise());
     }
 
     /**
@@ -610,13 +610,20 @@ public class ProjectService {
                 () -> pdfQuotaService.reserveForUser(userId));
     }
 
-    /** The guest twin, billed to whoever the access code says pays. */
+    /**
+     * The guest twin, billed to whoever the access code says pays.
+     *
+     * A guest room records its boards but never CLOSES on them. Closing exists to unlock
+     * the render, and the render page is behind a sign-in a walk-in does not have — so it
+     * would take the studio away from them and give nothing back. How many boards they get
+     * is already governed by the code they were sold.
+     */
     @Transactional
     public ColourBoardResponse recordGuestColourBoard(String accessCodeId, String projectId,
                                                       RecordColourBoardRequest request) {
         Project project = findGuestOwned(accessCodeId, projectId);
         return boardService.recordBoard(project, request,
-                () -> pdfQuotaService.reserveForGuest(accessCodeId));
+                () -> pdfQuotaService.reserveForGuest(accessCodeId), false);
     }
 
     /**
@@ -1562,7 +1569,8 @@ public class ProjectService {
         String originalUrl = storageService.getPublicUrl(image.getStorageKey());
         String cleanedUrl = project.getCleanedImageStorageKey() != null
                 ? storageService.getPublicUrl(project.getCleanedImageStorageKey()) : null;
-        ProjectResponse r = ProjectResponse.from(project, originalUrl, boardService.boardsPerProject());
+        ProjectResponse r = ProjectResponse.from(project, originalUrl,
+                boardService.boardsPerProject(), pricingService.renderTopUpPricePaise());
         r.setCleanedImageUrl(cleanedUrl);
         if (project.getRawMaskStorageKey() != null) {
             r.setRawMaskUrl(storageService.getPublicUrl(project.getRawMaskStorageKey()));

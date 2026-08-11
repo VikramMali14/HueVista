@@ -1,6 +1,5 @@
 package com.gridstore.huevista.project.service;
 
-import com.gridstore.huevista.common.exception.ExternalServiceException;
 import com.gridstore.huevista.common.exception.QuotaExceededException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.image.model.ImageType;
@@ -15,15 +14,13 @@ import com.gridstore.huevista.project.repository.ProjectRenderRepository;
 import com.gridstore.huevista.project.repository.ProjectRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
  * The last step of a project: one photorealistic AI render of a combination the customer
@@ -46,6 +43,12 @@ import java.util.Map;
  * means the refund path is real code that runs, rather than the "there is no refund
  * endpoint anywhere in the billing module" the colour-board download has to live with —
  * this allowance is a column on the project, so giving it back is a decrement.
+ *
+ * <p>This class owns every database moment; {@link ProjectRenderWorker} owns the minute of
+ * HTTP in between. They are separate beans because Spring's {@code @Async} and
+ * {@code @Transactional} are proxy-based: a method calling its own annotated method goes
+ * straight down the class and picks up neither, so a worker living here would have run on
+ * the request thread with no transaction at all.
  */
 @Slf4j
 @Service
@@ -55,23 +58,21 @@ public class ProjectRenderService {
     private final ProjectRepository projectRepository;
     private final ProjectRenderRepository renderRepository;
     private final ProjectBoardService boardService;
-    private final ReplicatePredictions replicate;
     private final RenderPromptBuilder promptBuilder;
     private final StorageService storageService;
-    private final StubAiPipeline stubAiPipeline;
+    private final ProjectRenderWorker worker;
 
-    /** Nano Banana Pro, the same model the clean step uses — the best of the ones wired
-     *  in at preserving a building's own architecture while repainting it. */
-    @Value("${replicate.render.model:google/nano-banana-pro}")
-    private String model;
-
-    /** 2K by default here, against 1K for the clean: this image is the thing the customer
-     *  keeps and shows people, not an intermediate the masks are derived from. */
-    @Value("${replicate.render.resolution:2K}")
-    private String resolution;
-
-    @Value("${replicate.render.aspect-ratio:match_input_image}")
-    private String aspectRatio;
+    /**
+     * Everything the model call needs, read out of the database in one go and carried to
+     * the worker as plain values.
+     *
+     * The entities are deliberately left behind. The worker runs on the AI executor, where
+     * there is no session, so a lazy field touched out there throws
+     * {@code LazyInitializationException} — and holding a transaction open across a minute
+     * of polling to avoid that would be worse than the bug.
+     */
+    public record RenderJob(String renderId, String prompt, List<String> imageUrls,
+                            String ownerFolder) {}
 
     /**
      * Accept a render request: check it may be made, spend the allowance, and hand the
@@ -114,74 +115,31 @@ public class ProjectRenderService {
                 project.getId(), render.getId(), page.getId(),
                 project.getRendersUsed(), project.getRendersAllowed());
 
-        generateAsync(render.getId());
+        worker.run(render.getId());
         return ProjectRenderResponse.from(render, null);
     }
 
     /**
-     * Produce the image.
+     * Read everything the model needs while a session is still open, and mark the render
+     * RUNNING on the way past.
      *
-     * Runs on the AI executor and in its own transaction — the caller's has already
-     * committed the spent allowance by the time this starts, which is the point: the
-     * charge must survive a render that fails, right up until the refund puts it back.
+     * Returns empty when the render has vanished under us — a project deleted between the
+     * request and the worker picking it up — which is a reason to stop, not to fail.
      */
-    @Async("aiTaskExecutor")
-    public void generateAsync(String renderId) {
-        try {
-            generate(renderId);
-        } catch (Exception e) {
-            // Anything that escaped generate() is a bug rather than a model failure, but
-            // it must still not leave a render QUEUED forever with the allowance spent.
-            log.error("Render failed unexpectedly: render={}", renderId, e);
-            fail(renderId, "Something went wrong making your image. Your credit is back — "
-                    + "please try again.");
-        }
-    }
-
-    void generate(String renderId) {
+    @Transactional
+    public java.util.Optional<RenderJob> startJob(String renderId) {
         ProjectRender render = renderRepository.findById(renderId).orElse(null);
         if (render == null) {
             log.warn("Render vanished before it ran: render={}", renderId);
-            return;
+            return java.util.Optional.empty();
         }
         Project project = render.getProject();
-        markRunning(renderId);
-
-        byte[] image;
-        try {
-            image = stubAiPipeline.isEnabled()
-                    ? stubRender(project)
-                    : callModel(render, project);
-        } catch (ExternalServiceException e) {
-            fail(renderId, e.getMessage());
-            return;
-        } catch (Exception e) {
-            log.error("Render generation failed: render={}", renderId, e);
-            fail(renderId, "Your image could not be made. Your credit is back — "
-                    + "please try again.");
-            return;
-        }
-
-        try {
-            String ownerId = ownerFolder(project);
-            String key = storageService.store(image, ownerId, "render.jpg", "image/jpeg");
-            succeed(renderId, key);
-            log.info("Render ready: project={} render={}", project.getId(), renderId);
-        } catch (Exception e) {
-            log.error("Render produced an image but could not store it: render={}", renderId, e);
-            fail(renderId, "Your image was made but could not be saved. Your credit is back — "
-                    + "please try again.");
-        }
-    }
-
-    private byte[] callModel(ProjectRender render, Project project) {
         ImageType imageType = project.getImage().getImageType();
-        String prompt = promptBuilder.build(render, render.getPage(), imageType);
 
         List<String> images = new ArrayList<>();
         // The cleaned photo when there is one: clutter gone and every paintable surface
-        // flat white, so the model tints a neutral surface instead of fighting the
-        // colour that is already there. The original is the fallback, not the default.
+        // flat white, so the model tints a neutral surface instead of fighting the colour
+        // that is already there. The original is the fallback, not the default.
         images.add(storageService.getPublicUrl(project.getCleanedImageStorageKey() != null
                 ? project.getCleanedImageStorageKey()
                 : project.getImage().getStorageKey()));
@@ -189,29 +147,28 @@ public class ProjectRenderService {
             images.addAll(maskUrls(project));
         }
 
-        Map<String, Object> input = new java.util.HashMap<>();
-        input.put("prompt", prompt);
-        input.put("image_input", images);
-        input.put("output_format", "jpg");
-        if (resolution != null && !resolution.isBlank()) input.put("resolution", resolution);
-        if (aspectRatio != null && !aspectRatio.isBlank()) input.put("aspect_ratio", aspectRatio);
+        render.setStatus(ProjectRender.Status.RUNNING);
+        renderRepository.save(render);
 
-        return replicate.runToImage(model, input, "Render");
+        return java.util.Optional.of(new RenderJob(
+                renderId,
+                promptBuilder.build(render, render.getPage(), imageType),
+                images,
+                ownerFolder(project)));
     }
 
     /**
      * The region masks, so "keep the original borders" means the boundaries this project
      * actually has rather than the model's idea of them.
      *
-     * Hand-drawn masks are preferred over generated ones for the same region — a customer
-     * who corrected a wall by hand has told us where its edge is, and that answer beats the
-     * model's. Regions with no mask are skipped rather than faked.
+     * A region carries whichever mask it has — hand-drawn if the customer corrected that
+     * wall, generated otherwise — so there is nothing to choose between here; they go in
+     * the order the studio shows them. Regions with no mask at all are skipped rather
+     * than faked.
      */
     private List<String> maskUrls(Project project) {
         return project.getRegions().stream()
-                .sorted(java.util.Comparator
-                        .comparing(Region::isManual).reversed()
-                        .thenComparingInt(Region::getDisplayOrder))
+                .sorted(java.util.Comparator.comparingInt(Region::getDisplayOrder))
                 .map(Region::getMaskUrl)
                 .filter(key -> key != null && !key.isBlank())
                 .map(storageService::getPublicUrl)
@@ -225,49 +182,20 @@ public class ProjectRenderService {
         return "orphaned";
     }
 
-    /**
-     * A flat image standing in for the model, for tests and the free E2E path. Deliberately
-     * not a copy of the cleaned photo: a stub that returns something plausible hides the
-     * difference between "the render ran" and "the render was skipped".
-     */
-    private byte[] stubRender(Project project) {
-        log.warn("STUB AI: returning a placeholder render for project={}", project.getId());
-        try {
-            java.awt.image.BufferedImage img =
-                    new java.awt.image.BufferedImage(64, 64, java.awt.image.BufferedImage.TYPE_INT_RGB);
-            java.awt.Graphics2D g = img.createGraphics();
-            g.setColor(new java.awt.Color(0x8899AA));
-            g.fillRect(0, 0, 64, 64);
-            g.dispose();
-            var out = new java.io.ByteArrayOutputStream();
-            javax.imageio.ImageIO.write(img, "jpg", out);
-            return out.toByteArray();
-        } catch (java.io.IOException e) {
-            throw new ExternalServiceException("Stub render could not be produced.");
-        }
-    }
-
-    // ── Status transitions, each in its own transaction ─────────────────────
+    // ── Finishing, each in its own transaction ──────────────────────────────
     //
-    // Separate and REQUIRES_NEW because they run from the async worker, where there is no
-    // caller transaction to join and a failure that rolls back the status write would
-    // leave a render stuck RUNNING with its allowance spent.
+    // REQUIRES_NEW because these are called from the worker thread, where there is no
+    // caller transaction to join and a rollback would leave a render stuck RUNNING with
+    // its allowance spent.
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    void markRunning(String renderId) {
-        renderRepository.findById(renderId).ifPresent(r -> {
-            r.setStatus(ProjectRender.Status.RUNNING);
-            renderRepository.save(r);
-        });
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    void succeed(String renderId, String storageKey) {
+    public void succeed(String renderId, String storageKey) {
         renderRepository.findById(renderId).ifPresent(r -> {
             r.setStatus(ProjectRender.Status.READY);
             r.setStorageKey(storageKey);
-            r.setCompletedAt(java.time.LocalDateTime.now());
+            r.setCompletedAt(LocalDateTime.now());
             renderRepository.save(r);
+            log.info("Render ready: render={}", renderId);
         });
     }
 
@@ -280,11 +208,11 @@ public class ProjectRenderService {
      * a lie in exactly the case where it matters most.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    void fail(String renderId, String reason) {
+    public void fail(String renderId, String reason) {
         renderRepository.findById(renderId).ifPresent(r -> {
             r.setStatus(ProjectRender.Status.FAILED);
             r.setFailureReason(reason);
-            r.setCompletedAt(java.time.LocalDateTime.now());
+            r.setCompletedAt(LocalDateTime.now());
             renderRepository.save(r);
 
             Project project = r.getProject();
@@ -295,6 +223,11 @@ public class ProjectRenderService {
                         project.getId(), renderId);
             }
         });
+    }
+
+    /** Store the finished bytes and return the storage KEY — never a presigned URL. */
+    public String store(byte[] image, String ownerFolder) throws java.io.IOException {
+        return storageService.store(image, ownerFolder, "render.jpg", "image/jpeg");
     }
 
     // ── Reading ────────────────────────────────────────────────────────────

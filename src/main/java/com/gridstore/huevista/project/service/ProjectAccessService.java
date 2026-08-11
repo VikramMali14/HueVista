@@ -62,8 +62,17 @@ public class ProjectAccessService {
         VIEW_ONLY
     }
 
-    /** Why a project is view-only, and what it would take to unlock it. */
-    public record Access(Mode mode, String reason, LocalDateTime expiresAt, int reopenPricePoints) {
+    /**
+     * Why a project is view-only, and what it would take to unlock it.
+     *
+     * BOTH rails are quoted, and both are read from the project rather than from the
+     * account, because reopening no longer has one price. A lapsed window costs ₹9 and a
+     * closed project ₹99, and the account-level quote cannot tell which this is — it
+     * knows the buyer, not the room. Quoting the wrong one puts a price on the banner
+     * that the payment then refuses to match.
+     */
+    public record Access(Mode mode, String reason, LocalDateTime expiresAt,
+                         int reopenPricePoints, int reopenPricePaise) {
         public boolean editable() {
             return mode == Mode.FULL;
         }
@@ -119,7 +128,7 @@ public class ProjectAccessService {
         // keep editing a job they had already closed and been rendered for.
         if (project.isClosed()) {
             return new Access(Mode.VIEW_ONLY, CLOSED, project.getAccessExpiresAt(),
-                    pricingService.pointsPriceReopen(true));
+                    pricingService.pointsPriceReopen(true), pricingService.reopenPricePaise(true));
         }
         if (subscribed) {
             return full();
@@ -132,18 +141,19 @@ public class ProjectAccessService {
         }
         if (project.isAccessWindowOpen()) {
             return new Access(Mode.FULL, null, project.getAccessExpiresAt(),
-                    pricingService.pointsPriceReopen());
+                    pricingService.pointsPriceReopen(), pricingService.reopenPricePaise());
         }
         // A project that never carried a window at all belongs to an account that used to
         // be covered by a plan. It reads as subscription-lapsed rather than expired,
         // because buying a reopen would not be the right advice — resubscribing is.
         String reason = project.hasAccessWindow() ? windowLapsedMessage() : NO_SUBSCRIPTION;
         return new Access(Mode.VIEW_ONLY, reason, project.getAccessExpiresAt(),
-                pricingService.pointsPriceReopen());
+                pricingService.pointsPriceReopen(), pricingService.reopenPricePaise());
     }
 
     private Access full() {
-        return new Access(Mode.FULL, null, null, pricingService.pointsPriceReopen());
+        return new Access(Mode.FULL, null, null,
+                pricingService.pointsPriceReopen(), pricingService.reopenPricePaise());
     }
 
     /**

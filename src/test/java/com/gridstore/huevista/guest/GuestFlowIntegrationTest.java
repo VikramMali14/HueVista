@@ -60,6 +60,7 @@ class GuestFlowIntegrationTest {
     @Autowired PasswordEncoder passwordEncoder;
     @Autowired BillingService billingService;
     @Autowired SubscriptionRepository subscriptionRepository;
+    @Autowired com.gridstore.huevista.project.repository.ProjectRepository projectRepository;
 
     private static final String CODE = "GUESTAB2";
     private String codeId;
@@ -504,5 +505,57 @@ class GuestFlowIntegrationTest {
         out[out.length - 2] = (byte) 0xFF;
         out[out.length - 1] = (byte) 0xD9;
         return out;
+    }
+
+    /**
+     * A walk-in's boards are recorded, but they never close the room out from under them.
+     *
+     * Closing exists to unlock the AI render, and the render page is behind a sign-in a
+     * guest does not have. Closing a guest room would therefore take away the studio and
+     * hand back nothing — which is exactly what it did before the guest path stopped
+     * passing mayClose.
+     */
+    @Test
+    void guestColourBoardsAreRecordedButNeverCloseTheRoom() throws Exception {
+        // The board is billed to the issuing shop's plan, so the shop needs one.
+        billingService.grantTrial(retailerId, Plan.PROFESSIONAL, 14);
+
+        String guestToken = redeemAsGuest();
+        String projectId = guestCreateProject(guestToken, guestUpload(guestToken));
+
+        String board = """
+                {"pages":[{"title":"Calm","shades":[
+                  {"regionLabel":"Main wall","shadeName":"Beige","hex":"#e8d5b0"}]}]}""";
+
+        mockMvc.perform(post("/api/guest/projects/" + projectId + "/colour-boards")
+                        .header("Authorization", "Bearer " + guestToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(board))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.boardsUsed").value(1))
+                .andExpect(jsonPath("$.closed").value(false));
+
+        // The board that would have closed an account holder's project, and the one after
+        // it. Both go through: what limits a guest is the allowance they were sold — the
+        // shop's plan here, the code's own quota on a kiosk code — never the two-board
+        // lifecycle, which has nowhere to send them afterwards.
+        mockMvc.perform(post("/api/guest/projects/" + projectId + "/colour-boards")
+                        .header("Authorization", "Bearer " + guestToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(board))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.closed").value(false));
+
+        mockMvc.perform(post("/api/guest/projects/" + projectId + "/colour-boards")
+                        .header("Authorization", "Bearer " + guestToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(board))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.boardsUsed").value(3))
+                .andExpect(jsonPath("$.closed").value(false));
+
+        org.assertj.core.api.Assertions
+                .assertThat(projectRepository.findById(projectId).orElseThrow().isClosed())
+                .isFalse();
     }
 }

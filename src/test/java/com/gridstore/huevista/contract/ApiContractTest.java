@@ -87,10 +87,14 @@ class ApiContractTest {
                 "shadeCodeScheme",
                 // Closing: when the job finished, how many colour boards it has handed
                 // over of the ones it gets, and what is left of its AI render allowance.
-                "closedAt", "boardsUsed", "boardsAllowed", "rendersAllowed", "rendersUsed",
+                "closedAt", "boardsUsed", "boardsAllowed",
+                "rendersAllowed", "rendersUsed", "renderPricePaise",
                 // Access: the studio disables the palette on readOnly rather than letting
                 // the user paint and then fail on autosave.
-                "readOnly", "readOnlyReason", "accessExpiresAt", "reopenPricePoints");
+                "readOnly", "readOnlyReason", "accessExpiresAt",
+                // Both rails, quoted from the PROJECT: a lapsed window and a closed
+                // project are different purchases at different prices.
+                "reopenPricePoints", "reopenPricePaise");
     }
 
     @Test

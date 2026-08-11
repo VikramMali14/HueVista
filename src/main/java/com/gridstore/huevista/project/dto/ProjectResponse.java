@@ -64,6 +64,10 @@ public class ProjectResponse {
     // and unlocked by closing; the rest are bought one at a time.
     private int rendersAllowed;
     private int rendersUsed;
+    // What one more costs, in paise. Quoted here rather than left for the studio to infer
+    // from the reopen price they happen to share today: they are two settings, and a
+    // button that names a price the payment then refuses is worse than no price at all.
+    private int renderPricePaise;
 
     // ─── Access ──────────────────────────────────────────────────────────────
     // True when the viewer may look but not touch: the colours last applied are all
@@ -77,24 +81,30 @@ public class ProjectResponse {
     private LocalDateTime accessExpiresAt;
     // What reopening a lapsed project costs, in paise — so the studio can name the
     // price on the banner instead of sending the user off to find it.
-    /** What reopening this project costs, in POINTS. */
+    /** What reopening THIS project costs, on both rails. Read from the project rather
+     *  than from the account: a lapsed window and a closed project are two different
+     *  purchases at two different prices, and only the project knows which this is. */
     private int reopenPricePoints;
+    private int reopenPricePaise;
 
     /** Stamp the viewer's access onto an owner-view response. */
     public ProjectResponse withAccess(boolean readOnly, String reason,
-                                      LocalDateTime accessExpiresAt, int reopenPricePoints) {
+                                      LocalDateTime accessExpiresAt,
+                                      int reopenPricePoints, int reopenPricePaise) {
         this.readOnly = readOnly;
         this.readOnlyReason = reason;
         this.accessExpiresAt = accessExpiresAt;
         this.reopenPricePoints = reopenPricePoints;
+        this.reopenPricePaise = reopenPricePaise;
         return this;
     }
 
     public static ProjectResponse from(Project project, String imageUrl) {
-        return from(project, imageUrl, 0);
+        return from(project, imageUrl, 0, 0);
     }
 
-    public static ProjectResponse from(Project project, String imageUrl, int boardsAllowed) {
+    public static ProjectResponse from(Project project, String imageUrl,
+                                       int boardsAllowed, int renderPricePaise) {
         List<RegionResponse> regions = project.getRegions().stream()
                 .map(RegionResponse::from)
                 .toList();
@@ -118,6 +128,7 @@ public class ProjectResponse {
                 .boardsAllowed(boardsAllowed)
                 .rendersAllowed(project.getRendersAllowed())
                 .rendersUsed(project.getRendersUsed())
+                .renderPricePaise(renderPricePaise)
                 .createdAt(project.getCreatedAt())
                 .updatedAt(project.getUpdatedAt())
                 .build();
