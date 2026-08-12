@@ -14,34 +14,28 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Generates the colour-coded wall mask by asking an image-EDITING model on
- * Replicate to flood each paintable surface with a flat category colour.
- * Model-agnostic: the configured model decides which request schema is sent.
+ * Generates the colour-coded wall mask by asking Replicate's Nano Banana Pro
+ * ({@code google/nano-banana-pro}, i.e. Gemini 3 Pro Image) to flood each
+ * paintable surface with a flat category colour.
  *
- * Supported model families (same REPLICATE_API_TOKEN for both):
- *   black-forest-labs/flux-2-max — FLUX.2 [max] (DEFAULT — highest editing
- *                                  consistency in the FLUX.2 lineup; inputs:
- *                                  input_images + aspect_ratio, both support
- *                                  "match_input_image" so the mask keeps the
- *                                  photo's exact aspect)
- *   black-forest-labs/flux-2-*   — other FLUX.2 tiers (pro/flex), same schema
- *   google/nano-banana-pro / -2  — Gemini Image family (previous default;
- *                                  inputs: image_input + aspect_ratio +
- *                                  1K/2K/4K resolution)
+ * Request schema: {@code image_input} + {@code aspect_ratio} (which accepts
+ * "match_input_image", so the mask keeps the photo's exact aspect) + an
+ * optional 1K/2K/4K {@code resolution}. Sibling models in the same family
+ * (e.g. {@code google/nano-banana-2}) speak the same schema and can be set
+ * via config without a code change.
  *
  * Honest caveat: this is generative image EDITING, not pixel extraction.
  * Pixel alignment isn't guaranteed. The downstream post-processing
  * (colour gate, morph clean, edge snap — see SegmentationService) exists
  * precisely to absorb the model's small misregistrations.
  *
- * Configuration (key names kept from the Nano Banana era so existing
- * REPLICATE_NANO_BANANA_* deployment env vars keep working):
+ * Configuration:
  *   replicate.nano-banana.enabled       — kill switch (default false)
- *   replicate.nano-banana.model         — owner/name (default black-forest-labs/flux-2-max)
+ *   replicate.nano-banana.model         — owner/name (default google/nano-banana-pro)
  *   replicate.nano-banana.model-version — pin a version hash for production
  *
- * Cost: ~$0.03-0.12 per mask depending on the model. One colour-coded
- * call per upload. User explicitly asked for quality over cost.
+ * Cost: ~$0.10 per mask. One colour-coded call per upload. User explicitly
+ * asked for quality over cost.
  */
 @Slf4j
 @Service
@@ -53,7 +47,7 @@ public class ReplicateMaskSegmenter {
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
 
-    @Value("${replicate.nano-banana.model:black-forest-labs/flux-2-max}")
+    @Value("${replicate.nano-banana.model:google/nano-banana-pro}")
     private String model;
 
     @Value("${replicate.nano-banana.model-version:}")
@@ -68,18 +62,13 @@ public class ReplicateMaskSegmenter {
      * mask can come back at a different aspect than the photo — and every
      * region mask is then systematically stretched or shifted off the real
      * surfaces. "match_input_image" pins the output to the photo's own
-     * aspect and is supported by BOTH the FLUX.2 and Nano Banana families.
-     * Blank = omit the parameter.
+     * aspect. Blank = omit the parameter.
      */
     @Value("${replicate.nano-banana.aspect-ratio:match_input_image}")
     private String aspectRatio;
 
-    /** Output resolution when the model supports it; higher means finer mask
-     *  edges. Configured in Nano Banana units (1K/2K/4K) — for FLUX models
-     *  the value is translated to megapixels ("1 MP"/"2 MP"/"4 MP", see
-     *  {@link #resolutionForModel}); FLUX also accepts "match_input_image"
-     *  directly. Blank (default) = omit and take the model's native output
-     *  size. */
+    /** Output resolution (1K/2K/4K); higher means finer mask edges. Blank
+     *  (default) = omit and take the model's native output size. */
     @Value("${replicate.nano-banana.resolution:}")
     private String resolution;
 
@@ -435,57 +424,23 @@ public class ReplicateMaskSegmenter {
 
     /**
      * Base input for an image-edit prediction, plus the OPTIONAL aspect-ratio
-     * and resolution controls when configured. The source-image key differs
-     * per family: FLUX.2 takes {@code input_images}, Nano Banana takes
-     * {@code image_input}. Both families accept {@code aspect_ratio} with
-     * "match_input_image", which is what keeps the mask pinned to the photo's
-     * exact aspect. If a model variant rejects an optional key,
+     * and resolution controls when configured. {@code aspect_ratio} with
+     * "match_input_image" is what keeps the mask pinned to the photo's exact
+     * aspect. If a model variant rejects an optional key,
      * {@link #startPrediction} retries once without the optional keys.
      */
     private Map<String, Object> buildImageEditInput(String prompt, String imageUrl) {
         Map<String, Object> input = new java.util.HashMap<>();
         input.put("prompt", prompt);
-        input.put(isFluxModel() ? "input_images" : "image_input", List.of(imageUrl));
+        input.put("image_input", List.of(imageUrl));
         input.put("output_format", "png");
         if (aspectRatio != null && !aspectRatio.isBlank()) {
             input.put("aspect_ratio", aspectRatio.trim());
         }
-        String res = resolutionForModel();
-        if (res != null) {
-            input.put("resolution", res);
+        if (resolution != null && !resolution.isBlank()) {
+            input.put("resolution", resolution.trim());
         }
         return input;
-    }
-
-    /** FLUX family speaks a different input schema (input_images, megapixel
-     *  resolutions) than the Gemini/Nano Banana family. Matches any
-     *  black-forest-labs model so flux-2-pro/flex work too. */
-    private boolean isFluxModel() {
-        return model != null && model.startsWith("black-forest-labs/");
-    }
-
-    /**
-     * Resolution value in the configured model's own units, or null to omit
-     * the key. The config is written in Nano Banana units (1K/2K/4K); FLUX
-     * models size in megapixels instead, so those values are translated
-     * (1K→"1 MP", 2K→"2 MP", 4K→"4 MP" — FLUX caps at 4 MP / 2048px longest
-     * side, which matches MAX_MASK_DIM downstream). Anything else — e.g.
-     * FLUX's own "match_input_image" or an explicit "2 MP" — passes through
-     * untouched, and {@link #startPrediction}'s retry-without-optionals
-     * covers a value the model rejects.
-     */
-    private String resolutionForModel() {
-        if (resolution == null || resolution.isBlank()) return null;
-        String value = resolution.trim();
-        if (isFluxModel()) {
-            return switch (value.toUpperCase()) {
-                case "1K" -> "1 MP";
-                case "2K" -> "2 MP";
-                case "4K" -> "4 MP";
-                default -> value;
-            };
-        }
-        return value;
     }
 
     private String startPrediction(Map<String, Object> input) {
@@ -567,9 +522,9 @@ public class ReplicateMaskSegmenter {
     }
 
     /**
-     * Model output on Replicate can be a single URL string (FLUX.2), a list
-     * of URLs (Nano Banana), or a dict — depends on the model. Handle all
-     * three.
+     * Nano Banana returns a list of URLs, but Replicate's envelope also allows
+     * a bare URL string or a dict depending on the model version. Handle all
+     * three so a schema change doesn't break the mask.
      */
     @SuppressWarnings("unchecked")
     private String extractOutputUrl(Object output) {

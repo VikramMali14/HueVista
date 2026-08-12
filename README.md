@@ -162,7 +162,7 @@ With this on, the two paid Replicate steps are replaced by local no-ops:
 | Upload classification | Claude Vision | **unchanged — still calls Claude** (indoor / house exterior / not a house) |
 | Photo clean-up | Nano Banana Pro repaint | skipped — the uploaded photo is left untouched and stays the canvas |
 | Cleaning hints | Claude | skipped (only reachable from inside the cleaner) |
-| Colour-coded mask | FLUX.2 [max] | drawn locally: three equal **vertical** stripes, RED \| GREEN \| BLUE |
+| Colour-coded mask | Nano Banana Pro | drawn locally: three equal **vertical** stripes, RED \| GREEN \| BLUE |
 
 The fake mask always splits into all three categories — main wall, accent wall
 and trim — so region editing, shade picking, compare, PDF export and sharing
@@ -257,11 +257,14 @@ A Starter retailer's 20 monthly renders translates to roughly ₹100 in cloud sp
 Everything in [.env.example](.env.example) explains itself; these are the items that
 bite if skipped:
 
-1. **Email + SMS delivery** — set `MAIL_ENABLED=true` (+ SMTP creds) and
-   `SMS_ENABLED=true`, `SMS_PROVIDER=twilio` (+ Twilio creds). These flags also
-   drive the retailer verification gate: a channel is only required-verified
-   before project creation when it can actually deliver a code, so leaving them
+1. **Email delivery** — set `MAIL_ENABLED=true` (+ SMTP creds). This flag also
+   drives the retailer verification gate: a channel is only required-verified
+   before project creation when it can actually deliver a code, so leaving it
    off silently weakens onboarding verification.
+
+   `SMS_ENABLED` stays **false**. No SMS provider is implemented — `SmsSender`
+   writes the code to the server log — so enabling it gates every retailer behind
+   an OTP that is never delivered. Implement a provider first.
 
    The product sends from two addresses and the SMTP account must be authorised
    for **both**, on one domain with SPF/DKIM/DMARC set — a provider asked to send

@@ -24,16 +24,14 @@ public class ConversationSummaryResponse {
 
     public static ConversationSummaryResponse from(Conversation c, String lastMessage) {
         var u = c.getUser();
-        String name = u != null ? u.getName()
-                : (c.getContactName() != null ? c.getContactName() : c.getContactChannelId());
         return ConversationSummaryResponse.builder()
                 .id(c.getId())
                 .channel(c.getChannel())
                 .status(c.getStatus())
                 .subject(c.getSubject())
-                .requesterName(name)
+                .requesterName(u != null ? u.getName() : null)
                 .requesterEmail(u != null ? u.getEmail() : null)
-                .requesterRole(u != null && u.getRole() != null ? u.getRole().name() : c.getChannel().name())
+                .requesterRole(u != null && u.getRole() != null ? u.getRole().name() : null)
                 .lastMessage(lastMessage)
                 .updatedAt(c.getUpdatedAt())
                 .build();

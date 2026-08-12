@@ -33,7 +33,6 @@ public class SupportService {
     private final SupportMessageRepository messageRepo;
     private final UserRepository userRepository;
     private final ClaudeService claude;
-    private final com.gridstore.huevista.support.channel.WhatsAppService whatsAppService;
 
     @Transactional
     public ConversationResponse start(String userId, String message, String subject) {
@@ -85,64 +84,6 @@ public class SupportService {
         return toResponse(c);
     }
 
-    // ── External channels (WhatsApp / voice) ─────────────────────────────────
-
-    /**
-     * Handle an inbound message from an external contact (no app account). Finds
-     * or creates their conversation on the channel, runs the AI agent, and returns
-     * the text to send back (or null if a human is handling it / nothing to say).
-     */
-    @Transactional
-    public String handleInbound(SupportChannel channel, String contactChannelId, String contactName, String text) {
-        Conversation c = conversationRepo
-                .findFirstByChannelAndContactChannelIdAndStatusNotOrderByUpdatedAtDesc(
-                        channel, contactChannelId, ConversationStatus.RESOLVED)
-                .orElseGet(() -> conversationRepo.save(Conversation.builder()
-                        .channel(channel)
-                        .status(ConversationStatus.OPEN)
-                        .contactChannelId(contactChannelId)
-                        .contactName(contactName)
-                        .subject(deriveSubject(text))
-                        .build()));
-        addMessage(c, MessageSender.USER, text);
-
-        if (c.getStatus() == ConversationStatus.NEEDS_HUMAN) {
-            return null; // a human is handling it; just record the inbound message
-        }
-        if (wantsHuman(text)) {
-            escalate(c);
-            return "Okay — I'm connecting you with a team member who'll reply here shortly.";
-        }
-        Optional<String> reply = claude.complete(systemPrompt(c.getContactName(), "CUSTOMER"), buildTurns(c.getId()), 600);
-        if (reply.isEmpty()) {
-            String fallback = "Thanks for your message. I can't answer that automatically right now — "
-                    + "a team member will follow up shortly.";
-            addMessage(c, MessageSender.AI, fallback);
-            escalate(c);
-            return fallback;
-        }
-        String t = reply.get();
-        boolean needsHuman = t.contains(ESCALATE);
-        if (needsHuman) t = t.replace(ESCALATE, "").trim();
-        if (!t.isBlank()) addMessage(c, MessageSender.AI, t);
-        if (needsHuman) escalate(c);
-        return t.isBlank() ? null : t;
-    }
-
-    /** Record a finished voice call (e.g. an ElevenLabs post-call transcript). */
-    @Transactional
-    public void recordVoiceTranscript(String contactChannelId, String contactName, String transcript, boolean escalate) {
-        Conversation c = conversationRepo.save(Conversation.builder()
-                .channel(SupportChannel.VOICE)
-                .status(escalate ? ConversationStatus.NEEDS_HUMAN : ConversationStatus.RESOLVED)
-                .contactChannelId(contactChannelId)
-                .contactName(contactName)
-                .subject("Voice call")
-                .build());
-        addMessage(c, MessageSender.SYSTEM, "Voice call transcript:");
-        addMessage(c, MessageSender.USER, transcript);
-    }
-
     // ── Staff (ADMIN) ────────────────────────────────────────────────────────
 
     @Transactional(readOnly = true)
@@ -169,15 +110,6 @@ public class SupportService {
         // to an already-resolved conversation would be invisible in the staff inbox.
         c.setStatus(ConversationStatus.NEEDS_HUMAN);
         addMessage(c, MessageSender.AGENT, body);
-        // An external contact never opens the in-app inbox — the reply must travel back
-        // over their channel or the agent is typing into the void. Best-effort: the
-        // message is stored either way, and a failed dispatch is visible in the logs.
-        if (c.getChannel() == SupportChannel.WHATSAPP && c.getContactChannelId() != null) {
-            boolean delivered = whatsAppService.sendText(c.getContactChannelId(), body);
-            if (!delivered) {
-                log.warn("Agent reply stored but WhatsApp dispatch failed: conversation={}", conversationId);
-            }
-        }
         return toResponse(c);
     }
 
@@ -186,8 +118,7 @@ public class SupportService {
      * whose last activity is older than {@code idleFor} is marked RESOLVED, with a
      * SYSTEM note so both ends see why it ended. This is what makes a chat "get
      * over": a customer coming back the next day starts a fresh thread instead of
-     * reopening a stale one (the in-app widget and the WhatsApp lookup both resume
-     * only non-resolved conversations). Returns how many were closed.
+     * reopening a stale one. Returns how many were closed.
      */
     @Transactional
     public int autoCloseIdle(Duration idleFor) {
@@ -304,9 +235,9 @@ public class SupportService {
     private void addMessage(Conversation c, MessageSender sender, String body) {
         messageRepo.save(SupportMessage.builder().conversation(c).sender(sender).body(body).build());
         // Touch the conversation so updatedAt reflects the latest MESSAGE, not the last
-        // status change. The staff inbox and the user's list sort by updatedAt, and the
-        // WhatsApp inbound lookup picks "most recently updated" — without this a
-        // NEEDS_HUMAN conversation receiving new user messages never moves up.
+        // status change. The staff inbox and the user's list both sort by updatedAt —
+        // without this a NEEDS_HUMAN conversation receiving new user messages never
+        // moves up.
         c.setUpdatedAt(LocalDateTime.now());
         conversationRepo.save(c);
     }

@@ -21,16 +21,11 @@ public class Conversation {
     @GeneratedValue(strategy = GenerationType.UUID)
     private String id;
 
-    /** Who opened it (customer or retailer) — null for external contacts
-     *  arriving over WhatsApp/voice who aren't app users. */
+    /** Who opened it (customer or retailer). Every conversation starts from the
+     *  in-app widget, so this is always set. */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id")
     private User user;
-
-    /** For external (non-app-user) contacts: the channel identity (phone number,
-     *  email, or external session id) and a display name, if known. */
-    private String contactChannelId;
-    private String contactName;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)

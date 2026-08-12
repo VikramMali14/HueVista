@@ -7,7 +7,7 @@ two different jobs:
 | Step | Class | Model | Job |
 | --- | --- | --- | --- |
 | 1. Clean + repaint | `ImageCleanerService` | Nano Banana Pro (Gemini) | Removes clutter and **repaints the actual photo** into the reference palette → this is the canvas shown to the user and fed to step 2. |
-| 2. Colour-block edit | `ReplicateMaskSegmenter` | FLUX.2 [max] (default) | **Edits the cleaned photo**, flooding each surface with a flat category colour (red/green/blue/black) in place. `MaskProcessor.splitColorCodedMask` then splits the result by colour into per-category recolourable regions. |
+| 2. Colour-block edit | `ReplicateMaskSegmenter` | Nano Banana Pro | **Edits the cleaned photo**, flooding each surface with a flat category colour (red/green/blue/black) in place. `MaskProcessor.splitColorCodedMask` then splits the result by colour into per-category recolourable regions. |
 
 Step 2 is deliberately framed as an **edit of the real photo**, not an abstract
 "generate a segmentation mask" task. Painting flat colour *onto* the existing
