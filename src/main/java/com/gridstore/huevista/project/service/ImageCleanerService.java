@@ -2,6 +2,8 @@ package com.gridstore.huevista.project.service;
 
 import com.gridstore.huevista.common.ai.GeminiImageClient;
 import com.gridstore.huevista.common.ai.ImageEditException;
+import com.gridstore.huevista.common.ai.ReplicateAuthException;
+import com.gridstore.huevista.common.ai.ReplicateImageEditor;
 import com.gridstore.huevista.common.exception.ExternalServiceException;
 import com.gridstore.huevista.image.model.ImageType;
 import lombok.RequiredArgsConstructor;
@@ -16,8 +18,9 @@ import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 
@@ -52,25 +55,53 @@ import java.util.concurrent.Callable;
  * of generative regeneration). Opt-in by default; falls through silently
  * when not enabled.
  *
- * Two ways to reach the model, tried in that order: Replicate, then Google's
- * Gemini API directly ({@link GeminiImageClient}). They run the SAME model —
- * {@code google/nano-banana-pro} on Replicate is Gemini 3 Pro Image — but the queue
- * in front of it is different, and the queue is what fails. A busy Replicate pool
- * ends a prediction {@code failed} with {@code ModelRateLimitError: Service is
- * currently unavailable due to high demand (E003)}, which says nothing at all about
- * the photo. Waiting that out costs the user their clean; asking Google directly
- * usually does not.
+ * <h2>The provider hierarchy</h2>
+ *
+ * The clean is now the pipeline's load-bearing step — {@link SegmentationService}
+ * will not generate masks without it — so one model saying no can no longer end the
+ * run. Providers are asked in this order, and the first image produced wins:
+ *
+ * <ol>
+ *   <li><b>Nano Banana Pro on Replicate</b> ({@code google/nano-banana-pro}) — the
+ *       best of these at holding a building's architecture still while it edits.</li>
+ *   <li><b>The same model on Google's own API</b> ({@link GeminiImageClient}) —
+ *       {@code google/nano-banana-pro} on Replicate IS Gemini 3 Pro Image, but the
+ *       queue in front of it is different, and the queue is what fails. A busy
+ *       Replicate pool ends a prediction {@code failed} with {@code ModelRateLimitError:
+ *       Service is currently unavailable due to high demand (E003)}, which says nothing
+ *       about the photo. Asking Google directly usually just works, and it is the
+ *       cheapest possible failover because the output is identical in kind.</li>
+ *   <li><b>A DIFFERENT model family</b>, in configured order — FLUX 2 Pro, then GPT
+ *       Image, then Seedream. These are only reached once both routes to Gemini are
+ *       out, at which point the problem is more likely to be the model than the queue,
+ *       so what is wanted is a different model rather than another attempt at the same
+ *       one. They edit to a slightly different look; the downstream mask step reads
+ *       whichever canvas comes back, so the pipeline does not care which one did it.</li>
+ * </ol>
+ *
+ * Each model's request body differs; {@link ReplicateImageEditor} owns that. A refusal
+ * about the PHOTO itself (a safety block) stops the chain immediately — every provider
+ * would give the same answer, and spending four minutes proving it costs the user their
+ * run.
+ *
+ * <p>Not in the hierarchy: Claude. Anthropic's models read images but do not generate
+ * or edit them, so there is no Claude image-edit endpoint to fall back to. Claude does
+ * the two jobs here it is actually able to do — classifying the photo
+ * ({@code ClaudeVisionService}) and describing this photo's clutter for the prompt
+ * ({@link CleaningHintService}).
  *
  * Configuration:
- *   replicate.image-cleaner.enabled       — kill switch (default false)
- *   replicate.image-cleaner.model         — default google/nano-banana-pro
- *                                           (best quality for architecture
- *                                            preservation; pro tier ~$0.10/call)
- *   replicate.image-cleaner.max-attempts  — tries per provider before moving on
- *   google.gemini.api-key                 — set to enable the direct fallback
+ *   replicate.image-cleaner.enabled          — kill switch (default false)
+ *   replicate.image-cleaner.model            — primary, default google/nano-banana-pro
+ *   replicate.image-cleaner.fallback-models  — comma-separated, tried in order after
+ *                                              the primary and the direct Gemini route
+ *   replicate.image-cleaner.max-attempts     — tries per provider before moving on
+ *   google.gemini.api-key                    — set to enable the direct Google route
+ *   openai.api-key                           — required by openai/* models, which are
+ *                                              skipped without it
  *
- * Cost: ~$0.10 per clean on Nano Banana Pro. Doubles per-upload
- * Replicate spend when enabled (clean + mask = 2 calls).
+ * Cost: ~$0.10 per clean on Nano Banana Pro, and only the provider that SUCCEEDS
+ * bills a full generation — the rest failed before producing an image.
  */
 @Slf4j
 @Service
@@ -80,12 +111,27 @@ public class ImageCleanerService {
     private final RestTemplate restTemplate;
     private final CleaningHintService cleaningHintService;
     private final GeminiImageClient gemini;
+    private final ReplicateImageEditor replicate;
 
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
 
     @Value("${replicate.image-cleaner.model:google/nano-banana-pro}")
     private String model;
+
+    /**
+     * The models tried, in order, after the primary and the direct Google route have
+     * both failed — a comma-separated list of Replicate model ids.
+     *
+     * <p>Deliberately a different FAMILY each time rather than another Gemini tier: by
+     * the time the chain gets here, two routes to Gemini have already declined, so the
+     * useful next question is "does a different model see this photo differently?".
+     * The ids are configuration so a newer tier (flux-2-max, seedream-4-5,
+     * gpt-image-1-mini) can be swapped in without a deploy of new code —
+     * {@link ReplicateImageEditor} picks the request schema off the model name.
+     */
+    @Value("${replicate.image-cleaner.fallback-models:black-forest-labs/flux-2-pro,openai/gpt-image-1,bytedance/seedream-4}")
+    private String fallbackModels;
 
     @Value("${replicate.image-cleaner.enabled:false}")
     private boolean enabled;
@@ -124,10 +170,6 @@ public class ImageCleanerService {
     @Value("${replicate.image-cleaner.retry-backoff-ms:15000}")
     private long retryBackoffMs;
 
-    private static final String REPLICATE_BASE = "https://api.replicate.com/v1";
-    private static final int POLL_INTERVAL_MS = 2000;
-    private static final int MAX_POLL_ATTEMPTS = 90;
-
     /** Max characters of image-derived hint text allowed into the generative prompt. */
     private static final int MAX_HINT_CHARS = 1500;
 
@@ -153,16 +195,34 @@ public class ImageCleanerService {
                 && model != null && !model.isBlank();
     }
 
+    /** True when SOME provider — Replicate or Google — could serve a clean. */
+    public boolean isAvailable() {
+        return enabled && (isConfigured() || gemini.isConfigured());
+    }
+
+    /** The ordered Replicate fallback model ids, blanks and duplicates removed. */
+    List<String> fallbackModelList() {
+        if (fallbackModels == null || fallbackModels.isBlank()) return List.of();
+        LinkedHashSet<String> ordered = Arrays.stream(fallbackModels.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        // The primary is already the first thing asked; listing it again would just
+        // repeat a model that has already had its attempts.
+        ordered.remove(model == null ? "" : model.trim());
+        return List.copyOf(ordered);
+    }
+
     /**
      * Runs the cleaning prompt on the input image. Returns the cleaned
-     * image bytes on success. Empty on any failure (caller should fall
-     * back to the original image).
+     * image bytes on success. Empty when every provider in the hierarchy declined
+     * (see the class doc for the order).
      *
-     * <p>Each configured provider is asked up to {@code max-attempts} times with a
-     * growing wait between tries, and a provider that is merely busy hands over to the
-     * next one rather than ending the clean. What is NOT retried is a refusal about the
-     * image itself — a safety block or a malformed request gets the same answer from
-     * everyone, and spending a minute proving that costs the user their run.
+     * <p>Each provider is asked up to {@code max-attempts} times with a growing wait
+     * between tries, and a provider that is merely busy hands over to the next one
+     * rather than ending the clean. What is NOT retried anywhere is a refusal about the
+     * image itself — a safety block gets the same answer from every model, and spending
+     * four minutes proving that costs the user their run.
      */
     public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType) {
         boolean replicateOn = isConfigured();
@@ -190,14 +250,20 @@ public class ImageCleanerService {
 
         byte[] cleaned = null;
         boolean keepGoing = true;
+        // Set when Replicate refuses our token: the rest of the Replicate models would
+        // each discover the same dead token, so the chain skips straight past them.
+        boolean replicateDead = false;
 
+        // 1. The primary model on Replicate.
         if (replicateOn) {
             Attempt attempt = askProvider("Replicate[" + model + "]",
-                    () -> runOnReplicate(finalPrompt, imageUrl, imageType, hints.isPresent()));
+                    () -> runOnReplicate(model, finalPrompt, imageUrl, imageType, hints.isPresent()));
             cleaned = attempt.image();
             keepGoing = attempt.worthFailingOver();
+            replicateDead = attempt.platformDead();
         }
 
+        // 2. The same model, asked through Google instead of Replicate's queue.
         if (cleaned == null && keepGoing && geminiOn) {
             // Gemini wants the photo's bytes inline, not a link to it.
             byte[] source = readSource(imageUrl);
@@ -209,14 +275,35 @@ public class ImageCleanerService {
                     log.info("ImageCleaner [{}]: retrying the clean on Google's API directly "
                             + "after Replicate could not serve it", gemini.model());
                 }
-                cleaned = askProvider("GeminiAPI[" + gemini.model() + "]",
-                        () -> gemini.edit(finalPrompt, source, resolution)).image();
+                Attempt attempt = askProvider("GeminiAPI[" + gemini.model() + "]",
+                        () -> gemini.edit(finalPrompt, source, resolution));
+                cleaned = attempt.image();
+                keepGoing = attempt.worthFailingOver();
+            }
+        }
+
+        // 3. Different model families, in configured order, until one delivers.
+        if (cleaned == null && keepGoing && replicateOn && !replicateDead) {
+            for (String fallback : fallbackModelList()) {
+                if (!replicate.canRun(fallback)) {
+                    log.info("ImageCleaner skipping {} — it is not configured "
+                            + "(openai/* models need OPENAI_API_KEY)", fallback);
+                    continue;
+                }
+                log.info("ImageCleaner falling over to {} after the models before it in the "
+                        + "hierarchy produced nothing", fallback);
+                Attempt attempt = askProvider("Replicate[" + fallback + "]",
+                        () -> runOnReplicate(fallback, finalPrompt, imageUrl, imageType, hints.isPresent()));
+                cleaned = attempt.image();
+                if (cleaned != null) break;
+                if (!attempt.worthFailingOver() || attempt.platformDead()) break;
             }
         }
 
         if (cleaned == null) {
-            log.warn("ImageCleaner produced nothing — the ORIGINAL photo stays the canvas "
-                    + "and the walls will have to be marked against it");
+            log.warn("ImageCleaner produced nothing — every provider in the hierarchy "
+                    + "declined, so this run has no cleaned canvas and no masks will be "
+                    + "generated from it");
             return Optional.empty();
         }
         byte[] upscaled = upscaleToLongestEdge(cleaned, upscaleLongestPx);
@@ -225,8 +312,21 @@ public class ImageCleanerService {
         return Optional.of(upscaled);
     }
 
-    /** What asking one provider came to: the image, or why there isn't one. */
-    private record Attempt(byte[] image, boolean worthFailingOver) {}
+    /**
+     * What asking one provider came to: the image, or why there isn't one.
+     *
+     * @param platformDead the provider's PLATFORM refused us (a bad Replicate token),
+     *                     so its siblings in the chain are not worth asking either
+     */
+    private record Attempt(byte[] image, boolean worthFailingOver, boolean platformDead) {
+        static Attempt of(byte[] image) {
+            return new Attempt(image, true, false);
+        }
+
+        static Attempt none(boolean worthFailingOver) {
+            return new Attempt(null, worthFailingOver, false);
+        }
+    }
 
     /**
      * Ask one provider for the clean, retrying only what is worth retrying.
@@ -241,32 +341,37 @@ public class ImageCleanerService {
         int attempts = Math.max(1, maxAttempts);
         for (int attempt = 1; attempt <= attempts; attempt++) {
             try {
-                return new Attempt(call.call(), true);
+                return Attempt.of(call.call());
+            } catch (ReplicateAuthException e) {
+                // The account, not the model. Every other Replicate model in the chain
+                // would hit this too, so say so once and let the caller skip them.
+                log.error("ImageCleaner {}: {}", label, e.getMessage());
+                return new Attempt(null, true, true);
             } catch (ImageEditException e) {
                 if (!e.worthFailingOver()) {
                     log.warn("ImageCleaner {} refused the job — not retried anywhere: {}",
                             label, e.getMessage());
-                    return new Attempt(null, false);
+                    return Attempt.none(false);
                 }
                 boolean lastTry = attempt == attempts || !e.retryable();
                 if (lastTry) {
                     log.warn("ImageCleaner {} gave up after {} attempt(s): {}",
                             label, attempt, e.getMessage());
-                    return new Attempt(null, true);
+                    return Attempt.none(true);
                 }
                 long waitMs = retryBackoffMs * attempt;
                 log.warn("ImageCleaner {} attempt {}/{} failed, retrying in {}ms: {}",
                         label, attempt, attempts, waitMs, e.getMessage());
-                if (!pause(waitMs)) return new Attempt(null, false);
+                if (!pause(waitMs)) return Attempt.none(false);
             } catch (Exception e) {
                 // Anything unmapped is treated as transport trouble rather than a verdict
-                // on the image, so the other provider still gets its turn.
+                // on the image, so the other providers still get their turn.
                 log.warn("ImageCleaner {} attempt {}/{} threw: {}", label, attempt, attempts, e.toString());
-                if (attempt == attempts) return new Attempt(null, true);
-                if (!pause(retryBackoffMs * attempt)) return new Attempt(null, false);
+                if (attempt == attempts) return Attempt.none(true);
+                if (!pause(retryBackoffMs * attempt)) return Attempt.none(false);
             }
         }
-        return new Attempt(null, true);
+        return Attempt.none(true);
     }
 
     /** @return false when the wait was interrupted and the caller should stop. */
@@ -281,30 +386,20 @@ public class ImageCleanerService {
         }
     }
 
-    /** One full Replicate prediction: start it, wait for it, download what it made. */
-    private byte[] runOnReplicate(String prompt, String imageUrl, ImageType imageType, boolean hinted) {
-        log.info("ImageCleaner [{}]: cleaning image (scene={}, imageHints={})", model, imageType, hinted);
-
-        // Generate at a smaller resolution (cheaper/faster), then upscale
-        // locally — see upscaleToLongestEdge below. Only send the resolution
-        // param when set, so models that don't accept it aren't rejected.
-        Map<String, Object> input = new java.util.HashMap<>();
-        input.put("prompt", prompt);
-        input.put("image_input", List.of(imageUrl));
-        input.put("output_format", "jpg");
-        if (resolution != null && !resolution.isBlank()) {
-            input.put("resolution", resolution.trim());
-        }
-        if (aspectRatio != null && !aspectRatio.isBlank()) {
-            input.put("aspect_ratio", aspectRatio.trim());
-        }
-
-        Map<String, Object> result = pollUntilDone(startPrediction(input));
-        String cleanedUrl = extractOutputUrl(result.get("output"));
-        if (cleanedUrl == null) {
-            throw ImageEditException.failover("prediction succeeded but named no output image");
-        }
-        return downloadBytes(cleanedUrl);
+    /**
+     * One full Replicate prediction on the given model.
+     *
+     * <p>Generates at a smaller resolution (cheaper/faster) and upscales locally
+     * afterwards — see {@link #upscaleToLongestEdge}. The resolution and aspect asks
+     * are written in Nano Banana's units here and translated per family by
+     * {@link ReplicateImageEditor}, which also drops them and retries once if a model
+     * turns out not to know them.
+     */
+    private byte[] runOnReplicate(String modelId, String prompt, String imageUrl,
+                                  ImageType imageType, boolean hinted) {
+        log.info("ImageCleaner [{}]: cleaning image (scene={}, imageHints={})", modelId, imageType, hinted);
+        return replicate.edit(new ReplicateImageEditor.Spec(
+                modelId, prompt, imageUrl, aspectRatio, resolution, "jpg"));
     }
 
     /** The photo as bytes, for a provider that takes the image inline rather than by URL. */
@@ -678,125 +773,6 @@ public class ImageCleanerService {
           + "That caution covers clutter, furniture and decor ONLY — it is never a "
           + "reason to leave a raw brick wall or a bare concrete ceiling unfinished. "
           + "Unfinished construction surfaces are always completed.\n";
-
-    /**
-     * @throws ImageEditException when the job cannot be started, classified so the caller
-     *         knows whether waiting would help. A 429 is Replicate throttling US and
-     *         clears on its own; a 401/403 is a token problem and never will.
-     */
-    private String startPrediction(Map<String, Object> input) {
-        try {
-            return doStartPrediction(input);
-        } catch (org.springframework.web.client.HttpClientErrorException e) {
-            int status = e.getStatusCode().value();
-            // 400/422 usually means an input the model version doesn't know.
-            // Drop the optional tuning keys and retry once — a clean at the
-            // model's default aspect/resolution beats no clean at all.
-            boolean hadOptional = input.containsKey("resolution") || input.containsKey("aspect_ratio");
-            if (hadOptional && (status == 400 || status == 422)) {
-                log.warn("ImageCleaner model rejected optional inputs ({}), retrying without " +
-                        "resolution/aspect_ratio: {}", e.getStatusCode(), e.getResponseBodyAsString());
-                Map<String, Object> slim = new java.util.HashMap<>(input);
-                slim.remove("resolution");
-                slim.remove("aspect_ratio");
-                try {
-                    return doStartPrediction(slim);
-                } catch (Exception retryError) {
-                    throw ImageEditException.failover(
-                            "could not be started even without the optional inputs: " + retryError.getMessage());
-                }
-            }
-            String detail = status + " " + e.getResponseBodyAsString();
-            if (status == 429) {
-                throw ImageEditException.retry("Replicate is throttling us: " + detail);
-            }
-            throw ImageEditException.giveUp("Replicate rejected the request: " + detail);
-        } catch (org.springframework.web.client.HttpServerErrorException e) {
-            throw ImageEditException.retry("Replicate server error starting the prediction: "
-                    + e.getStatusCode() + " " + e.getResponseBodyAsString());
-        } catch (Exception e) {
-            throw ImageEditException.retry("could not reach Replicate to start the prediction: " + e);
-        }
-    }
-
-    private String doStartPrediction(Map<String, Object> input) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.set("Authorization", "Token " + replicateApiToken);
-
-        Map<String, Object> body = Map.of("input", input);
-        String endpoint = REPLICATE_BASE + "/models/" + model + "/predictions";
-
-        ResponseEntity<Map> response = restTemplate.exchange(
-                endpoint, HttpMethod.POST,
-                new HttpEntity<>(body, headers),
-                Map.class
-        );
-        return (String) response.getBody().get("id");
-    }
-
-    /**
-     * Wait for a started prediction to stop moving.
-     *
-     * <p>The two ways this ends badly used to be one shared {@code null}, so the caller
-     * could only ever report the second one and logged a rate limit as a timeout. They
-     * are not the same event: a prediction Replicate marked {@code failed} is an answer,
-     * arrives in seconds, and usually carries the reason (a busy pool says
-     * {@code ModelRateLimitError … (E003)}), whereas running out of poll attempts means
-     * the job was still moving when we stopped watching after
-     * {@code MAX_POLL_ATTEMPTS × POLL_INTERVAL_MS}. Only the first is worth an immediate
-     * retry — having already waited three minutes for the second, the other provider is
-     * the better bet.
-     *
-     * @throws ImageEditException naming which of the two it was
-     */
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> pollUntilDone(String predictionId) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.set("Authorization", "Token " + replicateApiToken);
-        for (int attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
-            try {
-                Thread.sleep(POLL_INTERVAL_MS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw ImageEditException.giveUp("waiting on the prediction was interrupted");
-            }
-            ResponseEntity<Map> response = restTemplate.exchange(
-                    REPLICATE_BASE + "/predictions/" + predictionId,
-                    HttpMethod.GET,
-                    new HttpEntity<>(headers),
-                    Map.class
-            );
-            Map<String, Object> body = response.getBody();
-            if (body == null) continue;
-            String status = (String) body.get("status");
-            if ("succeeded".equals(status)) return body;
-            if ("failed".equals(status) || "canceled".equals(status)) {
-                String error = String.valueOf(body.get("error"));
-                throw new ImageEditException(
-                        "prediction " + status + ": " + error, ImageEditException.classify(error));
-            }
-        }
-        throw ImageEditException.failover("prediction was still running after "
-                + (MAX_POLL_ATTEMPTS * POLL_INTERVAL_MS / 1000) + "s and was given up on");
-    }
-
-    @SuppressWarnings("unchecked")
-    private String extractOutputUrl(Object output) {
-        if (output == null) return null;
-        if (output instanceof String s && !s.isBlank()) return s;
-        if (output instanceof List<?> list && !list.isEmpty()) {
-            Object first = list.get(0);
-            if (first instanceof String s) return s;
-        }
-        if (output instanceof Map<?, ?> map) {
-            for (String key : new String[]{"image", "output", "url"}) {
-                Object v = map.get(key);
-                if (v instanceof String s) return s;
-            }
-        }
-        return null;
-    }
 
     /**
      * Upscales the cleaned image so its longest edge is {@code longestPx}, using

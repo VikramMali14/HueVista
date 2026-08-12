@@ -6,6 +6,7 @@ import com.gridstore.huevista.image.model.ImageType;
 import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.StorageService;
+import com.gridstore.huevista.project.model.FailureStage;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
 import com.gridstore.huevista.project.model.RegionCategory;
@@ -31,11 +32,21 @@ import java.util.Optional;
  *
  * <h3>Auto flow (segmentAsync)</h3>
  * <ol>
- *   <li>(Optional) Send the photo to {@link ImageCleanerService} —
- *       Nano Banana Pro removes wires/bushes/clutter AND repaints the
- *       painted surfaces into the reference palette, so the canvas the masks
- *       are aligned to already looks freshly painted. Opt-in via
- *       REPLICATE_IMAGE_CLEANER_ENABLED.</li>
+ *   <li>Send the photo to {@link ImageCleanerService} — Nano Banana Pro (falling
+ *       down a hierarchy of other image models when it can't serve the request)
+ *       removes wires/bushes/clutter AND repaints the painted surfaces into the
+ *       reference palette, so the canvas the masks are aligned to already looks
+ *       freshly painted. Enabled via REPLICATE_IMAGE_CLEANER_ENABLED.
+ *
+ *       <p><b>The masks depend on this step.</b> When the cleaner is enabled and
+ *       every provider declines, the run FAILS here and the mask model is never
+ *       called. That is deliberate: a mask generated against the raw photo is
+ *       aligned to a canvas the studio does not display — the frontend renders the
+ *       cleaned image — and, worse, the mask model reads clutter as architecture
+ *       (a wire crossing a wall becomes a wall edge, an unplastered shell becomes
+ *       cladding and blacks out). Half a pipeline produces regions in the wrong
+ *       places, which looks to every check like a successful run; failing honestly
+ *       lets the user say so through the report channel instead.</li>
  *   <li>One image-edit call ({@link ReplicateMaskSegmenter}, Nano Banana
  *       Pro) edits the cleaned photo into a flat colour-blocked image: RED = main
  *       paintable wall, GREEN = accent / highlighter wall, BLUE = trim &
@@ -73,6 +84,7 @@ public class SegmentationService {
     private final ImageCleanerService imageCleaner;
     private final StubAiPipeline stubAiPipeline;
     private final ImageRepository imageRepository;
+    private final com.gridstore.huevista.image.service.ClaudeVisionService claudeVision;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final com.gridstore.huevista.account.repository.CustomerAccessCodeRepository accessCodeRepository;
     private final ProjectBillingResolver billingResolver;
@@ -172,24 +184,31 @@ public class SegmentationService {
                 // would make the frontend render them on the wrong canvas.
                 persistCleanedImageKey(projectId, null);
             }
+            // The scene (INDOOR / OUTDOOR) picks the cleaning prompt, the mask prompt's
+            // accent rule, the sky filter and the opening palette, so an unresolved one
+            // is not a cosmetic detail — see resolveScene.
+            ImageType scene = resolveScene(uploadedImage);
+
             String maskImageUrl = imageUrl;
             byte[] cleanedBytes = null;
+            // Whether a cleaned canvas is REQUIRED before masks may be generated: the
+            // cleaner is on and this run isn't one of the deliberate skips.
+            boolean cleanRequired = !skipClean && imageCleaner.isAvailable();
             try {
                 Optional<byte[]> cleanedOpt = skipClean
                         ? Optional.empty()
-                        : imageCleaner.cleanImage(imageUrl, uploadedImage.getImageType());
+                        : imageCleaner.cleanImage(imageUrl, scene);
                 if (cleanedOpt.isPresent()) {
                     cleanedBytes = cleanedOpt.get();
                     String cleanedKey = storageService.store(
                             cleanedBytes, userId, "cleaned.jpg", "image/jpeg");
-                    persistCleanedImageKey(projectId, cleanedKey);
+                    persistCleanedImageKey(projectId, cleanedKey, cleanedBytes);
                     maskImageUrl = storageService.getPublicUrl(cleanedKey);
                     log.info("ImageCleaner produced cleaned image for project {}, storageKey={}",
                             projectId, cleanedKey);
                 }
             } catch (Exception e) {
-                log.warn("ImageCleaner step failed for project {}, using original: {}",
-                        projectId, e.getMessage());
+                log.warn("ImageCleaner step failed for project {}: {}", projectId, e.getMessage());
             }
 
             // MANUAL mask mode: the pipeline deliberately stops after the
@@ -198,12 +217,31 @@ public class SegmentationService {
             // The project is usable right away (cleaned canvas when the clean
             // succeeded, original photo otherwise), and only the IMAGE credit
             // is charged: no AI wall detection ran, so no auto-mask credit.
+            //
+            // A failed clean does NOT fail a manual run: nothing is generated in this
+            // mode, so there is no mask to misalign — the user marks walls on whatever
+            // canvas exists, and the original photo is a perfectly good one to draw on.
+            // The AUTO path below is the one that depends on the clean.
             if ("MANUAL".equalsIgnoreCase(
                     projectRepository.findMaskModeById(projectId).orElse(null))) {
                 markSegmented(projectId);
                 billRun(billing, false);
                 log.info("Manual mask mode: stopped after clean-up for project {} " +
-                        "(image credit charged, walls to be marked by hand)", projectId);
+                        "(image credit charged, walls to be marked by hand, cleaned canvas={})",
+                        projectId, cleanedBytes != null);
+                return;
+            }
+
+            // The gate. Masks are generated FROM the cleaned canvas, so without one
+            // there is nothing correct to generate them from — see the class doc.
+            if (cleanRequired && cleanedBytes == null) {
+                // A cleaned image from an earlier run would put this run's masks on a
+                // canvas that no longer matches, so drop the reference along with it.
+                persistCleanedImageKey(projectId, null);
+                markFailed(projectId, FailureStage.CLEAN,
+                        "The photo clean-up didn't come through — every image model we ask "
+                        + "turned it down, so wall detection was not run. Try again in a few "
+                        + "minutes, or report this and our team will look at your photo.");
                 return;
             }
 
@@ -221,11 +259,11 @@ public class SegmentationService {
                 }
             }
 
-            // Step 2: color-coded mask via Replicate (Nano Banana Pro).
-            // Scene drives the accent-wall rule: interiors always get one
-            // accent wall to highlight.
+            // Step 2: color-coded mask via Replicate (Nano Banana Pro), run against the
+            // CLEANED canvas whenever there is one. Scene drives the accent-wall rule:
+            // interiors always get one accent wall to highlight.
             if (tryColorCodedSegmentation(projectId, userId, maskImageUrl,
-                    uploadedImage.getImageType(), cleanedBytes, snapFallbackBytes,
+                    scene, cleanedBytes, snapFallbackBytes,
                     uploadedImage.getWidth(), uploadedImage.getHeight())) {
                 markSegmented(projectId);
                 // Charge one IMAGE credit (compulsory clean-up) plus one AUTO-MASK credit
@@ -236,15 +274,17 @@ public class SegmentationService {
                 return;
             }
 
-            // Nothing worked — surface a clear failure so the UI can prompt
-            // the user to click-segment manually.
-            markFailed(projectId,
-                    "Auto-segmentation failed — the mask model didn't produce usable masks. " +
-                    "Use click-to-segment to mark walls manually.");
+            // The clean landed but the walls didn't. Say which half failed — the studio
+            // offers the report with the right box already ticked, and "report it" is
+            // the only way this ever reaches anyone.
+            markFailed(projectId, FailureStage.MASK,
+                    "We couldn't pick out the walls in this photo. You can mark them "
+                    + "yourself with 'Add a wall', or report this and our team will take "
+                    + "a look.");
 
         } catch (Exception e) {
             log.error("Segmentation error for project {}: {}", projectId, e.getMessage(), e);
-            markFailed(projectId, "Segmentation failed: " + e.getMessage());
+            markFailed(projectId, FailureStage.MASK, "Segmentation failed: " + e.getMessage());
         } finally {
             // The run reached a terminal outcome (SEGMENTED or FAILED), so the queue
             // entry must not be retried. No-op when the job didn't come from the queue.
@@ -845,11 +885,94 @@ public class SegmentationService {
         return image;
     }
 
+    /**
+     * The photo's scene — INDOOR or OUTDOOR — resolved for certain before the models
+     * are prompted, classifying the stored photo now if the upload never got a verdict.
+     *
+     * <p>Everything downstream branches on this and NOTHING re-checked it, so an
+     * unresolved scene quietly became "outdoor" at four separate decisions: the cleaning
+     * prompt (interiors are told to finish ceilings and floors, exteriors to clear sky
+     * and wires), the mask prompt's accent rule (indoors always highlights one wall),
+     * the sky filter (which discards a top-touching pale region — indoors that is the
+     * wall meeting the ceiling, and it took the main wall with it), and the opening
+     * palette (exteriors open in the beige/sienna combo, interiors white).
+     *
+     * <p>The upload path leaves it UNKNOWN in two real cases: <b>every guest upload</b>
+     * — the kiosk skips classification because that endpoint is unauthenticated and a
+     * per-upload AI call is an abuse vector — and any upload made while Claude was
+     * unavailable. Both then ran the whole pipeline as an exterior, which is how an
+     * interior room ends up processed as a facade. Here is the right place to fix that:
+     * a run is already committed to spending on image models, so one classification call
+     * is not the cost that matters, and the answer is written back to the image so a
+     * re-run doesn't pay for it twice.
+     *
+     * <p>Best-effort by design: if the classifier is down or the photo won't decode, the
+     * run continues on UNKNOWN exactly as before rather than failing over a hint.
+     */
+    private ImageType resolveScene(UploadedImage image) {
+        ImageType known = image.getImageType();
+        if (known != null && known != ImageType.UNKNOWN) return known;
+
+        try {
+            byte[] bytes = storageService.load(image.getStorageKey());
+            ImageType detected = claudeVision.classifyStored(bytes);
+            if (detected == null || detected == ImageType.UNKNOWN) {
+                // The classifier says "not a room or a building". It is not this
+                // service's job to reject an upload that is already paid for and
+                // sitting in a project, so the run goes ahead on the exterior
+                // treatment — but the log says why, because a run that goes strange
+                // from here usually starts with a photo that isn't a house.
+                log.warn("Scene classification for image {} came back INVALID — running as {}",
+                        image.getId(), ImageType.UNKNOWN);
+                return ImageType.UNKNOWN;
+            }
+            image.setImageType(detected);
+            imageRepository.save(image);
+            log.info("Resolved scene for image {}: {} (was UNKNOWN)", image.getId(), detected);
+            return detected;
+        } catch (Exception e) {
+            log.warn("Could not resolve the scene for image {} — continuing as UNKNOWN: {}",
+                    image.getId(), e.getMessage());
+            return ImageType.UNKNOWN;
+        }
+    }
+
+    /** Forgets the cleaned canvas — key and size together, so nothing downstream can
+     *  read a size that belongs to an image no longer referenced. */
     private void persistCleanedImageKey(String projectId, String storageKey) {
+        persistCleanedImageKey(projectId, storageKey, null);
+    }
+
+    /**
+     * Records the cleaned canvas and ITS pixel size.
+     *
+     * <p>The size is not decoration. Click-to-segment turns a normalised click on the
+     * canvas the user is looking at into pixel coordinates for SAM, and the cleaned
+     * image is a generative edit followed by a local upscale — a different size from
+     * the photo, sometimes a slightly different aspect. Scaling the click by the
+     * ORIGINAL's dimensions therefore aims at a different part of the picture.
+     */
+    private void persistCleanedImageKey(String projectId, String storageKey, byte[] cleanedBytes) {
+        int[] size = cleanedBytes == null ? null : dimensionsOf(cleanedBytes);
         projectRepository.findById(projectId).ifPresent(p -> {
             p.setCleanedImageStorageKey(storageKey);
+            p.setCleanedImageWidth(size != null ? size[0] : null);
+            p.setCleanedImageHeight(size != null ? size[1] : null);
             projectRepository.save(p);
         });
+    }
+
+    /** {width, height}, or null when the bytes can't be decoded — the caller stores
+     *  no size rather than a wrong one, and click-to-segment falls back to the
+     *  original photo, which is exactly the old behaviour. */
+    private int[] dimensionsOf(byte[] bytes) {
+        try {
+            BufferedImage img = ImageIO.read(new ByteArrayInputStream(bytes));
+            return img == null ? null : new int[]{img.getWidth(), img.getHeight()};
+        } catch (Exception e) {
+            log.warn("Could not read the cleaned image's dimensions: {}", e.getMessage());
+            return null;
+        }
     }
 
     private void persistRawMaskKey(String projectId, String storageKey) {
@@ -863,15 +986,22 @@ public class SegmentationService {
         projectRepository.findById(projectId).ifPresent(p -> {
             p.setStatus(ProjectStatus.SEGMENTED);
             p.setFailureReason(null);
+            p.setFailureStage(null);
             projectRepository.save(p);
         });
     }
 
+    /** A failure that belongs to neither pipeline stage — configuration, mostly. */
     private void markFailed(String projectId, String reason) {
-        log.error("Segmentation failed for project {}: {}", projectId, reason);
+        markFailed(projectId, null, reason);
+    }
+
+    private void markFailed(String projectId, FailureStage stage, String reason) {
+        log.error("Segmentation failed for project {} at stage {}: {}", projectId, stage, reason);
         projectRepository.findById(projectId).ifPresent(p -> {
             p.setStatus(ProjectStatus.FAILED);
             p.setFailureReason(reason);
+            p.setFailureStage(stage);
             projectRepository.save(p);
         });
     }

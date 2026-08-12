@@ -129,6 +129,12 @@ public class MaskReportService {
         report.setMaskMode(project.getMaskMode());
         report.setRegionCount(project.getRegions() != null ? project.getRegions().size() : 0);
         report.setHadCleanedImage(project.getCleanedImageStorageKey() != null);
+        // Which stage gave up, when the run failed outright. This is what tells the
+        // admin whether to look at the cleaning models or the mask model — and a report
+        // with NO stage is the harder bug: the pipeline thought it had succeeded.
+        report.setFailureStage(project.getFailureStage() != null
+                ? project.getFailureStage().name() : null);
+        report.setFailureReason(project.getFailureReason());
         // A re-report re-opens the row; anything an admin had written about the
         // previous pass is stale, but is kept rather than wiped — it is the only
         // record of what was already looked at.
@@ -163,6 +169,7 @@ public class MaskReportService {
                     Project:  %s (%s)
                     Reported: %s
                     Run:      status=%s mode=%s regions=%d cleaned-image=%s
+                    Failed:   %s
                     Contact:  %s
 
                     Note:
@@ -175,6 +182,7 @@ public class MaskReportService {
                             report.getMaskMode() != null ? report.getMaskMode() : "AUTO",
                             report.getRegionCount(),
                             report.isHadCleanedImage() ? "yes" : "no",
+                            failureLine(report),
                             replyTo != null ? replyTo : "no account — follow up via the shop",
                             report.getNote() != null ? report.getNote() : "(none)"));
         } catch (Exception e) {
@@ -248,6 +256,24 @@ public class MaskReportService {
             throw new IllegalArgumentException("Tell us what went wrong — tick at least one option.");
         }
         return clean;
+    }
+
+    /**
+     * The failure line of the mail. Says which stage gave up and what the user was
+     * told — and, when nothing failed, says THAT explicitly rather than leaving a
+     * blank: a report on a run the pipeline considered successful is the case where
+     * the only evidence is the reporter's own eyes.
+     */
+    private static String failureLine(MaskReport report) {
+        if (report.getFailureStage() == null && report.getFailureReason() == null) {
+            return "no — the run reported success, so the masks are wrong rather than missing";
+        }
+        String stage = switch (String.valueOf(report.getFailureStage())) {
+            case "CLEAN" -> "photo clean-up (no cleaned canvas, so no masks were generated)";
+            case "MASK" -> "wall detection (the clean landed; no usable walls came out of it)";
+            default -> "unknown stage";
+        };
+        return stage + (report.getFailureReason() != null ? " — " + report.getFailureReason() : "");
     }
 
     private static String label(MaskReportIssue issue) {

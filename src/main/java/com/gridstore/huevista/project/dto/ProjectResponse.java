@@ -18,6 +18,18 @@ public class ProjectResponse {
     private String status;
     private String imageId;
     private String imageUrl;
+    /**
+     * "INDOOR" / "OUTDOOR" / "UNKNOWN" — the scene the pipeline actually ran this
+     * project as.
+     *
+     * The studio used to know this only from the upload response, which meant it knew
+     * it for exactly one moment: a REOPENED project showed no scene at all, and a
+     * GUEST project showed UNKNOWN forever, because the kiosk upload skips
+     * classification and the answer segmentation later worked out never came back.
+     * The frontend branches on it too (outdoor rooms get different colour advice), so
+     * the two ends were reasoning about different photos.
+     */
+    private String imageType;
     // Cleaned image URL when ImageCleanerService ran. Frontend should
     // prefer this as the paint canvas when present — masks are aligned
     // to the cleaned image, not the original. Null when cleaning is
@@ -30,6 +42,11 @@ public class ProjectResponse {
     private String rawMaskUrl;
     // Populated when status == FAILED so the UI can show the cause.
     private String failureReason;
+    // "CLEAN" / "MASK" — which half of the run failed, so the studio can offer to
+    // report it with the right problem already ticked. Null when the run didn't
+    // fail, when it failed for a reason that is ours rather than the models'
+    // (missing token), or on projects that failed before this shipped.
+    private String failureStage;
     // "AUTO" / "MANUAL" — the wall-creation choice this project was (last)
     // segmented with; null = default AUTO. MANUAL projects come back SEGMENTED
     // with zero auto regions: the cleaned canvas is ready and the user marks
@@ -117,7 +134,11 @@ public class ProjectResponse {
                 .status(project.getStatus().name())
                 .imageId(project.getImage().getId())
                 .imageUrl(imageUrl)
+                .imageType(project.getImage().getImageType() != null
+                        ? project.getImage().getImageType().name() : null)
                 .failureReason(project.getFailureReason())
+                .failureStage(project.getFailureStage() != null
+                        ? project.getFailureStage().name() : null)
                 .maskMode(project.getMaskMode())
                 .regions(regions)
                 .hasShareLink(project.getShareToken() != null)
@@ -146,6 +167,8 @@ public class ProjectResponse {
                 .status(project.getStatus().name())
                 .imageId(project.getImage().getId())
                 .imageUrl(imageUrl)
+                .imageType(project.getImage().getImageType() != null
+                        ? project.getImage().getImageType().name() : null)
                 .regions(regions)
                 .sharedBrands(project.getShareBrandList())
                 // The guest needs this to render "Sent ✓" after a reload.

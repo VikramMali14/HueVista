@@ -1048,6 +1048,24 @@ public class ProjectService {
         return "image/jpeg";
     }
 
+    /**
+     * Click-to-segment, against the canvas the user actually clicked.
+     *
+     * <p>SAM used to be sent the ORIGINAL photo while the studio was displaying the
+     * CLEANED one. Every mask it returned was therefore drawn on a different picture
+     * from the one the click came from, and then stretched over the cleaned canvas:
+     * the wire, the parked car and the overhanging branch that the clean removed were
+     * all still there as far as SAM was concerned, so it traced edges that no longer
+     * exist and the wall came back with pieces missing. The generative clean also
+     * shifts pixels slightly, which puts the rest of the outline out by a little
+     * everywhere.
+     *
+     * <p>So the cleaned image is preferred, with ITS pixel size — the size matters as
+     * much as the URL, because the click arrives normalised (0–1) and is multiplied by
+     * the dimensions of whatever image is being sent. Projects cleaned before those
+     * dimensions were recorded, and runs with no cleaned canvas at all, fall back to
+     * the original photo exactly as before.
+     */
     @Transactional
     public RegionResponse segmentPoint(String userId, String projectId,
                                        double x, double y, String label) {
@@ -1055,11 +1073,17 @@ public class ProjectService {
         UploadedImage image = project.getImage();
         ensureDimensionsCached(image);
 
-        String imageUrl = storageService.getPublicUrl(image.getStorageKey());
+        boolean useCleaned = project.getCleanedImageStorageKey() != null
+                && project.getCleanedImageWidth() != null
+                && project.getCleanedImageHeight() != null;
+        String imageUrl = storageService.getPublicUrl(
+                useCleaned ? project.getCleanedImageStorageKey() : image.getStorageKey());
+        int canvasWidth = useCleaned ? project.getCleanedImageWidth() : image.getWidth();
+        int canvasHeight = useCleaned ? project.getCleanedImageHeight() : image.getHeight();
         try {
             Region region = segmentationService.segmentPointAndSave(
                     projectId, imageUrl,
-                    image.getWidth(), image.getHeight(),
+                    canvasWidth, canvasHeight,
                     x, y, label
             );
             RegionResponse response = RegionResponse.from(region);
