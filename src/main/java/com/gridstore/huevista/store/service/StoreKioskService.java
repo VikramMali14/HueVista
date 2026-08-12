@@ -73,7 +73,7 @@ public class StoreKioskService {
 
     /** Create a Razorpay order the kiosk opens in Checkout. */
     public StoreOrderResponse createOrder(String slug) {
-        StoreLink link = requireLink(slug);
+        StoreLink link = requireLiveLink(slug);
         if (!link.isActive()) {
             throw new IllegalStateException("This store's kiosk is paused right now. Please ask at the counter.");
         }
@@ -127,8 +127,8 @@ public class StoreKioskService {
     @Transactional
     public StoreCheckoutResponse verifyAndIssue(String slug, VerifyStoreOrderRequest req) {
         StoreLink link = requireLink(slug);
-        // Note: a link deactivated between order and verify is still honored —
-        // the money already moved; the pause only stops NEW orders.
+        // Note: a link deactivated OR deleted between order and verify is still
+        // honoured — the money already moved; both only stop NEW orders.
 
         try {
             JSONObject options = new JSONObject();
@@ -253,6 +253,24 @@ public class StoreKioskService {
                 .build();
     }
 
+    /**
+     * A link the kiosk will serve — not one the shop has deleted. Use for anything
+     * that STARTS a purchase.
+     */
+    private StoreLink requireLiveLink(String slug) {
+        return linkRepository.findBySlugAndDeletedAtIsNull(slug)
+                .orElseThrow(() -> new ResourceNotFoundException("Store not found"));
+    }
+
+    /**
+     * A link by slug, deleted or not — only for finishing a payment already in flight.
+     *
+     * The same asymmetry a pause already has: a pause stops new orders and still honours
+     * one that is mid-Checkout, because the money has moved. A deletion is a harder
+     * stop, but not hard enough to keep a walk-in's money and give them nothing — if
+     * the shop retires the link while a Checkout is open, that customer still gets the
+     * code they paid for.
+     */
     private StoreLink requireLink(String slug) {
         return linkRepository.findBySlug(slug)
                 .orElseThrow(() -> new ResourceNotFoundException("Store not found"));
