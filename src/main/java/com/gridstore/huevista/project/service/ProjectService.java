@@ -804,6 +804,14 @@ public class ProjectService {
             }
             project.setMaskMode(mode);
         }
+        if (options != null && options.getSimulateFailure() != null) {
+            // Rejected loudly rather than ignored: a typo'd value on a knob whose whole
+            // job is to make something fail would otherwise run an honest pipeline and
+            // look like the failure path is broken. Null (the normal case) keeps
+            // whatever the last run was given, exactly like skipImageClean above — an
+            // explicit "NONE" is how a simulation is switched back off.
+            project.setSimulatedFailure(AiFailureSimulator.parse(options.getSimulateFailure()));
+        }
 
         // Gate WITHOUT charging yet: throws 402 when the paying account has no active
         // subscription or has hit its monthly image limit. The payer is NOT always the
@@ -847,6 +855,11 @@ public class ProjectService {
 
         project.setStatus(ProjectStatus.SEGMENTING);
         project.setFailureReason(null);
+        // Both of these describe the run that just ended rather than the project, so a
+        // new attempt starts without them: leaving autoMaskFailed set would have the
+        // studio still asking for hand-marked walls while detection is back in flight.
+        project.setFailureStage(null);
+        project.setAutoMaskFailed(false);
         projectRepository.save(project);
 
         String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
@@ -1395,6 +1408,11 @@ public class ProjectService {
 
         project.setStatus(ProjectStatus.SEGMENTING);
         project.setFailureReason(null);
+        // Both of these describe the run that just ended rather than the project, so a
+        // new attempt starts without them: leaving autoMaskFailed set would have the
+        // studio still asking for hand-marked walls while detection is back in flight.
+        project.setFailureStage(null);
+        project.setAutoMaskFailed(false);
         projectRepository.save(project);
 
         String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());

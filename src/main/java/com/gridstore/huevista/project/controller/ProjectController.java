@@ -147,9 +147,19 @@ public class ProjectController {
                       auto-mask credit; 402 AUTO_MASK_UNAVAILABLE when the plan
                       has none), MANUAL stops after the clean-up so walls are
                       marked by hand (free). `cleanImage: false` (ADMIN only)
-                      skips the image-cleaner step. Masks are always stored
+                      skips the image-cleaner step. `simulateFailure` (ADMIN
+                      only: NONE / CLEAN / MASK / BOTH) makes the image models
+                      decline for that half of the run, so the recovery paths
+                      can be tested on demand. Masks are always stored
                       raw — exactly as the model produced them, with no
                       post-processing
+                    - AUTO does not always end in walls, and that is not a
+                      failure: when the clean-up succeeds and wall detection
+                      returns nothing, the project still comes back SEGMENTED
+                      (on its cleaned canvas, with no regions) carrying
+                      `autoMaskFailed: true`. The walls are the user's to mark
+                      by hand, and a mask report has already been filed with
+                      the admin. Only `FAILED` means there is nothing to open
                     """
     )
     @ApiResponses({

@@ -84,6 +84,10 @@ public class MaskReportService {
                 .findFirstByProjectIdAndReporterIdAndStatusNotOrderByCreatedAtDesc(
                         projectId, userId, MaskReportStatus.RESOLVED)
                 .orElseGet(() -> MaskReport.builder().project(project).reporter(reporter).build());
+        // A person is speaking now. If this row was opened by the pipeline reporting
+        // itself, it stops being that: someone has looked at the room and is telling us
+        // about it, which is a different (and better) piece of evidence.
+        report.setAutoRaised(false);
 
         return save(report, project, request, reporter.getName(), reporter.getEmail());
     }
@@ -105,12 +109,78 @@ public class MaskReportService {
                 .findFirstByProjectIdAndAccessCodeIdAndReporterIsNullAndStatusNotOrderByCreatedAtDesc(
                         projectId, accessCodeId, MaskReportStatus.RESOLVED)
                 .orElseGet(() -> MaskReport.builder().project(project).accessCode(code).build());
+        // See the note in report(): a human voice supersedes the pipeline's own.
+        report.setAutoRaised(false);
 
         String shop = code.getOrganization() != null ? code.getOrganization().getName() : null;
         String who = code.getCustomerName() != null && !code.getCustomerName().isBlank()
                 ? code.getCustomerName() + " (walk-in)"
                 : "Walk-in customer";
         return save(report, project, request, who + (shop != null ? " at " + shop : ""), null);
+    }
+
+    /**
+     * The pipeline reporting itself: the photo was cleaned, wall detection then
+     * produced nothing usable, and the project was handed over for hand-marked walls
+     * instead of being failed.
+     *
+     * <p>Every other report here starts with a person looking at their room and saying
+     * it is wrong. This one cannot, and that is the whole reason it exists: the user
+     * ends up with a cleaned canvas that works, marks three walls by hand, and has no
+     * particular reason to tell anyone. A mask model failing all afternoon would
+     * therefore show up in this queue as silence. So the run files it.
+     *
+     * <p>Filed AGAINST the project's owner — the signed-in user, or the access code a
+     * walk-in was working under — because that is who the admin follows up with, and
+     * because it lets a real complaint from that same person fold into this row rather
+     * than sit beside it as a duplicate. What it is NOT is a report by them:
+     * {@code autoRaised} keeps the queue honest about that.
+     *
+     * <p>Called from the async segmentation worker, outside any transaction of its own.
+     * Failures here must never reach the run — the caller catches them — because a
+     * finished, correct project must not be undone by a mail server.
+     *
+     * @return the saved report, or empty when the project has no owner to file it
+     *         against (which would be a project in a state nothing else can use either)
+     */
+    @Transactional
+    public Optional<MaskReportResponse> reportAutoMaskFailure(String projectId) {
+        Project project = projectRepository.findById(projectId)
+                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+
+        CreateMaskReportRequest request = new CreateMaskReportRequest();
+        request.setIssues(List.of(MaskReportIssue.MASK_NOT_GENERATED_PROPERLY));
+        request.setNote("Raised automatically by the pipeline. The photo clean-up "
+                + "succeeded and wall detection then returned no usable walls, so this "
+                + "project was handed to its owner with the walls to mark by hand. "
+                + "Nobody complained — the room works — so this is the only record.");
+
+        User owner = project.getUser();
+        if (owner != null) {
+            MaskReport report = reportRepository
+                    .findFirstByProjectIdAndReporterIdAndStatusNotOrderByCreatedAtDesc(
+                            projectId, owner.getId(), MaskReportStatus.RESOLVED)
+                    .orElseGet(() -> MaskReport.builder().project(project).reporter(owner).build());
+            report.setAutoRaised(true);
+            return Optional.of(save(report, project, request,
+                    "The pipeline (on behalf of " + owner.getName() + ")", owner.getEmail()));
+        }
+
+        CustomerAccessCode code = project.getAccessCode();
+        if (code == null) {
+            log.warn("Auto mask report skipped for project {} — it has neither an owner "
+                    + "nor an access code to file against", projectId);
+            return Optional.empty();
+        }
+        MaskReport report = reportRepository
+                .findFirstByProjectIdAndAccessCodeIdAndReporterIsNullAndStatusNotOrderByCreatedAtDesc(
+                        projectId, code.getId(), MaskReportStatus.RESOLVED)
+                .orElseGet(() -> MaskReport.builder().project(project).accessCode(code).build());
+        report.setAutoRaised(true);
+        String shop = code.getOrganization() != null ? code.getOrganization().getName() : null;
+        return Optional.of(save(report, project, request,
+                "The pipeline (on behalf of a walk-in" + (shop != null ? " at " + shop : "") + ")",
+                null));
     }
 
     /**
@@ -146,8 +216,9 @@ public class MaskReportService {
     private MaskReportResponse save(MaskReport report, Project project, CreateMaskReportRequest request,
                                     String who, String replyTo) {
         MaskReport saved = reportRepository.save(snapshot(report, project, request));
-        log.info("Mask report {} raised for project {} ({}) issues={}",
-                saved.getId(), project.getId(), saved.getProjectStatus(), saved.getIssues());
+        log.info("Mask report {} raised for project {} ({}) issues={} auto={}",
+                saved.getId(), project.getId(), saved.getProjectStatus(), saved.getIssues(),
+                saved.isAutoRaised());
         notifyInbox(saved, project, who, replyTo);
         return MaskReportResponse.forReporter(saved);
     }
@@ -163,7 +234,10 @@ public class MaskReportService {
         try {
             String issues = report.getIssueList().stream().map(MaskReportService::label)
                     .reduce((a, b) -> a + "; " + b).orElse("(none)");
-            emailSender.send(inbox, "HueVista: AI run reported — " + project.getName(), """
+            String subject = (report.isAutoRaised()
+                    ? "HueVista: AI run reported itself — "
+                    : "HueVista: AI run reported — ") + project.getName();
+            emailSender.send(inbox, subject, """
                     %s reported a problem with an AI run.
 
                     Project:  %s (%s)
@@ -266,6 +340,14 @@ public class MaskReportService {
      */
     private static String failureLine(MaskReport report) {
         if (report.getFailureStage() == null && report.getFailureReason() == null) {
+            // The pipeline's own report is the one case where a stage-less report is
+            // NOT "the masks are wrong": the run knows exactly what happened, and the
+            // project is fine — it is the wall detection that came back empty.
+            if (report.isAutoRaised()) {
+                return "wall detection returned no usable walls; the clean-up had "
+                        + "succeeded, so the cleaned photo was handed over with the walls "
+                        + "to be marked by hand — the project itself works";
+            }
             return "no — the run reported success, so the masks are wrong rather than missing";
         }
         String stage = switch (String.valueOf(report.getFailureStage())) {

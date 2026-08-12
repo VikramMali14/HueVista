@@ -86,7 +86,12 @@ class ApiContractTest {
                 // Which half of a failed run gave up, so the studio can offer the
                 // report with the right problem already ticked.
                 "failureStage",
-                "maskMode", "regions",
+                "maskMode",
+                // The run kept its cleaned canvas but detection found no walls. NOT a
+                // failure — the project opens and works — so the studio needs its own
+                // flag to know to ask for hand-marked walls.
+                "autoMaskFailed",
+                "regions",
                 "hasShareLink", "shareExpiresAt", "sharedBrands", "sentToShopAt",
                 "createdAt", "updatedAt",
                 // Shared view only: how the issuing shop presents a colour. The share
@@ -159,6 +164,9 @@ class ApiContractTest {
         // both are mirrored by one interface in types.ts.
         assertThat(propsOf("MaskReportResponse")).containsExactlyInAnyOrder(
                 "id", "issues", "note", "status", "createdAt",
+                // Whether the PIPELINE filed this (detection came back empty) or a
+                // person did. The queue reads very differently for the two.
+                "autoRaised",
                 "projectId", "projectName",
                 "reporterName", "reporterEmail", "reporterRole", "shopName",
                 // The reported RUN, snapshotted — re-running segmentation overwrites

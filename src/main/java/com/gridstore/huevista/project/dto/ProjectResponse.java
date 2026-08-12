@@ -52,6 +52,12 @@ public class ProjectResponse {
     // with zero auto regions: the cleaned canvas is ready and the user marks
     // walls themselves.
     private String maskMode;
+    // True when THIS project asked for AI wall detection, got its cleaned photo, and
+    // the mask model still found nothing usable. The project is SEGMENTED and fully
+    // workable — the cleaned canvas is there — but it carries no auto walls, so the
+    // studio asks for them by hand. The team has already been told: the pipeline files
+    // its own report in this case, because a user with a working room has no reason to.
+    private boolean autoMaskFailed;
     private List<RegionResponse> regions;
     private boolean hasShareLink;
     private LocalDateTime shareExpiresAt;
@@ -140,6 +146,7 @@ public class ProjectResponse {
                 .failureStage(project.getFailureStage() != null
                         ? project.getFailureStage().name() : null)
                 .maskMode(project.getMaskMode())
+                .autoMaskFailed(project.isAutoMaskFailed())
                 .regions(regions)
                 .hasShareLink(project.getShareToken() != null)
                 .shareExpiresAt(project.getShareExpiresAt())

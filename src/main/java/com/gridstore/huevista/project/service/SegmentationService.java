@@ -65,6 +65,24 @@ import java.util.Optional;
  *       stored.</li>
  * </ol>
  *
+ * <h3>When the walls don't come out (but the clean did)</h3>
+ * The two halves fail differently, and only one of them is fatal.
+ *
+ * <p>A failed CLEAN ends the run, for the reason above: there is no correct canvas
+ * to generate masks from. A failed MASK does NOT. The expensive half already
+ * succeeded — the photo is cleaned, repainted and paid for — and the studio has a
+ * perfectly good tool for drawing walls by hand, free on every plan. So the project
+ * finishes SEGMENTED on its cleaned canvas with zero auto regions (exactly the shape
+ * a MANUAL-mode run has), carrying {@code autoMaskFailed} so the studio can say what
+ * happened and point at "Add a wall". Failing it instead threw away work that was
+ * done and left the user at a dead end a minute of clicking would have cleared.
+ *
+ * <p>The cost of that kindness is that nobody finds out: a user with a working room
+ * does not file a complaint, so the mask model's bad day would never reach anyone.
+ * The pipeline therefore files the report itself, against the project's owner, via
+ * {@link com.gridstore.huevista.maskreport.service.MaskReportService#reportAutoMaskFailure}
+ * — the one failure in this system the backend can see for itself.
+ *
  * <h3>Manual flow (segmentPointAndSave)</h3>
  * The user clicks a point on the photo in the frontend. We call SAM 2 on
  * Replicate with that single point as a positive prompt; SAM returns the
@@ -83,11 +101,13 @@ public class SegmentationService {
     private final ReplicateMaskSegmenter maskSegmenter;
     private final ImageCleanerService imageCleaner;
     private final StubAiPipeline stubAiPipeline;
+    private final AiFailureSimulator failureSimulator;
     private final ImageRepository imageRepository;
     private final com.gridstore.huevista.image.service.ClaudeVisionService claudeVision;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final com.gridstore.huevista.account.repository.CustomerAccessCodeRepository accessCodeRepository;
     private final ProjectBillingResolver billingResolver;
+    private final com.gridstore.huevista.maskreport.service.MaskReportService maskReportService;
 
     /** Optional, mirrors ProjectService: present when the Redis-backed queue is in play. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -189,13 +209,32 @@ public class SegmentationService {
             // is not a cosmetic detail — see resolveScene.
             ImageType scene = resolveScene(uploadedImage);
 
+            // TESTING ONLY: this run may have been asked to pretend one half of the
+            // pipeline declined, so the recovery paths can be walked through on demand
+            // rather than waited for. Resolved once, here, so both halves below read the
+            // same answer and neither pays for a model call it is about to discard.
+            String simulate = projectRepository.findSimulatedFailureById(projectId).orElse(null);
+            boolean simulateCleanFailure =
+                    failureSimulator.simulates(AiFailureSimulator.Stage.CLEAN, simulate);
+            boolean simulateMaskFailure =
+                    failureSimulator.simulates(AiFailureSimulator.Stage.MASK, simulate);
+            if (simulateCleanFailure || simulateMaskFailure) {
+                log.warn("Project {} is running with SIMULATED AI failures (clean={}, mask={}) — " +
+                        "the models will not be called for those stages", projectId,
+                        simulateCleanFailure, simulateMaskFailure);
+            }
+
             String maskImageUrl = imageUrl;
             byte[] cleanedBytes = null;
             // Whether a cleaned canvas is REQUIRED before masks may be generated: the
-            // cleaner is on and this run isn't one of the deliberate skips.
-            boolean cleanRequired = !skipClean && imageCleaner.isAvailable();
+            // cleaner is on and this run isn't one of the deliberate skips. A SIMULATED
+            // clean failure counts as required too — otherwise the rehearsal only works
+            // on a box where the cleaner happens to be configured, which is the opposite
+            // of what a testing knob is for.
+            boolean cleanRequired = !skipClean
+                    && (imageCleaner.isAvailable() || simulateCleanFailure);
             try {
-                Optional<byte[]> cleanedOpt = skipClean
+                Optional<byte[]> cleanedOpt = (skipClean || simulateCleanFailure)
                         ? Optional.empty()
                         : imageCleaner.cleanImage(imageUrl, scene);
                 if (cleanedOpt.isPresent()) {
@@ -262,7 +301,7 @@ public class SegmentationService {
             // Step 2: color-coded mask via Replicate (Nano Banana Pro), run against the
             // CLEANED canvas whenever there is one. Scene drives the accent-wall rule:
             // interiors always get one accent wall to highlight.
-            if (tryColorCodedSegmentation(projectId, userId, maskImageUrl,
+            if (!simulateMaskFailure && tryColorCodedSegmentation(projectId, userId, maskImageUrl,
                     scene, cleanedBytes, snapFallbackBytes,
                     uploadedImage.getWidth(), uploadedImage.getHeight())) {
                 markSegmented(projectId);
@@ -274,15 +313,28 @@ public class SegmentationService {
                 return;
             }
 
-            // The clean landed but the walls didn't. Say which half failed — the studio
-            // offers the report with the right box already ticked, and "report it" is
-            // the only way this ever reaches anyone.
-            markFailed(projectId, FailureStage.MASK,
-                    "We couldn't pick out the walls in this photo. You can mark them "
-                    + "yourself with 'Add a wall', or report this and our team will take "
-                    + "a look.");
+            // The clean landed but the walls didn't — and that is NOT a dead end. The
+            // canvas the user came for exists, so hand it over with the walls left to
+            // mark by hand, and tell the team ourselves. See the class doc.
+            //
+            // Except when the mask model was never asked at all, because it isn't
+            // switched on in this deployment. Same outcome for the user — a cleaned
+            // canvas to mark by hand — but nothing to report: a report says "look at
+            // what this model did with this photo", and no model looked at it. Filing
+            // one per project would fill the queue with a single line of configuration.
+            // (Mirrors the guard in tryColorCodedSegmentation; a SIMULATED failure is
+            // deliberately still reported, since watching the report arrive is the
+            // whole point of rehearsing one.)
+            boolean maskModelWasAsked = simulateMaskFailure
+                    || stubAiPipeline.isEnabled() || maskSegmenter.isConfigured();
+            handOverForManualWalls(projectId, cleanedBytes != null, maskModelWasAsked);
+            billRun(billing, false);
 
         } catch (Exception e) {
+            // Still a real FAILED, unlike the empty-mask case above. That one is a model
+            // declining to find walls, with everything else intact; this is the run
+            // falling over somewhere unknown — storage, the database, a decode — and we
+            // have no idea whether the canvas the studio would open is even there.
             log.error("Segmentation error for project {}: {}", projectId, e.getMessage(), e);
             markFailed(projectId, FailureStage.MASK, "Segmentation failed: " + e.getMessage());
         } finally {
@@ -987,8 +1039,58 @@ public class SegmentationService {
             p.setStatus(ProjectStatus.SEGMENTED);
             p.setFailureReason(null);
             p.setFailureStage(null);
+            p.setAutoMaskFailed(false);
             projectRepository.save(p);
         });
+    }
+
+    /**
+     * Wall detection came back empty. Finish the run anyway — on the canvas that DID
+     * come out — and file the report the user won't.
+     *
+     * <p>This used to be {@code markFailed(MASK, …)}, which is the wrong verdict on the
+     * evidence. The clean succeeded, so the room the customer is standing in front of at
+     * a shop counter is right there, cleaned and repainted; what is missing is three
+     * masks that the studio can draw in about a minute with a tool that costs nothing.
+     * Ending the project instead spent the money, produced the picture, and then refused
+     * to show it — and the only thing offered was to report it and wait.
+     *
+     * <p>So the project ends SEGMENTED with no auto regions. That is not a lie about the
+     * pipeline: it is exactly what a MANUAL-mode run produces, and {@code autoMaskFailed}
+     * is the flag that tells the studio (and anyone reading the row later) that this one
+     * did not CHOOSE that. Only the image credit is charged — no wall detection landed,
+     * so no auto-mask credit is taken.
+     *
+     * <p>Then the report, and this is the part that must not be skipped. Every other
+     * report in this system exists because a person looked at their room and said it was
+     * wrong; nobody files one for a room that works. Left to the user, a mask model
+     * failing all day would show up as nothing at all. Best-effort by design — the run is
+     * already finished and correct, and a mail server or a queue being down is not a
+     * reason to take the customer's cleaned photo away from them.
+     *
+     * @param fileReport false when the mask model was never asked (it isn't enabled in
+     *                   this deployment), where there is no model behaviour to look at
+     *                   and a report per project would only bury the real ones
+     */
+    private void handOverForManualWalls(String projectId, boolean hadCleanedCanvas,
+                                        boolean fileReport) {
+        projectRepository.findById(projectId).ifPresent(p -> {
+            p.setStatus(ProjectStatus.SEGMENTED);
+            p.setFailureReason(null);
+            p.setFailureStage(null);
+            p.setAutoMaskFailed(true);
+            projectRepository.save(p);
+        });
+        log.warn("Auto wall detection produced nothing for project {} (cleanedCanvas={}, " +
+                "reporting={}) — handing the project over for hand-marked walls",
+                projectId, hadCleanedCanvas, fileReport);
+        if (!fileReport) return;
+        try {
+            maskReportService.reportAutoMaskFailure(projectId);
+        } catch (Exception e) {
+            log.error("Could not raise the automatic mask report for project {}: {}",
+                    projectId, e.toString());
+        }
     }
 
     /** A failure that belongs to neither pipeline stage — configuration, mostly. */

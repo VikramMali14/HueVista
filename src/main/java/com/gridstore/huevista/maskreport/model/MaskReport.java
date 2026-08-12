@@ -84,6 +84,22 @@ public class MaskReport {
     @Column(columnDefinition = "TEXT")
     private String note;
 
+    /**
+     * True when the PIPELINE raised this, not a person.
+     *
+     * One failure the backend can see for itself: the photo was cleaned and wall
+     * detection then produced nothing usable. That run is handed to the user as a
+     * cleaned canvas to mark by hand rather than failed outright, which means the
+     * user has a working room and no particular reason to complain — so nobody would
+     * ever file this, and the mask model's bad day would go unrecorded. The pipeline
+     * files it instead, against the project's owner, and this flag is how the admin
+     * queue tells the two apart: a person ticking a box is a judgement about what
+     * they can SEE, while this is a fact the run already knows.
+     */
+    @Column(nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean autoRaised = false;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
     @Builder.Default

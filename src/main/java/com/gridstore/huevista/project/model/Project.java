@@ -91,6 +91,15 @@ public class Project {
     // the queue payload so the choice survives worker restarts and requeues.
     private Boolean skipImageClean;
 
+    // ADMIN testing knob, set per segmentation request: which half of the run to
+    // make the image models decline — "CLEAN", "MASK", "BOTH", or "NONE" to force
+    // an honest run on a deployment where the global switch is on. Null = nothing
+    // was asked for, and the global setting decides. See AiFailureSimulator.
+    // Persisted for the same reason as skipImageClean above: the async worker that
+    // reads it may be a different JVM than the one that took the request.
+    @Column(length = 16)
+    private String simulatedFailure;
+
     // How walls are created after the compulsory AI photo clean-up: "AUTO"
     // (null = default) runs AI wall detection and consumes one auto-mask
     // credit; "MANUAL" stops the pipeline after the clean-up so the user marks
@@ -115,6 +124,25 @@ public class Project {
     @Enumerated(EnumType.STRING)
     @Column(length = 16)
     private FailureStage failureStage;
+
+    /**
+     * The run finished on a cleaned canvas but AI wall detection produced nothing —
+     * so the walls are the user's to mark by hand.
+     *
+     * <p>Deliberately NOT a FAILED status. Failing the run threw away a photo that had
+     * been cleaned, paid for and is perfectly usable, and left the user with a dead end
+     * where marking three walls by hand would have taken a minute. The project therefore
+     * comes back SEGMENTED with zero auto regions — exactly the shape a MANUAL-mode run
+     * has — and this flag is what tells the studio to say so, and what tells anyone
+     * reading the row later that the AI missed rather than that the user chose to draw.
+     *
+     * <p>It is also not the same thing as maskMode=MANUAL, which is the user's own
+     * choice and must survive a re-run. This is a fact about ONE run and is cleared at
+     * the start of the next one.
+     */
+    @Column(nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean autoMaskFailed = false;
 
     // Share link — null until generated
     @Column(unique = true)

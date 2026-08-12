@@ -25,6 +25,9 @@ public class MaskReportResponse {
     private String note;
     private MaskReportStatus status;
     private LocalDateTime createdAt;
+    /** True when the pipeline filed this itself (wall detection came back empty)
+     *  rather than a person reporting what they could see. */
+    private boolean autoRaised;
 
     // ─── Who and what (admin view; null on the reporter's copy) ──────────────
 
@@ -63,6 +66,7 @@ public class MaskReportResponse {
                 .note(r.getNote())
                 .status(r.getStatus())
                 .createdAt(r.getCreatedAt())
+                .autoRaised(r.isAutoRaised())
                 .build();
     }
 
@@ -80,6 +84,7 @@ public class MaskReportResponse {
                 .note(r.getNote())
                 .status(r.getStatus())
                 .createdAt(r.getCreatedAt())
+                .autoRaised(r.isAutoRaised())
                 .projectId(project != null ? project.getId() : null)
                 .projectName(project != null ? project.getName() : null)
                 .reporterName(reporter != null ? reporter.getName() : null)
