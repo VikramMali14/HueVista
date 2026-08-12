@@ -1557,14 +1557,11 @@ public class ProjectService {
         }
     }
 
+    /** The one name each surface goes by — see {@link RegionCategory#getDefaultLabel()}. */
     private String defaultLabel(RegionCategory category, int displayOrder) {
-        return switch (category) {
-            case MAIN_WALL -> "Main wall";
-            case ACCENT_WALL -> "Accent wall";
-            case TRIM -> "Trim & Frames";
-            case OTHER_WALL -> "Wall";
-            case MANUAL -> "Region " + (displayOrder + 1);
-        };
+        return category == RegionCategory.MANUAL
+                ? category.getDefaultLabel() + " " + (displayOrder + 1)
+                : category.getDefaultLabel();
     }
 
     /**
