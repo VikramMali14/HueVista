@@ -51,12 +51,15 @@ class BillingServiceLifecycleTest {
     private final AuditService audit = mock(AuditService.class);
     private final com.gridstore.huevista.billing.service.BillingEmailService emails =
             mock(com.gridstore.huevista.billing.service.BillingEmailService.class);
+    /** Answers false for everyone unless a test says otherwise — i.e. an ordinary billed shop. */
+    private final com.gridstore.huevista.billing.service.UnbilledAccounts unbilled =
+            mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class);
 
     private BillingService service() {
         BillingService svc = new BillingService(subs, payments, users, razorpay, audit, emails,
                 mock(com.gridstore.huevista.billing.service.PaymentAttemptService.class),
                 mock(com.gridstore.huevista.billing.service.FreeTierService.class),
-                mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class));
+                unbilled);
         ReflectionTestUtils.setField(svc, "keyId", "rzp_key");
         ReflectionTestUtils.setField(svc, "keySecret", "secret");
         ReflectionTestUtils.setField(svc, "planIdStarter", "plan_starter");
@@ -498,6 +501,38 @@ class BillingServiceLifecycleTest {
         assertThatThrownBy(() -> service().reserveProjectUsage(USER))
                 .isInstanceOf(QuotaExceededException.class)
                 .hasMessageContaining("used this month's projects");
+    }
+
+    /**
+     * An administrator holds no subscription row and never will, so the row this gate
+     * demanded could not exist for them. Creating a project answered "No plan on this
+     * account. Pick a plan to start making rooms." — the platform selling itself to the
+     * person who runs it, and a dead end, since there is no plan an admin can buy.
+     *
+     * The exemption has to be read HERE and not left to the caller: project creation asks
+     * {@code PricingService#isSubscribed} first, which already treats an admin as covered,
+     * and that "yes" is exactly what routes them into this method.
+     */
+    @Test
+    void reserveProjectUsageChargesNothingToAnUnbilledAccount() {
+        when(unbilled.covers(USER)).thenReturn(true);
+        when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of());
+
+        service().reserveProjectUsage(USER);   // no exception: the gate does not apply
+
+        // Nothing is metered either — there is no counter an admin's projects belong to.
+        verify(subs, never()).incrementProjectUsageIfWithinLimit(any());
+    }
+
+    /** The same exemption on the read-only pre-flight, which shares the gate. */
+    @Test
+    void projectQuotaGateIsSkippedForAnUnbilledAccount() {
+        when(unbilled.covers(USER)).thenReturn(true);
+        when(subs.findEntitling(eq(USER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of());
+
+        service().assertProjectQuotaAvailable(USER);
     }
 
     @Test
