@@ -3,11 +3,9 @@ package com.gridstore.huevista.support;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.common.ai.ClaudeService;
-import com.gridstore.huevista.support.channel.WhatsAppService;
 import com.gridstore.huevista.support.model.Conversation;
 import com.gridstore.huevista.support.model.ConversationStatus;
 import com.gridstore.huevista.support.model.MessageSender;
-import com.gridstore.huevista.support.model.SupportChannel;
 import com.gridstore.huevista.support.model.SupportMessage;
 import com.gridstore.huevista.support.repository.ConversationRepository;
 import com.gridstore.huevista.support.repository.SupportMessageRepository;
@@ -30,7 +28,7 @@ import static org.mockito.Mockito.when;
 /**
  * The "both ends" chat fixes: every new message touches the conversation's updatedAt
  * (inbox ordering / relative times), an agent reply re-takes the conversation for a
- * human, and agent replies to WhatsApp contacts are actually dispatched outbound.
+ * human.
  */
 class SupportServiceTest {
 
@@ -38,19 +36,17 @@ class SupportServiceTest {
     private final SupportMessageRepository messages = mock(SupportMessageRepository.class);
     private final UserRepository users = mock(UserRepository.class);
     private final ClaudeService claude = mock(ClaudeService.class);
-    private final WhatsAppService whatsApp = mock(WhatsAppService.class);
 
     private final SupportService service =
-            new SupportService(convos, messages, users, claude, whatsApp);
+            new SupportService(convos, messages, users, claude);
 
-    private static Conversation conversation(SupportChannel channel, ConversationStatus status) {
+    private static Conversation conversation(ConversationStatus status) {
         User user = new User();
         user.setId("user-1");
         user.setName("Asha");
         Conversation c = Conversation.builder()
                 .id("conv-1")
                 .user(user)
-                .channel(channel)
                 .status(status)
                 .subject("Help")
                 .build();
@@ -64,7 +60,7 @@ class SupportServiceTest {
 
     @Test
     void posting_a_message_touches_the_conversation_updatedAt() {
-        Conversation c = conversation(SupportChannel.IN_APP, ConversationStatus.NEEDS_HUMAN);
+        Conversation c = conversation(ConversationStatus.NEEDS_HUMAN);
         LocalDateTime before = c.getUpdatedAt();
         when(convos.findByIdAndUserId("conv-1", "user-1")).thenReturn(Optional.of(c));
         stubMessageReads();
@@ -82,7 +78,7 @@ class SupportServiceTest {
 
     @Test
     void agent_reply_reopens_a_resolved_conversation_for_a_human() {
-        Conversation c = conversation(SupportChannel.IN_APP, ConversationStatus.RESOLVED);
+        Conversation c = conversation(ConversationStatus.RESOLVED);
         when(convos.findById("conv-1")).thenReturn(Optional.of(c));
         when(users.findById("agent-1")).thenReturn(Optional.empty());
         stubMessageReads();
@@ -92,35 +88,11 @@ class SupportServiceTest {
         assertThat(c.getStatus()).isEqualTo(ConversationStatus.NEEDS_HUMAN);
     }
 
-    @Test
-    void agent_reply_to_a_whatsapp_contact_is_dispatched_outbound() {
-        Conversation c = conversation(SupportChannel.WHATSAPP, ConversationStatus.NEEDS_HUMAN);
-        c.setContactChannelId("919999888877");
-        when(convos.findById("conv-1")).thenReturn(Optional.of(c));
-        when(users.findById("agent-1")).thenReturn(Optional.empty());
-        when(whatsApp.sendText(anyString(), anyString())).thenReturn(true);
-        stubMessageReads();
 
-        service.agentReply("agent-1", "conv-1", "Your code is on its way.");
-
-        verify(whatsApp).sendText("919999888877", "Your code is on its way.");
-    }
-
-    @Test
-    void agent_reply_in_app_never_touches_whatsapp() {
-        Conversation c = conversation(SupportChannel.IN_APP, ConversationStatus.NEEDS_HUMAN);
-        when(convos.findById("conv-1")).thenReturn(Optional.of(c));
-        when(users.findById("agent-1")).thenReturn(Optional.empty());
-        stubMessageReads();
-
-        service.agentReply("agent-1", "conv-1", "Done.");
-
-        verify(whatsApp, org.mockito.Mockito.never()).sendText(anyString(), anyString());
-    }
 
     @Test
     void user_message_while_human_has_it_does_not_trigger_the_ai() {
-        Conversation c = conversation(SupportChannel.IN_APP, ConversationStatus.NEEDS_HUMAN);
+        Conversation c = conversation(ConversationStatus.NEEDS_HUMAN);
         when(convos.findByIdAndUserId("conv-1", "user-1")).thenReturn(Optional.of(c));
         stubMessageReads();
 
@@ -134,7 +106,7 @@ class SupportServiceTest {
     void auto_close_resolves_idle_conversations_with_a_system_note() {
         // A chat left open past the idle window is swept closed so the customer's
         // next message opens a fresh thread instead of resuming this stale one.
-        Conversation c = conversation(SupportChannel.IN_APP, ConversationStatus.NEEDS_HUMAN);
+        Conversation c = conversation(ConversationStatus.NEEDS_HUMAN);
         when(convos.findByStatusInAndUpdatedAtBefore(any(), any())).thenReturn(List.of(c));
         stubMessageReads();
 

@@ -36,8 +36,8 @@ import java.util.Optional;
  *       painted surfaces into the reference palette, so the canvas the masks
  *       are aligned to already looks freshly painted. Opt-in via
  *       REPLICATE_IMAGE_CLEANER_ENABLED.</li>
- *   <li>One image-edit call ({@link ReplicateMaskSegmenter}, FLUX.2 [max]
- *       by default) edits the cleaned photo into a flat colour-blocked image: RED = main
+ *   <li>One image-edit call ({@link ReplicateMaskSegmenter}, Nano Banana
+ *       Pro) edits the cleaned photo into a flat colour-blocked image: RED = main
  *       paintable wall, GREEN = accent / highlighter wall, BLUE = trim &
  *       frames, BLACK = everything else (sky, ground, stone, windows, fixtures,
  *       plus the door panels and metal railings — kept as fixed features:
@@ -221,7 +221,7 @@ public class SegmentationService {
                 }
             }
 
-            // Step 2: color-coded mask via Replicate (FLUX.2 [max] by default).
+            // Step 2: color-coded mask via Replicate (Nano Banana Pro).
             // Scene drives the accent-wall rule: interiors always get one
             // accent wall to highlight.
             if (tryColorCodedSegmentation(projectId, userId, maskImageUrl,
