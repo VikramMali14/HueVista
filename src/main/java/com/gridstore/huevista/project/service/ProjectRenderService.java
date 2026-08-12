@@ -17,7 +17,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -115,8 +118,44 @@ public class ProjectRenderService {
                 project.getId(), render.getId(), page.getId(),
                 project.getRendersUsed(), project.getRendersAllowed());
 
-        worker.run(render.getId());
+        dispatchOnceCommitted(render.getId());
         return ProjectRenderResponse.from(render, null);
+    }
+
+    /**
+     * Hand the render to the AI executor — but only once this transaction has committed.
+     *
+     * Handing it over inline reads as equivalent and is not. The worker opens its own
+     * transaction on another thread, and until this one commits the row it was just given
+     * the id of does not exist to anybody else. The worker therefore lost that race
+     * essentially every time: it logged "Render vanished before it ran" and stopped, which
+     * left the render QUEUED for ever with the allowance already spent and no failure to
+     * trigger the refund — the project's one render gone, and a spinner that never stops.
+     *
+     * <p>It is worth being precise about why this was not merely flaky. {@code request} is
+     * called from {@code ProjectService.requestRender}, which is itself
+     * {@code @Transactional}, so the commit is two proxies further out than the dispatch —
+     * the worker had a comfortable head start on a row that had not been written yet.
+     *
+     * <p>Committing first also fixes a quieter version of the same mistake. The executor
+     * runs {@code CallerRunsPolicy}, so a saturated pool makes the submitting thread run
+     * the task itself — which inline meant a minute of model HTTP inside an open database
+     * transaction. After commit, the worst that costs is a minute on the request thread.
+     *
+     * <p>The no-transaction branch is for direct callers in tests, where registering a
+     * synchronization would throw rather than run.
+     */
+    private void dispatchOnceCommitted(String renderId) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            worker.run(renderId);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                worker.run(renderId);
+            }
+        });
     }
 
     /**
@@ -125,12 +164,22 @@ public class ProjectRenderService {
      *
      * Returns empty when the render has vanished under us — a project deleted between the
      * request and the worker picking it up — which is a reason to stop, not to fail.
+     *
+     * <p>Also returns empty when the render is no longer QUEUED. That is the handshake with
+     * {@link ProjectRenderSweeper}: a render it has already given up on and refunded must
+     * not then quietly run and charge for itself, and a render already RUNNING must not be
+     * started twice.
      */
     @Transactional
     public java.util.Optional<RenderJob> startJob(String renderId) {
         ProjectRender render = renderRepository.findById(renderId).orElse(null);
         if (render == null) {
             log.warn("Render vanished before it ran: render={}", renderId);
+            return java.util.Optional.empty();
+        }
+        if (render.getStatus() != ProjectRender.Status.QUEUED) {
+            log.warn("Render is not queued any more, leaving it alone: render={} status={}",
+                    renderId, render.getStatus());
             return java.util.Optional.empty();
         }
         Project project = render.getProject();
@@ -223,6 +272,29 @@ public class ProjectRenderService {
                         project.getId(), renderId);
             }
         });
+    }
+
+    /**
+     * The renders that can no longer finish: still QUEUED or RUNNING long after any real
+     * one would have ended.
+     *
+     * A render is bounded from the moment it starts — the model is polled ninety times at
+     * two seconds, so about three minutes and then it gives up. Anything still not terminal
+     * an order of magnitude past that is not slow, it is stranded: the process died holding
+     * it, or it was accepted and never picked up. Both leave the allowance spent, which is
+     * the reason this query exists rather than a dashboard someone has to read.
+     *
+     * <p>Ids rather than entities, because the caller finishes each one in its own
+     * transaction and a detached entity would be worth nothing there.
+     */
+    @Transactional(readOnly = true)
+    public List<String> strandedRenderIds(Duration olderThan) {
+        return renderRepository.findByStatusInAndCreatedAtBefore(
+                        List.of(ProjectRender.Status.QUEUED, ProjectRender.Status.RUNNING),
+                        LocalDateTime.now().minus(olderThan))
+                .stream()
+                .map(ProjectRender::getId)
+                .toList();
     }
 
     /** Store the finished bytes and return the storage KEY — never a presigned URL. */
