@@ -8,6 +8,7 @@ import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.ClaudeVisionService;
 import com.gridstore.huevista.image.service.StorageService;
+import com.gridstore.huevista.maskreport.service.MaskReportService;
 import com.gridstore.huevista.project.model.FailureStage;
 import com.gridstore.huevista.project.model.Project;
 import com.gridstore.huevista.project.model.ProjectStatus;
@@ -60,11 +61,16 @@ class SegmentationServiceTest {
     private final ImageCleanerService cleaner = mock(ImageCleanerService.class);
     private final ImageRepository images = mock(ImageRepository.class);
     private final ClaudeVisionService vision = mock(ClaudeVisionService.class);
+    /** Real, not mocked: its whole job is one small decision, and a mock of it would
+     *  only ever assert that the tests agree with themselves. Left at its default
+     *  (NONE), so nothing here simulates a failure unless it says so. */
+    private final AiFailureSimulator failureSimulator = new AiFailureSimulator();
+    private final MaskReportService maskReports = mock(MaskReportService.class);
     private final SegmentationService service = new SegmentationService(
             projects, regions, storage, mock(RestTemplate.class), segmenter,
-            cleaner, stubAiPipeline, images, vision,
+            cleaner, stubAiPipeline, failureSimulator, images, vision,
             mock(BillingService.class), mock(CustomerAccessCodeRepository.class),
-            mock(ProjectBillingResolver.class));
+            mock(ProjectBillingResolver.class), maskReports);
 
     /** Colour-coded model output WITH a usable main wall: red block (12000 px)
      *  plus a blue trim block (4000 px), rest black. */
@@ -280,6 +286,141 @@ class SegmentationServiceTest {
         service.segmentAsync("p1", "http://img");
 
         verify(segmenter, times(1)).generateColorCodedMask(anyString(), any());
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    //  The mask stage: empty walls are NOT a failed project
+    // ────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void anEmptyMaskKeepsTheCleanedProjectAndReportsItselfInstead() throws Exception {
+        // The expensive half succeeded — there is a cleaned, repainted photo the user
+        // paid for — so a mask model that finds nothing must not throw that away. The
+        // project finishes SEGMENTED with no regions (what a MANUAL run looks like) and
+        // the pipeline files the report, because a user holding a working room never will.
+        ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
+        stubProjectForRun(ImageType.OUTDOOR);
+        when(cleaner.isAvailable()).thenReturn(true);
+        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("cleaned/key.jpg");
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.generateColorCodedMask(anyString(), any())).thenReturn(Optional.empty());
+
+        service.segmentAsync("p1", "http://img");
+
+        verify(regions, never()).save(any());
+        ArgumentCaptor<Project> saved = ArgumentCaptor.forClass(Project.class);
+        verify(projects, atLeastOnce()).save(saved.capture());
+        Project last = saved.getAllValues().get(saved.getAllValues().size() - 1);
+        assertThat(last.getStatus()).isEqualTo(ProjectStatus.SEGMENTED);
+        assertThat(last.isAutoMaskFailed()).isTrue();
+        // Not a failure, so nothing that describes one may be left behind: the studio
+        // reads failureStage to decide whether there is anything to open at all.
+        assertThat(last.getFailureStage()).isNull();
+        assertThat(last.getFailureReason()).isNull();
+        verify(maskReports).reportAutoMaskFailure("p1");
+    }
+
+    @Test
+    void aReportThatCannotBeFiledStillLeavesTheUserTheirCleanedRoom() throws Exception {
+        // The report is a best-effort side errand. A mail server or a database hiccup
+        // must never undo a run that already finished correctly — the customer standing
+        // at the counter loses their photo over a problem that is entirely ours.
+        ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
+        stubProjectForRun(ImageType.OUTDOOR);
+        when(cleaner.isAvailable()).thenReturn(true);
+        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("cleaned/key.jpg");
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.generateColorCodedMask(anyString(), any())).thenReturn(Optional.empty());
+        when(maskReports.reportAutoMaskFailure("p1")).thenThrow(new RuntimeException("inbox down"));
+
+        service.segmentAsync("p1", "http://img");
+
+        ArgumentCaptor<Project> saved = ArgumentCaptor.forClass(Project.class);
+        verify(projects, atLeastOnce()).save(saved.capture());
+        Project last = saved.getAllValues().get(saved.getAllValues().size() - 1);
+        assertThat(last.getStatus()).isEqualTo(ProjectStatus.SEGMENTED);
+        assertThat(last.isAutoMaskFailed()).isTrue();
+    }
+
+    @Test
+    void aMaskModelThatIsSwitchedOFFHandsOverWithoutFilingAReport() throws Exception {
+        // Same outcome for the user — a cleaned canvas with the walls to mark — but
+        // nothing to report: a report asks an admin to look at what a model did with a
+        // photo, and no model looked at it. One line of configuration would otherwise
+        // put a row in the queue for every project that runs under it.
+        ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
+        stubProjectForRun(ImageType.OUTDOOR);
+        when(cleaner.isAvailable()).thenReturn(true);
+        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("cleaned/key.jpg");
+        when(segmenter.isConfigured()).thenReturn(false);
+
+        service.segmentAsync("p1", "http://img");
+
+        verifyNoInteractions(maskReports);
+        ArgumentCaptor<Project> saved = ArgumentCaptor.forClass(Project.class);
+        verify(projects, atLeastOnce()).save(saved.capture());
+        Project last = saved.getAllValues().get(saved.getAllValues().size() - 1);
+        assertThat(last.getStatus()).isEqualTo(ProjectStatus.SEGMENTED);
+        assertThat(last.isAutoMaskFailed()).isTrue();
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    //  Simulated failures (the ADMIN testing knob)
+    // ────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void aSimulatedMaskFailureNeverCallsTheModelAndTakesTheHandOverPath() throws Exception {
+        // The point of the knob: reach the hand-over path on demand, without paying
+        // for a generation and without waiting for Nano Banana to have a bad day.
+        ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
+        stubProjectForRun(ImageType.OUTDOOR);
+        when(projects.findSimulatedFailureById("p1")).thenReturn(Optional.of("MASK"));
+        when(cleaner.isAvailable()).thenReturn(true);
+        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("cleaned/key.jpg");
+
+        service.segmentAsync("p1", "http://img");
+
+        // The CLEAN still ran for real — only the simulated half is withheld, which is
+        // what makes this a rehearsal of "cleaned but no walls" rather than of nothing.
+        verify(cleaner).cleanImage(anyString(), any());
+        verify(segmenter, never()).generateColorCodedMask(anyString(), any());
+        verify(maskReports).reportAutoMaskFailure("p1");
+        ArgumentCaptor<Project> saved = ArgumentCaptor.forClass(Project.class);
+        verify(projects, atLeastOnce()).save(saved.capture());
+        Project last = saved.getAllValues().get(saved.getAllValues().size() - 1);
+        assertThat(last.getStatus()).isEqualTo(ProjectStatus.SEGMENTED);
+        assertThat(last.isAutoMaskFailed()).isTrue();
+    }
+
+    @Test
+    void aSimulatedCleanFailureFailsTheRunEvenWithTheCleanerSwitchedOff() {
+        // Simulating the clean failure has to work on a box where the cleaner isn't
+        // configured — that is exactly the box someone tests on. Otherwise the knob
+        // would quietly do nothing in the one place it is needed.
+        ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
+        stubProjectForRun(ImageType.OUTDOOR);
+        when(projects.findSimulatedFailureById("p1")).thenReturn(Optional.of("CLEAN"));
+        when(cleaner.isAvailable()).thenReturn(false);
+
+        service.segmentAsync("p1", "http://img");
+
+        verifyNoInteractions(segmenter);
+        verify(cleaner, never()).cleanImage(anyString(), any());
+        ArgumentCaptor<Project> saved = ArgumentCaptor.forClass(Project.class);
+        verify(projects, atLeastOnce()).save(saved.capture());
+        Project last = saved.getAllValues().get(saved.getAllValues().size() - 1);
+        assertThat(last.getStatus()).isEqualTo(ProjectStatus.FAILED);
+        assertThat(last.getFailureStage()).isEqualTo(FailureStage.CLEAN);
     }
 
     // ────────────────────────────────────────────────────────────────────────

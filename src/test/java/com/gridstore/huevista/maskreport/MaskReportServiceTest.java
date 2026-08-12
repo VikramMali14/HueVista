@@ -259,6 +259,99 @@ class MaskReportServiceTest {
         assertThat(body.getValue()).contains("Mehta Paint House");
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  The report nobody files: the pipeline's own
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void the_pipeline_files_its_own_report_against_the_owner_when_detection_finds_nothing() {
+        // A run whose clean succeeded and whose walls didn't hands the customer a
+        // working room, so the customer has no reason to complain — and the mask
+        // model's bad afternoon would otherwise reach this queue as silence.
+        Project p = project();
+        p.setRegions(new ArrayList<>());
+        User owner = user();
+        p.setUser(owner);
+        when(projects.findById("proj-1")).thenReturn(Optional.of(p));
+        when(reports.findFirstByProjectIdAndReporterIdAndStatusNotOrderByCreatedAtDesc(
+                "proj-1", "user-1", MaskReportStatus.RESOLVED)).thenReturn(Optional.empty());
+
+        service.reportAutoMaskFailure("proj-1");
+
+        MaskReport r = saved();
+        assertThat(r.isAutoRaised()).isTrue();
+        // Filed against the owner, because that is who an admin follows up with — and
+        // because a real complaint from them then folds into this row instead of
+        // sitting beside it as a near-duplicate.
+        assertThat(r.getReporter().getId()).isEqualTo("user-1");
+        assertThat(r.getIssueList()).containsExactly(MaskReportIssue.MASK_NOT_GENERATED_PROPERLY);
+        assertThat(r.getRegionCount()).isZero();
+        assertThat(r.getNote()).contains("Raised automatically");
+
+        // The mail has to say the run reported ITSELF; read as an ordinary complaint it
+        // would send an admin looking for a person who never wrote in.
+        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
+        verify(email).send(anyString(), subject.capture(), anyString());
+        assertThat(subject.getValue()).contains("reported itself");
+    }
+
+    @Test
+    void a_guests_empty_run_is_reported_against_the_shops_code() {
+        // No account exists, so the code is both the owner and the trail back to the
+        // shop — the same routing a guest's own report gets.
+        Project p = project();
+        p.setRegions(new ArrayList<>());
+        Organization org = new Organization();
+        org.setId("org-1");
+        org.setName("Mehta Paint House");
+        p.setAccessCode(CustomerAccessCode.builder().id("code-1").organization(org).build());
+        when(projects.findById("proj-1")).thenReturn(Optional.of(p));
+        when(reports.findFirstByProjectIdAndAccessCodeIdAndReporterIsNullAndStatusNotOrderByCreatedAtDesc(
+                "proj-1", "code-1", MaskReportStatus.RESOLVED)).thenReturn(Optional.empty());
+
+        service.reportAutoMaskFailure("proj-1");
+
+        MaskReport r = saved();
+        assertThat(r.isAutoRaised()).isTrue();
+        assertThat(r.getReporter()).isNull();
+        assertThat(r.getAccessCode().getId()).isEqualTo("code-1");
+    }
+
+    @Test
+    void a_person_reporting_the_same_project_takes_the_pipelines_row_over() {
+        // The pipeline's report says "detection returned nothing". Somebody then looks
+        // at the room and writes in about it, and that is a strictly better piece of
+        // evidence — same complaint, so it updates the row rather than stacking a
+        // second, and the row stops claiming nobody was there to see it.
+        Project p = project();
+        ownedByUser(p);
+        MaskReport existing = MaskReport.builder()
+                .id("rep-1").project(p).reporter(user()).build();
+        existing.setAutoRaised(true);
+        when(reports.findFirstByProjectIdAndReporterIdAndStatusNotOrderByCreatedAtDesc(
+                "proj-1", "user-1", MaskReportStatus.RESOLVED)).thenReturn(Optional.of(existing));
+
+        service.report("user-1", "proj-1",
+                request("the walls it did find are on the curtains",
+                        MaskReportIssue.MASK_NOT_GENERATED_PROPERLY));
+
+        MaskReport r = saved();
+        assertThat(r.getId()).isEqualTo("rep-1");
+        assertThat(r.isAutoRaised()).isFalse();
+        assertThat(r.getNote()).isEqualTo("the walls it did find are on the curtains");
+    }
+
+    @Test
+    void an_ownerless_project_is_skipped_rather_than_filed_against_nobody() {
+        Project p = project();
+        p.setRegions(new ArrayList<>());
+        when(projects.findById("proj-1")).thenReturn(Optional.of(p));
+
+        assertThat(service.reportAutoMaskFailure("proj-1")).isEmpty();
+
+        verify(reports, never()).save(any());
+    }
+
     @Test
     void resolving_stamps_who_and_when_and_reopening_clears_it() {
         MaskReport r = MaskReport.builder().id("rep-1").project(project()).build();

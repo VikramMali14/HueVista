@@ -179,4 +179,13 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
      */
     @Query("SELECT p.maskMode FROM Project p WHERE p.id = :projectId")
     Optional<String> findMaskModeById(@Param("projectId") String projectId);
+
+    /**
+     * Reads the ADMIN failure-simulation knob for this run without pulling the full
+     * entity — consulted by the async segmentation worker before each model call.
+     * Empty optional / null = nothing asked for, and the global setting decides.
+     * See {@link com.gridstore.huevista.project.service.AiFailureSimulator}.
+     */
+    @Query("SELECT p.simulatedFailure FROM Project p WHERE p.id = :projectId")
+    Optional<String> findSimulatedFailureById(@Param("projectId") String projectId);
 }

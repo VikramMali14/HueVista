@@ -6,6 +6,7 @@ import com.gridstore.huevista.image.model.ImageType;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.ClaudeVisionService;
 import com.gridstore.huevista.image.service.StorageService;
+import com.gridstore.huevista.maskreport.service.MaskReportService;
 import com.gridstore.huevista.project.model.Project;
 import com.gridstore.huevista.project.model.Region;
 import com.gridstore.huevista.project.model.RegionCategory;
@@ -102,10 +103,11 @@ class StubAiPipelineTest {
         ReplicateMaskSegmenter segmenter = mock(ReplicateMaskSegmenter.class);
         SegmentationService service = new SegmentationService(
                 projects, regions, storage, mock(RestTemplate.class), segmenter,
-                mock(ImageCleanerService.class), stub, mock(ImageRepository.class),
+                mock(ImageCleanerService.class), stub, new AiFailureSimulator(),
+                mock(ImageRepository.class),
                 mock(ClaudeVisionService.class), mock(BillingService.class),
                 mock(CustomerAccessCodeRepository.class),
-                mock(ProjectBillingResolver.class));
+                mock(ProjectBillingResolver.class), mock(MaskReportService.class));
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 2);
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("masks/key.png");
@@ -140,9 +142,10 @@ class StubAiPipelineTest {
         SegmentationService service = new SegmentationService(
                 projects, regions, storage, mock(RestTemplate.class),
                 mock(ReplicateMaskSegmenter.class), mock(ImageCleanerService.class),
-                stub, mock(ImageRepository.class), mock(ClaudeVisionService.class),
+                stub, new AiFailureSimulator(), mock(ImageRepository.class),
+                mock(ClaudeVisionService.class),
                 mock(BillingService.class), mock(CustomerAccessCodeRepository.class),
-                mock(ProjectBillingResolver.class));
+                mock(ProjectBillingResolver.class), mock(MaskReportService.class));
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("masks/key.png");
