@@ -4,6 +4,7 @@ import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.billing.service.BillingService;
 import com.gridstore.huevista.image.model.ImageType;
 import com.gridstore.huevista.image.repository.ImageRepository;
+import com.gridstore.huevista.image.service.ClaudeVisionService;
 import com.gridstore.huevista.image.service.StorageService;
 import com.gridstore.huevista.project.model.Project;
 import com.gridstore.huevista.project.model.Region;
@@ -102,7 +103,8 @@ class StubAiPipelineTest {
         SegmentationService service = new SegmentationService(
                 projects, regions, storage, mock(RestTemplate.class), segmenter,
                 mock(ImageCleanerService.class), stub, mock(ImageRepository.class),
-                mock(BillingService.class), mock(CustomerAccessCodeRepository.class),
+                mock(ClaudeVisionService.class), mock(BillingService.class),
+                mock(CustomerAccessCodeRepository.class),
                 mock(ProjectBillingResolver.class));
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 2);
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
@@ -138,8 +140,9 @@ class StubAiPipelineTest {
         SegmentationService service = new SegmentationService(
                 projects, regions, storage, mock(RestTemplate.class),
                 mock(ReplicateMaskSegmenter.class), mock(ImageCleanerService.class),
-                stub, mock(ImageRepository.class), mock(BillingService.class),
-                mock(CustomerAccessCodeRepository.class), mock(ProjectBillingResolver.class));
+                stub, mock(ImageRepository.class), mock(ClaudeVisionService.class),
+                mock(BillingService.class), mock(CustomerAccessCodeRepository.class),
+                mock(ProjectBillingResolver.class));
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("masks/key.png");

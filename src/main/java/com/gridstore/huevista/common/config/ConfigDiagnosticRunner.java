@@ -80,6 +80,20 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
     @Value("${replicate.image-cleaner.model:NOT SET}")
     private String imageCleanerModel;
 
+    // The rest of the hierarchy. Worth printing on startup because wall detection
+    // now runs ONLY on a cleaned canvas: if this list is empty and Nano Banana Pro is
+    // having a bad day, every run in that window fails, and this line is where an
+    // operator finds out whether the chain was armed at all.
+    @Value("${replicate.image-cleaner.fallback-models:NOT SET}")
+    private String imageCleanerFallbacks;
+
+    // Presence only — these are keys.
+    @Value("${google.gemini.api-key:}")
+    private String geminiApiKey;
+
+    @Value("${openai.api-key:}")
+    private String openAiApiKey;
+
     // --- Storage ---
     @Value("${app.upload.storage-path:NOT SET}")
     private String localStoragePath;
@@ -189,6 +203,9 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
             "  Mask Resolution : {}\n" +
             "  Cleaner Enabled : {}\n" +
             "  Cleaner Model   : {}\n" +
+            "  Cleaner Chain   : {}\n" +
+            "  Gemini Key      : {}   (direct Google route for the clean)\n" +
+            "  OpenAI Key      : {}   (needed by openai/* in the chain)\n" +
             "\n── GOOGLE OAUTH2 ─────────────────────────────────────────────\n" +
             "  Client ID    : {}\n" +
             "  Secret       : {}\n" +
@@ -234,7 +251,8 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
             mask(replicateToken), blank(sam2Version),
             // Auto segmentation — plain values, nothing secret here
             maskSegmenterEnabled, maskSegmenterModel, maskSegmenterResolution,
-            imageCleanerEnabled, imageCleanerModel,
+            imageCleanerEnabled, imageCleanerModel, imageCleanerFallbacks,
+            isSet(geminiApiKey), isSet(openAiApiKey),
             // Google
             mask(googleClientId), isSet(googleClientSecret),
             // Razorpay — the key id carries its own mode prefix and is half of a public

@@ -79,7 +79,14 @@ class ApiContractTest {
     void project_response_matches_frontend_ProjectDetail() {
         assertThat(propsOf("ProjectResponse")).containsExactlyInAnyOrder(
                 "id", "name", "roomType", "notes", "status", "imageId", "imageUrl",
-                "cleanedImageUrl", "rawMaskUrl", "failureReason", "maskMode", "regions",
+                // The scene the pipeline RAN this project as. Only the project can
+                // carry it: a guest upload comes back UNKNOWN and is classified later.
+                "imageType",
+                "cleanedImageUrl", "rawMaskUrl", "failureReason",
+                // Which half of a failed run gave up, so the studio can offer the
+                // report with the right problem already ticked.
+                "failureStage",
+                "maskMode", "regions",
                 "hasShareLink", "shareExpiresAt", "sharedBrands", "sentToShopAt",
                 "createdAt", "updatedAt",
                 // Shared view only: how the issuing shop presents a colour. The share
@@ -157,6 +164,9 @@ class ApiContractTest {
                 // The reported RUN, snapshotted — re-running segmentation overwrites
                 // every one of these on the project itself.
                 "projectStatus", "maskMode", "regionCount", "hadCleanedImage",
+                // Which stage the reported run failed at, and what it told the user.
+                // Null on a report against a run that believed it had succeeded.
+                "failureStage", "failureReason",
                 "adminNote", "resolvedByName", "resolvedAt", "updatedAt");
         assertThat(propsOf("CreateMaskReportRequest")).containsExactlyInAnyOrder("issues", "note");
         assertThat(propsOf("UpdateMaskReportRequest")).containsExactlyInAnyOrder("status", "adminNote");

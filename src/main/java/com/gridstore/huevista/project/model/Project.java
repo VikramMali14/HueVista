@@ -66,6 +66,17 @@ public class Project {
     // when present, falling back to the original UploadedImage when not.
     private String cleanedImageStorageKey;
 
+    // Pixel size of THAT cleaned image. Not a cache of the original's dimensions:
+    // the clean is a generative edit and then a local upscale, so it is a different
+    // size (and occasionally a slightly different aspect) from the photo it came
+    // from. Click-to-segment needs these — it converts a normalised click on the
+    // canvas the user is looking at into pixel coordinates in the image it sends to
+    // SAM, and doing that against the ORIGINAL's dimensions puts the point somewhere
+    // else. Null when there is no cleaned image.
+    private Integer cleanedImageWidth;
+
+    private Integer cleanedImageHeight;
+
     // Storage key of the model's raw colour-coded mask (RED/GREEN/BLUE/BLACK
     // image) from the generation that was accepted. Kept purely for
     // diagnostics — the admin mask viewer compares it against the processed
@@ -96,6 +107,14 @@ public class Project {
     // reasonable VARCHAR limit.
     @Column(columnDefinition = "TEXT")
     private String failureReason;
+
+    // Which half of the run failed, for the code rather than the reader — the studio
+    // turns a failure into a "report this" prompt and needs to tick the right box on
+    // the user's behalf. See FailureStage. Null unless status == FAILED, and null on
+    // failures that belong to neither stage.
+    @Enumerated(EnumType.STRING)
+    @Column(length = 16)
+    private FailureStage failureStage;
 
     // Share link — null until generated
     @Column(unique = true)

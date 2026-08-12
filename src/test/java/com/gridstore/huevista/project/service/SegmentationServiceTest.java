@@ -4,9 +4,13 @@ import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.repository.OrgMembershipRepository;
 import com.gridstore.huevista.billing.service.BillingService;
 import com.gridstore.huevista.image.model.ImageType;
+import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
+import com.gridstore.huevista.image.service.ClaudeVisionService;
 import com.gridstore.huevista.image.service.StorageService;
+import com.gridstore.huevista.project.model.FailureStage;
 import com.gridstore.huevista.project.model.Project;
+import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
 import com.gridstore.huevista.project.model.RegionCategory;
 import com.gridstore.huevista.project.repository.ProjectRepository;
@@ -28,9 +32,11 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -51,9 +57,12 @@ class SegmentationServiceTest {
     /** Defaults to isEnabled()=false, i.e. the real Replicate path, for every
      *  test that doesn't explicitly turn the testing stub on. */
     private final StubAiPipeline stubAiPipeline = mock(StubAiPipeline.class);
+    private final ImageCleanerService cleaner = mock(ImageCleanerService.class);
+    private final ImageRepository images = mock(ImageRepository.class);
+    private final ClaudeVisionService vision = mock(ClaudeVisionService.class);
     private final SegmentationService service = new SegmentationService(
             projects, regions, storage, mock(RestTemplate.class), segmenter,
-            mock(ImageCleanerService.class), stubAiPipeline, mock(ImageRepository.class),
+            cleaner, stubAiPipeline, images, vision,
             mock(BillingService.class), mock(CustomerAccessCodeRepository.class),
             mock(ProjectBillingResolver.class));
 
@@ -203,6 +212,111 @@ class SegmentationServiceTest {
         assertThat(saved.getAllValues())
                 .extracting(Region::getCategory)
                 .containsExactly(RegionCategory.MAIN_WALL, RegionCategory.ACCENT_WALL);
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    //  The clean gate: no cleaned canvas, no masks
+    // ────────────────────────────────────────────────────────────────────────
+
+    /** Wires up the repository lookups segmentAsync makes before the clean step. */
+    private UploadedImage stubProjectForRun(ImageType type) {
+        UploadedImage image = UploadedImage.builder()
+                .id("i1").storageKey("orig.jpg").imageType(type).width(W).height(H)
+                .build();
+        when(projects.findUserIdById("p1")).thenReturn(Optional.of("u1"));
+        when(projects.findAccessCodeIdById("p1")).thenReturn(Optional.empty());
+        when(projects.findImageIdById("p1")).thenReturn(Optional.of("i1"));
+        when(projects.findSkipImageCleanById("p1")).thenReturn(Optional.of(false));
+        when(projects.findMaskModeById("p1")).thenReturn(Optional.of("AUTO"));
+        when(projects.findById("p1")).thenReturn(Optional.of(new Project()));
+        when(images.findById("i1")).thenReturn(Optional.of(image));
+        return image;
+    }
+
+    @Test
+    void aFailedCleanNeverReachesTheMaskModel() {
+        // The whole point of the gate: masks are generated FROM the cleaned canvas, so
+        // when every cleaning provider declines there is nothing correct to generate
+        // them from. Running the mask model anyway would spend a second generation to
+        // produce regions aligned to a canvas the studio doesn't display.
+        ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
+        stubProjectForRun(ImageType.OUTDOOR);
+        when(cleaner.isAvailable()).thenReturn(true);
+        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.empty());
+
+        service.segmentAsync("p1", "http://img");
+
+        verify(segmenter, never()).generateColorCodedMask(anyString(), any());
+        verify(regions, never()).save(any());
+
+        ArgumentCaptor<Project> saved = ArgumentCaptor.forClass(Project.class);
+        verify(projects, atLeastOnce()).save(saved.capture());
+        Project failed = saved.getAllValues().get(saved.getAllValues().size() - 1);
+        assertThat(failed.getStatus()).isEqualTo(ProjectStatus.FAILED);
+        assertThat(failed.getFailureStage()).isEqualTo(FailureStage.CLEAN);
+        // The reason is what the studio shows and what the report carries, so it has to
+        // point at the one thing the user can actually do.
+        assertThat(failed.getFailureReason()).contains("report");
+    }
+
+    @Test
+    void aRunWithTheCleanerOffStillMasksTheOriginalPhoto() throws Exception {
+        // The gate is about a clean that FAILED, not about one that was never asked
+        // for. With the cleaner disabled (or an admin's cleanImage=false), masking the
+        // original photo is the deliberate behaviour and must survive.
+        ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
+        stubProjectForRun(ImageType.OUTDOOR);
+        when(cleaner.isAvailable()).thenReturn(false);
+        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.empty());
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.generateColorCodedMask(anyString(), any()))
+                .thenReturn(Optional.of(goodCodedPng()));
+        when(storage.load("orig.jpg")).thenReturn(png(new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB)));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("masks/key.png");
+        when(projects.getReferenceById("p1")).thenReturn(mock(Project.class));
+
+        service.segmentAsync("p1", "http://img");
+
+        verify(segmenter, times(1)).generateColorCodedMask(anyString(), any());
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    //  Scene detection
+    // ────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void anUnclassifiedPhotoIsClassifiedBeforeTheModelsAreAsked() throws Exception {
+        // Every guest upload arrives UNKNOWN (the kiosk endpoint skips classification),
+        // and UNKNOWN used to mean "treat as exterior" at four separate decisions —
+        // which is how an interior room got a facade's treatment.
+        ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
+        UploadedImage image = stubProjectForRun(ImageType.UNKNOWN);
+        when(storage.load("orig.jpg")).thenReturn(png(new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB)));
+        when(vision.classifyStored(any(byte[].class))).thenReturn(ImageType.INDOOR);
+        when(cleaner.isAvailable()).thenReturn(true);
+        when(cleaner.cleanImage(anyString(), eq(ImageType.INDOOR))).thenReturn(Optional.empty());
+
+        service.segmentAsync("p1", "http://img");
+
+        // Asked about the right scene, and the answer is written back so a re-run of
+        // this project doesn't pay for the same classification again.
+        verify(cleaner).cleanImage(anyString(), eq(ImageType.INDOOR));
+        assertThat(image.getImageType()).isEqualTo(ImageType.INDOOR);
+        verify(images).save(image);
+    }
+
+    @Test
+    void anAlreadyClassifiedPhotoIsNotSentToTheClassifierAgain() {
+        ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
+        stubProjectForRun(ImageType.OUTDOOR);
+        when(cleaner.isAvailable()).thenReturn(true);
+        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.empty());
+
+        service.segmentAsync("p1", "http://img");
+
+        verifyNoInteractions(vision);
     }
 
     @Test

@@ -43,6 +43,10 @@ public class MaskReportResponse {
     private String maskMode;
     private Integer regionCount;
     private Boolean hadCleanedImage;
+    /** "CLEAN" / "MASK" when the reported run failed outright; null when it "succeeded". */
+    private String failureStage;
+    /** What the failed run told the reporter. Null when the run didn't fail. */
+    private String failureReason;
 
     // ─── Admin handling ──────────────────────────────────────────────────────
 
@@ -88,6 +92,8 @@ public class MaskReportResponse {
                 .maskMode(r.getMaskMode())
                 .regionCount(r.getRegionCount())
                 .hadCleanedImage(r.isHadCleanedImage())
+                .failureStage(r.getFailureStage())
+                .failureReason(r.getFailureReason())
                 .adminNote(r.getAdminNote())
                 .resolvedByName(r.getResolvedBy() != null ? r.getResolvedBy().getName() : null)
                 .resolvedAt(r.getResolvedAt())

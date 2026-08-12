@@ -44,8 +44,10 @@ Retailers subscribe to use HueVista as a sales tool with walk-ins, shortening th
                       |
 +---------------------v----------------------------+
 |              AI / ML LAYER                       |
-|  Image cleaning (opt-in): Nano Banana Pro        |
+|  Image cleaning: Nano Banana Pro → Gemini direct |
+|                 → FLUX 2 → GPT Image → Seedream  |
 |  Auto mask generation:    Nano Banana (color)    |
+|    (runs ONLY on a cleaned canvas)               |
 |  Click refinement:        SAM 2 (point prompt)   |
 |  Image classification:    Claude Haiku Vision    |
 |  Color recommendations:   Claude Sonnet          |
@@ -160,7 +162,7 @@ With this on, the two paid Replicate steps are replaced by local no-ops:
 | Step | Normally | With the stub |
 |---|---|---|
 | Upload classification | Claude Vision | **unchanged — still calls Claude** (indoor / house exterior / not a house) |
-| Photo clean-up | Nano Banana Pro repaint | skipped — the uploaded photo is left untouched and stays the canvas |
+| Photo clean-up | Nano Banana Pro repaint, falling down a hierarchy of other image models | skipped — the uploaded photo is left untouched and stays the canvas, and the mask step still runs (the "clean first" gate applies only to a clean that was attempted and failed) |
 | Cleaning hints | Claude | skipped (only reachable from inside the cleaner) |
 | Colour-coded mask | Nano Banana Pro | drawn locally: three equal **vertical** stripes, RED \| GREEN \| BLUE |
 
@@ -219,6 +221,37 @@ Color application (browser-side WebGL) is unlimited at zero marginal cost. Segme
 
 ## Operational notes
 
+### When the AI run fails
+The pipeline is two generative steps, and they are not independent: **wall detection
+runs only on a cleaned canvas.** A mask generated against the raw photo is aligned to
+an image the studio never displays, and the mask model reads clutter as architecture —
+a wire crossing a wall becomes a wall edge, an unplastered shell reads as cladding and
+blacks the room out. So the clean is defended first, and the run is failed honestly
+rather than half-completed.
+
+1. **The clean is asked of several models, in order** — Nano Banana Pro on Replicate,
+   then the same model through Google's own API (a different queue: Replicate answers a
+   full pool with `ModelRateLimitError … (E003)`, which says nothing about the photo),
+   then a different family each time: FLUX 2 Pro → GPT Image → Seedream. The first image
+   produced wins. A refusal about the *photo* (a safety block) stops the chain
+   immediately — every model would answer the same, and proving it costs the user their
+   run. Configure with `REPLICATE_IMAGE_CLEANER_FALLBACK_MODELS`; each model's request
+   schema is picked from its name, so newer tiers can be swapped in without a code
+   change. (Claude is not in this chain: Anthropic's models read images but do not edit
+   them. Claude classifies the photo and describes its clutter for the prompt.)
+2. **No clean, no masks.** If every provider declines, the project ends `FAILED` with
+   `failureStage=CLEAN` and the mask model is never called — no second generation spent
+   on a canvas that doesn't exist.
+3. **The user is asked to report it.** Both failure stages, and a run that "succeeded"
+   with the walls in the wrong places, reach the same place: the studio's report button,
+   which files into the admin console (Mask reports) and e-mails `SUPPORT_EMAIL`
+   (`support@huevista.org` by default). A failed run opens that dialog with the failed
+   stage already ticked, so reporting is one press. Nothing else in the system can
+   notice a bad mask — to every check the backend makes, a wrong mask is a good one.
+
+Manual-mask projects are unaffected by the gate: nothing is generated in that mode, so
+a failed clean just means the user marks walls on the original photo.
+
 ### Database migrations
 The schema is owned by **Flyway** (`src/main/resources/db/migration`), applied automatically at startup; Hibernate runs with `ddl-auto=validate` and never mutates the schema.
 
@@ -243,7 +276,8 @@ GitHub Actions workflow at [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 |---|---|---|
 | Classification | Claude Haiku Vision | ~₹0.30 |
 | Auto-mask | Replicate Nano Banana | ~₹3.40 |
-| Image cleaning (opt-in) | Replicate Nano Banana Pro | ~₹8.50 |
+| Image cleaning | Replicate Nano Banana Pro | ~₹8.50 |
+| ↳ when that can't serve it | Gemini direct, then FLUX 2 Pro → GPT Image → Seedream | same order of magnitude; only the provider that SUCCEEDS bills a full generation |
 | Click refinement | Replicate SAM 2 | ~₹1.70 |
 | Recommendation | Claude Sonnet Vision | ~₹2.50 |
 | Color application | Browser WebGL | ₹0 |

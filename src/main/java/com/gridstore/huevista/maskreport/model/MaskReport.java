@@ -111,6 +111,20 @@ public class MaskReport {
     @Builder.Default
     private boolean hadCleanedImage = false;
 
+    /**
+     * "CLEAN" / "MASK" when the reported run had FAILED outright, from
+     * {@code Project.failureStage}. Null when the run succeeded — which is the
+     * interesting case in its own right, because a report against a SEGMENTED project
+     * means the pipeline believed it had done its job and the walls are still wrong.
+     */
+    @Column(length = 16)
+    private String failureStage;
+
+    /** What the run told the user when it failed, kept verbatim so the admin reads the
+     *  same sentence the reporter was looking at. Null when the run didn't fail. */
+    @Column(columnDefinition = "TEXT")
+    private String failureReason;
+
     // ─── Admin side ──────────────────────────────────────────────────────────
 
     /** What the admin found / did. Internal — never shown to the reporter. */
