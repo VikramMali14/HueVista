@@ -45,6 +45,13 @@ public class CleaningHintService {
         // Both scenes can be photographed mid-construction — an unplastered brick shell is
         // as common indoors as a half-rendered facade — so both get a FINISH list. Indoors
         // the ceiling and floor can be raw too, not just the walls.
+        //
+        // "Unfinished" is NOT only rough masonry. A wall that is fully and evenly plastered
+        // but was never puttied or painted is the state most of these photos are actually
+        // taken in, and it is the one most easily read as finished: it is flat, so nothing
+        // about it looks like a building site. Naming it explicitly is what stops this list
+        // coming back empty for a room whose every wall is still bare grey plaster — which
+        // then told the cleaner there was nothing to finish.
         String finishList =
                 "FINISH: any " + (exterior ? "wall" : "wall, ceiling or floor")
               + " that is clearly unfinished or only partly plastered — bare cement, raw "
@@ -52,7 +59,13 @@ public class CleaningHintService {
               + (exterior ? ""
                   : ", a bare concrete ceiling soffit (call out shuttering/formwork "
                   + "plank lines and board joints if you can see them), a raw cement floor")
-              + " — that should be completed into a smooth paintable surface. Omit this "
+              + " — that should be completed into a smooth paintable surface. Include here "
+              + "any surface that is smoothly plastered but UNPAINTED — bare grey or sandy "
+              + "cement plaster, or a chalky white putty coat with no paint over it, with "
+              + "trowel sweeps, float marks, damp patches or feathered putty patches "
+              + "showing. Smooth does not mean finished: a wall is finished only once it is "
+              + "plastered, puttied AND painted, so say when the putty coat or the paint is "
+              + "still missing. Omit this "
               + "list if every surface is already finished. Do not list an intentional "
               + "exposed-brick, stone or tile feature in an otherwise finished "
               + (exterior ? "facade" : "room") + " — that is a design choice, not "

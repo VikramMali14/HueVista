@@ -133,6 +133,49 @@ class CleaningAndMaskPromptTest {
         assertThat(prompt).contains("the dark wood door is still dark");
     }
 
+    /**
+     * A wall can be flat, even and smoothly plastered and still be nowhere near
+     * finished — in most of these photos the plaster is done and the putty coat and
+     * paint are not. That wall fell between the two rules that were supposed to catch
+     * it: REPAINT covered "every PAINTED wall", so it excluded a wall nobody had ever
+     * painted, and FINISH listed only rough masonry — raw brick, bare cement render,
+     * patchy half-applied plaster — so a wall with no roughness left to see matched
+     * nothing. The room came back with its bare grey plaster faithfully preserved,
+     * which is the one reading of "change nothing you were not told to change" that
+     * makes the visualiser useless.
+     *
+     * Both halves are asserted: the trigger has to name the state, and the rule has to
+     * say what to do about it (putty, then paint).
+     */
+    @Test
+    void interiorCleanPromptPuttiesAndPaintsAPlasteredButUnpaintedWall() {
+        String prompt = ImageCleanerService.cleanPromptFor(ImageType.INDOOR);
+
+        assertThat(prompt).contains("A WALL IS ONLY FINISHED ONCE IT IS PLASTERED, PUTTIED AND PAINTED");
+        assertThat(prompt).contains("WALLS THAT ARE PLASTERED BUT NOT YET PUTTIED OR PAINTED");
+        // The wrong inference is the mirror of the room-level one, so it is named too.
+        assertThat(prompt).contains("SMOOTH IS NOT FINISHED");
+        assertThat(prompt).contains("apply the putty coat if it does not have one");
+        // REPAINT must not exclude a wall that was never painted in the first place.
+        assertThat(prompt).contains("repaint EVERY wall a single even coat")
+                .doesNotContain("repaint every painted wall a single even coat");
+        // ...and an unpainted surface must not slip through as a "finished choice".
+        assertThat(prompt).contains("unpainted plaster is a stage of the work, not a chosen");
+        // Checked once more before the image is returned.
+        assertThat(prompt).contains("NO SURFACE IS LEFT UNPAINTED");
+    }
+
+    /** The same gap, and the same fix, on a facade left in bare plaster. */
+    @Test
+    void exteriorCleanPromptPuttiesAndPaintsAPlasteredButUnpaintedWall() {
+        String prompt = ImageCleanerService.cleanPromptFor(ImageType.OUTDOOR);
+
+        assertThat(prompt).contains("A WALL IS ONLY FINISHED ONCE IT IS PLASTERED, PUTTIED AND PAINTED");
+        assertThat(prompt).contains("repaint EVERY wall a single even coat")
+                .doesNotContain("repaint EVERY painted wall a single even coat");
+        assertThat(prompt).contains("PUTTIED AND PAINTED — never left as bare plaster or bare putty");
+    }
+
     @Test
     void exteriorCleanPromptStillUsedForOutdoorAndUnknown() {
         assertThat(ImageCleanerService.cleanPromptFor(ImageType.OUTDOOR))
