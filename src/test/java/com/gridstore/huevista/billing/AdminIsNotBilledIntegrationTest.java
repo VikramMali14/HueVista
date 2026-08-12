@@ -6,6 +6,10 @@ import com.gridstore.huevista.auth.model.AuthProvider;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.billing.repository.SubscriptionRepository;
+import com.gridstore.huevista.image.model.ImageType;
+import com.gridstore.huevista.image.model.UploadedImage;
+import com.gridstore.huevista.image.repository.ImageRepository;
 import com.razorpay.RazorpayClient;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,6 +23,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -51,13 +56,19 @@ class AdminIsNotBilledIntegrationTest {
     @Autowired ObjectMapper objectMapper;
     @Autowired UserRepository userRepository;
     @Autowired PasswordEncoder passwordEncoder;
+    @Autowired ImageRepository imageRepository;
+    @Autowired SubscriptionRepository subscriptionRepository;
 
-    private String adminToken() throws Exception {
-        userRepository.save(User.builder()
+    private User admin() {
+        return userRepository.save(User.builder()
                 .name("Root Admin").email("root@example.com")
                 .password(passwordEncoder.encode("password123"))
                 .provider(AuthProvider.LOCAL).emailVerified(true)
                 .role(UserRole.ADMIN).build());
+    }
+
+    private String adminToken() throws Exception {
+        admin();
         return tokenFor("root@example.com");
     }
 
@@ -105,6 +116,45 @@ class AdminIsNotBilledIntegrationTest {
                     .andExpect(jsonPath("$.unlimited").value(true))
                     .andExpect(jsonPath("$.used").value(0));
         }
+    }
+
+    /**
+     * The one the exemption did NOT reach: creating a project.
+     *
+     * The gates each consulted the exemption, but the project charge did not, and the two
+     * halves of that path disagreed. {@code PricingService#isSubscribed} answers "covered"
+     * for an admin, which sent creation down the subscribed branch — and that branch then
+     * demanded the subscription ROW the exemption exists precisely so an admin never has.
+     * The answer was 402 "No plan on this account. Pick a plan to start making rooms.": the
+     * platform selling itself to the person who runs it, and a dead end, because there is no
+     * plan an admin can buy.
+     */
+    @Test
+    void an_admin_can_create_a_project_without_a_plan() throws Exception {
+        User root = admin();
+        String token = tokenFor("root@example.com");
+        UploadedImage image = imageRepository.save(UploadedImage.builder()
+                .user(root)
+                .originalFilename("room.jpg")
+                .storageKey("test/room.jpg")
+                .contentType("image/jpeg")
+                .fileSize(1024L)
+                .imageType(ImageType.INDOOR)
+                .build());
+
+        // Twice: an exempt account has no allowance to run down, so the second must be as
+        // free as the first. A comped plan — the fix this one is deliberately not — would
+        // have metered both and eventually refused one.
+        for (int i = 0; i < 2; i++) {
+            mockMvc.perform(post("/api/projects")
+                            .header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"imageId\":\"" + image.getId() + "\"}"))
+                    .andExpect(status().isCreated());
+        }
+
+        // Nothing was written to bill it against, either.
+        assertThat(subscriptionRepository.findByUserIdOrderByCreatedAtDesc(root.getId())).isEmpty();
     }
 
     /**

@@ -901,6 +901,9 @@ public class BillingService {
      */
     @Transactional(readOnly = true)
     public void assertProjectQuotaAvailable(String userId, boolean holdsReservation) {
+        if (unbilledAccounts.covers(userId)) {
+            return; // no plan, no allowance, nothing to check — see reserveProjectUsage
+        }
         Subscription sub = requireBillableSubscription(userId);
         if (holdsReservation) {
             return;
@@ -1013,9 +1016,21 @@ public class BillingService {
      * transaction meant a creation that failed after this point left the shop a credit
      * short until something noticed and handed it back, and it could not see a
      * subscription the caller had only just written.
+     *
+     * An account that runs the platform is exempt and charged nothing ({@link
+     * UnbilledAccounts}). This has to be asked HERE rather than left to the caller,
+     * because the caller's question is a different one: {@code PricingService#isSubscribed}
+     * already answers "yes, covered" for an admin, which routed project creation straight
+     * into this method — and this method then demanded the subscription ROW that the
+     * exemption exists precisely to avoid issuing. An administrator creating a project got
+     * "No plan on this account. Pick a plan to start making rooms.", i.e. the platform
+     * selling itself to the person who runs it, with no plan they could buy to escape it.
      */
     @Transactional
     public void reserveProjectUsage(String userId) {
+        if (unbilledAccounts.covers(userId)) {
+            return;
+        }
         Subscription sub = requireBillableSubscription(userId);
         int reserved = subscriptionRepository.incrementProjectUsageIfWithinLimit(sub.getId());
         if (reserved == 0) {
