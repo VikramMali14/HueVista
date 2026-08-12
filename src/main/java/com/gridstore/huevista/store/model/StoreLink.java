@@ -39,7 +39,15 @@ public class StoreLink {
     @Column(unique = true, nullable = false, length = 80)
     private String slug;
 
-    /** How long each purchased access code (and the guest session it opens) lasts. */
+    /**
+     * How long each purchased access code (and the guest session it opens) lasts.
+     *
+     * No longer chosen per link — the shop was picking 3, 7 or 14 days at creation
+     * while its counter-issued codes ran a fixed 10, which read as one of the two
+     * being wrong. New links take the platform default; the column stays because
+     * links created under the old form carry the number the shop picked, and a code
+     * already sold under one must keep the window it was sold with.
+     */
     @Column(nullable = false)
     private int validDays;
 
@@ -48,9 +56,25 @@ public class StoreLink {
     @Builder.Default
     private boolean active = true;
 
+    /**
+     * When the shop deleted this link, or null while it is live.
+     *
+     * Soft, because {@code store_payments.store_link_id} is NOT NULL: a hard delete
+     * would take the shop's own sales history and the points audit behind it with
+     * the link. A deleted link stops serving its slug immediately and leaves the
+     * shop's list, and the walk-ins who already bought through it keep the codes
+     * they paid for.
+     */
+    private LocalDateTime deletedAt;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 
     @UpdateTimestamp
     private LocalDateTime updatedAt;
+
+    /** True once the shop has deleted it — no longer served, no longer listed. */
+    public boolean isDeleted() {
+        return deletedAt != null;
+    }
 }

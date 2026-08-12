@@ -6,6 +6,7 @@ import lombok.Data;
 
 import java.util.List;
 import java.util.function.Predicate;
+import java.util.function.ToLongFunction;
 
 /**
  * What the shop's "which companies do we show?" settings page renders.
@@ -35,10 +36,23 @@ public class ShopBrandVisibilityResponse {
         private String name;
         private String slug;
         private boolean shown;
+        /**
+         * How many shades this company actually has loaded.
+         *
+         * A grant and a catalogue are two different things: a distributor can assign a
+         * shop a company whose shades have never been imported, and until now nothing
+         * said so. The shop counted its companies on one screen and its colours on
+         * another and got different answers — eight companies assigned, six with any
+         * colour in them — with no way to tell which two were empty. Switching an empty
+         * company on shows the customer a company with nothing behind it, so the number
+         * travels with the option.
+         */
+        private long shadeCount;
     }
 
     public static ShopBrandVisibilityResponse of(boolean restricted, List<Brand> grantable,
-                                                 Predicate<Brand> shown) {
+                                                 Predicate<Brand> shown,
+                                                 ToLongFunction<Brand> shadeCount) {
         return ShopBrandVisibilityResponse.builder()
                 .restricted(restricted)
                 .brands(grantable.stream()
@@ -47,6 +61,7 @@ public class ShopBrandVisibilityResponse {
                                 .name(b.getName())
                                 .slug(b.getSlug())
                                 .shown(shown.test(b))
+                                .shadeCount(shadeCount.applyAsLong(b))
                                 .build())
                         .toList())
                 .build();

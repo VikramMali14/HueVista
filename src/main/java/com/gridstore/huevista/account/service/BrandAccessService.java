@@ -66,6 +66,7 @@ public class BrandAccessService {
     private final UserRepository userRepository;
     private final CustomerAccessCodeRepository codeRepository;
     private final BrandRepository brandRepository;
+    private final com.gridstore.huevista.paint.repository.ShadeRepository shadeRepository;
     private final PlanFeatureService planFeatureService;
 
     /**
@@ -400,8 +401,17 @@ public class BrandAccessService {
                 .map(v -> v.getBrand().getId())
                 .collect(java.util.stream.Collectors.toSet());
         boolean restricted = org.isVisibleBrandsRestricted();
+        // How many shades each granted company actually has. A company can be assigned
+        // and still be empty — nothing imported for it yet — and a shop had no way to
+        // tell which of its companies those were.
+        java.util.Map<String, Long> shadesBySlug = shadeRepository.countShadesByBrand().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        com.gridstore.huevista.paint.dto.ShadeBrandSummaryResponse::getSlug,
+                        com.gridstore.huevista.paint.dto.ShadeBrandSummaryResponse::getShadeCount,
+                        (a, b) -> a));
         return ShopBrandVisibilityResponse.of(restricted, grantable,
-                brand -> !restricted || shown.contains(brand.getId()));
+                brand -> !restricted || shown.contains(brand.getId()),
+                brand -> shadesBySlug.getOrDefault(brand.getSlug(), 0L));
     }
 
     /**

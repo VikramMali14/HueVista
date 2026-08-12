@@ -27,8 +27,10 @@ public class StoreLinkController {
     private final StoreLinkService storeLinkService;
 
     @Operation(summary = "Create a store link",
-            description = "Publishes a public kiosk URL for this shop at the given price per image. "
-                    + "Only retailer org owners/managers can call this.")
+            description = "Publishes a permanent public kiosk URL for this shop. Nothing is "
+                    + "configured on it: the price is the platform's and the code window a "
+                    + "walk-in buys is a platform default. Only retailer org owners/managers "
+                    + "can call this.")
     @PostMapping("/api/organizations/{orgId}/store-links")
     public ResponseEntity<StoreLinkResponse> create(
             @AuthenticationPrincipal UserDetails userDetails,
@@ -46,12 +48,26 @@ public class StoreLinkController {
         return ResponseEntity.ok(storeLinkService.listLinks(userDetails.getUsername(), orgId));
     }
 
-    @Operation(summary = "Update a store link", description = "Change the price or validity, or pause/resume the kiosk.")
+    @Operation(summary = "Pause or resume a store link",
+            description = "Pausing stops new orders and keeps the printed URL working for when "
+                    + "the shop resumes. Neither the price nor the code window is the shop's to set.")
     @PatchMapping("/api/store-links/{linkId}")
     public ResponseEntity<StoreLinkResponse> update(
             @AuthenticationPrincipal UserDetails userDetails,
             @PathVariable String linkId,
             @Valid @RequestBody UpdateStoreLinkRequest request) {
         return ResponseEntity.ok(storeLinkService.updateLink(userDetails.getUsername(), linkId, request));
+    }
+
+    @Operation(summary = "Delete a store link",
+            description = "Retires the link: its URL stops working immediately and it leaves the "
+                    + "shop's list. The sales it made are kept — they are the shop's own history "
+                    + "and the audit behind its points — and walk-ins who already bought through "
+                    + "it keep the codes they paid for.")
+    @DeleteMapping("/api/store-links/{linkId}")
+    public ResponseEntity<StoreLinkResponse> delete(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String linkId) {
+        return ResponseEntity.ok(storeLinkService.deleteLink(userDetails.getUsername(), linkId));
     }
 }

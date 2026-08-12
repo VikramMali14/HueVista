@@ -344,19 +344,25 @@ public class SegmentationService {
 
             int saved = 0;
             int displayOrder = 0;
+            // Labels come from RegionCategory itself, not from string literals here.
+            // Three places named the same three surfaces and no two agreed: the studio
+            // showed "Main wall / Accent wall / Border" before a photo, this wrote
+            // "Main Wall / Accent Wall / Trim & Frames" after detection, and
+            // ProjectService.defaultLabel had a third spelling again. The names a
+            // customer is choosing between changed halfway through the flow.
             saveCategoryRegion(projectId, userId, masks.main(),
-                    "Main Wall", RegionCategory.MAIN_WALL, displayOrder++,
+                    RegionCategory.MAIN_WALL.getDefaultLabel(), RegionCategory.MAIN_WALL, displayOrder++,
                     defaultHexFor(RegionCategory.MAIN_WALL, scene));
             saved++;
             if (masks.accent() != null) {
                 saveCategoryRegion(projectId, userId, masks.accent(),
-                        "Accent Wall", RegionCategory.ACCENT_WALL, displayOrder++,
+                        RegionCategory.ACCENT_WALL.getDefaultLabel(), RegionCategory.ACCENT_WALL, displayOrder++,
                         defaultHexFor(RegionCategory.ACCENT_WALL, scene));
                 saved++;
             }
             if (masks.trim() != null) {
                 saveCategoryRegion(projectId, userId, masks.trim(),
-                        "Trim & Frames", RegionCategory.TRIM, displayOrder++,
+                        RegionCategory.TRIM.getDefaultLabel(), RegionCategory.TRIM, displayOrder++,
                         defaultHexFor(RegionCategory.TRIM, scene));
                 saved++;
             }

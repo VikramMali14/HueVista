@@ -213,13 +213,64 @@ class StoreKioskServiceTest {
                 .id("link-1").organization(org).slug("mehta-x7k2p9")
                 .validDays(3).active(false).build();
         StoreLinkRepository links = mock(StoreLinkRepository.class);
-        when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(paused));
+        when(links.findBySlugAndDeletedAtIsNull("mehta-x7k2p9")).thenReturn(Optional.of(paused));
         StoreKioskService svc = service(mock(RazorpayClient.class), links,
                 mock(StorePaymentRepository.class), mock(AccessCodeService.class));
 
         assertThatThrownBy(() -> svc.createOrder("mehta-x7k2p9"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("paused");
+    }
+
+    /** A link the shop deleted is gone as far as anyone opening its URL is concerned. */
+    @Test
+    void deletedLinkRefusesNewOrders() {
+        StoreLinkRepository links = mock(StoreLinkRepository.class);
+        when(links.findBySlugAndDeletedAtIsNull("mehta-x7k2p9")).thenReturn(Optional.empty());
+        StoreKioskService svc = service(mock(RazorpayClient.class), links,
+                mock(StorePaymentRepository.class), mock(AccessCodeService.class));
+
+        assertThatThrownBy(() -> svc.createOrder("mehta-x7k2p9"))
+                .isInstanceOf(com.gridstore.huevista.common.exception.ResourceNotFoundException.class);
+    }
+
+    /**
+     * Deleting a link stops new sales, not one already paid for.
+     *
+     * A shop can retire a link while a walk-in has Checkout open. The money has moved by
+     * the time verification runs, so that customer gets the code they bought — the same
+     * asymmetry a pause already has. Keeping their money and issuing nothing is the one
+     * outcome this must never have.
+     */
+    @Test
+    void deletedLinkStillFinishesAPaymentAlreadyInFlight() throws Exception {
+        StoreLink deleted = StoreLink.builder()
+                .id("link-1").organization(org).slug("mehta-x7k2p9")
+                .validDays(3).active(false).deletedAt(java.time.LocalDateTime.now()).build();
+        RazorpayClient razorpay = mock(RazorpayClient.class);
+        razorpay.orders = mock(OrderClient.class);
+        when(razorpay.orders.fetch("order_1")).thenReturn(order(KIOSK_PRICE, "store_kiosk", "link-1"));
+        StoreLinkRepository links = mock(StoreLinkRepository.class);
+        // The live lookup would find nothing; verification uses the plain one.
+        when(links.findBySlugAndDeletedAtIsNull("mehta-x7k2p9")).thenReturn(Optional.empty());
+        when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(deleted));
+        StorePaymentRepository payments = mock(StorePaymentRepository.class);
+        when(payments.findByPaymentId("pay_1")).thenReturn(Optional.empty());
+        when(payments.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        AccessCodeService codes = mock(AccessCodeService.class);
+        CustomerAccessCode code = CustomerAccessCode.builder()
+                .id("code-1").code("ABCD2345").organization(org).build();
+        when(codes.issueForStore(any(), anyInt())).thenReturn(code);
+        when(codes.redeemAsGuest("ABCD2345")).thenReturn(GuestRedeemResponse.builder()
+                .guestToken("gt").code("ABCD2345").shopName("Mehta Paints")
+                .validDays(3).expiresAt(Instant.now().plusSeconds(3600)).build());
+        StoreKioskService svc = service(razorpay, links, payments, codes);
+
+        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
+            utils.when(() -> Utils.verifyPaymentSignature(any(), anyString())).thenReturn(true);
+            StoreCheckoutResponse out = svc.verifyAndIssue("mehta-x7k2p9", req("order_1", "pay_1"));
+            assertThat(out.getCode()).isEqualTo("ABCD2345");
+        }
     }
 
     /**
