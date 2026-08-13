@@ -25,6 +25,10 @@ public enum PaymentFlow {
     /** One more AI render on a project that already spent its included one. */
     RENDER("Extra AI image"),
 
+    /** A top-up of the AI image wallet — the rail a customer uses, and the one a shop
+     *  uses to hold images in advance rather than paying per project. */
+    AI_CREDITS("AI image credits"),
+
     /** In-store kiosk — the buyer is a walk-in customer, not a signed-in user. */
     STORE_KIOSK("Store kiosk");
 

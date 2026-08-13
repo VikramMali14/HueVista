@@ -47,6 +47,13 @@ import java.util.List;
  * endpoint anywhere in the billing module" the colour-board download has to live with —
  * this allowance is a column on the project, so giving it back is a decrement.
  *
+ * <p><b>There are two pockets it can be spent from.</b> A project the account paid for
+ * itself carries one included render. A project a SHOP handed to a customer carries none —
+ * the shop paid for the room, not for the picture — so every image on one of those is
+ * bought, and the wallet is where it comes from. Both are charged here, before anything
+ * asynchronous starts, and {@link ProjectRender#isPaidWithCredit()} records which so the
+ * refund goes back to the pocket the charge came out of.
+ *
  * <p>This class owns every database moment; {@link ProjectRenderWorker} owns the minute of
  * HTTP in between. They are separate beans because Spring's {@code @Async} and
  * {@code @Transactional} are proxy-based: a method calling its own annotated method goes
@@ -64,6 +71,8 @@ public class ProjectRenderService {
     private final RenderPromptBuilder promptBuilder;
     private final StorageService storageService;
     private final ProjectRenderWorker worker;
+    private final com.gridstore.huevista.billing.service.AiCreditService aiCreditService;
+    private final com.gridstore.huevista.billing.service.PricingService pricingService;
 
     /**
      * Everything the model call needs, read out of the database in one go and carried to
@@ -78,11 +87,11 @@ public class ProjectRenderService {
                             String ownerFolder) {}
 
     /**
-     * Accept a render request: check it may be made, spend the allowance, and hand the
-     * work to the AI executor.
+     * Accept a render request: check it may be made, pay for it, and hand the work to the
+     * AI executor.
      *
-     * The allowance is spent inside this transaction, before anything asynchronous starts.
-     * Doing it the other way round — start the work, charge when it lands — is what lets a
+     * Payment happens inside this transaction, before anything asynchronous starts. Doing
+     * it the other way round — start the work, charge when it lands — is what lets a
      * customer with one included render open two tabs and get two.
      */
     @Transactional
@@ -92,15 +101,8 @@ public class ProjectRenderService {
                     "Close this project first — the render is made from the colour boards "
                     + "you hand over.");
         }
-        if (!project.hasRenderLeft()) {
-            throw new QuotaExceededException(
-                    "You've used this project's AI image. Buy another to try a different "
-                    + "combination from your colour boards.");
-        }
         ProjectPdfPage page = boardService.requirePage(project.getId(), request.getComboId());
-
-        project.setRendersUsed(project.getRendersUsed() + 1);
-        projectRepository.save(project);
+        Funding funding = charge(project);
 
         ProjectRender render = renderRepository.save(ProjectRender.builder()
                 .project(project)
@@ -112,14 +114,66 @@ public class ProjectRenderService {
                 .furnishing(request.getFurnishing())
                 .style(request.getStyle())
                 .note(request.getNote())
+                .paidWithCredit(funding.withCredit())
+                .paidByUserId(funding.walletUserId())
+                .creditsSpent(funding.credits())
                 .build());
 
-        log.info("Render requested: project={} render={} combo={} used={}/{}",
+        log.info("Render requested: project={} render={} combo={} used={}/{} paidWith={}",
                 project.getId(), render.getId(), page.getId(),
-                project.getRendersUsed(), project.getRendersAllowed());
+                project.getRendersUsed(), project.getRendersAllowed(),
+                funding.withCredit() ? funding.credits() + " credit(s)" : "project allowance");
 
         dispatchOnceCommitted(render.getId());
         return ProjectRenderResponse.from(render, null);
+    }
+
+    /** How one render was paid for, so the failure path can hand back the same thing. */
+    private record Funding(boolean withCredit, String walletUserId, int credits) {
+        static Funding fromAllowance() {
+            return new Funding(false, null, 0);
+        }
+
+        static Funding fromWallet(String userId, int credits) {
+            return new Funding(true, userId, credits);
+        }
+    }
+
+    /**
+     * Take payment for one render, from the project's own allowance if it has one and from
+     * the owner's AI wallet otherwise.
+     *
+     * <p>The allowance comes first, always. A shop working its own room has an image
+     * included and must not be charged a credit while it is sitting there unspent; and a
+     * customer who bought a per-project top-up (the other cash rail, which increments
+     * {@code rendersAllowed}) has already paid for this picture once.
+     *
+     * <p>The wallet is the fallback, and it is the ONLY route on a project a shop handed
+     * over: those are created with no included render at all, so the first image on one is
+     * already a purchase. A project with neither — a walk-in guest's room, which has no
+     * user account and therefore no wallet — is refused rather than run free.
+     */
+    private Funding charge(Project project) {
+        if (project.hasRenderLeft()) {
+            project.setRendersUsed(project.getRendersUsed() + 1);
+            projectRepository.save(project);
+            return Funding.fromAllowance();
+        }
+
+        String walletUserId = project.getUser() != null ? project.getUser().getId() : null;
+        if (walletUserId == null) {
+            throw new QuotaExceededException(
+                    "This room's AI image has been used. Sign in with your own account to buy "
+                    + "AI image credits and make another.");
+        }
+
+        // Throws 402 with the balance in the message when the wallet is short — the same
+        // status the allowance gate used to throw, so the studio's "you need to pay for
+        // this" branch handles both without knowing which pocket came up empty.
+        int cost = pricingService.aiCreditRenderCost();
+        aiCreditService.spend(walletUserId, cost, project.getId(),
+                "1 AI image · " + project.getName());
+        return Funding.fromWallet(walletUserId, cost);
     }
 
     /**
@@ -249,12 +303,17 @@ public class ProjectRenderService {
     }
 
     /**
-     * Record the failure and hand the allowance back.
+     * Record the failure and hand back whatever paid for it.
      *
      * The refund is the important half. A customer who paid ₹99 for a render the model
      * could not produce has to be able to try again without paying twice, and the included
      * render is the same promise — spending it on nothing would make "one render included"
      * a lie in exactly the case where it matters most.
+     *
+     * <p>Which of the two goes back is read off the render, never guessed from the project.
+     * Guessing is how a shop-granted project — which has no included render, so
+     * {@code rendersUsed} is 0 and {@code rendersAllowed} is 0 — would have had its
+     * customer's credit quietly kept while the decrement found nothing to give back.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void fail(String renderId, String reason) {
@@ -265,6 +324,10 @@ public class ProjectRenderService {
             renderRepository.save(r);
 
             Project project = r.getProject();
+            if (r.isPaidWithCredit()) {
+                aiCreditService.refundRender(r.getPaidByUserId(), r.getCreditsSpent(), project.getId());
+                return;
+            }
             if (project.getRendersUsed() > 0) {
                 project.setRendersUsed(project.getRendersUsed() - 1);
                 projectRepository.save(project);

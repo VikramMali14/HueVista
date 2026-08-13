@@ -90,6 +90,42 @@ public class ProjectRender {
     @Column(length = 500)
     private String failureReason;
 
+    /**
+     * Which pocket paid for this render: the project's own allowance, or an AI credit out
+     * of the owner's wallet.
+     *
+     * <p>Recorded because the refund has to go back where the charge came from. A project a
+     * shop gave a customer carries NO included render, so every image on it is a spent
+     * credit — handing back a project allowance there would invent an image out of nothing,
+     * and decrementing {@code rendersUsed} below zero would let the next one run free. The
+     * reverse mistake is worse: silently keeping a customer's ₹99 credit for a picture the
+     * model refused to make.
+     *
+     * <p>False on every render written before credits existed, which is correct — those
+     * were all paid out of the project allowance.
+     */
+    @Column(nullable = false, columnDefinition = "boolean not null default false")
+    @Builder.Default
+    private boolean paidWithCredit = false;
+
+    /**
+     * Whose wallet paid, when {@link #paidWithCredit}. Null otherwise.
+     *
+     * Stored rather than re-derived from the project at refund time because the refund runs
+     * on the worker thread minutes later, and a project re-pointed at a new account in
+     * between (which happens the moment a guest signs up) would send the credit to the
+     * wrong wallet — or to none at all.
+     */
+    @Column(length = 64)
+    private String paidByUserId;
+
+    /** How many credits were taken, when {@link #paidWithCredit}. Stored rather than read
+     *  from configuration at refund time, so a price change cannot alter what an already
+     *  charged render owes back. */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int creditsSpent = 0;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

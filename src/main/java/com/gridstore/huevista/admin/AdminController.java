@@ -54,6 +54,7 @@ public class AdminController {
     private final AuditService auditService;
     private final com.gridstore.huevista.account.service.AccountService accountService;
     private final com.gridstore.huevista.common.audit.AuditLogRepository auditLogRepository;
+    private final com.gridstore.huevista.billing.service.AiCreditService aiCreditService;
 
     /** Hard cap on admin page sizes — these tables are unbounded. */
     private static final int MAX_PAGE_SIZE = 500;
@@ -263,6 +264,23 @@ public class AdminController {
         return ResponseEntity.ok(
                 billingService.adminAdjustSubscription(auth.getName(), userId,
                         request.getAddProjects(), request.getExtendDays()));
+    }
+
+    @Operation(summary = "Give a user AI image credits",
+            description = "Puts credits into the user's AI wallet without a payment — support, "
+                    + "goodwill, or a launch promotion. One credit is one AI image. Refused for an "
+                    + "account that owns no projects (a painter or distributor), which would have "
+                    + "nothing to spend them on. Returns the new balance.")
+    @PostMapping("/users/{userId}/ai-credits")
+    public ResponseEntity<Map<String, Object>> grantAiCredits(
+            @PathVariable String userId,
+            @Valid @RequestBody com.gridstore.huevista.billing.dto.AdminGrantAiCreditsRequest request,
+            Authentication auth) {
+        int balance = aiCreditService.grant(
+                userId, request.getCredits(), auth.getName(), request.getReason());
+        auditService.record(auth.getName(), "AI_CREDITS_GRANTED", "USER", userId,
+                "credits=" + request.getCredits() + " balance=" + balance);
+        return ResponseEntity.ok(Map.of("balance", balance, "credits", request.getCredits()));
     }
 
     @Operation(summary = "List all subscriptions")

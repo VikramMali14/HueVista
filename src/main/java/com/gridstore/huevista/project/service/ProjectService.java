@@ -136,6 +136,7 @@ public class ProjectService {
                     .notes(blankToNull(request.getNotes()))
                     .status(ProjectStatus.CREATED)
                     .accessCode(linkedCode)
+                    .rendersAllowed(includedRenders(payment.shopEntitled() || linkedCode != null))
                     .build();
 
             // A bought project carries its own validity. Opened paused when the buyer is
@@ -172,6 +173,27 @@ public class ProjectService {
             }
             throw failed;
         }
+    }
+
+    /**
+     * How many AI images a new project includes — one, or none when a SHOP paid for it.
+     *
+     * <p>An account that paid for its own room gets the picture at the end of it. A room a
+     * shop gave away is a different bargain: the shop bought the room, out of its own
+     * monthly quota, so that its customer can try colours and walk out with a colour board.
+     * The photorealistic image is the expensive part and nobody has paid for it — so it is
+     * not included, and the customer buys it with AI credits when they want it.
+     *
+     * <p>Handing one out anyway is what made the shop's quota pay for a model call it never
+     * agreed to, on every code it issued and every project it granted.
+     *
+     * <p>Applies to projects created from here on. Rooms that already exist keep whatever
+     * allowance they were created with, including shop-funded ones with an unspent image:
+     * that image was promised when the room was made, and taking it back retroactively
+     * would break a promise to settle a pricing question.
+     */
+    private static int includedRenders(boolean shopFunded) {
+        return shopFunded ? 0 : 1;
     }
 
     /**
@@ -303,6 +325,7 @@ public class ProjectService {
                     .cleanedImageStorageKey(
                             copyBlob(source.getCleanedImageStorageKey(), userId, "cleaned", "image/jpeg"))
                     .accessCode(linkedCode)
+                    .rendersAllowed(includedRenders(payment.shopEntitled() || linkedCode != null))
                     .build();
 
             if (credit != null) {
@@ -1305,6 +1328,8 @@ public class ProjectService {
                 .roomType(blankToNull(request.getRoomType()))
                 .notes(blankToNull(request.getNotes()))
                 .status(ProjectStatus.CREATED)
+                // Always shop-funded: a code IS the shop paying for this room.
+                .rendersAllowed(includedRenders(true))
                 .build());
 
         // Charged to the issuing shop at creation, exactly like a signed-in one — a kiosk
