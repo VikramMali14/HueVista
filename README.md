@@ -103,6 +103,9 @@ Retailers subscribe to use HueVista as a sales tool with walk-ins, shortening th
 | POST | `/api/projects/{projectId}/recommendations` | Claude color recommendations |
 | POST | `/api/billing/subscriptions` | Create Razorpay subscription |
 | GET | `/api/billing/subscriptions/current` | Current subscription |
+| GET | `/api/billing/ai-credits` | AI image wallet: balance, price, statement |
+| POST | `/api/billing/ai-credits/order` | Buy AI image credits (Razorpay order) |
+| POST | `/api/billing/ai-credits/verify` | Verify the payment and credit the wallet |
 | POST | `/api/billing/webhooks/razorpay` | Razorpay webhook receiver (HMAC verified) |
 | POST | `/api/organizations` | Create distributor/retailer org |
 | POST | `/api/organizations/{orgId}/access-codes` | Generate customer access code |
@@ -216,6 +219,34 @@ To skip this bulk load (e.g. in a constrained environment), set `app.catalog.aut
 | Enterprise | Custom | Unlimited | + API access, dedicated onboarding |
 
 Color application (browser-side WebGL) is unlimited at zero marginal cost. Segmentation (which includes the image clean) and recommendations count against the monthly quota — reserved/charged atomically in `BillingService.reserveAiUsage()` / `incrementAiUsage()`, with failed runs refunded. Upload classification is not quota-charged but is per-IP rate-limited (`app.rate-limit.image-upload.*`) to bound its Claude cost.
+
+### The closing AI image, and who pays for it
+
+The photorealistic render a closed project produces is priced separately from the plan,
+because it is the one step with a per-call cost the tiers were never sized for.
+
+| Who owns the room | Included images | Paying for more |
+|---|---|---|
+| A shop's own project | 1 | AI credit, or the per-project top-up |
+| A room a shop gave a customer (access code or grant) | **0** | AI credit |
+| A walk-in guest's room (no account) | 0 | none — sign up first |
+
+A room a shop gives away includes no image on purpose. The shop spends a project credit
+from its monthly quota so its customer can try colours and take a colour board home; the
+model call at the end is nobody's purchase, and handing one over made the shop's quota
+quietly fund it — once per code issued and once per project granted.
+
+**AI credits** (`app.ai-credit.*`) are the wallet that pays for it: one credit, one image,
+₹198 list with a 50% launch discount, so ₹99 today. Deliberately the same price as the
+per-project top-up (`app.render.top-up-price-paise`), so topping up in advance can never
+leave a buyer worse off. Unlike reward points they never expire, and both a RETAILER and a
+CUSTOMER can hold them — a customer can hold no points and cannot buy a plan at all, so
+this is the only rail open to them.
+
+Spending is a compare-and-set on the wallet row, and every render records which pocket paid
+(`project_renders.paid_with_credit`) so a failure refunds the one that was actually charged.
+The rule is **not retroactive**: rooms created before it keep the allowance they were made
+with.
 
 ---
 

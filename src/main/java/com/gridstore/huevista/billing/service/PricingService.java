@@ -9,8 +9,10 @@ import org.springframework.stereotype.Service;
 /**
  * One place that answers "what does this cost?".
  *
- * A shop buys three things: a monthly plan, points, and extra projects once the plan's
- * monthly allowance is spent. The extra project is the only one with two prices — points
+ * A shop buys four things: a monthly plan, points, extra projects once the plan's monthly
+ * allowance is spent, and AI image credits. A CUSTOMER buys exactly one of them — AI image
+ * credits — because everything else on the list is shop-side and a customer's projects are
+ * given to them by a shop. The extra project is the only one with two prices — points
  * or money — and both are read off the buyer's own PLAN rather than being flat: the
  * bigger the tier, the cheaper the extra, so a shop that keeps outgrowing its plan is
  * nudged up a tier instead of paying a flat premium forever. An account with no paid plan
@@ -80,6 +82,37 @@ public class PricingService {
     /** A second AI render on a project that already spent its included one. Flat. */
     @Value("${app.render.top-up-price-paise:9900}")
     private int renderTopUpPricePaise;
+
+    // ── AI image credits ────────────────────────────────────────────────────
+    //
+    // The wallet rail for the same picture the per-project top-up above buys. One credit
+    // is one AI image, and the two prices are kept deliberately equal at launch (₹198 less
+    // 50% is ₹99) so a customer can never be worse off for having topped up in advance.
+
+    /** The undiscounted price of one AI image credit, in paise. */
+    @Value("${app.ai-credit.list-price-paise:19800}")
+    private int aiCreditListPricePaise;
+
+    /**
+     * The launch discount on AI credits, as a whole percentage off the list price.
+     *
+     * A percentage rather than a second "launch price" setting, because the two would drift
+     * — somebody would move the list price and leave the launch price where it was, and the
+     * strike-through the customer is shown would then be a lie. Set to 0 to end the offer.
+     */
+    @Value("${app.ai-credit.launch-discount-percent:50}")
+    private int aiCreditDiscountPercent;
+
+    @Value("${app.ai-credit.min-purchase:1}")
+    private int aiCreditMinPurchase;
+
+    @Value("${app.ai-credit.max-purchase:50}")
+    private int aiCreditMaxPurchase;
+
+    /** Credits one AI image costs. One, and there is no reason for it to be anything else —
+     *  it is here so the number is quoted from one place rather than typed at three. */
+    @Value("${app.ai-credit.render-cost:1}")
+    private int aiCreditRenderCost;
 
     @Value("${app.points.validity-days:365}")
     private int pointsValidityDays;
@@ -214,6 +247,58 @@ public class PricingService {
     /** What one more AI render on an already-rendered project costs, in paise. */
     public int renderTopUpPricePaise() {
         return renderTopUpPricePaise * (100 + Plan.GST_PERCENT) / 100;
+    }
+
+    // ── AI image credits ────────────────────────────────────────────────────
+
+    /** What one AI image credit costs before the launch discount, in paise (GST included). */
+    public int aiCreditListPricePaise() {
+        return aiCreditListPricePaise * (100 + Plan.GST_PERCENT) / 100;
+    }
+
+    /** The launch discount currently on offer, as a whole percentage. 0 when it is over. */
+    public int aiCreditDiscountPercent() {
+        return clampPercent(aiCreditDiscountPercent);
+    }
+
+    /** What one AI image credit costs today, in paise (GST included). */
+    public int aiCreditPricePaise() {
+        return aiCreditPricePaise(1);
+    }
+
+    /**
+     * What {@code credits} AI image credits cost today, in paise (GST included).
+     *
+     * The discount is applied to the WHOLE order rather than per credit and then multiplied,
+     * so a rate that does not divide evenly cannot lose a rupee per credit to integer
+     * truncation — at ten credits that is the difference between the price quoted on the
+     * button and the price the order was created at, and verification refuses on exactly
+     * that mismatch.
+     *
+     * <p>Both the order and the verify side call this, or a correctly-paid purchase fails
+     * signature verification on an amount mismatch.
+     */
+    public int aiCreditPricePaise(int credits) {
+        long gross = (long) aiCreditListPricePaise() * Math.max(0, credits);
+        return (int) (gross * (100 - aiCreditDiscountPercent()) / 100);
+    }
+
+    public int aiCreditMinPurchase() {
+        return Math.max(1, aiCreditMinPurchase);
+    }
+
+    public int aiCreditMaxPurchase() {
+        return Math.max(aiCreditMinPurchase(), aiCreditMaxPurchase);
+    }
+
+    /** Credits one AI image costs. */
+    public int aiCreditRenderCost() {
+        return Math.max(1, aiCreditRenderCost);
+    }
+
+    /** A misconfigured discount must never make an order free, or negative. */
+    private static int clampPercent(int percent) {
+        return Math.max(0, Math.min(100, percent));
     }
 
     public int pointsValidityDays() {
