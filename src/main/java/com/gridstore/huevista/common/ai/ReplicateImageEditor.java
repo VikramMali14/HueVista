@@ -156,25 +156,52 @@ public class ReplicateImageEditor {
     }
 
     private Map<String, Object> buildInput(Spec spec) {
-        Family family = familyOf(spec.model());
+        return buildInput(spec.model(), spec.prompt(), List.of(spec.imageUrl()),
+                spec.aspectRatio(), spec.resolution(), spec.outputFormat());
+    }
+
+    /**
+     * The request body for {@code model}, with {@code imageUrls} put under whichever key
+     * that model's family reads images from.
+     *
+     * <p>Public and taking a LIST because the render sends more than one image — the
+     * cleaned photo followed by the region masks — and it needs to fail over between
+     * families exactly like the clean does. Keeping that translation here rather than
+     * copying it into the render path is the whole point: a family's key is stated once,
+     * and every caller that adds a model gets it right.
+     *
+     * <p>The families that take a list are given the whole list. {@link Family#FLUX_KONTEXT}
+     * is the exception — its schema has a single {@code input_image} — so it receives the
+     * first image only. That is lossy for a render (the masks are what "keep the original
+     * borders" means), which is why Kontext is not in the render's default chain; it stays
+     * usable for the single-image clean.
+     */
+    public Map<String, Object> buildInput(String model, String prompt, List<String> imageUrls,
+                                          String aspectRatio, String resolution,
+                                          String outputFormat) {
+        if (imageUrls == null || imageUrls.isEmpty()) {
+            throw new IllegalArgumentException("A model edit needs at least one image.");
+        }
+        List<String> images = List.copyOf(imageUrls);
+        Family family = familyOf(model);
         Map<String, Object> input = new HashMap<>();
-        input.put("prompt", spec.prompt());
-        input.put("output_format", spec.outputFormat());
+        input.put("prompt", prompt);
+        input.put("output_format", outputFormat);
 
         switch (family) {
             case FLUX -> {
-                input.put("input_images", List.of(spec.imageUrl()));
-                putIfPresent(input, "resolution", megapixels(spec.resolution()));
-                putIfPresent(input, "aspect_ratio", trimmed(spec.aspectRatio()));
+                input.put("input_images", images);
+                putIfPresent(input, "resolution", megapixels(resolution));
+                putIfPresent(input, "aspect_ratio", trimmed(aspectRatio));
             }
             case FLUX_KONTEXT -> {
                 // Kontext edits exactly one image and has no size input at all —
                 // it always returns at the input's resolution.
-                input.put("input_image", spec.imageUrl());
-                putIfPresent(input, "aspect_ratio", trimmed(spec.aspectRatio()));
+                input.put("input_image", images.get(0));
+                putIfPresent(input, "aspect_ratio", trimmed(aspectRatio));
             }
             case OPENAI -> {
-                input.put("input_images", List.of(spec.imageUrl()));
+                input.put("input_images", images);
                 input.put("openai_api_key", openAiApiKey);
                 input.put("number_of_images", 1);
                 // GPT Image re-renders the whole frame; "high" fidelity is what keeps
@@ -183,27 +210,32 @@ public class ReplicateImageEditor {
                 input.put("quality", "high");
                 // It has no match_input_image: "auto" is the nearest thing, letting it
                 // pick the bucket closest to the photo instead of defaulting to square.
-                putIfPresent(input, "aspect_ratio", openAiAspect(spec.aspectRatio()));
+                putIfPresent(input, "aspect_ratio", openAiAspect(aspectRatio));
             }
             case SEEDREAM -> {
-                input.put("image_input", List.of(spec.imageUrl()));
+                input.put("image_input", images);
                 // Seedream can return a SERIES from one prompt; we want the single edit.
                 input.put("sequential_image_generation", "disabled");
                 input.put("max_images", 1);
-                putIfPresent(input, "size", trimmed(spec.resolution()));
-                putIfPresent(input, "aspect_ratio", trimmed(spec.aspectRatio()));
+                putIfPresent(input, "size", trimmed(resolution));
+                putIfPresent(input, "aspect_ratio", trimmed(aspectRatio));
             }
             case NANO_BANANA -> {
-                input.put("image_input", List.of(spec.imageUrl()));
-                putIfPresent(input, "resolution", trimmed(spec.resolution()));
-                putIfPresent(input, "aspect_ratio", trimmed(spec.aspectRatio()));
+                input.put("image_input", images);
+                putIfPresent(input, "resolution", trimmed(resolution));
+                putIfPresent(input, "aspect_ratio", trimmed(aspectRatio));
             }
         }
         return input;
     }
 
-    /** The keys that are tuning rather than substance — dropped on a 400/422 retry. */
-    private static final List<String> OPTIONAL_KEYS = List.of(
+    /**
+     * The keys that are tuning rather than substance — dropped on a 400/422 retry.
+     *
+     * <p>Public because every caller that builds a body with {@link #buildInput} needs the
+     * same escape hatch when a model version turns out not to know one of them.
+     */
+    public static final List<String> OPTIONAL_KEYS = List.of(
             "resolution", "aspect_ratio", "size", "quality", "input_fidelity",
             "sequential_image_generation", "max_images", "number_of_images");
 
