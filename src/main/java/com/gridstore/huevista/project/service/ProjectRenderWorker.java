@@ -7,9 +7,6 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
-import java.util.HashMap;
-import java.util.Map;
-
 /**
  * The minute of HTTP between accepting a render and having an image.
  *
@@ -46,6 +43,24 @@ public class ProjectRenderWorker {
      *  in at preserving a building's own architecture while repainting it. */
     @Value("${replicate.render.model:google/nano-banana-pro}")
     private String model;
+
+    /**
+     * The models tried, in order, once the primary above has been asked its full quota of
+     * times and is still out of capacity.
+     *
+     * <p>This is the difference between "Nano Banana Pro is busy" costing the customer their
+     * render and costing them a slightly different picture. The render fails LOUD and has no
+     * fallback OUTPUT — the generated image is the whole deliverable, so we never hand back
+     * the photo instead — but a different model still produces a real render, so there is
+     * nothing to protect the customer from by refusing to ask one.
+     *
+     * <p>Both entries take a LIST of images under their own key, which the render needs:
+     * the cleaned photo comes first and the region masks follow it. Flux Kontext is
+     * deliberately absent — it edits exactly one image, so it would silently drop the masks
+     * and ignore "keep the original borders".
+     */
+    @Value("${replicate.render.fallback-models:bytedance/seedream-4,black-forest-labs/flux-2-pro}")
+    private String fallbackModels;
 
     /** 2K by default here, against 1K for the clean: this image is the thing the customer
      *  keeps and shows people, not an intermediate the masks are derived from. */
@@ -98,13 +113,15 @@ public class ProjectRenderWorker {
     }
 
     private byte[] callModel(ProjectRenderService.RenderJob job) {
-        Map<String, Object> input = new HashMap<>();
-        input.put("prompt", job.prompt());
-        input.put("image_input", job.imageUrls());
-        input.put("output_format", "jpg");
-        if (resolution != null && !resolution.isBlank()) input.put("resolution", resolution);
-        if (aspectRatio != null && !aspectRatio.isBlank()) input.put("aspect_ratio", aspectRatio);
-        return replicate.runToImage(model, input, "Render");
+        // The input keys differ per model family, so the body is built per model down in
+        // ReplicatePredictions rather than assembled here for one of them.
+        return replicate.run(new ReplicatePredictions.Ask(
+                ReplicatePredictions.chainOf(model, fallbackModels),
+                job.prompt(),
+                job.imageUrls(),
+                resolution,
+                aspectRatio,
+                "jpg"), "Render");
     }
 
     /**
