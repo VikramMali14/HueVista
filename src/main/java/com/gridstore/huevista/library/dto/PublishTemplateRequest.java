@@ -72,9 +72,17 @@ public class PublishTemplateRequest {
     @Size(max = 400, message = "Blurb is too long — it is one sentence on a card")
     private String blurb;
 
-    /** Paragraphs separated by blank lines. */
+    /**
+     * Paragraphs separated by blank lines.
+     *
+     * Capped despite the column being TEXT. This ends up on a public page in a
+     * response nothing paginates, so the ceiling is what stops one stray paste
+     * from an admin turning every read of the portfolio into a large one.
+     */
+    @Size(max = 8000, message = "The story is too long")
     private String story;
 
     /** One {@code Label: Value} per line. */
+    @Size(max = 2000, message = "That is a lot of numbers — keep it to a few lines")
     private String stats;
 }

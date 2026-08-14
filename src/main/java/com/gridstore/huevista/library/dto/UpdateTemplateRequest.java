@@ -54,9 +54,11 @@ public class UpdateTemplateRequest {
     @Size(max = 400, message = "Blurb is too long — it is one sentence on a card")
     private String blurb;
 
-    /** Paragraphs separated by blank lines. */
+    /** Paragraphs separated by blank lines. See PublishTemplateRequest on the cap. */
+    @Size(max = 8000, message = "The story is too long")
     private String story;
 
     /** One {@code Label: Value} per line. */
+    @Size(max = 2000, message = "That is a lot of numbers — keep it to a few lines")
     private String stats;
 }
