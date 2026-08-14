@@ -1,12 +1,14 @@
 package com.gridstore.huevista.library.repository;
 
 import com.gridstore.huevista.library.model.FreeProjectTemplate;
+import com.gridstore.huevista.library.model.TemplatePlacement;
 import com.gridstore.huevista.library.model.TemplateSpace;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -21,6 +23,17 @@ public interface FreeProjectTemplateRepository extends JpaRepository<FreeProject
 
     /** What an ordinary visitor would see, once this is opened beyond the admin. */
     List<FreeProjectTemplate> findByPublishedTrueOrderBySpaceAscRoomKeyAscDisplayOrderAscTitleAsc();
+
+    /**
+     * One public page's worth of rooms.
+     *
+     * The caller passes the placements that page accepts — {@code [GALLERY, BOTH]}
+     * for the gallery, {@code [WORK, BOTH]} for the portfolio — rather than a
+     * single surface, so BOTH needs no special case in the query or in whoever
+     * reads it.
+     */
+    List<FreeProjectTemplate> findByPublishedTrueAndPlacementInOrderBySpaceAscRoomKeyAscDisplayOrderAscTitleAsc(
+            Collection<TemplatePlacement> placements);
 
     /** Fills the "5 per type" counter on the admin page without loading the rows. */
     long countBySpaceAndRoomKey(TemplateSpace space, String roomKey);

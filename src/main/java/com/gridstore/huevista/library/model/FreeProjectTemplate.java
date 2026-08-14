@@ -85,6 +85,55 @@ public class FreeProjectTemplate {
     @Builder.Default
     private boolean published = true;
 
+    /**
+     * Which public page this room appears on once published.
+     *
+     * Orthogonal to {@link #published}: that says whether the room is on the site
+     * at all, this says where. Hiding a room takes it off both pages regardless.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 16)
+    @Builder.Default
+    private TemplatePlacement placement = TemplatePlacement.DEFAULT;
+
+    // ─── Editorial copy for the "Our work" page ──────────────────────────────
+    // All optional, all shown only on /work. A room can be put on that page with
+    // none of it filled in — the page then reads what it can off the room itself
+    // (its shades, its room type, when it was published) and simply omits the
+    // sections it has nothing for. These exist so a portfolio entry can say the
+    // things a photograph cannot: where it was, who previewed it, what happened.
+
+    /** "Pune", "Bengaluru" — where the room is. */
+    @Column(length = 120)
+    private String location;
+
+    /** Free text rather than a number: "2026", "Winter 2025" both read fine. */
+    @Column(name = "project_year", length = 16)
+    private String projectYear;
+
+    /** The attribution line under the story — "Previewed at the counter · Pune". */
+    @Column(length = 200)
+    private String credit;
+
+    /** One sentence for the card and the page's lead. */
+    @Column(name = "blurb", length = 400)
+    private String blurb;
+
+    /** The full story. Paragraphs are separated by blank lines. */
+    @Column(columnDefinition = "TEXT")
+    private String story;
+
+    /**
+     * The stat row under the story: one {@code Label: Value} per line.
+     *
+     * Free text rather than its own table because it is display copy with no
+     * meaning to anything else in the system — nothing queries "photo to preview"
+     * — and a table would buy referential integrity over three strings an admin
+     * retypes whenever they feel like it.
+     */
+    @Column(columnDefinition = "TEXT")
+    private String stats;
+
     @Column(nullable = false)
     @Builder.Default
     private int displayOrder = 0;

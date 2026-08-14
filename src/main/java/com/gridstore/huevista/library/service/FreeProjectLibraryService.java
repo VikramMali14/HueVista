@@ -13,6 +13,7 @@ import com.gridstore.huevista.library.FreeProjectStorage;
 import com.gridstore.huevista.library.dto.*;
 import com.gridstore.huevista.library.model.FreeProjectTemplate;
 import com.gridstore.huevista.library.model.FreeProjectTemplateRegion;
+import com.gridstore.huevista.library.model.TemplatePlacement;
 import com.gridstore.huevista.library.model.TemplateSpace;
 import com.gridstore.huevista.library.repository.FreeProjectTemplateRepository;
 import com.gridstore.huevista.project.model.Project;
@@ -116,10 +117,35 @@ public class FreeProjectLibraryService {
      */
     @Transactional(readOnly = true)
     public List<PublicFreeProjectResponse> listPublished() {
-        return templateRepository.findByPublishedTrueOrderBySpaceAscRoomKeyAscDisplayOrderAscTitleAsc()
-                .stream()
+        return listPublished(null);
+    }
+
+    /**
+     * The published rooms belonging to one public page.
+     *
+     * {@code surface} is GALLERY or WORK; null means every published room
+     * regardless of placement, which is what the in-app library wants — a room is
+     * openable and paintable whichever marketing page it is filed under, and
+     * gating that on an editorial choice would take rooms away from signed-in
+     * accounts for no reason the account could see.
+     */
+    @Transactional(readOnly = true)
+    public List<PublicFreeProjectResponse> listPublished(TemplatePlacement surface) {
+        List<FreeProjectTemplate> templates = surface == null
+                ? templateRepository.findByPublishedTrueOrderBySpaceAscRoomKeyAscDisplayOrderAscTitleAsc()
+                : templateRepository
+                        .findByPublishedTrueAndPlacementInOrderBySpaceAscRoomKeyAscDisplayOrderAscTitleAsc(
+                                placementsFor(surface));
+        return templates.stream()
                 .map(t -> PublicFreeProjectResponse.from(t, publicImageUrl(t)))
                 .toList();
+    }
+
+    /** The placements a page accepts — its own, plus BOTH. */
+    private static List<TemplatePlacement> placementsFor(TemplatePlacement surface) {
+        return surface == TemplatePlacement.BOTH
+                ? List.of(TemplatePlacement.GALLERY, TemplatePlacement.WORK, TemplatePlacement.BOTH)
+                : List.of(surface, TemplatePlacement.BOTH);
     }
 
     /** One published room by slug, for its own page. Hidden ones read as absent. */
@@ -261,7 +287,14 @@ public class FreeProjectLibraryService {
                 .imageType(sourceImage.getImageType() != null ? sourceImage.getImageType() : ImageType.UNKNOWN)
                 .cleanedImageStorageKey(cleanedKey)
                 .published(request.getPublished() == null || request.getPublished())
+                .placement(TemplatePlacement.parse(request.getPlacement(), TemplatePlacement.DEFAULT))
                 .displayOrder(request.getDisplayOrder() != null ? request.getDisplayOrder() : 0)
+                .location(blankToNull(request.getLocation()))
+                .projectYear(blankToNull(request.getProjectYear()))
+                .credit(blankToNull(request.getCredit()))
+                .blurb(blankToNull(request.getBlurb()))
+                .story(blankToNull(request.getStory()))
+                .stats(blankToNull(request.getStats()))
                 .sourceProjectId(project.getId())
                 .createdByUserId(adminUserId)
                 .build();
@@ -284,6 +317,7 @@ public class FreeProjectLibraryService {
         FreeProjectTemplate saved = templateRepository.save(template);
         auditService.record(adminUserId, "FREE_TEMPLATE_PUBLISHED", "FREE_PROJECT_TEMPLATE", saved.getId(),
                 "slug=" + slug + " space=" + space + " room=" + saved.getRoomKey()
+                        + " placement=" + saved.getPlacement()
                         + " walls=" + regions.size() + " from=" + project.getId());
         log.info("[library] published template {} ({} walls) from project {} by {}",
                 slug, regions.size(), project.getId(), adminUserId);
@@ -515,6 +549,92 @@ public class FreeProjectLibraryService {
 
     // ─── Editing the shelf ───────────────────────────────────────────────────
 
+    /**
+     * Edit a room's metadata: where it shows, what it is called, its story.
+     *
+     * Nothing here touches a pixel. The photograph and the masks belong to the
+     * source project and are replaced only by {@link #refreshFromSource}, which
+     * keeps "moving a wall" on one path with one set of rules about copies that
+     * are already open. This is the other half of that split — the half where an
+     * admin fixes a typo or moves a room from the gallery to the portfolio, and
+     * nobody's open copy notices.
+     *
+     * <p>Null leaves a field alone; empty string clears it. That asymmetry is
+     * deliberate and is what makes a partial edit safe: a form that only shows the
+     * story sends only the story, and the location it never displayed survives.
+     * Title is the one exception — it is {@code NOT NULL} on the row, so a blank
+     * one is refused rather than written.
+     *
+     * <p>The slug is deliberately not editable. It is the room's public URL and
+     * also its storage folder, so changing it would break every link to the room
+     * and orphan its files at once.
+     */
+    @Transactional
+    public FreeProjectTemplateResponse updateTemplate(String adminUserId, String templateId,
+                                                      UpdateTemplateRequest request) {
+        FreeProjectTemplate template = templateRepository.findById(templateId)
+                .orElseThrow(() -> new ResourceNotFoundException("Template not found: " + templateId));
+
+        List<String> changed = new ArrayList<>();
+
+        if (request.getTitle() != null) {
+            String title = request.getTitle().trim();
+            if (title.isEmpty()) {
+                throw new IllegalArgumentException("A room needs a title.");
+            }
+            if (!title.equals(template.getTitle())) {
+                template.setTitle(title);
+                changed.add("title");
+            }
+        }
+        if (request.getSpace() != null && !request.getSpace().isBlank()) {
+            TemplateSpace space = parseSpace(request.getSpace());
+            if (space != template.getSpace()) {
+                template.setSpace(space);
+                changed.add("space=" + space);
+            }
+        }
+        if (request.getRoomKey() != null && !request.getRoomKey().isBlank()) {
+            String key = request.getRoomKey().trim().toUpperCase(Locale.ROOT);
+            if (!key.equals(template.getRoomKey())) {
+                template.setRoomKey(key);
+                changed.add("room=" + key);
+            }
+            // The label travels with the key: a room moved from LIVING_ROOM to
+            // KITCHEN while still labelled "Living room" reads as a bug on the
+            // shelf, and the caller may not have sent a label at all.
+            template.setRoomLabel(request.getRoomLabel() != null && !request.getRoomLabel().isBlank()
+                    ? request.getRoomLabel().trim()
+                    : titleCase(key));
+        } else if (request.getRoomLabel() != null && !request.getRoomLabel().isBlank()) {
+            template.setRoomLabel(request.getRoomLabel().trim());
+        }
+        if (request.getPlacement() != null && !request.getPlacement().isBlank()) {
+            TemplatePlacement placement = TemplatePlacement.parse(request.getPlacement(), template.getPlacement());
+            if (placement != template.getPlacement()) {
+                template.setPlacement(placement);
+                changed.add("placement=" + placement);
+            }
+        }
+        if (request.getDisplayOrder() != null) {
+            template.setDisplayOrder(request.getDisplayOrder());
+        }
+
+        if (request.getDescription() != null) template.setDescription(blankToNull(request.getDescription()));
+        if (request.getLocation() != null) template.setLocation(blankToNull(request.getLocation()));
+        if (request.getProjectYear() != null) template.setProjectYear(blankToNull(request.getProjectYear()));
+        if (request.getCredit() != null) template.setCredit(blankToNull(request.getCredit()));
+        if (request.getBlurb() != null) template.setBlurb(blankToNull(request.getBlurb()));
+        if (request.getStory() != null) template.setStory(blankToNull(request.getStory()));
+        if (request.getStats() != null) template.setStats(blankToNull(request.getStats()));
+
+        FreeProjectTemplate saved = templateRepository.save(template);
+        auditService.record(adminUserId, "FREE_TEMPLATE_UPDATED", "FREE_PROJECT_TEMPLATE", templateId,
+                "slug=" + saved.getSlug()
+                        + (changed.isEmpty() ? " copy-only" : " " + String.join(" ", changed)));
+        return toResponse(saved);
+    }
+
     /** Flip a template between listed and hidden without touching its files. */
     @Transactional
     public FreeProjectTemplateResponse setPublished(String adminUserId, String templateId, boolean published) {
@@ -706,8 +826,12 @@ public class FreeProjectLibraryService {
         if (request.getRoomLabel() != null && !request.getRoomLabel().isBlank()) {
             return request.getRoomLabel().trim();
         }
-        // "LIVING_ROOM" → "Living room"
-        String words = request.getRoomKey().trim().toLowerCase(Locale.ROOT).replace('_', ' ');
+        return titleCase(request.getRoomKey());
+    }
+
+    /** "LIVING_ROOM" → "Living room" — the fallback label for a room key. */
+    private static String titleCase(String roomKey) {
+        String words = roomKey == null ? "" : roomKey.trim().toLowerCase(Locale.ROOT).replace('_', ' ');
         return words.isEmpty() ? "Other" : Character.toUpperCase(words.charAt(0)) + words.substring(1);
     }
 

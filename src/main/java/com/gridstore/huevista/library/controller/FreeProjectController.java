@@ -4,6 +4,7 @@ import com.gridstore.huevista.image.service.StorageService;
 import com.gridstore.huevista.library.FreeProjectStorage;
 import com.gridstore.huevista.library.dto.PublicFreeProjectResponse;
 import com.gridstore.huevista.library.dto.StartedProjectResponse;
+import com.gridstore.huevista.library.model.TemplatePlacement;
 import com.gridstore.huevista.library.service.FreeProjectLibraryService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
@@ -57,12 +59,24 @@ public class FreeProjectController {
     private final StorageService storageService;
 
     @Operation(summary = "List the published rooms",
-            description = "Every room currently on the shelf, in gallery order. Hidden ones are never included.")
-    @ApiResponse(responseCode = "200", description = "The gallery")
+            description = """
+                    Every room currently on the shelf, in gallery order. Hidden ones are never
+                    included.
+
+                    The library feeds two public pages, and `surface` picks which one you are
+                    asking about: GALLERY for the /gallery grid, WORK for the /work portfolio.
+                    A room filed under BOTH answers to either. Left off, the whole published
+                    shelf comes back regardless of placement — which is what the signed-in
+                    library wants, since a room is openable and paintable whichever marketing
+                    page it happens to be filed under.
+                    """)
+    @ApiResponse(responseCode = "200", description = "The published rooms")
     @SecurityRequirements
     @GetMapping
-    public ResponseEntity<List<PublicFreeProjectResponse>> list() {
-        return ResponseEntity.ok(libraryService.listPublished());
+    public ResponseEntity<List<PublicFreeProjectResponse>> list(
+            @Parameter(description = "GALLERY or WORK. Omit for every published room.")
+            @RequestParam(required = false) String surface) {
+        return ResponseEntity.ok(libraryService.listPublished(TemplatePlacement.parse(surface, null)));
     }
 
     @Operation(summary = "Get one published room",
