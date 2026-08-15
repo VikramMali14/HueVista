@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -54,8 +55,9 @@ public class ProjectBoardService {
     private final ProjectRenderRepository renderRepository;
     private final ProjectAccessService projectAccessService;
     private final PdfQuotaService pdfQuotaService;
+    private final com.gridstore.huevista.paint.service.ShadeDecodeService shadeDecodeService;
 
-    @Value("${app.project.colour-boards-per-project:2}")
+    @Value("${app.project.colour-boards-per-project:1}")
     private int boardsPerProject;
 
     /**
@@ -167,8 +169,20 @@ public class ProjectBoardService {
                 .filter(r -> r.getPage() != null)
                 .map(r -> r.getPage().getId())
                 .collect(Collectors.toSet());
-        return pageRepository.findByProjectIdWithShades(projectId).stream()
-                .map(page -> ProjectComboResponse.from(page, renderedPageIds.contains(page.getId())))
+        List<ProjectPdfPage> pages = pageRepository.findByProjectIdWithShades(projectId);
+        // One bulk lookup for the whole project rather than a query per swatch. The HV
+        // codes ride along so the render page can reprint this board — with the AI image
+        // on the end — in the same customer-facing numbering the original carried.
+        Map<String, String> hvByCode = shadeDecodeService.hvCodesByShadeCode(
+                pages.stream()
+                        .flatMap(p -> p.getShades().stream())
+                        .map(ProjectPdfPageShade::getShadeCode)
+                        .filter(c -> c != null && !c.isBlank())
+                        .distinct()
+                        .toList());
+        return pages.stream()
+                .map(page -> ProjectComboResponse.from(
+                        page, renderedPageIds.contains(page.getId()), hvByCode))
                 .toList();
     }
 

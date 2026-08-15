@@ -16,6 +16,7 @@ import com.gridstore.huevista.common.exception.QuotaExceededException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,6 +39,21 @@ public class PdfQuotaService {
     private final OrgMembershipRepository orgMembershipRepository;
     private final UnbilledAccounts unbilledAccounts;
 
+    /**
+     * Pictures a GUEST's colour board carries, as a floor on whatever plan is paying.
+     *
+     * A walk-in gets one board and then the project is finished, so that board is the
+     * entire deliverable rather than the first of a pair — five pictures is what makes
+     * it worth carrying out of the shop. A floor rather than a flat number because the
+     * paying shop's own plan may already allow more, and a customer of a Professional
+     * shop should not get a smaller sheet than a customer of a Free one.
+     *
+     * <p>Account holders never come through here: their cap is their plan's own
+     * {@code pdfImageLimit}, unchanged.
+     */
+    @Value("${app.project.guest-images-per-board:5}")
+    private int guestImagesPerBoard;
+
     @Transactional(readOnly = true)
     public PdfAllowanceResponse allowanceForUser(String userId) {
         if (unbilledAccounts.covers(userId)) {
@@ -50,9 +66,21 @@ public class PdfQuotaService {
     public PdfAllowanceResponse allowanceForGuest(String accessCodeId) {
         CustomerAccessCode code = requireCode(accessCodeId);
         if (code.isSelfFunded()) {
-            return selfFundedAllowance(code);
+            return withGuestBoard(selfFundedAllowance(code));
         }
-        return PdfAllowanceResponse.from(billableSubscriptionForGuest(accessCodeId));
+        return withGuestBoard(PdfAllowanceResponse.from(billableSubscriptionForGuest(accessCodeId)));
+    }
+
+    /**
+     * Widen an allowance to the guest board size, leaving every other figure alone.
+     *
+     * The monthly count is a commercial limit and belongs to whoever is paying; the
+     * per-document count is what the walk-in actually holds in their hands, and that is
+     * the only number this raises.
+     */
+    private PdfAllowanceResponse withGuestBoard(PdfAllowanceResponse allowance) {
+        allowance.setImagesPerPdf(Math.max(allowance.getImagesPerPdf(), guestImagesPerBoard));
+        return allowance;
     }
 
     /** Reserve one download for an account holder; returns the post-charge allowance. */
@@ -84,9 +112,9 @@ public class PdfQuotaService {
                         "You've downloaded the colour board for what you paid for. "
                         + "Buy another visit at the kiosk for more.");
             }
-            return selfFundedAllowance(requireCode(accessCodeId));
+            return withGuestBoard(selfFundedAllowance(requireCode(accessCodeId)));
         }
-        return reserve(billableSubscriptionForGuest(accessCodeId));
+        return withGuestBoard(reserve(billableSubscriptionForGuest(accessCodeId)));
     }
 
     /**

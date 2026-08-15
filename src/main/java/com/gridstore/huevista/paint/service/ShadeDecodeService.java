@@ -153,4 +153,27 @@ public class ShadeDecodeService {
                         Shade::getHvCode,
                         (a, b) -> a));
     }
+
+    /**
+     * The same lookup keyed by the manufacturer's code alone, upper-cased.
+     *
+     * For callers that hold a code and no brand — a recorded colour-board page keeps the
+     * code the customer's sheet was printed from and nothing else, because that is all
+     * re-rendering the combination ever needed. Two companies using the same code string
+     * collapse onto one entry; that is a worse key than {@link #hvCodesFor}'s and it is
+     * the only one available here, so the loser is a shade whose HV code belongs to its
+     * namesake rather than a wrong shade being painted.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, String> hvCodesByShadeCode(List<String> shadeCodes) {
+        if (shadeCodes == null || shadeCodes.isEmpty()) return Map.of();
+        return shadeCodes.stream()
+                .map(shadeRepository::findByShadeCodeIgnoreCase)
+                .flatMap(List::stream)
+                .filter(s -> s.getHvCode() != null)
+                .collect(java.util.stream.Collectors.toMap(
+                        s -> s.getShadeCode().toUpperCase(java.util.Locale.ROOT),
+                        Shade::getHvCode,
+                        (a, b) -> a));
+    }
 }

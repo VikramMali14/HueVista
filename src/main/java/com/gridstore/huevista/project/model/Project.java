@@ -243,8 +243,8 @@ public class Project {
      *
      * One is included, and a project only ever earns the right to it by closing. Further
      * renders are bought one at a time; the allowance is stored per project rather than
-     * as an account balance because a render is only meaningful against the eight combos
-     * of the project that produced it.
+     * as an account balance because a render is only meaningful against the combos of the
+     * project that produced it.
      */
     @Column(nullable = false, columnDefinition = "integer not null default 1")
     @Builder.Default

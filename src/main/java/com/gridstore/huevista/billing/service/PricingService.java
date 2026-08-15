@@ -223,7 +223,7 @@ public class PricingService {
      *
      * Two different purchases wear the same name. A LAPSED project ran out of days with
      * the work unfinished, and ₹9 buys the clock back. A CLOSED one is finished — the
-     * customer took two colour boards and an AI render off it and said so — and reopening
+     * customer took their colour board and an AI render off it and said so — and reopening
      * unlocks the whole catalogue again on a job that already delivered. That is half a
      * project's worth of product, so it is priced at half a project.
      *

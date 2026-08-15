@@ -692,7 +692,7 @@ public class ProjectService {
     }
 
     /**
-     * Close a project on its owner's say-so, before it has spent both boards.
+     * Close a project on its owner's say-so, before it has spent its board.
      *
      * Deliberately NOT gated on {@code findEditable}. Closing an already-closed project is
      * a no-op rather than an error, and refusing it because the project is view-only would

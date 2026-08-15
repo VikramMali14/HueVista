@@ -14,7 +14,7 @@ import java.util.List;
  *
  * The board is assembled entirely in the browser — the server has never seen the pages —
  * so this is the only moment the shades that went onto paper can be captured. Everything
- * downstream of closing depends on it: the eight combos the customer chooses a render
+ * downstream of closing depends on it: the combos the customer chooses a render
  * from, and the shades that stay unlocked once the project closes.
  */
 @Data

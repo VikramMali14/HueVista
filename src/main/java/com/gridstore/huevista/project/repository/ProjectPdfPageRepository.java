@@ -16,7 +16,7 @@ public interface ProjectPdfPageRepository extends JpaRepository<ProjectPdfPage, 
      *
      * The shades are fetch-joined because the caller always wants them — the selection
      * page renders each combo from its hexes, so a page without its shades is not a
-     * usable answer, and lazy-loading them is eight extra queries for eight combos.
+     * usable answer, and lazy-loading them is one extra query per combo.
      */
     @Query("""
            SELECT DISTINCT p FROM ProjectPdfPage p
