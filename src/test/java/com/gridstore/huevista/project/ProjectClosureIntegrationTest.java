@@ -36,8 +36,13 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
- * A project's ending, end to end: two colour boards, closure, the combos that survive it,
+ * A project's ending, end to end: the colour board, closure, the combos that survive it,
  * and what a closed project will and will not let its owner do.
+ *
+ * A project hands over ONE board and is finished — see
+ * {@code app.project.colour-boards-per-project} — so "the last board" and "the first
+ * board" are the same download here, and the assertions below are written to say so
+ * rather than to count to two.
  *
  * The subscription here is deliberately an ACTIVE paid plan, because that is the case
  * closure has to outrank. A subscribed account can normally edit anything it owns, so if
@@ -66,7 +71,7 @@ class ProjectClosureIntegrationTest {
     private String token;
     private String projectId;
 
-    /** One board of four pages, each a different combination of the same two surfaces. */
+ /** One board of N pages, each a different combination of the same two surfaces. */
     private static String board(String... names) {
         StringBuilder json = new StringBuilder("{\"pages\":[");
         for (int i = 0; i < names.length; i++) {
@@ -141,28 +146,23 @@ class ProjectClosureIntegrationTest {
     // ─── Closing ─────────────────────────────────────────────────────────────
 
     @Test
-    void theSecondColourBoardClosesTheProject() throws Exception {
-        MvcResult first = postBoard(board("Calm", "Warm", "Bold", "Deep"));
-        assertThat(first.getResponse().getStatus()).isEqualTo(200);
-        assertThat(first.getResponse().getContentAsString())
+    void theOneColourBoardClosesTheProject() throws Exception {
+        MvcResult only = postBoard(board("Calm", "Warm", "Bold", "Deep", "Stone"));
+        assertThat(only.getResponse().getStatus()).isEqualTo(200);
+        assertThat(only.getResponse().getContentAsString())
                 .contains("\"boardsUsed\":1")
-                .contains("\"closed\":false");
-
-        MvcResult second = postBoard(board("Stone", "Clay", "Sand", "Slate"));
-        assertThat(second.getResponse().getContentAsString())
-                .contains("\"boardsUsed\":2")
+                .contains("\"boardsAllowed\":1")
                 .contains("\"closed\":true");
 
         assertThat(projectRepository.findById(projectId).orElseThrow().isClosed()).isTrue();
     }
 
     @Test
-    void aThirdColourBoardIsRefused() throws Exception {
-        postBoard(board("Calm", "Warm", "Bold", "Deep"));
-        postBoard(board("Stone", "Clay", "Sand", "Slate"));
+    void aSecondColourBoardIsRefused() throws Exception {
+        postBoard(board("Calm", "Warm", "Bold", "Deep", "Stone"));
 
-        // 409: the project closed itself on the second board, so there is nothing left
-        // to hand over — and the studio's own view-only rules now govern it.
+        // 402: the project closed itself on that board, so there is nothing left to
+        // hand over — and the studio's own view-only rules now govern it.
         mockMvc.perform(post("/api/projects/" + projectId + "/colour-boards")
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -171,9 +171,7 @@ class ProjectClosureIntegrationTest {
     }
 
     @Test
-    void theOwnerCanCloseEarly() throws Exception {
-        postBoard(board("Calm", "Warm"));
-
+    void theOwnerCanCloseBeforeTakingTheBoard() throws Exception {
         mockMvc.perform(post("/api/projects/" + projectId + "/close")
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
@@ -231,30 +229,29 @@ class ProjectClosureIntegrationTest {
 
     @Test
     void aClosedProjectIsStillReadable() throws Exception {
-        postBoard(board("Calm", "Warm", "Bold", "Deep"));
-        postBoard(board("Stone", "Clay", "Sand", "Slate"));
+        postBoard(board("Calm", "Warm", "Bold", "Deep", "Stone"));
 
         mockMvc.perform(get("/api/projects/" + projectId)
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.readOnly").value(true))
                 .andExpect(jsonPath("$.closedAt").isNotEmpty())
-                .andExpect(jsonPath("$.boardsUsed").value(2))
+                .andExpect(jsonPath("$.boardsUsed").value(1))
+                .andExpect(jsonPath("$.boardsAllowed").value(1))
                 .andExpect(jsonPath("$.rendersAllowed").value(1))
                 .andExpect(jsonPath("$.rendersUsed").value(0));
     }
 
-    // ─── The eight combos ────────────────────────────────────────────────────
+    // ─── The combos the board leaves behind ──────────────────────────────────
 
     @Test
-    void bothBoardsLeaveEightCombosInTheOrderTheCustomerSawThem() throws Exception {
-        postBoard(board("Calm", "Warm", "Bold", "Deep"));
-        postBoard(board("Stone", "Clay", "Sand", "Slate"));
+    void theBoardLeavesItsCombosInTheOrderTheCustomerSawThem() throws Exception {
+        postBoard(board("Calm", "Warm", "Bold", "Deep", "Stone"));
 
         mockMvc.perform(get("/api/projects/" + projectId + "/combos")
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(8))
+                .andExpect(jsonPath("$.length()").value(5))
                 .andExpect(jsonPath("$[0].title").value("Calm"))
                 .andExpect(jsonPath("$[0].boardIndex").value(1))
                 .andExpect(jsonPath("$[0].pageIndex").value(0))
@@ -262,7 +259,7 @@ class ProjectClosureIntegrationTest {
                 .andExpect(jsonPath("$[0].shades[0].hex").value("#e8d5b0"))
                 .andExpect(jsonPath("$[0].rendered").value(false))
                 .andExpect(jsonPath("$[4].title").value("Stone"))
-                .andExpect(jsonPath("$[4].boardIndex").value(2));
+                .andExpect(jsonPath("$[4].pageIndex").value(4));
     }
 
     @Test
@@ -281,17 +278,29 @@ class ProjectClosureIntegrationTest {
                 .isZero();
     }
 
-    // ─── Renders are gated on closing ────────────────────────────────────────
+    // ─── Renders need a combination, not a closed project ────────────────────
 
     @Test
-    void aRenderIsRefusedUntilTheProjectCloses() throws Exception {
-        MvcResult first = postBoard(board("Calm", "Warm", "Bold", "Deep"));
+    void aRenderNoLongerWaitsForTheProjectToClose() throws Exception {
+        MvcResult only = postBoard(board("Calm", "Warm"));
+        assertThat(only.getResponse().getStatus()).isEqualTo(200);
+
+        // Put the project back into the state the old gate refused with a 409: it has a
+        // board, and it is open. Reached by hand because one board now closes a project
+        // outright, so the ordinary flow can no longer produce it — but it is still
+        // reachable in the wild (an owner reopens a closed room and keeps its combos),
+        // and it is exactly the case an AI credit must be spendable in. The gate is gone
+        // because an image is paid for with a credit, and a customer holding one should
+        // never be told the room is in the wrong state to spend it.
+        Project reopened = projectRepository.findById(projectId).orElseThrow();
+        reopened.setClosedAt(null);
+        projectRepository.save(reopened);
+
         String comboId = objectMapper.readTree(
                         mockMvc.perform(get("/api/projects/" + projectId + "/combos")
                                         .header("Authorization", "Bearer " + token))
                                 .andReturn().getResponse().getContentAsString())
                 .get(0).get("id").asText();
-        assertThat(first.getResponse().getStatus()).isEqualTo(200);
 
         mockMvc.perform(post("/api/projects/" + projectId + "/renders")
                         .header("Authorization", "Bearer " + token)
@@ -300,13 +309,12 @@ class ProjectClosureIntegrationTest {
                                  {"comboId":"%s","timeOfDay":"DAY","borderMode":"KEEP_ORIGINAL",
                                   "lighting":"NATURAL","furnishing":"KEEP","style":"MODERN"}"""
                                 .formatted(comboId)))
-                .andExpect(status().isConflict());
+                .andExpect(status().isAccepted());
     }
 
     @Test
     void aRenderMustNameACombinationFromThisProjectsOwnBoards() throws Exception {
-        postBoard(board("Calm", "Warm", "Bold", "Deep"));
-        postBoard(board("Stone", "Clay", "Sand", "Slate"));
+        postBoard(board("Calm", "Warm", "Bold", "Deep", "Stone"));
 
         mockMvc.perform(post("/api/projects/" + projectId + "/renders")
                         .header("Authorization", "Bearer " + token)

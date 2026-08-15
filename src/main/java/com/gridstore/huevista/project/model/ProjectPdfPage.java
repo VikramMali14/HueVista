@@ -16,14 +16,16 @@ import java.util.List;
  * built entirely in the browser and the only call home was a bare "charge me for one
  * download" with no body: no project, no shades, nothing. That was fine while a board was
  * just a receipt, but the whole closing flow is built on what the customer actually took
- * away — the eight combos they chose between, the shades that stay visible once the
+ * away — the combos they chose between, the shades that stay visible once the
  * project closes, and the one they pick to render. None of that can be reconstructed
  * afterwards, because a Region only ever holds the colour applied to it RIGHT NOW and is
  * overwritten in place every time the customer tries another shade.
  *
  * Pages are numbered twice over, and both numbers matter: {@link #boardIndex} says which
- * download it came from (1 or 2) and {@link #pageIndex} where it sat inside that
- * document. Together they order the eight combos exactly as the customer saw them.
+ * download it came from and {@link #pageIndex} where it sat inside that document.
+ * Together they order the combos exactly as the customer saw them. A project hands over
+ * one board today, so boardIndex is 1 on every page of a project made since — it is kept
+ * because rows written when a project got two are still on disk and still have to sort.
  *
  * No pixels are stored. The selection page re-renders each combo from the cleaned photo,
  * the region masks and the hexes below — all of which already exist — which stays sharp

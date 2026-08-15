@@ -53,6 +53,16 @@ class PdfQuotaServiceTest {
             new PdfQuotaService(subs, users, entitlements, codes, memberships,
                     mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class));
 
+    /**
+     * The guest board floor, injected by hand because this test builds the service with
+     * `new` rather than through Spring, so its {@code @Value} field would otherwise sit
+     * at 0 and make the floor a no-op — quietly passing every assertion below.
+     */
+    {
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                service, "guestImagesPerBoard", 5);
+    }
+
     private static User user(String id, UserRole role) {
         User u = new User();
         u.setId(id);
@@ -174,6 +184,55 @@ class PdfQuotaServiceTest {
 
         verify(subs).incrementPdfUsageIfWithinLimit(SUB_ID);
         assertThat(a.getUsed()).isEqualTo(1);
+    }
+
+    /**
+     * A walk-in's board carries five pictures even though the shop paying for it is on a
+     * plan whose own documents hold four. The board is now the whole deliverable — one
+     * download and the project is finished — so it is sized for the person carrying it
+     * out of the shop rather than for the plan behind the counter.
+     */
+    @Test
+    void guest_board_carries_five_pictures_on_a_small_plan() {
+        Organization org = new Organization();
+        org.setId(ORG);
+        CustomerAccessCode code = CustomerAccessCode.builder().organization(org).code("ABCD2345").build();
+        when(codes.findById(CODE_ID)).thenReturn(Optional.of(code));
+        when(memberships.findUserIdsByOrganizationIdAndRole(ORG, OrgMemberRole.OWNER))
+                .thenReturn(List.of(RETAILER));
+        Subscription small = sub(0, 100);
+        small.setPdfImageLimit(4);
+        when(subs.findEntitling(eq(RETAILER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(small));
+
+        assertThat(service.allowanceForGuest(CODE_ID).getImagesPerPdf()).isEqualTo(5);
+    }
+
+    /** A floor, not a ceiling: a bigger shop's customer keeps the bigger board. */
+    @Test
+    void guest_board_never_shrinks_a_bigger_plan() {
+        Organization org = new Organization();
+        org.setId(ORG);
+        CustomerAccessCode code = CustomerAccessCode.builder().organization(org).code("ABCD2345").build();
+        when(codes.findById(CODE_ID)).thenReturn(Optional.of(code));
+        when(memberships.findUserIdsByOrganizationIdAndRole(ORG, OrgMemberRole.OWNER))
+                .thenReturn(List.of(RETAILER));
+        when(subs.findEntitling(eq(RETAILER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(sub(0, 100))); // PROFESSIONAL: 8 per document
+
+        assertThat(service.allowanceForGuest(CODE_ID).getImagesPerPdf()).isEqualTo(8);
+    }
+
+    /** An account holder is untouched — their cap is their own plan's, floor or no floor. */
+    @Test
+    void an_account_holders_board_is_not_widened() {
+        when(users.findById(RETAILER)).thenReturn(Optional.of(user(RETAILER, UserRole.RETAILER)));
+        Subscription small = sub(0, 100);
+        small.setPdfImageLimit(4);
+        when(subs.findEntitling(eq(RETAILER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
+                .thenReturn(java.util.List.of(small));
+
+        assertThat(service.allowanceForUser(RETAILER).getImagesPerPdf()).isEqualTo(4);
     }
 
     @Test

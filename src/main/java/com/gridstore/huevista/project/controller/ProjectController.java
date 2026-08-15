@@ -407,9 +407,11 @@ public class ProjectController {
                     Makes a photorealistic image of the room in one of the combinations this
                     project handed over, through Nano Banana Pro.
 
-                    Only on a CLOSED project, and only from a combination that was actually on
-                    one of its colour boards. One render is included; each further one is
-                    bought (see /api/billing/projects/{id}/renders/order). The allowance is
+                    Only from a combination that was actually on one of this project's colour
+                    boards — the picture shows a scheme the customer committed to on paper.
+                    The project does NOT have to be closed: one render is included, and every
+                    further one is paid for with an AI image credit, so the wallet is the only
+                    thing standing between a customer and another image. The allowance is
                     spent as the request is accepted and handed back if the image cannot be
                     made, so a failure never costs anything.
 
@@ -419,9 +421,8 @@ public class ProjectController {
     )
     @ApiResponses({
             @ApiResponse(responseCode = "202", description = "Accepted; poll for the image"),
-            @ApiResponse(responseCode = "402", description = "This project's renders are used up"),
-            @ApiResponse(responseCode = "404", description = "No such project, or no such combination on it"),
-            @ApiResponse(responseCode = "409", description = "The project is not closed yet")
+            @ApiResponse(responseCode = "402", description = "No render left and the AI credit wallet is short"),
+            @ApiResponse(responseCode = "404", description = "No such project, or no such combination on it")
     })
     @PostMapping("/{id}/renders")
     public ResponseEntity<ProjectRenderResponse> requestRender(

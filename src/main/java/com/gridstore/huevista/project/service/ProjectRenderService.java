@@ -32,9 +32,12 @@ import java.util.List;
  * Three things make this different from every other AI call in the product, and all three
  * are deliberate.
  *
- * <p><b>It is gated on closing.</b> A render is what a finished job produces, not another
- * tool in the studio. Requiring closure is what keeps the eight combinations meaningful —
- * the customer renders something they committed to, not a forty-first idea.
+ * <p><b>It is made from a combination, and nothing else gates it.</b> A render shows a
+ * scheme the customer committed to on paper, which is what makes it trustworthy — not a
+ * forty-first idea invented afterwards. That is enforced by requiring a page off one of
+ * this project's colour boards. It is NOT enforced by requiring the project to be closed
+ * any more: an AI image is paid for with an AI credit, and a customer holding one they
+ * bought should be able to spend it whenever they like, on a room in any state.
  *
  * <p><b>It fails LOUD.</b> {@link ImageCleanerService} falls back to the original photo
  * when the model refuses, because a cleaned photo is an improvement on a photo and its
@@ -96,11 +99,13 @@ public class ProjectRenderService {
      */
     @Transactional
     public ProjectRenderResponse request(Project project, CreateRenderRequest request) {
-        if (!project.isClosed()) {
-            throw new IllegalStateException(
-                    "Close this project first — the render is made from the colour boards "
-                    + "you hand over.");
-        }
+        // No closure gate. Making the picture used to require finishing the job first,
+        // which read as a second lock on top of the one that already governs it: an AI
+        // image costs an AI credit, and a customer holding a credit they paid for should
+        // never be told the room is in the wrong state to spend it. The combination is
+        // still required — there is nothing to photograph without colours — but that is
+        // the SUBJECT of the render, not a gate in front of it, and a project that has
+        // handed over a board has combinations whether it went on to close or not.
         ProjectPdfPage page = boardService.requirePage(project.getId(), request.getComboId());
         Funding funding = charge(project);
 
