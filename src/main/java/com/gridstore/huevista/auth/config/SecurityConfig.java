@@ -127,6 +127,18 @@ public class SecurityConfig {
                 // status is exposed (show-details=never); no other actuator endpoint
                 // is web-exposed at all.
                 .requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/**").permitAll()
+                // The one shade route that is NOT public, listed before the blanket rule
+                // below so it is not swallowed by it. Reading a customer's HV code is the
+                // shop's side of the bargain that makes the code safe to print: the code
+                // itself carries no colour, and this is the only thing that turns it back
+                // into one. Behind a session, and behind RETAILER/ADMIN in the controller.
+                //
+                // Method security alone would have refused an anonymous caller too, but
+                // through @PreAuthorize on a permitAll route — a 403 telling a visitor
+                // their role is wrong, when the honest answer is that they are not signed
+                // in at all. This makes it a 401, and makes the rule visible where every
+                // other access decision in the app is written down.
+                .requestMatchers(HttpMethod.GET, "/api/shades/decode").authenticated()
                 // Shade catalog — public read-only
                 .requestMatchers(HttpMethod.GET, "/api/shades", "/api/shades/**").permitAll()
                 // The marketing site's own images, and the manifest naming them. Public

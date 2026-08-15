@@ -26,6 +26,9 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+// So the hv_code DEFAULT can fire: without it Hibernate writes an explicit NULL into
+// every column the entity leaves unset, and an explicit NULL beats a column default.
+@org.hibernate.annotations.DynamicInsert
 public class Shade {
 
     @Id
@@ -40,6 +43,30 @@ public class Shade {
 
     @Column(nullable = false)
     private String shadeCode; // entityCode: "9436"
+
+    /**
+     * The platform-wide customer-facing code — "HV0348" — that any HueVista shop can
+     * decode and nobody else can.
+     *
+     * Normally assigned by the DATABASE, not by us. Shades are inserted from four
+     * different paths (the Asian Paints seeder, the generic brand importer, the admin
+     * CSV upload, single-shade admin creates) and a Java-side allocator would have to be
+     * remembered at every one of them — the path added next is the one that ships a
+     * shade with no code. The column carries a DEFAULT drawing from {@code
+     * hv_shade_code_seq} (V54), which cannot be forgotten by code that does not know
+     * this field exists. {@code @DynamicInsert} on the class is what lets that default
+     * fire: Hibernate leaves a null column out of the INSERT entirely rather than
+     * writing an explicit NULL over it.
+     *
+     * Left WRITABLE and without {@code nullable = false} on purpose, which is the
+     * difference between this and a plain generated column. The test suite runs H2 with
+     * {@code create-drop} and Flyway off, so there is no sequence and no default there —
+     * a non-null generated column would fail every shade insert in the suite, and a
+     * read-only one would leave the decoder with nothing to test against. This way
+     * production gets its guaranteed code and a test can simply set one.
+     */
+    @Column(name = "hv_code", length = 12)
+    private String hvCode;
 
     @Column(nullable = false)
     private String name; // entityName: "air breeze"

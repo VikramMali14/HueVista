@@ -33,6 +33,23 @@ public class ShadeCodeSchemeResponse {
     /** False when this shop hides paint names everywhere a colour is shown. */
     @Builder.Default
     private boolean showNames = true;
+    /**
+     * Whether this viewer may see the manufacturer's own shade codes.
+     *
+     * True for shop staff and administrators — the people who have to open the right
+     * tin. False for everyone else, and for them the client shows the platform-wide HV
+     * code instead: a customer's screen, their colour board and any link they forward
+     * carry a number that names no company and no shade, and that only a HueVista shop
+     * can turn back into a colour.
+     *
+     * Defaults to FALSE so a client that cannot resolve a viewer, or a response built
+     * by a path that has not thought about this, withholds rather than leaks. The
+     * expensive mistake here is one-directional: showing a shop an HV code costs them
+     * one lookup, while showing a customer the manufacturer's code hands away the thing
+     * the whole scheme exists to keep.
+     */
+    @Builder.Default
+    private boolean showRealCodes = false;
     private LocalDateTime updatedAt;
     /**
      * When this shop first set up customer codes at all.
@@ -71,6 +88,19 @@ public class ShadeCodeSchemeResponse {
                     .retiredAt(s.getRetiredAt())
                     .build();
         }
+    }
+
+    /**
+     * Set who this response is for, after the fact.
+     *
+     * A fluent setter rather than a sixth parameter on each of the five factories below:
+     * the viewer is resolved in one place ({@code ShadeCodeSchemeService#describe}) and
+     * every factory funnels through it, so threading it through all of them would add an
+     * argument to each caller to say the same thing once.
+     */
+    public ShadeCodeSchemeResponse forViewer(boolean showRealCodes) {
+        this.showRealCodes = showRealCodes;
+        return this;
     }
 
     public static ShadeCodeSchemeResponse from(ShadeCodeScheme scheme, boolean showNames) {

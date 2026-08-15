@@ -7,6 +7,7 @@ import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.repository.CustomerEntitlementRepository;
 import com.gridstore.huevista.account.repository.OrgMembershipRepository;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
+import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.paint.dto.ShadeCodeSchemeResponse;
 import com.gridstore.huevista.paint.dto.UpdateShadeCodeSchemeRequest;
@@ -42,17 +43,22 @@ public class ShadeCodeSchemeService {
     private final CustomerEntitlementRepository entitlementRepository;
     private final CustomerAccessCodeRepository accessCodeRepository;
     private final com.gridstore.huevista.paint.repository.RetiredShadeCodeSchemeRepository retiredRepository;
+    private final com.gridstore.huevista.auth.repository.UserRepository userRepository;
 
     // --- Retailer-side management (portal) ---
 
     @Transactional(readOnly = true)
     public ShadeCodeSchemeResponse get(String userId, String orgId) {
         requireMember(userId, orgId);
-        return describe(orgId);
+        // A member of the shop, by the check above — they read real codes.
+        return describe(orgId, true);
     }
 
-    /** This shop's full display settings: the code pattern, and whether names show. */
-    private ShadeCodeSchemeResponse describe(String orgId) {
+    /**
+     * This shop's full display settings: the code pattern, whether names show, and
+     * whether this viewer is one of the people entitled to the manufacturer's own codes.
+     */
+    private ShadeCodeSchemeResponse describe(String orgId, boolean showRealCodes) {
         boolean showNames = organizationRepository.findById(orgId)
                 .map(Organization::isShowShadeNames)
                 .orElse(true);
@@ -62,7 +68,8 @@ public class ShadeCodeSchemeService {
                         .toList();
         return schemeRepository.findByOrganizationId(orgId)
                 .map(scheme -> ShadeCodeSchemeResponse.from(scheme, showNames, retired))
-                .orElseGet(() -> ShadeCodeSchemeResponse.empty(showNames, retired));
+                .orElseGet(() -> ShadeCodeSchemeResponse.empty(showNames, retired))
+                .forViewer(showRealCodes);
     }
 
     @Transactional
@@ -91,7 +98,8 @@ public class ShadeCodeSchemeService {
                 schemeRepository.delete(existing);
             });
             log.info("Shade-code scheme cleared: org={}", orgId);
-            return describe(orgId);
+            // requireOwnerOrManager above already established this is the shop.
+            return describe(orgId, true);
         }
 
         ShadeCodeScheme scheme = schemeRepository.findByOrganizationId(orgId)
@@ -110,7 +118,7 @@ public class ShadeCodeSchemeService {
         scheme.setSuffix(suffix);
         schemeRepository.save(scheme);
         log.info("Shade-code scheme saved: org={} prefix={} infix={} suffix={}", orgId, prefix, infix, suffix);
-        return describe(orgId);
+        return describe(orgId, true);
     }
 
     // --- Studio-side read (retailer staff, customers, guests) ---
@@ -131,9 +139,37 @@ public class ShadeCodeSchemeService {
      */
     @Transactional(readOnly = true)
     public ShadeCodeSchemeResponse forPrincipal(String principalName, boolean guest) {
+        // A guest is by definition not shop staff, so this is settled before any lookup.
+        boolean realCodes = !guest && seesRealCodes(principalName);
         String orgId = guest ? orgForGuest(principalName) : orgForUser(principalName);
-        if (orgId == null) return ShadeCodeSchemeResponse.empty();
-        return describe(orgId);
+        // No shop to ask still has to answer the code question: an ADMIN belongs to no
+        // retailer org and would otherwise be handed HV codes in their own console.
+        if (orgId == null) return ShadeCodeSchemeResponse.empty().forViewer(realCodes);
+        return describe(orgId, realCodes);
+    }
+
+    /**
+     * Whether this account may see the manufacturer's own shade codes.
+     *
+     * Shop staff and administrators: they are the ones who have to open the right tin,
+     * and the HV code exists to be READ by them rather than hidden from them. Everyone
+     * else — customers a shop onboarded, customers who signed up alone, painters — sees
+     * the HV code, because every screen they hold is a screen that can be photographed,
+     * forwarded or carried into a different shop.
+     *
+     * A membership in a RETAILER org is the test rather than the user's role field: that
+     * is what "works at a shop" means here, and it is the same thing the portal checks
+     * before letting someone manage the shop's codes at all.
+     */
+    private boolean seesRealCodes(String userId) {
+        if (userId == null) return false;
+        if (userRepository.findById(userId)
+                .map(u -> u.getRole() == UserRole.ADMIN)
+                .orElse(false)) {
+            return true;
+        }
+        return membershipRepository.findByUserId(userId).stream()
+                .anyMatch(m -> m.getOrganization().getType() == OrgType.RETAILER);
     }
 
     /**
@@ -157,6 +193,8 @@ public class ShadeCodeSchemeService {
     @Transactional(readOnly = true)
     public ShadeCodeSchemeResponse forSharedProject(String userId, String accessCodeId) {
         String orgId = userId != null ? orgForUser(userId) : null;
+        // The viewer of a share link has no session at all, so they are never shop staff
+        // — and a forwarded link is the single most-copied surface the shop has.
         if (orgId == null && accessCodeId != null) {
             // Deliberately not the expiry-filtered lookup below: a share link can
             // outlive the code that created the room, and an expired code must not
@@ -166,7 +204,7 @@ public class ShadeCodeSchemeService {
                     .orElse(null);
         }
         if (orgId == null) return ShadeCodeSchemeResponse.empty();
-        return describe(orgId);
+        return describe(orgId, false);
     }
 
     /** Guest principal = the redeemed access code's id; its shop owns the scheme. */

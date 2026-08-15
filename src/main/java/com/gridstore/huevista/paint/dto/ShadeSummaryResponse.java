@@ -39,6 +39,8 @@ public class ShadeSummaryResponse implements Serializable {
     private String brandName;
     private String brandSlug;
     private String shadeCode;
+    /** The platform-wide customer-facing code (HV0348). What non-shop viewers are shown. */
+    private String hvCode;
     private String name;
     private String hexCode;
     private String shadeFamily;
@@ -59,6 +61,7 @@ public class ShadeSummaryResponse implements Serializable {
                 .brandName(shade.getBrand().getName())
                 .brandSlug(shade.getBrand().getSlug())
                 .shadeCode(shade.getShadeCode())
+                .hvCode(shade.getHvCode())
                 .name(shade.getName())
                 .hexCode(shade.getHexCode())
                 .shadeFamily(shade.getShadeFamily())

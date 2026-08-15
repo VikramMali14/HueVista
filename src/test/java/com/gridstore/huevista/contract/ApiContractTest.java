@@ -142,7 +142,13 @@ class ApiContractTest {
     void region_response_matches_frontend_RegionDetail() {
         assertThat(propsOf("RegionResponse")).containsExactlyInAnyOrder(
                 "id", "label", "category", "maskData", "maskUrl",
-                "appliedShadeCode", "appliedHexCode", "displayOrder", "manual");
+                // Two codes for the applied colour, and which one a surface may show is
+                // the whole point of the pair: the manufacturer's is for shop staff, the
+                // HV code goes everywhere else — a customer's screen, a printed board, a
+                // forwarded share link — because it names nothing and only a HueVista
+                // shop can read it back.
+                "appliedShadeCode", "appliedHvCode",
+                "appliedHexCode", "displayOrder", "manual");
     }
 
     @Test

@@ -71,6 +71,7 @@ public class ProjectService {
     private final ProjectBoardService boardService;
     private final ProjectRenderService renderService;
     private final com.gridstore.huevista.paint.service.ShadeCodeSchemeService shadeCodeSchemeService;
+    private final com.gridstore.huevista.paint.repository.ShadeRepository shadeRepository;
     private final com.gridstore.huevista.notification.EmailSender emailSender;
     private final com.gridstore.huevista.account.service.BrandAccessService brandAccessService;
     private final com.gridstore.huevista.account.service.FeatureAccessService featureAccessService;
@@ -994,6 +995,10 @@ public class ProjectService {
         r.setShadeCodeScheme(shadeCodeSchemeService.forSharedProject(
                 project.getUser() != null ? project.getUser().getId() : null,
                 project.getAccessCode() != null ? project.getAccessCode().getId() : null));
+        // The one code a forwarded link may carry. fromPublic() dropped the
+        // manufacturer's; this puts back something that can be acted on at a counter
+        // without naming the company on a page anyone might open.
+        applyHvCodes(r, project);
         refreshMaskUrls(r);
         // Masks too: local-storage mode leaves them as relative, owner-authenticated
         // paths an anonymous share viewer can't fetch — point those at the public,
@@ -1008,6 +1013,51 @@ public class ProjectService {
             });
         }
         return r;
+    }
+
+    /**
+     * Fill each region's HV code from the shade it has applied.
+     *
+     * The region row stores a shade code and a hex, not a shade id, and a shade code is
+     * only unique WITHIN a company — so "L124" alone can match rows from two
+     * manufacturers. The applied hex settles it: the region was painted FROM a specific
+     * catalogue shade, so the one whose hex matches is that shade. With no hex match
+     * (an older row, or a colour edited by hand afterwards) the code is left null
+     * rather than guessed, because a wrong HV code sends someone to the counter for
+     * the wrong tin — worse than sending them with none.
+     *
+     * One query per distinct code, and a room has a handful of walls.
+     */
+    private void applyHvCodes(ProjectResponse response, Project project) {
+        if (response.getRegions() == null || response.getRegions().isEmpty()) return;
+        java.util.Map<Long, String> appliedByRegionId = project.getRegions() == null ? java.util.Map.of()
+                : project.getRegions().stream()
+                        .filter(rg -> rg.getAppliedShadeCode() != null && !rg.getAppliedShadeCode().isBlank())
+                        .collect(java.util.stream.Collectors.toMap(Region::getId,
+                                Region::getAppliedShadeCode, (a, b) -> a));
+        if (appliedByRegionId.isEmpty()) return;
+
+        java.util.Map<String, List<com.gridstore.huevista.paint.model.Shade>> byCode = appliedByRegionId.values().stream()
+                .distinct()
+                .collect(java.util.stream.Collectors.toMap(code -> code.toUpperCase(),
+                        shadeRepository::findByShadeCodeIgnoreCase, (a, b) -> a));
+
+        response.getRegions().forEach(region -> {
+            String code = appliedByRegionId.get(region.getId());
+            if (code == null) return;
+            List<com.gridstore.huevista.paint.model.Shade> hits = byCode.get(code.toUpperCase());
+            if (hits == null || hits.isEmpty()) return;
+            if (hits.size() == 1) {
+                region.setAppliedHvCode(hits.get(0).getHvCode());
+                return;
+            }
+            String hex = region.getAppliedHexCode();
+            if (hex == null) return;
+            hits.stream()
+                    .filter(s -> hex.equalsIgnoreCase(s.getHexCode()))
+                    .findFirst()
+                    .ifPresent(s -> region.setAppliedHvCode(s.getHvCode()));
+        });
     }
 
     /**
