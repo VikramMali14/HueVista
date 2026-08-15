@@ -49,4 +49,40 @@ public class PublishTemplateRequest {
 
     /** Defaults to true — a template is published to be used. */
     private Boolean published;
+
+    /**
+     * Which public page it goes on: GALLERY, WORK or BOTH.
+     * Defaults to {@link com.gridstore.huevista.library.model.TemplatePlacement#DEFAULT}.
+     */
+    private String placement;
+
+    // ─── Editorial copy for the "Our work" page ──────────────────────────────
+    // Optional. Ignored by the gallery grid, which reads everything it shows off
+    // the room itself; the portfolio page uses what is here and omits what isn't.
+
+    @Size(max = 120, message = "Location is too long")
+    private String location;
+
+    @Size(max = 16, message = "Year is too long")
+    private String projectYear;
+
+    @Size(max = 200, message = "Credit line is too long")
+    private String credit;
+
+    @Size(max = 400, message = "Blurb is too long — it is one sentence on a card")
+    private String blurb;
+
+    /**
+     * Paragraphs separated by blank lines.
+     *
+     * Capped despite the column being TEXT. This ends up on a public page in a
+     * response nothing paginates, so the ceiling is what stops one stray paste
+     * from an admin turning every read of the portfolio into a large one.
+     */
+    @Size(max = 8000, message = "The story is too long")
+    private String story;
+
+    /** One {@code Label: Value} per line. */
+    @Size(max = 2000, message = "That is a lot of numbers — keep it to a few lines")
+    private String stats;
 }

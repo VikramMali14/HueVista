@@ -93,6 +93,31 @@ public class AdminFreeProjectController {
         return ResponseEntity.ok(libraryService.refreshFromSource(auth.getName(), templateId));
     }
 
+    @Operation(summary = "Edit a room's details",
+            description = """
+                    Changes metadata only — which public page the room shows on (GALLERY, WORK
+                    or BOTH), its title and shelf, and the editorial copy the "Our work" page
+                    prints beside it. No pixel is touched: the photograph and masks come from
+                    the source project and are replaced by /refresh, which is the one path that
+                    may move a wall.
+
+                    A field left out is left alone; a field sent empty is cleared. So a form
+                    that edits only the story sends only the story, and the location it never
+                    showed survives — while an admin who wants the credit line gone has a way
+                    to say so.
+
+                    The slug is not editable: it is both the room's public URL and its storage
+                    folder, so changing it would break every link to the room and orphan its
+                    files in the same move.
+                    """)
+    @PatchMapping("/{templateId}")
+    public ResponseEntity<FreeProjectTemplateResponse> update(
+            @PathVariable String templateId,
+            @Valid @RequestBody UpdateTemplateRequest request,
+            Authentication auth) {
+        return ResponseEntity.ok(libraryService.updateTemplate(auth.getName(), templateId, request));
+    }
+
     @Operation(summary = "Show or hide a template",
             description = "Hidden templates stay in this list but are refused by 'start a copy'. Files are untouched.")
     @PatchMapping("/{templateId}/published")

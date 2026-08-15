@@ -26,8 +26,22 @@ public class FreeProjectTemplateResponse {
     private Integer imageWidth;
     private Integer imageHeight;
     private boolean published;
+    /** GALLERY, WORK or BOTH — which public page it appears on. */
+    private String placement;
     private int displayOrder;
     private long timesUsed;
+
+    // Editorial copy for /work, echoed back so the admin form opens on what is
+    // stored rather than blank. Raw here — the story is still one string with
+    // blank lines in it, the stats still "Label: Value" per line — because this
+    // is what the edit form puts back in its textareas. Only the PUBLIC response
+    // splits them, where they are being rendered rather than edited.
+    private String location;
+    private String projectYear;
+    private String credit;
+    private String blurb;
+    private String story;
+    private String stats;
     private int regionCount;
     /**
      * How many copies are alive right now and still pointing at this template's
@@ -55,8 +69,15 @@ public class FreeProjectTemplateResponse {
                 .imageWidth(t.getImageWidth())
                 .imageHeight(t.getImageHeight())
                 .published(t.isPublished())
+                .placement(t.getPlacement() != null ? t.getPlacement().name() : null)
                 .displayOrder(t.getDisplayOrder())
                 .timesUsed(t.getTimesUsed())
+                .location(t.getLocation())
+                .projectYear(t.getProjectYear())
+                .credit(t.getCredit())
+                .blurb(t.getBlurb())
+                .story(t.getStory())
+                .stats(t.getStats())
                 .regionCount(regions.size())
                 .copiesInUse(copiesInUse)
                 .regions(regions)
