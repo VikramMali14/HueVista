@@ -25,6 +25,18 @@ public interface ShadeRepository extends JpaRepository<Shade, Long>, JpaSpecific
 
     Optional<Shade> findByBrandSlugAndShadeCode(String brandSlug, String shadeCode);
 
+    /** The platform-wide customer code → the shade behind it. The whole of the shop decoder. */
+    Optional<Shade> findByHvCode(String hvCode);
+
+    /**
+     * Every shade carrying this manufacturer code, whichever company issued it.
+     *
+     * Codes are only unique WITHIN a company (the table's unique key is brand+code), and
+     * a counter typing "L124" off a customer's older board has no company to give — so
+     * the decoder has to be able to hand back all of them and let the shop choose.
+     */
+    List<Shade> findByShadeCodeIgnoreCase(String shadeCode);
+
     boolean existsByBrandIdAndShadeCode(Long brandId, String shadeCode);
 
     @Query("SELECT s.shadeCode FROM Shade s WHERE s.brand.id = :brandId")

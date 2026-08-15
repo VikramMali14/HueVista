@@ -15,6 +15,16 @@ public class RegionResponse {
     private String maskData;
     private String maskUrl;
     private String appliedShadeCode;
+    /**
+     * The platform-wide code for the applied shade — "HV0348".
+     *
+     * Safe on a surface where {@link #appliedShadeCode} is not, which is the whole
+     * reason it exists: it names no company and no colour, so it can go out on a
+     * forwarded link or a printed board, and any HueVista shop can turn it back into
+     * a tin. Filled by the caller (it needs a catalogue lookup); null when the applied
+     * colour is not a catalogue shade at all.
+     */
+    private String appliedHvCode;
     private String appliedHexCode;
     private Integer displayOrder;
     private boolean manual;
@@ -33,7 +43,16 @@ public class RegionResponse {
                 .build();
     }
 
-    // Used for shared project view — shade codes are hidden from end customers
+    /**
+     * Shared-link view: the manufacturer's code stays hidden, the HV code does not.
+     *
+     * The share page used to carry no code at all, which made it the one surface where
+     * a customer could show someone the colour but nobody could buy it — the link gets
+     * forwarded to a spouse or a builder, and they had a picture and no way to act on
+     * it. An HV code fixes that without giving anything away: it is a row number, so
+     * the page still names no paint company, and any HueVista shop reads it back.
+     * {@code appliedHvCode} is filled by the caller.
+     */
     public static RegionResponse fromPublic(Region region) {
         return RegionResponse.builder()
                 .id(region.getId())
@@ -41,7 +60,7 @@ public class RegionResponse {
                 .category(region.getCategory())
                 .maskData(region.getMaskData())
                 .maskUrl(region.getMaskUrl())
-                .appliedHexCode(region.getAppliedHexCode()) // hex shown, shade code hidden
+                .appliedHexCode(region.getAppliedHexCode()) // hex shown, manufacturer code hidden
                 .displayOrder(region.getDisplayOrder())
                 .manual(region.isManual())
                 .build();

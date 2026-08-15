@@ -260,15 +260,23 @@ public class ProjectController {
     }
 
     @Operation(
-            summary = "Delete a hand-drawn wall",
+            summary = "Delete a wall",
             description = """
-                    Removes a region the user created by hand (manual = true). AI-detected
-                    surfaces are protected and return 400 — only hand-drawn walls can be deleted.
+                    Removes a region from the project, whether it was drawn by hand or found
+                    by wall detection. Detection routinely produces surfaces nobody wants
+                    painted — an accent wall the customer is keeping, a ceiling, a strip of
+                    floor read as wall — and those used to be permanent, carried in the wall
+                    strip, the palette and every page of the colour board for the life of the
+                    room.
+
+                    The two are not equally cheap to undo: a hand-drawn wall can be redrawn
+                    for nothing, while a detected one only comes back by re-running detection,
+                    which spends a credit. The studio warns before removing a detected wall;
+                    the API does not refuse it.
                     """
     )
     @ApiResponses({
             @ApiResponse(responseCode = "204", description = "Region deleted"),
-            @ApiResponse(responseCode = "400", description = "Region is AI-detected, not hand-drawn"),
             @ApiResponse(responseCode = "404", description = "Project or region not found / not owned")
     })
     @DeleteMapping("/{id}/regions/{regionId}")

@@ -118,7 +118,9 @@ public class GuestController {
         return ResponseEntity.noContent().build();
     }
 
-    @Operation(summary = "Delete a hand-drawn wall (guest)")
+    @Operation(summary = "Delete a wall (guest)",
+            description = "Removes a region, hand-drawn or AI-detected. See the owner endpoint for why "
+                    + "detected walls are removable.")
     @DeleteMapping("/projects/{id}/regions/{regionId}")
     public ResponseEntity<Void> deleteRegion(
             @PathVariable String id,

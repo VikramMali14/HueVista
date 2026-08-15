@@ -440,6 +440,97 @@ class ProjectFlowIntegrationTest {
                 .andExpect(status().isBadRequest());
     }
 
+    /**
+     * A wall found by DETECTION can be removed, not only a hand-drawn one.
+     *
+     * This used to be refused with a 400. Detection routinely produces surfaces
+     * nobody wants painted — an accent wall the customer is keeping, a ceiling, a
+     * strip of floor read as wall — and while they could not be removed they stayed
+     * in the wall strip, the palette and every page of the colour board for the life
+     * of the room. The only escape was deleting the project and paying for another.
+     */
+    @Test
+    void a_detected_wall_can_be_deleted() throws Exception {
+        String projectId = createProject();
+        String maskKey = storageService.store(onePixelPng(0xFFFFFFFF), userId, "accent.png", "image/png");
+        Region detected = regionRepository.save(Region.builder()
+                .project(projectRepository.getReferenceById(projectId))
+                .label("Accent wall")
+                .category(RegionCategory.ACCENT_WALL)
+                .maskUrl(maskKey)
+                .maskData(maskKey)
+                .displayOrder(0)
+                .manual(false)
+                .build());
+
+        mockMvc.perform(delete("/api/projects/{id}/regions/{rid}", projectId, detected.getId())
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isNoContent());
+
+        assertThat(regionRepository.findById(detected.getId())).isEmpty();
+    }
+
+    /** And a hand-drawn one still can, which is what it could always do. */
+    @Test
+    void a_hand_drawn_wall_can_still_be_deleted() throws Exception {
+        String projectId = createProject();
+        Region drawn = regionRepository.save(Region.builder()
+                .project(projectRepository.getReferenceById(projectId))
+                .label("My wall")
+                .category(RegionCategory.MANUAL)
+                .displayOrder(0)
+                .manual(true)
+                .build());
+
+        mockMvc.perform(delete("/api/projects/{id}/regions/{rid}", projectId, drawn.getId())
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isNoContent());
+
+        assertThat(regionRepository.findById(drawn.getId())).isEmpty();
+    }
+
+    /**
+     * The LAST wall goes too. A room with no walls paints nothing, but it is not a
+     * dead end — drawing one by hand is free and unlimited — and refusing here would
+     * block the one deletion someone with a single badly-detected wall most needs.
+     */
+    @Test
+    void the_last_wall_can_be_deleted() throws Exception {
+        String projectId = createProject();
+        Region only = regionRepository.save(Region.builder()
+                .project(projectRepository.getReferenceById(projectId))
+                .label("Wall")
+                .category(RegionCategory.MAIN_WALL)
+                .displayOrder(0)
+                .manual(false)
+                .build());
+
+        mockMvc.perform(delete("/api/projects/{id}/regions/{rid}", projectId, only.getId())
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isNoContent());
+
+        assertThat(regionRepository.countByProjectId(projectId)).isZero();
+    }
+
+    @Test
+    void deleting_a_wall_of_someone_elses_project_is_404() throws Exception {
+        String projectId = createProject();
+        Region region = regionRepository.save(Region.builder()
+                .project(projectRepository.getReferenceById(projectId))
+                .label("Wall")
+                .category(RegionCategory.MAIN_WALL)
+                .displayOrder(0)
+                .manual(false)
+                .build());
+
+        // A region id that is real, under a project id that is not this caller's.
+        mockMvc.perform(delete("/api/projects/{id}/regions/{rid}", "not-my-project", region.getId())
+                        .header("Authorization", "Bearer " + userToken))
+                .andExpect(status().isNotFound());
+
+        assertThat(regionRepository.findById(region.getId())).isPresent();
+    }
+
     // ── helpers ──
 
     private String createProject() throws Exception {

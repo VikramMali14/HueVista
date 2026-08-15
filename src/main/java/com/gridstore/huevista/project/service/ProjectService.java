@@ -71,6 +71,7 @@ public class ProjectService {
     private final ProjectBoardService boardService;
     private final ProjectRenderService renderService;
     private final com.gridstore.huevista.paint.service.ShadeCodeSchemeService shadeCodeSchemeService;
+    private final com.gridstore.huevista.paint.repository.ShadeRepository shadeRepository;
     private final com.gridstore.huevista.notification.EmailSender emailSender;
     private final com.gridstore.huevista.account.service.BrandAccessService brandAccessService;
     private final com.gridstore.huevista.account.service.FeatureAccessService featureAccessService;
@@ -994,6 +995,10 @@ public class ProjectService {
         r.setShadeCodeScheme(shadeCodeSchemeService.forSharedProject(
                 project.getUser() != null ? project.getUser().getId() : null,
                 project.getAccessCode() != null ? project.getAccessCode().getId() : null));
+        // The one code a forwarded link may carry. fromPublic() dropped the
+        // manufacturer's; this puts back something that can be acted on at a counter
+        // without naming the company on a page anyone might open.
+        applyHvCodes(r, project);
         refreshMaskUrls(r);
         // Masks too: local-storage mode leaves them as relative, owner-authenticated
         // paths an anonymous share viewer can't fetch — point those at the public,
@@ -1008,6 +1013,51 @@ public class ProjectService {
             });
         }
         return r;
+    }
+
+    /**
+     * Fill each region's HV code from the shade it has applied.
+     *
+     * The region row stores a shade code and a hex, not a shade id, and a shade code is
+     * only unique WITHIN a company — so "L124" alone can match rows from two
+     * manufacturers. The applied hex settles it: the region was painted FROM a specific
+     * catalogue shade, so the one whose hex matches is that shade. With no hex match
+     * (an older row, or a colour edited by hand afterwards) the code is left null
+     * rather than guessed, because a wrong HV code sends someone to the counter for
+     * the wrong tin — worse than sending them with none.
+     *
+     * One query per distinct code, and a room has a handful of walls.
+     */
+    private void applyHvCodes(ProjectResponse response, Project project) {
+        if (response.getRegions() == null || response.getRegions().isEmpty()) return;
+        java.util.Map<Long, String> appliedByRegionId = project.getRegions() == null ? java.util.Map.of()
+                : project.getRegions().stream()
+                        .filter(rg -> rg.getAppliedShadeCode() != null && !rg.getAppliedShadeCode().isBlank())
+                        .collect(java.util.stream.Collectors.toMap(Region::getId,
+                                Region::getAppliedShadeCode, (a, b) -> a));
+        if (appliedByRegionId.isEmpty()) return;
+
+        java.util.Map<String, List<com.gridstore.huevista.paint.model.Shade>> byCode = appliedByRegionId.values().stream()
+                .distinct()
+                .collect(java.util.stream.Collectors.toMap(code -> code.toUpperCase(),
+                        shadeRepository::findByShadeCodeIgnoreCase, (a, b) -> a));
+
+        response.getRegions().forEach(region -> {
+            String code = appliedByRegionId.get(region.getId());
+            if (code == null) return;
+            List<com.gridstore.huevista.paint.model.Shade> hits = byCode.get(code.toUpperCase());
+            if (hits == null || hits.isEmpty()) return;
+            if (hits.size() == 1) {
+                region.setAppliedHvCode(hits.get(0).getHvCode());
+                return;
+            }
+            String hex = region.getAppliedHexCode();
+            if (hex == null) return;
+            hits.stream()
+                    .filter(s -> hex.equalsIgnoreCase(s.getHexCode()))
+                    .findFirst()
+                    .ifPresent(s -> region.setAppliedHvCode(s.getHvCode()));
+        });
     }
 
     /**
@@ -1157,25 +1207,51 @@ public class ProjectService {
         return replaceRegionMask(userId, projectId, regionId, request);
     }
 
-    /** Delete a hand-drawn wall. Only {@code manual} regions may be removed —
-     *  AI-detected surfaces are protected (400). Best-effort cleanup of the
-     *  stored mask; the row delete is what matters. */
+    /** Remove a wall from a project — hand-drawn or AI-detected. Best-effort cleanup
+     *  of the stored mask; the row delete is what matters. */
     @Transactional
     public void deleteRegion(String userId, String projectId, Long regionId) {
         findEditable(userId, projectId);
-        deleteManualRegion(projectId, regionId);
+        deleteRegionRow(projectId, regionId);
     }
 
-    private void deleteManualRegion(String projectId, Long regionId) {
+    /**
+     * Delete a wall, whichever way it got there.
+     *
+     * AI-detected surfaces used to be protected outright: only {@code manual} regions
+     * could go, and everything the detector produced was permanent. That was the wrong
+     * guard for the commonest thing people actually want, which is to take a wall OUT.
+     * Detection routinely finds surfaces nobody wants painted — an accent wall the
+     * customer has no intention of changing, a ceiling, a slab of floor read as wall —
+     * and with no way to remove them the room carried dead entries for the rest of its
+     * life: in the wall strip, in the palette, and on every page of the colour board.
+     * The only workaround was to delete the whole project and start again, which costs
+     * a fresh project credit for a problem the AI created.
+     *
+     * The asymmetry it was defending is real but belongs in the UI, not here. A manual
+     * wall can be re-drawn in seconds; an AI wall cannot come back without re-running
+     * detection, which costs a credit. That is a "are you sure" worth showing before
+     * the click, not a refusal after it — and refusing left people with no route at all
+     * rather than an expensive one.
+     *
+     * The last wall is deletable too. A room with no walls paints nothing, but it is
+     * not a dead end: drawing one by hand is free and unlimited, so the recovery is
+     * already there. Special-casing it would refuse the one deletion someone with a
+     * single, badly-detected wall most needs to make.
+     */
+    private void deleteRegionRow(String projectId, Long regionId) {
         Region region = regionRepository.findByIdAndProjectId(regionId, projectId)
                 .orElseThrow(() -> new ResourceNotFoundException("Region not found: " + regionId));
-        if (!region.isManual()) {
-            throw new IllegalArgumentException("Only hand-drawn walls can be deleted.");
-        }
         String maskUrl = region.getMaskUrl();
+        boolean manual = region.isManual();
         regionRepository.delete(region);
+        // Library rooms share their masks with the template every copy is made from, so
+        // this must not follow the key blindly — deleteOwnedBlob skips library keys, and
+        // without that, one customer tidying up their copy would strip the wall out of
+        // the shelf room for everybody.
         deleteOwnedBlob(maskUrl, "mask for region " + regionId);
-        log.info("Manual region deleted: project={} region={}", projectId, regionId);
+        log.info("{} region deleted: project={} region={}",
+                manual ? "Manual" : "Detected", projectId, regionId);
     }
 
     /** Shared body for persisting a hand-drawn mask. {@code storageScope} is the
@@ -1385,7 +1461,7 @@ public class ProjectService {
     @Transactional
     public void deleteGuestRegion(String accessCodeId, String projectId, Long regionId) {
         findGuestOwned(accessCodeId, projectId);
-        deleteManualRegion(projectId, regionId);
+        deleteRegionRow(projectId, regionId);
     }
 
     /**

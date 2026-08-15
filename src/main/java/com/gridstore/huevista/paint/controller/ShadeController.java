@@ -6,11 +6,13 @@ import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.paint.dto.AsianPaintsApiResponse;
 import com.gridstore.huevista.paint.dto.PagedShadesResponse;
 import com.gridstore.huevista.paint.dto.ShadeBrandSummaryResponse;
+import com.gridstore.huevista.paint.dto.ShadeDecodeResponse;
 import com.gridstore.huevista.paint.dto.ShadeResponse;
 import com.gridstore.huevista.paint.dto.ShadeSummaryResponse;
 import com.gridstore.huevista.paint.model.Shade;
 import com.gridstore.huevista.paint.repository.ShadeRepository;
 import com.gridstore.huevista.paint.service.ShadeAdminService;
+import com.gridstore.huevista.paint.service.ShadeDecodeService;
 import com.gridstore.huevista.paint.service.ShadeSeederService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -43,6 +45,7 @@ public class ShadeController {
     private final ShadeSeederService seederService;
     private final ShadeAdminService shadeAdminService;
     private final BrandAccessService brandAccessService;
+    private final ShadeDecodeService shadeDecodeService;
 
     @Operation(
             summary = "List shades with filters",
@@ -279,6 +282,39 @@ public class ShadeController {
                 .map(ShadeResponse::from)
                 .toList();
         return ResponseEntity.ok(matches);
+    }
+
+    @Operation(
+            summary = "Read a customer's code (shops only)",
+            description = """
+                    Turns a code off a customer's screen, share link or printed colour board back
+                    into the real colour: company, the manufacturer's own code, and the shade name.
+
+                    Accepts a HueVista code (`HV0348`) — which is what customers actually carry —
+                    or a manufacturer's own code. A manufacturer code that several companies
+                    happen to share comes back as `candidates` rather than a guess, because
+                    quoting a real shade from the wrong company looks exactly like a right answer.
+
+                    Pass `brand` to also get the nearest shade in a company you stock, flagged
+                    `exact` when that company carries the very colour and scored by CIELAB ΔE when
+                    it does not. That is the answer a counter needs when the customer designed
+                    their room against a company this shop doesn't sell.
+
+                    RETAILER and ADMIN accounts only. This is the whole reason an HV code is safe
+                    to print: it is a row number, so nobody without an account can read anything
+                    out of it, and a shop that wants to serve these customers signs up.
+                    """
+    )
+    @ApiResponse(responseCode = "200", description = "The decoded shade, or an empty match")
+    @ApiResponse(responseCode = "403", description = "Not a shop account")
+    @PreAuthorize("hasAnyRole('RETAILER','ADMIN')")
+    @GetMapping("/api/shades/decode")
+    public ResponseEntity<ShadeDecodeResponse> decodeCustomerCode(
+            @Parameter(description = "The code off the customer's board, e.g. HV0348") @RequestParam String code,
+            @Parameter(description = "Optional brand slug to match into, e.g. asian-paints")
+            @RequestParam(required = false) String brand
+    ) {
+        return ResponseEntity.ok(shadeDecodeService.decode(code, brand));
     }
 
     @Operation(
