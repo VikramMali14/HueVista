@@ -1207,25 +1207,51 @@ public class ProjectService {
         return replaceRegionMask(userId, projectId, regionId, request);
     }
 
-    /** Delete a hand-drawn wall. Only {@code manual} regions may be removed —
-     *  AI-detected surfaces are protected (400). Best-effort cleanup of the
-     *  stored mask; the row delete is what matters. */
+    /** Remove a wall from a project — hand-drawn or AI-detected. Best-effort cleanup
+     *  of the stored mask; the row delete is what matters. */
     @Transactional
     public void deleteRegion(String userId, String projectId, Long regionId) {
         findEditable(userId, projectId);
-        deleteManualRegion(projectId, regionId);
+        deleteRegionRow(projectId, regionId);
     }
 
-    private void deleteManualRegion(String projectId, Long regionId) {
+    /**
+     * Delete a wall, whichever way it got there.
+     *
+     * AI-detected surfaces used to be protected outright: only {@code manual} regions
+     * could go, and everything the detector produced was permanent. That was the wrong
+     * guard for the commonest thing people actually want, which is to take a wall OUT.
+     * Detection routinely finds surfaces nobody wants painted — an accent wall the
+     * customer has no intention of changing, a ceiling, a slab of floor read as wall —
+     * and with no way to remove them the room carried dead entries for the rest of its
+     * life: in the wall strip, in the palette, and on every page of the colour board.
+     * The only workaround was to delete the whole project and start again, which costs
+     * a fresh project credit for a problem the AI created.
+     *
+     * The asymmetry it was defending is real but belongs in the UI, not here. A manual
+     * wall can be re-drawn in seconds; an AI wall cannot come back without re-running
+     * detection, which costs a credit. That is a "are you sure" worth showing before
+     * the click, not a refusal after it — and refusing left people with no route at all
+     * rather than an expensive one.
+     *
+     * The last wall is deletable too. A room with no walls paints nothing, but it is
+     * not a dead end: drawing one by hand is free and unlimited, so the recovery is
+     * already there. Special-casing it would refuse the one deletion someone with a
+     * single, badly-detected wall most needs to make.
+     */
+    private void deleteRegionRow(String projectId, Long regionId) {
         Region region = regionRepository.findByIdAndProjectId(regionId, projectId)
                 .orElseThrow(() -> new ResourceNotFoundException("Region not found: " + regionId));
-        if (!region.isManual()) {
-            throw new IllegalArgumentException("Only hand-drawn walls can be deleted.");
-        }
         String maskUrl = region.getMaskUrl();
+        boolean manual = region.isManual();
         regionRepository.delete(region);
+        // Library rooms share their masks with the template every copy is made from, so
+        // this must not follow the key blindly — deleteOwnedBlob skips library keys, and
+        // without that, one customer tidying up their copy would strip the wall out of
+        // the shelf room for everybody.
         deleteOwnedBlob(maskUrl, "mask for region " + regionId);
-        log.info("Manual region deleted: project={} region={}", projectId, regionId);
+        log.info("{} region deleted: project={} region={}",
+                manual ? "Manual" : "Detected", projectId, regionId);
     }
 
     /** Shared body for persisting a hand-drawn mask. {@code storageScope} is the
@@ -1435,7 +1461,7 @@ public class ProjectService {
     @Transactional
     public void deleteGuestRegion(String accessCodeId, String projectId, Long regionId) {
         findGuestOwned(accessCodeId, projectId);
-        deleteManualRegion(projectId, regionId);
+        deleteRegionRow(projectId, regionId);
     }
 
     /**
