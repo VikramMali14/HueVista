@@ -45,11 +45,17 @@ public class PainterController {
         return ResponseEntity.ok(painterService.listMyRetailers(userDetails.getUsername()));
     }
 
-    @Operation(summary = "List painters for a retailer", description = "Returns active, profile-bearing painters linked to a retailer org. Used by the retailer to pick an assignee.")
+    @Operation(summary = "List painters for a retailer (owner or manager only)",
+            description = "Returns active, profile-bearing painters linked to a retailer org. "
+                    + "Used by the retailer to pick an assignee, and readable only by that "
+                    + "shop's owner or manager — the rows carry the painters' names, e-mail "
+                    + "addresses and phone numbers.")
     @GetMapping("/by-retailer/{retailerOrgId}")
     public ResponseEntity<List<PainterProfileResponse>> listForRetailer(
+            @AuthenticationPrincipal UserDetails userDetails,
             @PathVariable String retailerOrgId) {
-        return ResponseEntity.ok(painterService.listActivePaintersForRetailer(retailerOrgId));
+        return ResponseEntity.ok(painterService.listActivePaintersForRetailer(
+                userDetails.getUsername(), retailerOrgId));
     }
 
     @Operation(summary = "Remove a painter from a retailer (owner only)")

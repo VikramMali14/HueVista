@@ -78,7 +78,18 @@ public class PainterService {
 
     /** Active painters linked to a retailer — for assignment dropdowns. */
     @Transactional(readOnly = true)
-    public List<PainterProfileResponse> listActivePaintersForRetailer(String retailerOrgId) {
+    public List<PainterProfileResponse> listActivePaintersForRetailer(String requesterUserId, String retailerOrgId) {
+        // A shop's roster is the shop's, exactly as removing a painter from it is. This
+        // took no requester at all and so was guarded by nothing but the servlet's
+        // "somebody is signed in" rule: ANY account of ANY role could name any shop's org
+        // id and read back its painters' names, e-mail addresses and phone numbers. A
+        // walk-in customer is enough, and they are handed their shop's org id by the
+        // entitlement they redeemed a code for — so the one party who is neither the shop
+        // nor its painters could enumerate the roster of the shop that onboarded them.
+        //
+        // Guarded BEFORE the org is loaded, so a stranger cannot tell an org id that does
+        // not exist (404) from one that does and is not theirs (403).
+        requireOwnerOrManager(requesterUserId, retailerOrgId);
         Organization retailer = organizationRepository.findById(retailerOrgId)
                 .orElseThrow(() -> new ResourceNotFoundException("Retailer org not found: " + retailerOrgId));
         if (retailer.getType() != OrgType.RETAILER) {
