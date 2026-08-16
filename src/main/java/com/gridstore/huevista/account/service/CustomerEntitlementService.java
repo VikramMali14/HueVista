@@ -208,40 +208,48 @@ public class CustomerEntitlementService {
     }
 
     /**
-     * Claim one project slot for a NEW project: expiry + allowance, taken ATOMICALLY.
+     * Try to claim one project slot for a NEW project: expiry + allowance, taken
+     * ATOMICALLY. Returns whether the shop route funded it.
      *
-     * This replaces the old check-then-increment pair. Those were two separate calls, so
-     * two parallel "create project" requests could both pass the check and both create a
-     * project against a single remaining slot. The conditional UPDATE makes exactly one
-     * of them win. Non-customers are unaffected (their limits live elsewhere).
+     * The conditional UPDATE replaces an older check-then-increment pair. Those were two
+     * separate calls, so two parallel "create project" requests could both pass the check
+     * and both create a project against a single remaining slot; now exactly one wins.
+     * Non-customers pass straight through as funded — their limits live elsewhere and
+     * nothing here applies to them.
      *
-     * The slot is monotonic: deleting a project does not refund it.
+     * <p>It REPORTS rather than throws, which matters for one account in particular: a
+     * customer who bought projects on their own and later redeemed a shop's code holds
+     * both. Throwing from here made the shop's ten-day window the only thing that
+     * counted — when it closed, the rooms and credits they had paid for themselves went
+     * with it, because the caller never got as far as asking about them. The refusal a
+     * shop-onboarded customer should hear is still {@link #projectRefusal}, but only once
+     * nothing else can pay either.
+     *
+     * <p>The slot is monotonic: deleting a project does not refund it.
      */
     @Transactional
-    public void claimProjectSlot(String userId) {
-        if (!isCustomer(userId)) return;
-        CustomerEntitlement ent = requireEntitlement(userId);
-        if (ent.isExpired()) {
-            throw new AccessExpiredException(
-                    "Your access has ended. Ask your retailer for a new access code.");
-        }
-        if (entitlementRepository.claimProjectSlot(userId, LocalDateTime.now()) == 0) {
-            throw outOfProjects(ent);
-        }
+    public boolean tryClaimProjectSlot(String userId) {
+        if (!isCustomer(userId)) return true;
+        return entitlementRepository.claimProjectSlot(userId, LocalDateTime.now()) == 1;
     }
 
-    /** Read-only allowance check for the UI — the authoritative claim is {@link #claimProjectSlot}. */
+    /**
+     * Why the shop route could not fund a project — for a caller that has already found
+     * nothing else can either.
+     *
+     * The two cases read very differently to the person holding the code, so they stay
+     * two exceptions: a window that closed is 403 "your access has ended" (a new code
+     * fixes it), while an allowance used up is the 402 ASK_RETAILER refusal that puts a
+     * "grant one more" request in front of the counter.
+     */
     @Transactional(readOnly = true)
-    public void assertCanCreateProject(String userId) {
-        if (!isCustomer(userId)) return;
+    public RuntimeException projectRefusal(String userId) {
         CustomerEntitlement ent = requireEntitlement(userId);
         if (ent.isExpired()) {
-            throw new AccessExpiredException(
+            return new AccessExpiredException(
                     "Your access has ended. Ask your retailer for a new access code.");
         }
-        if (ent.getProjectsCreated() >= ent.getProjectAllowance()) {
-            throw outOfProjects(ent);
-        }
+        return outOfProjects(ent);
     }
 
     /**
