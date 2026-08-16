@@ -480,9 +480,15 @@ public class FreeProjectLibraryService {
      * upload plus a segmentation run. The project is born SEGMENTED because its
      * walls are already there — there is nothing for the pipeline to do.
      *
-     * Free by construction: no entitlement is claimed, no plan credit reserved and
-     * no points spent, because nothing expensive happened. That is what makes it
+     * Free to OPEN by construction: no entitlement is claimed, no plan credit reserved
+     * and no points spent, because nothing expensive happened. That is what makes it
      * safe to offer to every signed-in visitor and not only to an admin.
+     *
+     * <p>Free to open is not free of everything, and the difference is where the real
+     * money is. The colour board still comes out of the account's monthly download
+     * allowance, and the AI image at the end is bought with an AI credit — those are the
+     * two calls that cost something to serve. What the shelf gives away is the photograph
+     * and the wall detection.
      */
     private StartedProjectResponse startCopy(String userId, FreeProjectTemplate template) {
         if (!template.isPublished()) {
@@ -511,12 +517,21 @@ public class FreeProjectLibraryService {
                 .roomType(template.getRoomLabel())
                 .status(ProjectStatus.SEGMENTED)
                 .cleanedImageStorageKey(template.getCleanedImageStorageKey())
-                // What makes the room stay open. A copy carries no access window, no plan
+                // What makes the room OPEN. A copy carries no access window, no plan
                 // credit and no shop code, because none of those were spent on it — and
                 // under the ordinary rules that combination reads as "your subscription
                 // ended", so the free room the customer was just given would have opened
                 // view-only. This id is what ProjectAccessService reads instead.
+                //
+                // It buys nothing beyond that. From here the room runs the ordinary job:
+                // paint it, take the colour board, close it, and buy the AI image with an
+                // AI credit.
                 .libraryTemplateId(template.getId())
+                // No included AI image, for the same reason a shop-granted room has none —
+                // nobody paid for this room, and the picture is the one genuinely
+                // expensive thing on it. It is bought from the account's AI wallet, which
+                // is the pocket the customer tops up themselves and can spend on any room.
+                .rendersAllowed(0)
                 .build());
 
         List<Region> copies = new ArrayList<>();

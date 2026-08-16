@@ -88,28 +88,12 @@ public class ProjectBoardService {
     public ColourBoardResponse recordBoard(Project project, RecordColourBoardRequest request,
                                            java.util.function.Supplier<PdfAllowanceResponse> billed,
                                            boolean mayClose) {
-        // A room off the free library shelf is exempt from both endings, and the exemption
-        // is applied once here rather than at each caller. The per-project board cap and
-        // the closure it triggers are the same mechanism as the paid window — a bounded
-        // amount of work, after which reopening costs money — and there is no payment on a
-        // free room for that bound to have come out of. Capping it at one board would
-        // leave the room open and permanently unable to hand anything else over, which is
-        // the lock again wearing a different error message.
-        //
-        // What still bounds it: every board goes through `billed` below, so the account's
-        // own monthly download allowance is spent exactly as it is on any other room. The
-        // boards are free of THIS project's cap, not free of charge.
-        boolean fromLibrary = project.isFromLibrary();
-        if (fromLibrary) {
-            mayClose = false;
-        }
-        // A library room is never closed as far as any rule here is concerned, and the
-        // stored timestamp is not consulted — matching ProjectAccessService, which
-        // answers FULL for one whatever closedAt says. Without this the two would
-        // disagree on a row copied before the rule existed: access would let the board
-        // through and this would refuse it, which is a room that is open and cannot
-        // hand anything over.
-        if (!fromLibrary && project.isClosed()) {
+        // A room off the free library shelf runs this exactly like any other project: the
+        // same per-project cap, the same closure when the last board goes, the same
+        // monthly download allowance spent through `billed` below. Only the way in was
+        // free — the pixels were already stored and no AI ran — and that is a fact about
+        // where the photo came from, not about what a finished job is.
+        if (project.isClosed()) {
             throw new IllegalStateException(
                     "This project is closed. Reopen it to make another colour board.");
         }

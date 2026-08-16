@@ -376,10 +376,10 @@ class ProjectAccessServiceTest {
 
     // ─── Rooms off the free library shelf ────────────────────────────────────
     //
-    // Every rule above is answering "who paid for this work?". For a library room the
-    // answer is nobody — the pixels were already stored, no AI ran, nothing was spent —
-    // so none of those rails may close over it. These are the cases that used to charge
-    // a customer to carry on painting a room we gave away.
+    // The rails above are all answering "who paid for this work?". For a library room the
+    // answer is nobody — the pixels were already stored, no AI ran, nothing was spent — so
+    // none of those PAYMENT rails may close over it. Closure is a different question, and
+    // a library room answers it like every other project: the job it runs is the same job.
 
     private static Project libraryRoom() {
         return Project.builder().id("p").libraryTemplateId("tmpl-1").build();
@@ -400,37 +400,59 @@ class ProjectAccessServiceTest {
         assertThat(result.reason()).isNull();
     }
 
-    /** A library room cannot be closed at all, so its ₹99 reopen can never be quoted. */
+    /**
+     * Closing is how a job ENDS, and ending it is what leads to the render step. Refusing
+     * it on a library room stranded the room one move short of its AI image — with a
+     * button the studio offered and the server declined.
+     */
     @Test
-    void aLibraryRoomRefusesToClose() {
+    void aLibraryRoomClosesLikeAnyOtherProject() {
         Project room = libraryRoom();
 
-        assertThat(access.close(room)).isFalse();
+        assertThat(access.close(room)).isTrue();
+        assertThat(room.isClosed()).isTrue();
+    }
+
+    /**
+     * And a closed one is view-only, with the ₹99 reopen quoted — the library exemption
+     * sits BELOW closure, so it cannot answer for a job that has already finished.
+     */
+    @Test
+    void aClosedLibraryRoomIsViewOnlyWithAReopenQuoted() {
+        Project room = libraryRoom();
+        access.close(room);
+
+        var result = access.evaluate(UserRole.CUSTOMER, room, false, false);
+
+        assertThat(result.editable()).isFalse();
+        assertThat(result.reason()).contains("closed");
+        assertThat(result.reopenPricePoints()).isEqualTo(REOPEN_CLOSED_POINTS);
+    }
+
+    /** Reopening one gives its colour boards back, the same as any other project. */
+    @Test
+    void aClosedLibraryRoomCanBeReopened() {
+        subscribed(false);
+        Project room = libraryRoom();
+        room.setColourBoardsUsed(1);
+        access.close(room);
+
+        // The gate lets the purchase through: it is view-only, and no shop code paid for it.
+        access.assertNeedsReopen("cust-1", UserRole.CUSTOMER, room);
+        access.reopenClosed(room);
+
         assertThat(room.isClosed()).isFalse();
+        assertThat(room.getColourBoardsUsed()).isZero();
         assertThat(access.evaluate(UserRole.CUSTOMER, room, false, false).editable()).isTrue();
     }
 
     /**
-     * Rooms copied before this rule existed may still carry a closedAt on disk. The
-     * migration clears the ones it can see, but the check has to outrank the stored
-     * timestamp too, or those accounts stay locked out of the fix that was made for them.
+     * An UNFINISHED library room is still never sold a reopen. It is fully open on rail 3
+     * whatever the account's plan is doing, so there is nothing to unlock — which is the
+     * half of the old rule that was right and stays.
      */
     @Test
-    void aLibraryRoomThatWasClosedBeforeThisRuleIsOpenAgain() {
-        Project room = libraryRoom();
-        room.setClosedAt(LocalDateTime.now().minusDays(3));
-
-        assertThat(access.evaluate(UserRole.CUSTOMER, room, false, false).editable()).isTrue();
-    }
-
-    /**
-     * The reopen gate refuses anyone who can already work on the project, so a library
-     * room can never be sold one — neither the ₹9 window nor the ₹99 closed reopen. This
-     * is what makes "never charged again" true at the payment endpoint and not only on
-     * the banner.
-     */
-    @Test
-    void aLibraryRoomCannotBeSoldAReopen() {
+    void anOpenLibraryRoomCannotBeSoldAReopen() {
         subscribed(false);
         assertThatThrownBy(() ->
                 access.assertNeedsReopen("cust-1", UserRole.CUSTOMER, libraryRoom()))
