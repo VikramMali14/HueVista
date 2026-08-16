@@ -57,7 +57,8 @@ It needs **`s3:PutBucketCors`** on the bucket. Without that permission startup s
 succeeds and the log carries the `aws s3api put-bucket-cors …` command to run by
 hand — check for it after the first deploy to a new bucket. Until the rule exists,
 images are served through the frontend's `/api/media` fallback, which works but puts
-image bytes through the frontend server. See `docs/IMAGE_UPLOAD_FLOW.md` §12.
+image bytes through the frontend server. That fallback needs `S3_BUCKET_NAME` set on
+the **frontend** (same value as here) to arm. See `docs/IMAGE_UPLOAD_FLOW.md` §12.
 
 ## 3. SWAGGER_ENABLED=false
 

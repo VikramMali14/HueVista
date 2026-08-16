@@ -1056,6 +1056,11 @@ keeps the product working without the bucket rule — but it routes image bytes 
 the frontend server, which is exactly the cost presigned URLs exist to avoid. The bucket
 rule is the real fix; the proxy is the safety net.
 
+The fallback is armed by setting **`S3_BUCKET_NAME` on the frontend** to the same value
+this application uses. That route fetches from exactly one host, built from that
+variable — never from the incoming request — so with it unset the route answers `503`
+rather than accepting a bucket the caller names.
+
 ---
 
 ## 13. Security Decisions Explained
