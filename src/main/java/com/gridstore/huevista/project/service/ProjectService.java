@@ -42,6 +42,7 @@ import java.net.URI;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Slf4j
@@ -94,14 +95,7 @@ public class ProjectService {
         // No-op for anyone who is not a retailer on the free tier.
         freeTierService.ensureCurrentCycle(userId);
 
-        // Access-code customers: link the project to the code they redeemed so the
-        // issuing retailer keeps visibility of the customer's work (the counter reads
-        // the real shades from it), mirroring the anonymous-guest link. The code link
-        // is never cleared once set.
-        CustomerAccessCode linkedCode =
-                user.getRole() == com.gridstore.huevista.auth.model.UserRole.CUSTOMER
-                        ? accessCodeRepository.findFirstByUsedByUserIdOrderByCreatedAtDesc(userId).orElse(null)
-                        : null;
+        CustomerAccessCode redeemedCode = redeemedCodeOf(user);
 
         // Which of the three ways this project is paid for?
         //
@@ -114,6 +108,7 @@ public class ProjectService {
         Payment payment = claimPayment(user);
         boolean subscribed = payment.subscribed();
         com.gridstore.huevista.billing.model.ProjectCredit credit = payment.credit();
+        CustomerAccessCode linkedCode = shopFundedCode(redeemedCode, payment);
 
         try {
             // Retailer funnel gate: email+mobile verified, and the free trial includes
@@ -137,7 +132,7 @@ public class ProjectService {
                     .notes(blankToNull(request.getNotes()))
                     .status(ProjectStatus.CREATED)
                     .accessCode(linkedCode)
-                    .rendersAllowed(includedRenders(payment.shopEntitled() || linkedCode != null))
+                    .rendersAllowed(includedRenders(payment.shopEntitled()))
                     .build();
 
             // A bought project carries its own validity. Opened paused when the buyer is
@@ -184,6 +179,10 @@ public class ProjectService {
      * monthly quota, so that its customer can try colours and walk out with a colour board.
      * The photorealistic image is the expensive part and nobody has paid for it — so it is
      * not included, and the customer buys it with AI credits when they want it.
+     *
+     * <p>The question is who PAID, which is not the same as whether the account holds a
+     * shop code. A customer whose code has lapsed and who then buys a room out of their own
+     * pocket has bought their own room, and gets the image that comes with one.
      *
      * <p>Handing one out anyway is what made the shop's quota pay for a model call it never
      * agreed to, on every code it issued and every project it granted.
@@ -233,12 +232,36 @@ public class ProjectService {
      * shared room — so that "one project" means the same thing and costs the same thing
      * however the room got here.
      */
+    /** The most recent access code this account redeemed, if it is a customer at all. */
+    private CustomerAccessCode redeemedCodeOf(User user) {
+        return user.getRole() == com.gridstore.huevista.auth.model.UserRole.CUSTOMER
+                ? accessCodeRepository.findFirstByUsedByUserIdOrderByCreatedAtDesc(user.getId()).orElse(null)
+                : null;
+    }
+
+    /**
+     * The code a new project should be LINKED to — the shop's, and only when the shop is
+     * the one paying for this room.
+     *
+     * The link is what gives the issuing retailer visibility of their customer's work
+     * (the counter reads the real shades off it), mirroring the anonymous-guest link, and
+     * it is never cleared once set. Which is exactly why it must not be attached to a room
+     * the shop is not funding. Holding a code was the whole test before, so a customer
+     * whose code had run out or expired and who then bought a room WITH THEIR OWN MONEY
+     * got that room stamped with the shop's code — which spent one of the shop's held
+     * image credits on work it never agreed to, took away the AI image the purchase
+     * includes, and filed the room behind an access window that had already closed, so
+     * the buyer was locked out of it the moment they paid.
+     */
+    private static CustomerAccessCode shopFundedCode(CustomerAccessCode redeemed, Payment payment) {
+        return payment.shopEntitled() ? redeemed : null;
+    }
+
     private Payment claimPayment(User user) {
         String userId = user.getId();
         boolean shopEntitled = entitlementService.hasEntitlement(userId);
         boolean subscribed = pricingService.isSubscribed(userId);
-        if (shopEntitled) {
-            entitlementService.claimProjectSlot(userId);
+        if (shopEntitled && entitlementService.tryClaimProjectSlot(userId)) {
             return new Payment(true, subscribed, null);
         }
         if (subscribed) {
@@ -250,8 +273,21 @@ public class ProjectService {
             billingService.reserveProjectUsage(userId);
             return new Payment(false, true, null);
         }
-        return new Payment(false, false,
-                projectCreditLedger.claim(userId).orElseThrow(() -> noWayToPayFor(user)));
+        // Nothing left on the shop's code — used up, or its window has closed — but a
+        // project the customer bought with their OWN money is still theirs to spend. The
+        // shop route used to refuse outright here, which quietly made a shop's ten-day
+        // window the expiry date of work the customer had paid for before ever walking
+        // into that shop. The two ways an account holds projects are meant to be
+        // independent; only one of them belongs to the shop.
+        Optional<com.gridstore.huevista.billing.model.ProjectCredit> bought =
+                projectCreditLedger.claim(userId);
+        if (bought.isPresent()) {
+            return new Payment(false, subscribed, bought.get());
+        }
+        // Nothing anywhere. A shop-onboarded customer hears from their shop — a closed
+        // window and a used-up allowance being two different conversations — and everyone
+        // else is offered the purchase.
+        throw shopEntitled ? entitlementService.projectRefusal(userId) : noWayToPayFor(user);
     }
 
     /**
@@ -292,13 +328,11 @@ public class ProjectService {
 
         freeTierService.ensureCurrentCycle(userId);
 
-        CustomerAccessCode linkedCode =
-                user.getRole() == com.gridstore.huevista.auth.model.UserRole.CUSTOMER
-                        ? accessCodeRepository.findFirstByUsedByUserIdOrderByCreatedAtDesc(userId).orElse(null)
-                        : null;
+        CustomerAccessCode redeemedCode = redeemedCodeOf(user);
 
         Payment payment = claimPayment(user);
         com.gridstore.huevista.billing.model.ProjectCredit credit = payment.credit();
+        CustomerAccessCode linkedCode = shopFundedCode(redeemedCode, payment);
 
         try {
             projectAccessPolicy.assertCanCreateProject(user, credit != null);
@@ -326,7 +360,7 @@ public class ProjectService {
                     .cleanedImageStorageKey(
                             copyBlob(source.getCleanedImageStorageKey(), userId, "cleaned", "image/jpeg"))
                     .accessCode(linkedCode)
-                    .rendersAllowed(includedRenders(payment.shopEntitled() || linkedCode != null))
+                    .rendersAllowed(includedRenders(payment.shopEntitled()))
                     .build();
 
             if (credit != null) {
@@ -504,7 +538,13 @@ public class ProjectService {
      */
     @Transactional
     public List<ProjectSummaryResponse> getUserProjects(String userId, int page, int size) {
-        entitlementService.assertAccessValid(userId);
+        // Deliberately NOT gated on the customer's access window. The list is the account's
+        // own rooms, and it mixes two kinds: ones a shop's code paid for (locked once that
+        // code's window closes — findOwned refuses to open them) and ones the account
+        // bought itself (governed by their own validity, nothing to do with any shop).
+        // Refusing the whole list on the shop's expiry turned the dashboard into a 403
+        // panel sitting under a banner correctly inviting them to redeem a new code, and
+        // hid work the shop never paid for in the first place.
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
         boolean subscribed = pricingService.isSubscribed(userId);
@@ -1760,11 +1800,28 @@ public class ProjectService {
         return r;
     }
 
+    /**
+     * A project the caller owns, refusing it when the SHOP's access window that paid for
+     * it has closed.
+     *
+     * The lock is per project, not per account, and the distinction is the whole point:
+     * a room linked to an access code was bought by a shop for a fixed number of days,
+     * and that deadline is the deal. A room with no code behind it was paid for by the
+     * account itself, out of its own pocket, and carries its own validity window
+     * (ProjectAccessService) — so gating it on a shop's ten days made a customer's own
+     * purchase expire on a schedule set by a shop they may have visited once.
+     *
+     * The project is loaded FIRST so the question can be asked about the right thing;
+     * ownership is what the query enforces, and it does not leak anything to ask about a
+     * row the caller already owns.
+     */
     private Project findOwned(String userId, String projectId) {
-        // Full lock on expiry: a customer past their access window cannot view OR manage projects.
-        entitlementService.assertAccessValid(userId);
-        return projectRepository.findByIdAndUserId(projectId, userId)
+        Project project = projectRepository.findByIdAndUserId(projectId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+        if (project.getAccessCode() != null) {
+            entitlementService.assertAccessValid(userId);
+        }
+        return project;
     }
 
     @Transactional(readOnly = true)
