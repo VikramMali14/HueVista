@@ -426,6 +426,39 @@ class PainterFlowIntegrationTest {
                 .andExpect(jsonPath("$.status").value(PaintJobStatus.CANCELLED.name()));
     }
 
+    /**
+     * A shop's painter roster is the shop's.
+     *
+     * The endpoint used to take no requester at all, so the only thing standing in front
+     * of it was the servlet rule that somebody be signed in. Any account of any role could
+     * name a shop's org id and read back its painters' names, e-mail addresses and phone
+     * numbers — and a customer is handed that org id by the entitlement they get for
+     * redeeming the shop's code, so the one party who is neither the shop nor its painters
+     * could enumerate the roster of the shop that onboarded them.
+     */
+    @Test
+    void a_shops_painter_roster_is_readable_only_by_that_shop() throws Exception {
+        linkPainterToRetailer();
+
+        // The shop itself: still works, and the PII is the point of the page.
+        mockMvc.perform(get("/api/painters/by-retailer/{retailerOrgId}", retailerOrgId)
+                        .header("Authorization", "Bearer " + retailerOwnerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].email").value("painter@example.com"));
+
+        // A customer of this very shop — signed in, and still nobody's business.
+        mockMvc.perform(get("/api/painters/by-retailer/{retailerOrgId}", retailerOrgId)
+                        .header("Authorization", "Bearer " + loginAs("customer@example.com")))
+                .andExpect(status().isForbidden());
+
+        // The painter on the roster cannot read the roster either: knowing who else the
+        // shop works with is not part of being one of them.
+        mockMvc.perform(get("/api/painters/by-retailer/{retailerOrgId}", retailerOrgId)
+                        .header("Authorization", "Bearer " + painterToken))
+                .andExpect(status().isForbidden());
+    }
+
     // ── helpers ──
 
     private String generateInvitationCode() throws Exception {
