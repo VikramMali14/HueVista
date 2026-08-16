@@ -97,6 +97,10 @@ class ApiContractTest {
                 // Shared view only: how the issuing shop presents a colour. The share
                 // viewer has no session, so it travels with the project.
                 "shadeCodeScheme",
+                // Copied off the free library shelf. Changes what the studio may OFFER,
+                // not only how it reads: such a room has no board cap, never closes and
+                // never lapses, so the close button and the countdown are withheld.
+                "fromLibrary",
                 // Closing: when the job finished, how many colour boards it has handed
                 // over of the ones it gets, and what is left of its AI render allowance.
                 "closedAt", "boardsUsed", "boardsAllowed",
@@ -117,6 +121,9 @@ class ApiContractTest {
                 // Dashboard filtering: OWN vs CUSTOMER rooms, and who each one belongs to.
                 "source", "customerName", "accessCode", "accessCodeId",
                 "readOnly", "accessExpiresAt",
+                // A library room never lapses and never closes, so neither the expiry
+                // line nor the "done" badge belongs on its card.
+                "fromLibrary",
                 // A closed room is finished, not merely locked — the dashboard badges the
                 // two differently.
                 "closedAt");

@@ -511,6 +511,12 @@ public class FreeProjectLibraryService {
                 .roomType(template.getRoomLabel())
                 .status(ProjectStatus.SEGMENTED)
                 .cleanedImageStorageKey(template.getCleanedImageStorageKey())
+                // What makes the room stay open. A copy carries no access window, no plan
+                // credit and no shop code, because none of those were spent on it — and
+                // under the ordinary rules that combination reads as "your subscription
+                // ended", so the free room the customer was just given would have opened
+                // view-only. This id is what ProjectAccessService reads instead.
+                .libraryTemplateId(template.getId())
                 .build());
 
         List<Region> copies = new ArrayList<>();

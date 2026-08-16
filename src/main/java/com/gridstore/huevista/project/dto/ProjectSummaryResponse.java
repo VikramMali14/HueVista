@@ -41,6 +41,10 @@ public class ProjectSummaryResponse {
     /** Look-but-don't-touch (subscription lapsed, or the project's own validity ran out). */
     private boolean readOnly;
 
+    /** Copied off the free library shelf — so it never lapses, never closes, and the
+     *  dashboard has no expiry or "done" badge to put on it. */
+    private boolean fromLibrary;
+
     // When the job finished, so the dashboard can badge a closed room as done rather
     // than as merely view-only — the two look the same otherwise and mean opposite
     // things: one is finished, the other ran out.
@@ -64,6 +68,7 @@ public class ProjectSummaryResponse {
                 .createdAt(project.getCreatedAt())
                 .updatedAt(project.getUpdatedAt())
                 .source(SOURCE_OWN)
+                .fromLibrary(project.isFromLibrary())
                 .accessExpiresAt(project.getAccessExpiresAt())
                 .closedAt(project.getClosedAt())
                 .build();

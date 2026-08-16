@@ -340,4 +340,77 @@ class ProjectAccessServiceTest {
         assertThat(project.getRendersUsed()).isEqualTo(1);
         assertThat(project.hasRenderLeft()).isFalse();
     }
+
+    // ─── Rooms off the free library shelf ────────────────────────────────────
+    //
+    // Every rule above is answering "who paid for this work?". For a library room the
+    // answer is nobody — the pixels were already stored, no AI ran, nothing was spent —
+    // so none of those rails may close over it. These are the cases that used to charge
+    // a customer to carry on painting a room we gave away.
+
+    private static Project libraryRoom() {
+        return Project.builder().id("p").libraryTemplateId("tmpl-1").build();
+    }
+
+    /**
+     * The one that bit hardest. A library copy carries no window, no plan credit and no
+     * shop code, because none was spent on it — and that exact combination used to read
+     * as "your subscription has ended". The free room opened view-only from the first
+     * minute for anybody without a plan, which is every customer the shelf is for.
+     */
+    @Test
+    void aLibraryRoomIsFullyOpenWithoutASubscriptionWindowOrCode() {
+        subscribed(false);
+        var result = access.accessFor("cust-1", UserRole.CUSTOMER, libraryRoom());
+
+        assertThat(result.editable()).isTrue();
+        assertThat(result.reason()).isNull();
+    }
+
+    /** A library room cannot be closed at all, so its ₹99 reopen can never be quoted. */
+    @Test
+    void aLibraryRoomRefusesToClose() {
+        Project room = libraryRoom();
+
+        assertThat(access.close(room)).isFalse();
+        assertThat(room.isClosed()).isFalse();
+        assertThat(access.evaluate(UserRole.CUSTOMER, room, false).editable()).isTrue();
+    }
+
+    /**
+     * Rooms copied before this rule existed may still carry a closedAt on disk. The
+     * migration clears the ones it can see, but the check has to outrank the stored
+     * timestamp too, or those accounts stay locked out of the fix that was made for them.
+     */
+    @Test
+    void aLibraryRoomThatWasClosedBeforeThisRuleIsOpenAgain() {
+        Project room = libraryRoom();
+        room.setClosedAt(LocalDateTime.now().minusDays(3));
+
+        assertThat(access.evaluate(UserRole.CUSTOMER, room, false).editable()).isTrue();
+    }
+
+    /**
+     * The reopen gate refuses anyone who can already work on the project, so a library
+     * room can never be sold one — neither the ₹9 window nor the ₹99 closed reopen. This
+     * is what makes "never charged again" true at the payment endpoint and not only on
+     * the banner.
+     */
+    @Test
+    void aLibraryRoomCannotBeSoldAReopen() {
+        subscribed(false);
+        assertThatThrownBy(() ->
+                access.assertNeedsReopen("cust-1", UserRole.CUSTOMER, libraryRoom()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("already open");
+    }
+
+    /** A room the account uploaded itself keeps every rule it had. */
+    @Test
+    void anOrdinaryRoomIsUnaffectedByTheLibraryRule() {
+        subscribed(false);
+        Project uploaded = Project.builder().id("p").build();
+
+        assertThat(access.accessFor("cust-1", UserRole.CUSTOMER, uploaded).editable()).isFalse();
+    }
 }
