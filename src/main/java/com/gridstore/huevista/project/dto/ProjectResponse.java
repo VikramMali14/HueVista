@@ -92,6 +92,17 @@ public class ProjectResponse {
     // button that names a price the payment then refuses is worse than no price at all.
     private int renderPricePaise;
 
+    /**
+     * True when this room was copied off the free library shelf.
+     *
+     * The studio uses it to drop the whole closing apparatus — the "Close project" button,
+     * the boards-left countdown, the validity banner — none of which is true here: a
+     * library room has no board cap, never closes and can never lapse. Offering a button
+     * whose only effect would be to lock a free room, on a server that now refuses to,
+     * is worse than not offering it.
+     */
+    private boolean fromLibrary;
+
     // ─── Access ──────────────────────────────────────────────────────────────
     // True when the viewer may look but not touch: the colours last applied are all
     // here and render normally, but every write is refused. The studio uses this to
@@ -151,6 +162,7 @@ public class ProjectResponse {
                 .hasShareLink(project.getShareToken() != null)
                 .shareExpiresAt(project.getShareExpiresAt())
                 .sentToShopAt(project.getSentToShopAt())
+                .fromLibrary(project.isFromLibrary())
                 .closedAt(project.getClosedAt())
                 .boardsUsed(project.getColourBoardsUsed())
                 .boardsAllowed(boardsAllowed)

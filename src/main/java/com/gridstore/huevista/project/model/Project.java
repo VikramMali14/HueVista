@@ -205,6 +205,24 @@ public class Project {
     /** When this project was paid for outright, and what it cost. Null when it wasn't. */
     private LocalDateTime purchasedAt;
 
+    /**
+     * The library template this room was copied from, when it came off the shelf.
+     *
+     * Null for every ordinary project — a photo somebody uploaded — and that null is what
+     * keeps the paid rails exactly as they were for those.
+     *
+     * <p>Set, it is the one fact the access rules need: a library room cost nobody
+     * anything to open, so it is never view-only, never closes, and can never be sold a
+     * reopen. See {@link com.gridstore.huevista.project.service.ProjectAccessService}.
+     *
+     * <p>The id rather than a boolean because it also says WHICH room on the shelf this
+     * came from. It carries no foreign key on purpose: a template can be taken off the
+     * shelf while copies of it are open, and those rooms have to survive it — the copy
+     * owns its own rows and merely names where it came from.
+     */
+    @Column(length = 255)
+    private String libraryTemplateId;
+
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default
     private int purchasePoints = 0;
@@ -257,6 +275,17 @@ public class Project {
     /** Has the customer finished with this project? */
     public boolean isClosed() {
         return closedAt != null;
+    }
+
+    /**
+     * Did this room come off the free library shelf?
+     *
+     * The single question every "never lock it" rule is asked through, so that the answer
+     * lives in one place rather than as a null check scattered across the access service,
+     * the board service and three DTOs.
+     */
+    public boolean isFromLibrary() {
+        return libraryTemplateId != null && !libraryTemplateId.isBlank();
     }
 
     /** Is there an AI render left to spend on this project? */

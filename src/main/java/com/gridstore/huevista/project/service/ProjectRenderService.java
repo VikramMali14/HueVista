@@ -76,6 +76,7 @@ public class ProjectRenderService {
     private final ProjectRenderWorker worker;
     private final com.gridstore.huevista.billing.service.AiCreditService aiCreditService;
     private final com.gridstore.huevista.billing.service.PricingService pricingService;
+    private final com.gridstore.huevista.paint.service.ShadeDecodeService shadeDecodeService;
 
     /**
      * Everything the model call needs, read out of the database in one go and carried to
@@ -376,6 +377,41 @@ public class ProjectRenderService {
     public List<ProjectRenderResponse> list(String projectId) {
         return renderRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
                 .map(r -> ProjectRenderResponse.from(r, urlFor(r)))
+                .toList();
+    }
+
+    /**
+     * Every finished image this account owns, newest first, across all of its rooms.
+     *
+     * The per-project {@link #list} answers the studio, which already has one project
+     * open. This answers the customer who made an image last week and wants to find it
+     * again — until now the only route back was remembering which room it was on and
+     * reopening that room's render page, so an image somebody paid ₹99 for was, in
+     * practice, wherever their downloads folder had put it.
+     *
+     * <p>One HV-code lookup for the whole page rather than one per swatch, the same bulk
+     * call {@link ProjectBoardService#combos} makes: the codes are needed so a sheet
+     * printed from here carries the shop's own customer-facing numbering, and asking the
+     * catalogue once for thirty images beats asking it ninety times.
+     */
+    @Transactional(readOnly = true)
+    public List<com.gridstore.huevista.project.dto.MyRenderResponse> listForOwner(String userId) {
+        List<ProjectRender> renders =
+                renderRepository.findByOwnerAndStatus(userId, ProjectRender.Status.READY);
+        if (renders.isEmpty()) {
+            return List.of();
+        }
+        java.util.Map<String, String> hvByCode = shadeDecodeService.hvCodesByShadeCode(
+                renders.stream()
+                        .map(ProjectRender::getPage)
+                        .filter(java.util.Objects::nonNull)
+                        .flatMap(p -> p.getShades().stream())
+                        .map(com.gridstore.huevista.project.model.ProjectPdfPageShade::getShadeCode)
+                        .filter(c -> c != null && !c.isBlank())
+                        .distinct()
+                        .toList());
+        return renders.stream()
+                .map(r -> com.gridstore.huevista.project.dto.MyRenderResponse.from(r, urlFor(r), hvByCode))
                 .toList();
     }
 

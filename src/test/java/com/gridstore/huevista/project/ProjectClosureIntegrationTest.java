@@ -324,4 +324,109 @@ class ProjectClosureIntegrationTest {
                                   "lighting":"NATURAL","furnishing":"KEEP","style":"MODERN"}"""))
                 .andExpect(status().isNotFound());
     }
+
+    // ─── A room off the free library shelf has no ending ─────────────────────
+    //
+    // Every assertion above is about a project the account paid for, one way or another,
+    // and closure is what that project's last board buys. A library room was paid for by
+    // nobody — the pixels were already stored, no AI ran, nothing was spent — so the same
+    // last board must NOT end it. These are the same flows run against a copy, and they
+    // are here rather than in the library's own tests because what they pin is the
+    // closing behaviour, and the two must be read side by side.
+
+    /** A copy, made the way {@code FreeProjectLibraryService.startCopy} makes one: the
+     *  template's id on the row, and nothing else different. */
+    private String libraryProjectId() {
+        User user = userRepository.findByEmail("closing@example.com").orElseThrow();
+        UploadedImage image = imageRepository.save(UploadedImage.builder()
+                .user(user)
+                .originalFilename("shelf-room.jpg")
+                .storageKey("free-projects/sunlit-hall/source.jpg")
+                .contentType("image/jpeg")
+                .fileSize(1024L)
+                .imageType(ImageType.INDOOR)
+                .build());
+        return projectRepository.save(Project.builder()
+                .user(user)
+                .image(image)
+                .name("Sunlit hall")
+                .status(ProjectStatus.SEGMENTED)
+                .libraryTemplateId("tmpl-sunlit-hall")
+                .build()).getId();
+    }
+
+    private MvcResult postBoardTo(String id, String body) throws Exception {
+        return mockMvc.perform(post("/api/projects/" + id + "/colour-boards")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andReturn();
+    }
+
+    @Test
+    void aLibraryRoomsColourBoardDoesNotCloseIt() throws Exception {
+        String id = libraryProjectId();
+
+        MvcResult board = postBoardTo(id, board("Calm", "Warm", "Bold"));
+
+        assertThat(board.getResponse().getStatus()).isEqualTo(200);
+        // The board is still recorded and still charged — it is free of the project's
+        // cap, not free of charge — but it ends nothing.
+        assertThat(board.getResponse().getContentAsString())
+                .contains("\"boardsUsed\":1")
+                .contains("\"closed\":false");
+        assertThat(projectRepository.findById(id).orElseThrow().isClosed()).isFalse();
+    }
+
+    /**
+     * The one that used to cost ₹99. On an ordinary project the second board is refused
+     * because the first one closed it; on a library room there is no cap to run out of.
+     */
+    @Test
+    void aLibraryRoomKeepsHandingOverBoards() throws Exception {
+        String id = libraryProjectId();
+
+        assertThat(postBoardTo(id, board("Calm")).getResponse().getStatus()).isEqualTo(200);
+        assertThat(postBoardTo(id, board("Warm")).getResponse().getStatus()).isEqualTo(200);
+
+        MvcResult third = postBoardTo(id, board("Bold"));
+        assertThat(third.getResponse().getStatus()).isEqualTo(200);
+        assertThat(third.getResponse().getContentAsString()).contains("\"boardsUsed\":3");
+    }
+
+    /** Pressing "close" on one is accepted and does nothing — the studio does not offer
+     *  the button, and an older client pressing it must not lock a free room. */
+    @Test
+    void closingALibraryRoomIsRefusedQuietly() throws Exception {
+        String id = libraryProjectId();
+
+        mockMvc.perform(post("/api/projects/" + id + "/close")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.closedAt").doesNotExist())
+                .andExpect(jsonPath("$.fromLibrary").value(true))
+                .andExpect(jsonPath("$.readOnly").value(false));
+
+        assertThat(projectRepository.findById(id).orElseThrow().isClosed()).isFalse();
+    }
+
+    /** And the colour work stays open afterwards, which is the whole point. */
+    @Test
+    void aLibraryRoomStaysEditableAfterItsBoard() throws Exception {
+        String id = libraryProjectId();
+        postBoardTo(id, board("Calm", "Warm", "Bold"));
+
+        mockMvc.perform(patch("/api/projects/" + id)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Sunlit hall, take two\"}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/projects/" + id)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.readOnly").value(false))
+                .andExpect(jsonPath("$.readOnlyReason").doesNotExist())
+                .andExpect(jsonPath("$.closedAt").doesNotExist());
+    }
 }
