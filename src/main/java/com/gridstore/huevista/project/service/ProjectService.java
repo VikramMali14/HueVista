@@ -572,8 +572,12 @@ public class ProjectService {
         // the next nightly sweep.
         projectAccessService.reconcileAll(own, subscribed);
 
+        // Asked ONCE for the whole page rather than per row: it is the same answer for
+        // every project the account owns, and `evaluate` does no I/O by design.
+        boolean shopWindowClosed = projectAccessService.shopAccessExpired(userId, user.getRole());
+
         List<ProjectSummaryResponse> rows = new java.util.ArrayList<>(own.stream()
-                .map(p -> summarize(p, user, subscribed))
+                .map(p -> summarize(p, user, subscribed, shopWindowClosed))
                 .toList());
 
         if (!retailer) {
@@ -614,15 +618,23 @@ public class ProjectService {
                 .toList();
     }
 
-    private ProjectSummaryResponse summarize(Project p, User owner, boolean subscribed) {
+    /**
+     * One dashboard row.
+     *
+     * @param shopWindowClosed the owner is a customer whose shop access has run out, so
+     *        every room that shop's code paid for reads view-only. Rooms the account
+     *        bought itself are untouched by it.
+     */
+    private ProjectSummaryResponse summarize(Project p, User owner, boolean subscribed,
+                                             boolean shopWindowClosed) {
         ProjectSummaryResponse row = ProjectSummaryResponse.from(
                 p,
                 storageService.getPublicUrl(p.getImage().getStorageKey()),
                 p.getCleanedImageStorageKey() != null
                         ? storageService.getPublicUrl(p.getCleanedImageStorageKey())
                         : null);
-        return row.withReadOnly(
-                !projectAccessService.evaluate(owner.getRole(), p, subscribed).editable());
+        return row.withReadOnly(!projectAccessService
+                .evaluate(owner.getRole(), p, subscribed, shopWindowClosed).editable());
     }
 
     @Transactional
@@ -1801,27 +1813,17 @@ public class ProjectService {
     }
 
     /**
-     * A project the caller owns, refusing it when the SHOP's access window that paid for
-     * it has closed.
+     * A project the caller owns. Ownership is the only thing asked here.
      *
-     * The lock is per project, not per account, and the distinction is the whole point:
-     * a room linked to an access code was bought by a shop for a fixed number of days,
-     * and that deadline is the deal. A room with no code behind it was paid for by the
-     * account itself, out of its own pocket, and carries its own validity window
-     * (ProjectAccessService) — so gating it on a shop's ten days made a customer's own
-     * purchase expire on a schedule set by a shop they may have visited once.
-     *
-     * The project is loaded FIRST so the question can be asked about the right thing;
-     * ownership is what the query enforces, and it does not leak anything to ask about a
-     * row the caller already owns.
+     * A customer whose shop window has closed is NOT refused: their rooms go view-only
+     * instead (see ProjectAccessService), which is how every other lapse in this product
+     * behaves and what lets somebody still show a painter the colours they chose. What
+     * changes is not readable but writable, and every write goes through
+     * {@link #findEditable}.
      */
     private Project findOwned(String userId, String projectId) {
-        Project project = projectRepository.findByIdAndUserId(projectId, userId)
+        return projectRepository.findByIdAndUserId(projectId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
-        if (project.getAccessCode() != null) {
-            entitlementService.assertAccessValid(userId);
-        }
-        return project;
     }
 
     @Transactional(readOnly = true)

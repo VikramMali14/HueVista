@@ -89,7 +89,8 @@ class ProjectCreditServiceTest {
         when(users.findById(USER)).thenReturn(Optional.of(retailer));
 
         svc = new ProjectCreditService(ledger, subscriptions, projects,
-                new ProjectAccessService(projects, billing, pricing), pricing,
+                new ProjectAccessService(projects, billing, pricing,
+                        mock(com.gridstore.huevista.account.repository.CustomerEntitlementRepository.class)), pricing,
                 mock(BillingEmailService.class), points, billing, users);
 
         // Default: nobody is subscribed. Individual tests opt in.

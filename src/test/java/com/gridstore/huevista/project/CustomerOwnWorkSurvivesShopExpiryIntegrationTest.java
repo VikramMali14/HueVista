@@ -38,6 +38,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -49,8 +50,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <ul>
  *   <li>A SHOP gave them projects on an access code. The shop paid, out of its monthly
- *       image quota, for a fixed window — so when that window closes those rooms close
- *       with it. That is the deal and it stays.</li>
+ *       image quota, for a fixed window — so when that window closes those rooms go
+ *       view-only: still readable, nothing further to be changed on them, and nothing to
+ *       buy. Only the shop can open them again, with a fresh code.</li>
  *   <li>They BOUGHT projects themselves. Nobody's plan is involved and no shop has any
  *       claim on them; each carries its own validity window.</li>
  * </ul>
@@ -78,6 +80,7 @@ class CustomerOwnWorkSurvivesShopExpiryIntegrationTest {
     @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired CustomerEntitlementRepository entitlementRepository;
     @Autowired ProjectCreditService projectCreditService;
+    @Autowired com.gridstore.huevista.project.service.ProjectAccessService projectAccessService;
     @Autowired PasswordEncoder passwordEncoder;
 
     private static final String SHOP_EMAIL = "expiry-shop@example.com";
@@ -112,11 +115,12 @@ class CustomerOwnWorkSurvivesShopExpiryIntegrationTest {
      * The whole story in one pass: buy a room, redeem a shop's code, make a room on the
      * shop's tab, let the shop's window close.
      *
-     * The shop's room shuts. The bought room does not, and the list still shows both —
-     * the dashboard used to answer 403 for the entire page.
+     * The shop's room goes VIEW-ONLY — it still opens, and the colours the customer chose
+     * are still on it — while the room they bought is untouched. Both used to answer 403,
+     * the whole list included.
      */
     @Test
-    void aShopsExpiryClosesTheShopsRoomAndLeavesTheBoughtOneOpen() throws Exception {
+    void aShopsExpiryMakesTheShopsRoomViewOnlyAndLeavesTheBoughtOneAlone() throws Exception {
         projectCreditService.creditPurchasedProject(customerId, ProjectCredit.Source.PURCHASE);
         String boughtRoom = createProject("Room I paid for");
 
@@ -129,18 +133,82 @@ class CustomerOwnWorkSurvivesShopExpiryIntegrationTest {
 
         closeTheShopsWindow();
 
+        // Readable, and honest about what has changed. No reopen is quoted on either
+        // rail: this is the one view-only state with nothing to buy.
         mockMvc.perform(get("/api/projects/{id}", shopRoom)
                         .header("Authorization", "Bearer " + customerToken))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Room the shop gave me"))
+                .andExpect(jsonPath("$.readOnly").value(true))
+                .andExpect(jsonPath("$.readOnlyReason")
+                        .value(org.hamcrest.Matchers.containsString("shop access has ended")))
+                .andExpect(jsonPath("$.reopenPricePaise").value(0))
+                .andExpect(jsonPath("$.reopenPricePoints").value(0));
 
         mockMvc.perform(get("/api/projects/{id}", boughtRoom)
                         .header("Authorization", "Bearer " + customerToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.name").value("Room I paid for"));
+                .andExpect(jsonPath("$.name").value("Room I paid for"))
+                .andExpect(jsonPath("$.readOnly").value(false));
 
         mockMvc.perform(get("/api/projects").header("Authorization", "Bearer " + customerToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(2));
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[?(@.name=='Room the shop gave me')].readOnly").value(true))
+                .andExpect(jsonPath("$[?(@.name=='Room I paid for')].readOnly").value(false));
+    }
+
+    /**
+     * View-only has to mean it. Opening the read must not open the writes with it: the
+     * palette, the walls and the share link are all still the shop's window to give.
+     */
+    @Test
+    void aLapsedShopRoomOpensButRefusesEveryWrite() throws Exception {
+        redeemOntoThisAccount(generateCode(1).get("code").asText());
+        String shopRoom = createProject("Room the shop gave me");
+        closeTheShopsWindow();
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .put("/api/projects/{id}/regions", shopRoom)
+                        .header("Authorization", "Bearer " + customerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("[]"))
+                .andExpect(status().isPaymentRequired());
+
+        mockMvc.perform(post("/api/projects/{id}/segment", shopRoom)
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isPaymentRequired());
+
+        mockMvc.perform(post("/api/projects/{id}/share", shopRoom)
+                        .header("Authorization", "Bearer " + customerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isPaymentRequired());
+    }
+
+    /**
+     * …and it is not a thing the customer can buy their way out of.
+     *
+     * A reopen would have taken money twice over: the shop-code branch is asked before
+     * any window a purchase could open, so the room would stay view-only afterwards —
+     * and even if it did not, it would be selling a customer past a deadline their own
+     * shop sets and can lift for nothing.
+     */
+    @Test
+    void aLapsedShopRoomCannotBeReopenedByBuyingOne() throws Exception {
+        redeemOntoThisAccount(generateCode(1).get("code").asText());
+        String shopRoom = createProject("Room the shop gave me");
+        closeTheShopsWindow();
+
+        // Asserted on the guard itself rather than through the money endpoint: with no
+        // Razorpay keys in the test profile that route refuses at the gateway check long
+        // before it reaches any product rule, so going through it would prove nothing.
+        var room = projectRepository.findById(shopRoom).orElseThrow();
+        var customer = userRepository.findById(customerId).orElseThrow();
+        assertThatThrownBy(() ->
+                projectAccessService.assertNeedsReopen(customerId, customer.getRole(), room))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("nothing to buy here");
     }
 
     /**
