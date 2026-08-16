@@ -457,8 +457,31 @@ public class ProjectService {
         try {
             String ownerId = resolveShopOwnerUserId(code);
             if (ownerId == null) return;
-            boolean spentHold = accessCodeRepository.consumeReservedProject(code.getId()) == 1
-                    && billingService.consumeReservedProject(ownerId);
+            // The hold is one fact stored twice — on the code and on the subscription —
+            // and it has to move on both or neither. This was a single `&&`, which reads
+            // as one decision but is two writes with a short-circuit between them: when
+            // the code gave up a hold and the subscription could not (the shop's plan had
+            // lapsed, so findEntitlingSubscription returns nothing), the code's hold was
+            // destroyed and the subscription kept it.
+            //
+            // That stranded hold is permanent. Cycle rollover deliberately preserves
+            // reservedProjects — a code issued last month is still redeemable this one —
+            // so the phantom counts against the shop's limit in every period thereafter,
+            // and the expiry sweep can only ever refund the smaller number the code now
+            // carries. It is the same failure the sweep's own comment describes as fixed:
+            // a shop issuing codes at a steady rate eventually has no quota left.
+            //
+            // A lapsed shop is not a rare corner here either: a project funded by a code
+            // deliberately does NOT gate on the shop's subscription, precisely so a
+            // walk-in is never refused for their shop's billing.
+            boolean spentHold = false;
+            if (accessCodeRepository.consumeReservedProject(code.getId()) == 1) {
+                spentHold = billingService.consumeReservedProject(ownerId);
+                if (!spentHold) {
+                    // Nothing consumed it, so the code keeps it and the pair stays honest.
+                    accessCodeRepository.restoreReservedProject(code.getId());
+                }
+            }
             if (!spentHold) {
                 billingService.incrementProjectUsage(ownerId);
             }

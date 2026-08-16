@@ -109,6 +109,24 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
     int consumeReservedProject(@Param("id") String id);
 
     /**
+     * Put back a hold taken by {@link #consumeReservedProject} when the matching decrement
+     * on the SUBSCRIPTION could not be made — the shop's plan lapsed, so there is no
+     * entitling row to move the credit on.
+     *
+     * The two counters are one fact stored twice, and the pair is what the expiry sweep
+     * refunds against. Leaving the code short by a hold the subscription never gave up
+     * strands that hold on the subscription for good: cycle rollover deliberately keeps
+     * {@code reservedProjects}, so it counts against the shop's limit in every period
+     * thereafter — a project that already happened, charged forever.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            UPDATE CustomerAccessCode c SET c.reservedProjects = c.reservedProjects + 1
+             WHERE c.id = :id
+            """)
+    int restoreReservedProject(@Param("id") String id);
+
+    /**
      * Atomically zero a code's remaining holds, stamping when they were returned.
      * The {@code quotaReleasedAt IS NULL} guard makes the release idempotent, so a
      * revoke racing the expiry sweep can never refund the same code twice. Returns

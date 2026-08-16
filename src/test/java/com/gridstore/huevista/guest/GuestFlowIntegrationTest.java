@@ -455,6 +455,45 @@ class GuestFlowIntegrationTest {
 
     // --- helpers ---
 
+    /**
+     * A hold the subscription never gave up must stay on the code.
+     *
+     * The hold is one fact stored twice — on the code and on the shop's subscription —
+     * and spending it is two writes. When the shop's plan has lapsed there is no
+     * entitling subscription to take the second write, and the code used to give its
+     * hold up anyway: destroyed on one side, kept on the other.
+     *
+     * That strands the credit for good. Cycle rollover deliberately preserves
+     * reservedProjects, so the subscription's copy counts against the shop's limit in
+     * every period afterwards, and the expiry sweep can only refund the smaller number
+     * the code is left carrying. A lapsed shop is not a corner case here: a project a
+     * code paid for deliberately does not gate on the shop's subscription, so that a
+     * walk-in is never turned away over their shop's billing.
+     */
+    @Test
+    void a_lapsed_shop_does_not_strand_the_codes_held_credit() throws Exception {
+        // A code carrying two paid-for holds…
+        CustomerAccessCode held = codeRepository.findById(codeId).orElseThrow();
+        held.setProjectQuota(2);
+        held.setReservedProjects(2);
+        codeRepository.save(held);
+
+        // …and a shop with no entitling subscription at all (never subscribed, or lapsed):
+        // findEntitlingSubscription comes back empty, so the subscription side cannot move.
+        org.junit.jupiter.api.Assertions.assertTrue(
+                billingService.findEntitlingSubscription(retailerId).isEmpty());
+
+        String guestToken = redeemAsGuest();
+        guestCreateProject(guestToken, guestUpload(guestToken));
+
+        // The code keeps its holds, because nothing consumed one. Before, the first
+        // operand had already decremented this to 1 and no subscription ever received it.
+        CustomerAccessCode after = codeRepository.findById(codeId).orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals(
+                2, after.getReservedProjects(),
+                "a hold the subscription never took must stay on the code");
+    }
+
     private String redeemAsGuest() throws Exception {
         MvcResult r = mockMvc.perform(post("/api/access-codes/redeem-guest")
                         .contentType(MediaType.APPLICATION_JSON)
