@@ -26,12 +26,13 @@ import java.util.Map;
  * between {@link Mode#FULL} and {@link Mode#VIEW_ONLY}, and it is the only thing this
  * class is for.
  *
- * Access comes from any ONE of five places, checked in this order:
+ * Access is decided in this order:
  *
  * <ol>
  *   <li>The role. Administrators and distributors are never gated.</li>
- *   <li>The free library. A room copied off the shelf is never gated by anything — see
- *       below.</li>
+ *   <li>Closure. A finished job is view-only whoever is paying for it.</li>
+ *   <li>The free library. A room copied off the shelf has no payment behind it, so no
+ *       PAYMENT rail may gate it — see below.</li>
  *   <li>A live subscription — the ordinary case, and the only one that covers every
  *       project the account owns at once.</li>
  *   <li>The shop access code a project was created under. The issuing shop already paid
@@ -40,16 +41,19 @@ import java.util.Map;
  *   <li>The project's own paid window — the project was bought outright.</li>
  * </ol>
  *
- * <h2>Why a library room is unconditional</h2>
- * Every other rail in here is answering "who paid for this work?". For a room off the
- * free shelf the answer is nobody, and that is the product: the pixels were already
- * stored, no AI ran, no credit and no quota moved. So there is no clock to run out, and
- * nothing a reopen could be selling back. Left to the ordinary rules the opposite
- * happened — a copy carries no window at all, which reads as subscription-lapsed, so an
- * account without a plan got a room that opened and a palette that did not; and its one
- * colour board CLOSED it, which is a ₹99 reopen on a room we gave away. The check
- * therefore sits above closure and above every payment rail, because it has to outrank
- * all of them rather than merely one.
+ * <h2>Why a library room skips the payment rails — and only those</h2>
+ * Rails 4 to 6 are all answering "who paid for this work?". For a room off the free shelf
+ * the answer is nobody, and that is the product: the pixels were already stored, no AI
+ * ran, no credit and no quota moved. Left to those rules a copy read as SUBSCRIPTION
+ * LAPSED — it carries no window, no plan credit and no shop code, which is exactly the
+ * shape of an account whose plan ended — so the free room opened and its palette did not.
+ * That is what rail 3 fixes, and it is all it fixes.
+ *
+ * <p>It sits BELOW closure on purpose. A library room runs the same job as any other:
+ * paint it, take the colour board, close it, and buy the AI image with an AI credit. What
+ * closing means — the catalogue locks, the shades from the boards stay readable — is a
+ * fact about a job being finished, not about who paid for it, so a library room reaches
+ * it like everything else. Only the way IN was ever free.
  *
  * <h2>Why the window pauses</h2>
  * A paid window is a number of DAYS OF USE, not a calendar deadline. Someone who buys a
@@ -173,15 +177,6 @@ public class ProjectAccessService {
         if (role == UserRole.ADMIN || role == UserRole.DISTRIBUTOR) {
             return full();
         }
-        // A room off the free shelf, which nothing may ever gate — not a lapsed plan, not
-        // a spent board, not closure. Deliberately ABOVE the closure branch below: rooms
-        // copied before this rule existed may still carry a closedAt (the migration clears
-        // the ones it can see, and a race with an in-flight board could write another),
-        // and a library room that reads as closed is exactly the ₹99 charge this exists to
-        // remove. Answering here means the stored timestamp cannot decide anything.
-        if (project.isFromLibrary()) {
-            return full();
-        }
         // Closure outranks every way of paying, which is why it is asked FIRST and not
         // somewhere below. A closed project is finished: the customer took their colour
         // boards and their render off it and said so. Whether a plan or a shop's access
@@ -189,9 +184,23 @@ public class ProjectAccessService {
         // and there is no more work — putting this check under the subscription branch
         // would have left a subscribed shop, and every customer on a live code, able to
         // keep editing a job they had already closed and been rendered for.
+        //
+        // A library room is asked the same question and gets the same answer. It runs the
+        // ordinary job — board, close, AI image bought with a credit — and only the way in
+        // was free.
         if (project.isClosed()) {
             return new Access(Mode.VIEW_ONLY, CLOSED, project.getAccessExpiresAt(),
                     pricingService.pointsPriceReopen(true), pricingService.reopenPricePaise(true));
+        }
+        // A room off the free shelf, which no PAYMENT rail may gate. It carries no window,
+        // no plan credit and no shop code because none was spent on it — and that exact
+        // combination reads as "your subscription has ended" to every branch below, which
+        // served the free room view-only from its first minute to any account without a
+        // plan. Answering here is what makes the shelf work for the customers it is for.
+        // It is deliberately BELOW closure: an unfinished library room is always open, a
+        // finished one is finished like any other.
+        if (project.isFromLibrary()) {
+            return full();
         }
         if (subscribed) {
             return full();
@@ -308,18 +317,16 @@ public class ProjectAccessService {
      * Returns true when this call is the one that closed it — the caller uses that to
      * decide whether to send the customer on to the render step.
      *
-     * <p>A library room can never be closed, and this is the one place that is enforced
-     * rather than at each of the two callers (the last colour board, and the customer
-     * pressing "close project"). Closing is a purchase in disguise — what it does is make
-     * a project view-only until ₹99 reopens it — and there is nothing on a free room for
-     * that to be charged against. Refusing here is silent by design: the return value
-     * already means "nothing to do", which is what both callers do with an
-     * already-closed project, so neither needs to learn about library rooms to behave
-     * correctly. An AI image never depended on closure anyway (see
-     * {@link ProjectRenderService}), so nothing is withheld by declining.
+     * <p>A room off the library shelf closes on exactly the same terms as one the account
+     * uploaded. It used to be refused here, on the grounds that closing is a purchase in
+     * disguise and a free room has nothing to charge it against; what that actually did
+     * was strand the room one step short of the end of the job — no way to finish, and so
+     * no way through to the render step the finish leads to. The job is the same job
+     * whoever paid for the photo, and the AI image at the end of it is bought with an AI
+     * credit either way.
      */
     public boolean close(Project project) {
-        if (project.isFromLibrary() || project.isClosed()) {
+        if (project.isClosed()) {
             return false;
         }
         project.setClosedAt(LocalDateTime.now());

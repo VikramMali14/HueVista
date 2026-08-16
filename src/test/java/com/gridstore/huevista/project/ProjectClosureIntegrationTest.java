@@ -327,15 +327,19 @@ class ProjectClosureIntegrationTest {
 
     // ─── A room off the free library shelf has no ending ─────────────────────
     //
-    // Every assertion above is about a project the account paid for, one way or another,
-    // and closure is what that project's last board buys. A library room was paid for by
-    // nobody — the pixels were already stored, no AI ran, nothing was spent — so the same
-    // last board must NOT end it. These are the same flows run against a copy, and they
-    // are here rather than in the library's own tests because what they pin is the
-    // closing behaviour, and the two must be read side by side.
+    // A library room runs the SAME job as everything above: paint it, take the colour
+    // board, close it, buy the AI image with a credit. What the shelf gives away is the
+    // photograph and the wall detection — the way IN — and nothing about the way out. So
+    // these are the same flows run against a copy, expecting the same answers, and they
+    // are here rather than in the library's own tests because what they pin is the closing
+    // behaviour and the two must be read side by side.
+    //
+    // The one thing that stays different is the room's OPENNESS before it finishes: a copy
+    // carries no window, no plan credit and no shop code, and would otherwise read as
+    // subscription-lapsed. See ProjectAccessService rail 3.
 
     /** A copy, made the way {@code FreeProjectLibraryService.startCopy} makes one: the
-     *  template's id on the row, and nothing else different. */
+     *  template's id on the row, and no included AI image. */
     private String libraryProjectId() {
         User user = userRepository.findByEmail("closing@example.com").orElseThrow();
         UploadedImage image = imageRepository.save(UploadedImage.builder()
@@ -352,6 +356,7 @@ class ProjectClosureIntegrationTest {
                 .name("Sunlit hall")
                 .status(ProjectStatus.SEGMENTED)
                 .libraryTemplateId("tmpl-sunlit-hall")
+                .rendersAllowed(0)
                 .build()).getId();
     }
 
@@ -364,57 +369,53 @@ class ProjectClosureIntegrationTest {
     }
 
     @Test
-    void aLibraryRoomsColourBoardDoesNotCloseIt() throws Exception {
+    void aLibraryRoomsLastColourBoardClosesIt() throws Exception {
         String id = libraryProjectId();
 
         MvcResult board = postBoardTo(id, board("Calm", "Warm", "Bold"));
 
         assertThat(board.getResponse().getStatus()).isEqualTo(200);
-        // The board is still recorded and still charged — it is free of the project's
-        // cap, not free of charge — but it ends nothing.
         assertThat(board.getResponse().getContentAsString())
                 .contains("\"boardsUsed\":1")
-                .contains("\"closed\":false");
-        assertThat(projectRepository.findById(id).orElseThrow().isClosed()).isFalse();
+                .contains("\"closed\":true");
+        assertThat(projectRepository.findById(id).orElseThrow().isClosed()).isTrue();
     }
 
-    /**
-     * The one that used to cost ₹99. On an ordinary project the second board is refused
-     * because the first one closed it; on a library room there is no cap to run out of.
-     */
+    /** And the cap holds afterwards, exactly as it does on a room the account uploaded. */
     @Test
-    void aLibraryRoomKeepsHandingOverBoards() throws Exception {
+    void aClosedLibraryRoomRefusesAnotherBoard() throws Exception {
         String id = libraryProjectId();
+        postBoardTo(id, board("Calm"));
 
-        assertThat(postBoardTo(id, board("Calm")).getResponse().getStatus()).isEqualTo(200);
-        assertThat(postBoardTo(id, board("Warm")).getResponse().getStatus()).isEqualTo(200);
+        MvcResult second = postBoardTo(id, board("Warm"));
 
-        MvcResult third = postBoardTo(id, board("Bold"));
-        assertThat(third.getResponse().getStatus()).isEqualTo(200);
-        assertThat(third.getResponse().getContentAsString()).contains("\"boardsUsed\":3");
+        assertThat(second.getResponse().getStatus()).isEqualTo(402);
+        assertThat(projectRepository.findById(id).orElseThrow().getColourBoardsUsed()).isEqualTo(1);
     }
 
-    /** Pressing "close" on one is accepted and does nothing — the studio does not offer
-     *  the button, and an older client pressing it must not lock a free room. */
+    /** Pressing "close" finishes it, which is the move that leads to the AI image. */
     @Test
-    void closingALibraryRoomIsRefusedQuietly() throws Exception {
+    void aLibraryRoomClosesWhenItsOwnerSaysSo() throws Exception {
         String id = libraryProjectId();
 
         mockMvc.perform(post("/api/projects/" + id + "/close")
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.closedAt").doesNotExist())
+                .andExpect(jsonPath("$.closedAt").exists())
                 .andExpect(jsonPath("$.fromLibrary").value(true))
-                .andExpect(jsonPath("$.readOnly").value(false));
+                .andExpect(jsonPath("$.readOnly").value(true));
 
-        assertThat(projectRepository.findById(id).orElseThrow().isClosed()).isFalse();
+        assertThat(projectRepository.findById(id).orElseThrow().isClosed()).isTrue();
     }
 
-    /** And the colour work stays open afterwards, which is the whole point. */
+    /**
+     * Before it finishes, though, it is fully workable with no plan, no window and no shop
+     * code behind it — the one rule the free shelf does need, and the reason a customer
+     * without a subscription can paint one at all.
+     */
     @Test
-    void aLibraryRoomStaysEditableAfterItsBoard() throws Exception {
+    void anUnfinishedLibraryRoomIsEditableWithoutAnythingPayingForIt() throws Exception {
         String id = libraryProjectId();
-        postBoardTo(id, board("Calm", "Warm", "Bold"));
 
         mockMvc.perform(patch("/api/projects/" + id)
                         .header("Authorization", "Bearer " + token)
@@ -428,5 +429,21 @@ class ProjectClosureIntegrationTest {
                 .andExpect(jsonPath("$.readOnly").value(false))
                 .andExpect(jsonPath("$.readOnlyReason").doesNotExist())
                 .andExpect(jsonPath("$.closedAt").doesNotExist());
+    }
+
+    /**
+     * And it includes no AI image. The picture is the one genuinely expensive thing on a
+     * free room, so it is bought from the account's AI wallet like any other credit spend
+     * — the same terms a room a shop hands a customer runs on.
+     */
+    @Test
+    void aLibraryRoomIncludesNoAiImage() throws Exception {
+        String id = libraryProjectId();
+
+        mockMvc.perform(get("/api/projects/" + id)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rendersAllowed").value(0))
+                .andExpect(jsonPath("$.rendersUsed").value(0));
     }
 }
