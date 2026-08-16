@@ -998,6 +998,64 @@ CorsFilter -> checks Origin -> returns 200 with CORS headers
 Browser sends actual POST /api/images/upload  (with JWT + file)
 ```
 
+### The OTHER CORS configuration: the S3 bucket
+
+`CorsConfig` governs calls to **this API**. It has nothing to say about images, because
+when S3 storage is on the browser fetches those straight from
+`https://<bucket>.s3.<region>.amazonaws.com/...` — a host we do not serve and cannot
+add headers to. Only the **bucket's own** CORS configuration can do that.
+
+That matters more than it sounds. A presigned URL is fetchable by anyone holding it,
+but the frontend does not merely *display* these images — it draws them onto a canvas
+and reads the pixels back, which requires loading them `crossOrigin="anonymous"`, which
+makes every one of them a CORS request. With no rule on the bucket, S3 returns the
+bytes with no `Access-Control-Allow-Origin` and the browser discards the response:
+
+```
+Access to image at 'https://<bucket>.s3.ap-south-1.amazonaws.com/free-projects/...'
+from origin 'https://app.huevista.org' has been blocked by CORS policy:
+No 'Access-Control-Allow-Origin' header is present on the requested resource.
+```
+
+The symptom is a room that renders as a blank frame — most visibly on the public share
+page, where a link forwarded over WhatsApp opens on a photo that never arrives.
+
+**File:** `image/config/S3BucketCorsInitializer.java` (+ `S3CorsPolicy.java`)
+
+On startup, with S3 enabled, the application reads the bucket's CORS configuration and
+installs a read-only rule for `CORS_ALLOWED_ORIGINS` if the existing rules don't already
+cover them:
+
+```
+Rule ID:           huevista-browser-read
+Allowed Origins:   value of CORS_ALLOWED_ORIGINS  (same list the API filter uses)
+Allowed Methods:   GET, HEAD          <- read-only; no browser writes to the bucket
+Allowed Headers:   *
+Expose Headers:    ETag, Content-Length
+Max Age:           3600 seconds
+```
+
+It is deliberately conservative:
+
+- **Writes only when needed.** A rule an operator added by hand is left alone, so a
+  restart never undoes manual work. (`putBucketCors` replaces the *entire*
+  configuration, so rules that aren't ours are carried through explicitly.)
+- **Never fails startup.** `s3:PutBucketCors` is a permission an IAM role may not have.
+  When the write is refused, the startup log carries the exact command to run:
+
+  ```
+  aws s3api put-bucket-cors --bucket <bucket> --cors-configuration '{"CORSRules":[...]}'
+  ```
+
+- **Opt out** with `S3_CONFIGURE_CORS=false` to manage the bucket entirely by hand.
+
+The frontend also carries a fallback for the window where the rule is missing: a failed
+cross-origin load is retried through its own `/api/media` route, which fetches the same
+presigned URL server-side and returns it same-origin (where CORS does not apply). That
+keeps the product working without the bucket rule — but it routes image bytes through
+the frontend server, which is exactly the cost presigned URLs exist to avoid. The bucket
+rule is the real fix; the proxy is the safety net.
+
 ---
 
 ## 13. Security Decisions Explained

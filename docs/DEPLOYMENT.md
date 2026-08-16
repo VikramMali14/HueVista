@@ -40,6 +40,24 @@ gitignored — never commit it).
   `CORS_ALLOWED_ORIGINS=https://app.your-domain.example`.
 - Never use `*` — the API uses credentialed requests (cookies / Authorization
   headers).
+- This list also drives the **S3 bucket's** CORS rule (see below), so it must name
+  every origin that displays images, not only those that call the API.
+
+### The S3 bucket needs its own CORS rule
+
+The frontend draws every image it recolours onto a canvas, which means loading it
+`crossOrigin="anonymous"`, which makes it a CORS request. Presigning the URL does
+not help: only the **bucket's** CORS configuration can make S3 send
+`Access-Control-Allow-Origin`, and without it the browser blocks the image and the
+room renders blank.
+
+On startup (S3 enabled, `S3_CONFIGURE_CORS` unset or `true`) the app installs a
+read-only rule for `CORS_ALLOWED_ORIGINS` if the bucket doesn't already allow them.
+It needs **`s3:PutBucketCors`** on the bucket. Without that permission startup still
+succeeds and the log carries the `aws s3api put-bucket-cors …` command to run by
+hand — check for it after the first deploy to a new bucket. Until the rule exists,
+images are served through the frontend's `/api/media` fallback, which works but puts
+image bytes through the frontend server. See `docs/IMAGE_UPLOAD_FLOW.md` §12.
 
 ## 3. SWAGGER_ENABLED=false
 
@@ -142,6 +160,7 @@ and an `Email delivery failed` line in the log.
 
 - [ ] `JWT_SECRET` set to a freshly generated 32+ byte base64 value (compose fails fast without it)
 - [ ] `CORS_ALLOWED_ORIGINS` set to the real frontend origin(s), no wildcard
+- [ ] With S3 on: startup log shows the bucket CORS rule installed (or already covered) — if it warns instead, run the `aws s3api put-bucket-cors` command it prints
 - [ ] `SWAGGER_ENABLED=false`
 - [ ] `LOG_LEVEL_APP=INFO` (DEBUG logs emails and storage keys)
 - [ ] Leave `SPRING_JPA_DDL_AUTO` unset (defaults to `validate`; Flyway applies the schema)
