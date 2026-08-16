@@ -38,8 +38,10 @@ import java.util.List;
  * Policy:
  *  - 1 project is included by default; the shop assigns more on the code, and can top the
  *    same code up afterwards (see AccessCodeService#grantExtraProjects).
- *  - On expiry, EVERYTHING is locked (create + view + manage) until a new code is redeemed
- *    or the shop extends the one they hold.
+ *  - On expiry the customer can no longer CREATE against the code, and the rooms it paid
+ *    for go view-only (ProjectAccessService) — the colours they chose stay readable, so
+ *    they can still show a painter what they picked. A new code, or the shop extending
+ *    the one they hold, opens everything again.
  *  - Only role == CUSTOMER is gated; retailers/distributors/admins are unrestricted.
  */
 @Slf4j
@@ -186,25 +188,6 @@ public class CustomerEntitlementService {
             }
         }
         entitlementRepository.save(ent);
-    }
-
-    /**
-     * Guard for ANY project access (view/manage). Enforces the full expiry lock.
-     *
-     * A customer with NO entitlement row at all is deliberately let through: they
-     * have never held shop access, so they own nothing to lock, and throwing here
-     * turned their dashboard into a 403 error panel sitting next to a banner that
-     * (correctly) invited them to redeem a code. Creating a project still requires
-     * a real entitlement — see {@link #assertCanCreateProject}.
-     */
-    @Transactional(readOnly = true)
-    public void assertAccessValid(String userId) {
-        if (!isCustomer(userId)) return;
-        CustomerEntitlement ent = entitlementRepository.findByCustomerId(userId).orElse(null);
-        if (ent != null && ent.isExpired()) {
-            throw new AccessExpiredException(
-                    "Your access has ended. Ask your retailer for a new access code.");
-        }
     }
 
     /**

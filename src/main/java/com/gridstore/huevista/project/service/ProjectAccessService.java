@@ -67,6 +67,15 @@ public class ProjectAccessService {
     private final ProjectRepository projectRepository;
     private final BillingService billingService;
     private final PricingService pricingService;
+    /**
+     * The REPOSITORY and not {@code CustomerEntitlementService}, deliberately.
+     *
+     * The service would close a cycle — CustomerEntitlementService → ProjectGrantService →
+     * ProjectCreditService → back to here — and the context would not start. All this
+     * class needs is one row's expiry, which the repository answers on its own.
+     */
+    private final com.gridstore.huevista.account.repository.CustomerEntitlementRepository
+            entitlementRepository;
 
     public enum Mode {
         /** Everything is open: recolour, segment, share, edit. */
@@ -100,6 +109,18 @@ public class ProjectAccessService {
             + "is your render — but the rest of the catalogue is locked. Reopen it to start "
             + "choosing again.";
 
+    /**
+     * A room a shop's code paid for, after that code's window has closed.
+     *
+     * It names a code and nothing else on purpose: this is the one view-only state with
+     * nothing to buy. The customer cannot hold points or a plan, and selling them a
+     * reopen would be selling them past a deadline their shop set and their shop can
+     * lift — see {@link #assertNeedsReopen}.
+     */
+    private static final String SHOP_ACCESS_ENDED =
+            "Your shop access has ended, so this room is view-only — the colours you chose are "
+            + "all still here. A fresh code from the same shop opens it again.";
+
     /** The window length is configured, so the sentence quoting it has to be built. */
     private String windowLapsedMessage() {
         return "This project's validity has ended, so it is view-only — the colours you last "
@@ -120,14 +141,34 @@ public class ProjectAccessService {
     public Access accessFor(String userId, UserRole role, Project project) {
         boolean subscribed = pricingService.isSubscribed(userId);
         reconcile(project, subscribed, LocalDateTime.now());
-        return evaluate(role, project, subscribed);
+        return evaluate(role, project, subscribed, shopAccessExpired(userId, role));
+    }
+
+    /**
+     * Has this customer's shop-issued access window closed?
+     *
+     * Only a CUSTOMER can have one, and only one a shop onboarded: an account that signed
+     * up alone has no entitlement row and is governed entirely by what it bought.
+     */
+    @Transactional(readOnly = true)
+    public boolean shopAccessExpired(String userId, UserRole role) {
+        if (role != UserRole.CUSTOMER) return false;
+        return entitlementRepository.findByCustomerId(userId)
+                .map(com.gridstore.huevista.account.model.CustomerEntitlement::isExpired)
+                .orElse(false);
     }
 
     /**
      * Non-mutating variant for list views, where the caller has already reconciled the
-     * whole page in one pass (see {@link #reconcileAll}).
+     * whole page in one pass (see {@link #reconcileAll}) and resolved
+     * {@code shopAccessExpired} once for the whole account.
+     *
+     * @param shopAccessExpired the owner is a customer whose shop-issued window has run
+     *        out. It is passed in rather than looked up because this method does no I/O —
+     *        a dashboard page would otherwise ask the same question once per row.
      */
-    public Access evaluate(UserRole role, Project project, boolean subscribed) {
+    public Access evaluate(UserRole role, Project project, boolean subscribed,
+                           boolean shopAccessExpired) {
         // Administrators and distributors run the platform rather than buy from it.
         if (role == UserRole.ADMIN || role == UserRole.DISTRIBUTOR) {
             return full();
@@ -156,10 +197,22 @@ public class ProjectAccessService {
             return full();
         }
         // Work created under a shop's access code was paid for by that shop when the code
-        // was issued. Whether the person holding it subscribes to anything is irrelevant;
-        // the code's own validity governs, and expiry there is enforced separately.
+        // was issued. Whether the person holding it subscribes to anything is irrelevant —
+        // what governs is the shop's own window, and when that closes the room becomes
+        // view-only like every other lapse in this class rather than disappearing.
+        //
+        // It used to be refused outright, one layer up, on the customer's whole account:
+        // a full lock on create AND view AND manage. That took away the ability to show a
+        // painter the colours they had already chosen, and it disagreed with the rest of
+        // the product — a room whose shop window had closed still had its AI images on the
+        // customer's own images page, and every other lapse here is look-but-don't-touch.
+        // Nothing is given away by it: the writes are all behind assertEditable.
+        //
+        // No reopen is quoted. This is the one view-only state with nothing to buy.
         if (project.getAccessCode() != null) {
-            return full();
+            return shopAccessExpired
+                    ? new Access(Mode.VIEW_ONLY, SHOP_ACCESS_ENDED, project.getAccessExpiresAt(), 0, 0)
+                    : full();
         }
         if (project.isAccessWindowOpen()) {
             return new Access(Mode.FULL, null, project.getAccessExpiresAt(),
@@ -207,6 +260,16 @@ public class ProjectAccessService {
             throw new IllegalStateException(
                     "This project is already open — there's nothing to reopen. "
                     + "A reopen is only needed once its validity has run out.");
+        }
+        // A room the shop's code paid for is not the customer's to reopen, and letting
+        // them try would take money for nothing twice over: the shop-code branch of
+        // `evaluate` is asked BEFORE any window this purchase could open, so the room
+        // would stay view-only after paying — and even if it did not, it would be selling
+        // a customer their way past a deadline their own shop sets and can lift for free.
+        if (project.getAccessCode() != null) {
+            throw new IllegalStateException(
+                    "This room was opened with a shop's code, so there is nothing to buy here. "
+                    + "Ask the shop for a fresh code and the room opens again.");
         }
     }
 

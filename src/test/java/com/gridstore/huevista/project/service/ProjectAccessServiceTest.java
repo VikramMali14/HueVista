@@ -49,7 +49,8 @@ class ProjectAccessServiceTest {
         ReflectionTestUtils.setField(pricing, "pointsPriceReopen", REOPEN_POINTS);
         ReflectionTestUtils.setField(pricing, "pointsPriceReopenClosed", REOPEN_CLOSED_POINTS);
         ReflectionTestUtils.setField(pricing, "projectValidDays", 30);
-        access = new ProjectAccessService(mock(ProjectRepository.class), billing, pricing);
+        access = new ProjectAccessService(mock(ProjectRepository.class), billing, pricing,
+                mock(com.gridstore.huevista.account.repository.CustomerEntitlementRepository.class));
         when(billing.findEntitlingSubscription(any())).thenReturn(Optional.empty());
     }
 
@@ -263,7 +264,7 @@ class ProjectAccessServiceTest {
         Project project = new Project();
         access.close(project);
 
-        ProjectAccessService.Access result = access.evaluate(UserRole.RETAILER, project, true);
+        ProjectAccessService.Access result = access.evaluate(UserRole.RETAILER, project, true, false);
 
         assertThat(result.editable()).isFalse();
         assertThat(result.reason()).contains("closed");
@@ -275,7 +276,7 @@ class ProjectAccessServiceTest {
         project.setAccessCode(new CustomerAccessCode());
         access.close(project);
 
-        assertThat(access.evaluate(UserRole.CUSTOMER, project, false).editable()).isFalse();
+        assertThat(access.evaluate(UserRole.CUSTOMER, project, false, false).editable()).isFalse();
     }
 
     @Test
@@ -283,8 +284,40 @@ class ProjectAccessServiceTest {
         Project project = new Project();
         access.close(project);
 
-        assertThat(access.evaluate(UserRole.CUSTOMER, project, false).reopenPricePoints())
+        assertThat(access.evaluate(UserRole.CUSTOMER, project, false, false).reopenPricePoints())
                 .isEqualTo(REOPEN_CLOSED_POINTS);
+    }
+
+    /**
+     * A room the shop's code paid for, after that code's window has closed.
+     *
+     * View-only, like every other lapse here — the customer can still show a painter the
+     * colours they chose — and quoting NO reopen on either rail, because this is the one
+     * view-only state with nothing to buy: a customer can hold neither points nor a plan,
+     * and the way back is a fresh code from the shop that issued the first one.
+     */
+    @Test
+    void aShopCodeRoomGoesViewOnlyWhenTheShopsWindowCloses() {
+        Project room = new Project();
+        room.setAccessCode(new CustomerAccessCode());
+
+        ProjectAccessService.Access open = access.evaluate(UserRole.CUSTOMER, room, false, false);
+        assertThat(open.editable()).isTrue();
+
+        ProjectAccessService.Access closed = access.evaluate(UserRole.CUSTOMER, room, false, true);
+        assertThat(closed.editable()).isFalse();
+        assertThat(closed.reason()).contains("shop access has ended");
+        assertThat(closed.reopenPricePoints()).isZero();
+        assertThat(closed.reopenPricePaise()).isZero();
+    }
+
+    /** The customer's OWN rooms are no business of the shop's window. */
+    @Test
+    void aBoughtRoomIsUntouchedByTheShopsWindowClosing() {
+        Project bought = new Project();
+        bought.setAccessExpiresAt(LocalDateTime.now().plusDays(10));
+
+        assertThat(access.evaluate(UserRole.CUSTOMER, bought, false, true).editable()).isTrue();
     }
 
     @Test
@@ -292,7 +325,7 @@ class ProjectAccessServiceTest {
         Project project = new Project();
         project.setAccessExpiresAt(LocalDateTime.now().minusDays(1));
 
-        ProjectAccessService.Access result = access.evaluate(UserRole.CUSTOMER, project, false);
+        ProjectAccessService.Access result = access.evaluate(UserRole.CUSTOMER, project, false, false);
 
         assertThat(result.editable()).isFalse();
         assertThat(result.reopenPricePoints()).isEqualTo(REOPEN_POINTS);
@@ -303,7 +336,7 @@ class ProjectAccessServiceTest {
         Project project = new Project();
         access.close(project);
 
-        assertThat(access.evaluate(UserRole.ADMIN, project, false).editable()).isTrue();
+        assertThat(access.evaluate(UserRole.ADMIN, project, false, false).editable()).isTrue();
     }
 
     @Test
@@ -374,7 +407,7 @@ class ProjectAccessServiceTest {
 
         assertThat(access.close(room)).isFalse();
         assertThat(room.isClosed()).isFalse();
-        assertThat(access.evaluate(UserRole.CUSTOMER, room, false).editable()).isTrue();
+        assertThat(access.evaluate(UserRole.CUSTOMER, room, false, false).editable()).isTrue();
     }
 
     /**
@@ -387,7 +420,7 @@ class ProjectAccessServiceTest {
         Project room = libraryRoom();
         room.setClosedAt(LocalDateTime.now().minusDays(3));
 
-        assertThat(access.evaluate(UserRole.CUSTOMER, room, false).editable()).isTrue();
+        assertThat(access.evaluate(UserRole.CUSTOMER, room, false, false).editable()).isTrue();
     }
 
     /**
