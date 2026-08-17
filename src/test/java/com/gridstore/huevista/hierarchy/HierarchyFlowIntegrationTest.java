@@ -615,7 +615,6 @@ class HierarchyFlowIntegrationTest {
                 .retailerOrg(shopOrg)
                 .projectAllowance(allowance)
                 .projectsCreated(used)
-                .accessExpiresAt(expiresAt)
                 .build());
     }
 
@@ -623,10 +622,8 @@ class HierarchyFlowIntegrationTest {
         accessCodeRepository.save(CustomerAccessCode.builder()
                 .organization(org)
                 .code(code)
-                .validDays(7)
                 .expiresAt(java.time.LocalDateTime.now().plusDays(7))
                 .usedAt(redeemed ? java.time.LocalDateTime.now() : null)
-                .guestRedeemed(redeemed)
                 .build());
     }
 }

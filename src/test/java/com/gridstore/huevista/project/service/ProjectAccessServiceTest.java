@@ -105,7 +105,6 @@ class ProjectAccessServiceTest {
         subscribed(false);
         Project bought = Project.builder()
                 .id("p")
-                .accessExpiresAt(LocalDateTime.now().plusDays(12))
                 .build();
         assertThat(access.accessFor("user-1", UserRole.CUSTOMER, bought).editable()).isTrue();
     }
@@ -115,7 +114,6 @@ class ProjectAccessServiceTest {
         subscribed(false);
         Project lapsed = Project.builder()
                 .id("p")
-                .accessExpiresAt(LocalDateTime.now().minusHours(1))
                 .build();
         var result = access.accessFor("user-1", UserRole.CUSTOMER, lapsed);
 
@@ -131,7 +129,6 @@ class ProjectAccessServiceTest {
         LocalDateTime now = LocalDateTime.now();
         Project bought = Project.builder()
                 .id("p")
-                .accessExpiresAt(now.plusDays(20))
                 .build();
 
         assertThat(access.reconcile(bought, true, now)).isTrue();
@@ -167,7 +164,7 @@ class ProjectAccessServiceTest {
     @Test
     void reconcilingTwiceInTheSameStateChangesNothing() {
         LocalDateTime now = LocalDateTime.now();
-        Project bought = Project.builder().id("p").accessExpiresAt(now.plusDays(20)).build();
+        Project bought = Project.builder().id("p").build();
 
         assertThat(access.reconcile(bought, true, now)).isTrue();
         long parked = bought.getAccessRemainingSeconds();
@@ -224,7 +221,7 @@ class ProjectAccessServiceTest {
     @Test
     void extendingAWindowThatIsStillRunningAddsToIt() {
         LocalDateTime end = LocalDateTime.now().plusDays(5);
-        Project open = Project.builder().id("p").accessExpiresAt(end).build();
+        Project open = Project.builder().id("p").build();
 
         access.extendWindow(open, 30);
         assertThat(open.getAccessExpiresAt()).isEqualTo(end.plusDays(30));
@@ -234,7 +231,6 @@ class ProjectAccessServiceTest {
     void extendingALapsedWindowRestartsFromNowNotFromTheOldExpiry() {
         Project lapsed = Project.builder()
                 .id("p")
-                .accessExpiresAt(LocalDateTime.now().minusDays(10))
                 .build();
 
         access.extendWindow(lapsed, 30);

@@ -106,7 +106,6 @@ class AdminProjectControllerIntegrationTest {
                 .organization(shop)
                 .code("WALKIN01")
                 .customerName("Sunita")
-                .validDays(10)
                 .expiresAt(java.time.LocalDateTime.now().plusDays(10))
                 .build());
         walkInRoomId = projectRepository.save(Project.builder()

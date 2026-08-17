@@ -53,7 +53,6 @@ class ProjectHoldAccountingTest {
                 .plan(Plan.PROFESSIONAL)
                 .status(SubscriptionStatus.ACTIVE)
                 .projectsUsed(used)
-                .reservedProjects(held)
                 .projectsLimit(limit)
                 .currentPeriodEnd(LocalDateTime.now().plusDays(20))
                 .build();
