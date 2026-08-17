@@ -58,6 +58,31 @@ public class ProjectResponse {
     // studio asks for them by hand. The team has already been told: the pipeline files
     // its own report in this case, because a user with a working room has no reason to.
     private boolean autoMaskFailed;
+    /**
+     * What to say about {@link #autoMaskFailed}, so the studio does not have to invent it.
+     *
+     * <p>Two facts, in the order they matter to the person reading. First that the WALLS
+     * are what failed — the photo itself is cleaned and waiting, which is the expensive
+     * half and the half they can still use. Second that the report has already gone: the
+     * pipeline files its own mask report here, precisely because somebody looking at a
+     * working room has no reason to file one, and saying so is the difference between
+     * "something broke" and "something broke and it is being dealt with".
+     *
+     * <p>Null unless {@code autoMaskFailed}. It lives here rather than in the frontend
+     * because the share view, the studio and the kiosk all show this state and had no
+     * shared wording between them.
+     */
+    private String autoMaskNotice;
+    /**
+     * What the AI run is doing right now, while {@code status} is SEGMENTING.
+     *
+     * <p>The pipeline works through a chain of models and hands over whenever one is
+     * busy, which used to be invisible: one unchanging spinner for anything from forty
+     * seconds to eight minutes, so a working run and a dead one looked identical. This
+     * carries the running commentary — "That model was busy — trying Nano Banana 2
+     * (2 of 4)" — and is null on any project that is not mid-run.
+     */
+    private String aiProgressNote;
     // The image models this project's last run was PINNED to by an admin comparing
     // models, or null (the overwhelmingly normal case) for the configured ones. Carried
     // so the admin mask viewer can say which models made the canvas and the mask it is
@@ -139,6 +164,13 @@ public class ProjectResponse {
         return this;
     }
 
+    /** The sentence behind {@link #autoMaskNotice}; see that field for the reasoning. */
+    static final String AUTO_MASK_NOTICE =
+            "We couldn't create the custom wall masks for this photo — the issue has been "
+            + "sent to our tech team and they'll look at it. Your cleaned photo is ready, "
+            + "so mark the walls yourself with \"Add a wall\" (free and unlimited) and "
+            + "carry on painting.";
+
     public static ProjectResponse from(Project project, String imageUrl) {
         return from(project, imageUrl, 0, 0);
     }
@@ -164,6 +196,8 @@ public class ProjectResponse {
                         ? project.getFailureStage().name() : null)
                 .maskMode(project.getMaskMode())
                 .autoMaskFailed(project.isAutoMaskFailed())
+                .autoMaskNotice(project.isAutoMaskFailed() ? AUTO_MASK_NOTICE : null)
+                .aiProgressNote(project.getAiProgressNote())
                 .cleanModel(project.getCleanModel())
                 .maskModel(project.getMaskModel())
                 .regions(regions)

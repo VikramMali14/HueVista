@@ -918,6 +918,9 @@ public class ProjectService {
         // studio still asking for hand-marked walls while detection is back in flight.
         project.setFailureStage(null);
         project.setAutoMaskFailed(false);
+        // Same reasoning: the note narrates a run, and this is a new one. Left behind, a
+        // fresh SEGMENTING project would open showing the last run's dying words.
+        project.setAiProgressNote(null);
         projectRepository.save(project);
 
         String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());
@@ -1546,6 +1549,9 @@ public class ProjectService {
         // studio still asking for hand-marked walls while detection is back in flight.
         project.setFailureStage(null);
         project.setAutoMaskFailed(false);
+        // Same reasoning: the note narrates a run, and this is a new one. Left behind, a
+        // fresh SEGMENTING project would open showing the last run's dying words.
+        project.setAiProgressNote(null);
         projectRepository.save(project);
 
         String imageUrl = storageService.getPublicUrl(project.getImage().getStorageKey());

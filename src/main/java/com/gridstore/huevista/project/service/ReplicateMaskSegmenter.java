@@ -57,6 +57,22 @@ public class ReplicateMaskSegmenter {
     @Value("${replicate.nano-banana.model:google/nano-banana-pro}")
     private String model;
 
+    /**
+     * The models tried after {@link #model}, in order — comma-separated Replicate ids.
+     *
+     * <p>Deliberately the same family, unlike the cleaner's chain, and that difference is
+     * the whole design. The clean only has to produce a plausible photo, so any competent
+     * editor will do and swapping families is free. A mask has to come back as four flat
+     * primaries pinned to the photo's own edges, and only the Gemini image models follow
+     * that instruction closely enough for {@code splitColorCodedMask} to read the result
+     * — FLUX and Seedream return a beautifully shaded picture that the split then throws
+     * away. So the fallback is the sibling TIER (Nano Banana 2), which speaks the same
+     * schema and obeys the same prompt, rather than a different family that would fail
+     * differently and more expensively.
+     */
+    @Value("${replicate.nano-banana.fallback-models:google/nano-banana-2}")
+    private String fallbackModels;
+
     @Value("${replicate.nano-banana.model-version:}")
     private String modelVersion;
 
@@ -95,6 +111,29 @@ public class ReplicateMaskSegmenter {
     }
 
     /**
+     * The whole mask chain in order: the configured model, then its fallbacks.
+     *
+     * <p>Exposed rather than looped over in here because a mask can fail in two quite
+     * different ways and only the caller can see both. This class knows when the model
+     * refused or timed out; {@link SegmentationService} knows when an image DID come back
+     * and turned out to be unusable — no red main wall, off-palette, below the noise
+     * floor — which is the more common dud by a distance. Retrying only what this class
+     * can see would leave the frequent failure unretried, so the chain is driven from
+     * there, over both.
+     */
+    public java.util.List<String> modelChain() {
+        java.util.LinkedHashSet<String> chain = new java.util.LinkedHashSet<>();
+        if (model != null && !model.isBlank()) chain.add(model.trim());
+        if (fallbackModels != null && !fallbackModels.isBlank()) {
+            for (String id : fallbackModels.split(",")) {
+                String trimmed = id.trim();
+                if (!trimmed.isEmpty()) chain.add(trimmed);
+            }
+        }
+        return java.util.List.copyOf(chain);
+    }
+
+    /**
      * Produces a SINGLE flat colour-blocked image covering all three paint
      * categories at once. Red = main wall, Green = accent wall, Blue = trim,
      * Black = everything else (including the door panels and metal railings —
@@ -130,17 +169,25 @@ public class ReplicateMaskSegmenter {
     }
 
     /**
-     * @param modelOverride an ADMIN's per-run choice of model (already checked against
-     *                      {@code AiModelCatalogue}), or null for the configured one.
-     *                      A pinned {@code model-version} is NOT applied to an override:
-     *                      a version hash identifies one release of one model, so
-     *                      carrying it onto a different one asks Replicate for something
-     *                      that does not exist.
+     * @param requestedModel the exact model to ask — a link in the chain
+     *                       ({@link #modelChain()}) or an ADMIN's per-run pin, both
+     *                       already checked against {@code AiModelCatalogue}. Null takes
+     *                       the configured {@link #model}.
+     *
+     *                       <p>A pinned {@code model-version} is applied only when this
+     *                       resolves to the CONFIGURED model. A version hash identifies
+     *                       one release of one model, so carrying it onto any other asks
+     *                       Replicate for something that does not exist — which is why
+     *                       the test is "is this the configured model" rather than "did
+     *                       the caller pass a name": the chain names the configured model
+     *                       explicitly on its first link, and that link should still get
+     *                       the pin a production deployment set.
      */
     public Optional<byte[]> generateColorCodedMask(String imageUrl, ImageType scene,
-                                                   String modelOverride) {
-        boolean overridden = modelOverride != null && !modelOverride.isBlank();
-        String modelId = overridden ? modelOverride.trim() : model;
+                                                   String requestedModel) {
+        String modelId = (requestedModel == null || requestedModel.isBlank())
+                ? model : requestedModel.trim();
+        boolean overridden = modelId != null && !modelId.equals(model);
         boolean ready = enabled
                 && replicateApiToken != null && !replicateApiToken.isBlank()
                 && modelId != null && !modelId.isBlank();
@@ -151,7 +198,7 @@ public class ReplicateMaskSegmenter {
         try {
             boolean forceAccent = scene == ImageType.INDOOR;
             log.info("Mask segmenter [{}]: requesting COLOR-CODED mask (scene={}, forceAccent={}{})",
-                    modelId, scene, forceAccent, overridden ? ", ADMIN model override" : "");
+                    modelId, scene, forceAccent, overridden ? ", not the configured model" : "");
 
             Map<String, Object> input = buildImageEditInput(
                     modelId, colorCodedPrompt(forceAccent), imageUrl);

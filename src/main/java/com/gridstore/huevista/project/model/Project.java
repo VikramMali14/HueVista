@@ -158,6 +158,26 @@ public class Project {
     @Builder.Default
     private boolean autoMaskFailed = false;
 
+    /**
+     * What the AI run is doing right now, in a sentence fit to show the person waiting.
+     *
+     * <p>Both halves of the pipeline work through a chain of models, and a model that is
+     * merely busy hands over to the next one. That is the right behaviour and it is also
+     * completely invisible: the studio showed one unchanging spinner whether the first
+     * model answered in forty seconds or the fourth answered in six minutes, so a run
+     * that was working looked exactly like a run that had hung. People closed the tab.
+     *
+     * <p>So each step writes a line here as it happens ("Nano Banana 2 was busy — trying
+     * FLUX 2 Max"), and the status endpoint the studio already polls carries it back.
+     * Prose on purpose: {@link FailureStage} is the machine-readable half, and the only
+     * consumer of this one is a human reading a loader.
+     *
+     * <p>Cleared at the start of each run and again when it ends — it describes a run in
+     * flight, not the project.
+     */
+    @Column(columnDefinition = "TEXT")
+    private String aiProgressNote;
+
     // Share link — null until generated
     @Column(unique = true)
     private String shareToken;

@@ -241,7 +241,12 @@ public class SegmentationService {
             try {
                 Optional<byte[]> cleanedOpt = (skipClean || simulateCleanFailure)
                         ? Optional.empty()
-                        : imageCleaner.cleanImage(imageUrl, scene, cleanModel);
+                        // The listener is what turns the cleaner's model chain into
+                        // something the waiting studio can see: each link says which
+                        // model it is asking and that the last one was busy, and the
+                        // status endpoint hands the sentence straight back.
+                        : imageCleaner.cleanImage(imageUrl, scene, cleanModel,
+                                note -> say(projectId, note));
                 if (cleanedOpt.isPresent()) {
                     cleanedBytes = cleanedOpt.get();
                     String cleanedKey = storageService.store(
@@ -282,10 +287,12 @@ public class SegmentationService {
                 // A cleaned image from an earlier run would put this run's masks on a
                 // canvas that no longer matches, so drop the reference along with it.
                 persistCleanedImageKey(projectId, null);
-                markFailed(projectId, FailureStage.CLEAN,
-                        "The photo clean-up didn't come through — every image model we ask "
-                        + "turned it down, so wall detection was not run. Try again in a few "
-                        + "minutes, or report this and our team will look at your photo.");
+                // The chain is four models across two independent families, so all of them
+                // declining within a few minutes is a statement about capacity rather than
+                // about this photo — a safety refusal would have stopped the chain on the
+                // first model instead of reaching the last. So the user is told the system
+                // is loaded and to come back, not to change their picture.
+                markFailed(projectId, FailureStage.CLEAN, ImageCleanerService.SYSTEM_UNDER_LOAD);
                 return;
             }
 
@@ -412,18 +419,44 @@ public class SegmentationService {
             }
 
             int attempts = Math.max(1, autoMaskAttempts);
+            // An ADMIN pinning this run to one model is asking about THAT model, so the
+            // chain collapses to it — the same reasoning as the cleaner's override. A
+            // usable mask produced by a sibling tier would answer a question nobody asked
+            // and be indistinguishable, afterwards, from one the pinned model made.
+            String override = projectRepository.findMaskModelById(projectId).orElse(null);
+            List<String> chain = (override != null && !override.isBlank())
+                    ? List.of(override.trim())
+                    : maskSegmenter.modelChain();
+            // Stub mode never talks to Replicate, so there is no chain to walk — one
+            // pseudo-model, still retried, so the retry path itself stays exercised.
+            if (stubAiPipeline.isEnabled()) chain = List.of("stub");
+            // A chain that came back empty must not silently mean "make no attempt". One
+            // null entry is the pre-chain behaviour exactly: ask whatever the segmenter's
+            // own configuration says. Reachable through misconfiguration
+            // (nano-banana.model blank) and worth surviving either way.
+            if (chain.isEmpty()) chain = java.util.Collections.singletonList(null);
+
             ProcessedMasks masks = null;
-            for (int attempt = 1; attempt <= attempts && masks == null; attempt++) {
-                if (attempt > 1) {
-                    log.info("Auto-mask retry {}/{} for project {} — previous generation " +
-                            "produced no usable main wall", attempt, attempts, projectId);
+            int budget = attempts * Math.max(1, chain.size());
+            int spent = 0;
+            outer:
+            for (String candidate : chain) {
+                for (int attempt = 1; attempt <= attempts; attempt++) {
+                    spent++;
+                    if (spent > 1) {
+                        log.info("Auto-mask retry {}/{} for project {} on {} — the previous "
+                                + "generation produced no usable main wall",
+                                spent, budget, projectId, candidate);
+                    }
+                    say(projectId, maskNote(candidate, spent, budget));
+                    masks = generateAndProcessMasks(projectId, imageUrl, scene,
+                            targetW, targetH, candidate);
+                    if (masks != null) break outer;
                 }
-                masks = generateAndProcessMasks(projectId, imageUrl, scene,
-                        targetW, targetH);
             }
             if (masks == null) {
                 log.info("Mask model didn't produce a usable main wall for project {} " +
-                        "after {} attempt(s)", projectId, attempts);
+                        "after {} attempt(s) across {}", projectId, spent, chain);
                 return false;
             }
 
@@ -488,7 +521,8 @@ public class SegmentationService {
      */
     private ProcessedMasks generateAndProcessMasks(String projectId, String imageUrl,
                                                    ImageType scene,
-                                                   int targetW, int targetH) {
+                                                   int targetW, int targetH,
+                                                   String modelId) {
         // Testing stub: draw the colour-coded image locally (vertical
         // RED|GREEN|BLUE thirds) instead of paying for a generation. Produced
         // at the canvas size, so the resize below is a no-op.
@@ -502,12 +536,11 @@ public class SegmentationService {
                 return null;
             }
         } else {
-            // ADMIN testing knob, read here rather than carried down from segmentAsync:
-            // one single-column read beside a 60-90s model call is free, and it keeps the
-            // knob out of a signature every caller and test would then have to carry.
-            // Null (the normal case) = the configured mask model.
-            colorRaw = maskSegmenter.generateColorCodedMask(imageUrl, scene,
-                    projectRepository.findMaskModelById(projectId).orElse(null));
+            // The model this round is on, chosen by the chain in the caller. Passed as an
+            // "override" because that is the parameter the segmenter already has for
+            // "ask this exact model" — the chain and an admin's pin want the same thing
+            // of it, and a second parameter meaning the same would be one too many.
+            colorRaw = maskSegmenter.generateColorCodedMask(imageUrl, scene, modelId);
         }
         if (colorRaw.isEmpty()) {
             log.info("Mask segmenter returned no color-coded mask for project {}", projectId);
@@ -609,11 +642,22 @@ public class SegmentationService {
      *  the PNGs fast. */
     private static final int MAX_MASK_DIM = 2048;
 
-    /** How many colour-coded generations to try before declaring auto
-     *  segmentation failed. Generative models are non-deterministic, so a
-     *  second roll after a dud (no usable main wall) usually lands; each
-     *  extra attempt costs one more Replicate call, and only runs on failure.
-     *  1 = the old single-shot behaviour. */
+    /**
+     * How many colour-coded generations to try PER MODEL before moving to the next one
+     * in {@link ReplicateMaskSegmenter#modelChain()}.
+     *
+     * <p>Two, and unlike the cleaner's single attempt that is the right number here.
+     * The cleaner moves on immediately because its failures are queue failures, and a
+     * busy pool stays busy. A mask usually fails a different way: the model answers, and
+     * the answer is a dud — no red main wall, an off-palette image the split cannot use.
+     * That is non-determinism rather than capacity, and a second roll of the SAME model
+     * lands often enough to be the cheapest thing to try. Only once a model has produced
+     * two duds is it worth believing the model itself is wrong for this photo, which is
+     * when the sibling tier gets its turn.
+     *
+     * <p>So the full budget is 2 × the chain length — with the defaults, Nano Banana Pro
+     * twice, then Nano Banana 2 twice.
+     */
     @Value("${huevista.segmentation.auto-mask-attempts:2}")
     private int autoMaskAttempts;
 
@@ -1050,9 +1094,53 @@ public class SegmentationService {
             p.setFailureReason(null);
             p.setFailureStage(null);
             p.setAutoMaskFailed(false);
+            p.setAiProgressNote(null);
             projectRepository.save(p);
         });
     }
+
+    // ── Telling the user what the run is doing ───────────────────────────────
+    //
+    // Both halves of the pipeline walk a chain of models, and the wait is measured in
+    // minutes. From the studio all of it looked the same — one spinner, no movement —
+    // so a run that was patiently working through its third model was indistinguishable
+    // from one that had died, and the sensible response to a dead page is to close it.
+    // That is the one action that actually loses the work, so the run narrates itself.
+
+    /**
+     * Write one line of running commentary onto the project.
+     *
+     * <p>Its own tiny transaction on purpose: {@code segmentAsync} is not transactional
+     * as a whole (it cannot be — it spends minutes inside model calls), and a note is
+     * only worth anything if the polling studio can read it WHILE the run continues.
+     *
+     * <p>Best-effort to the point of swallowing everything. This is a progress
+     * indicator; a failure to write one must never be the reason a paid run ends.
+     */
+    private void say(String projectId, String note) {
+        try {
+            projectRepository.findById(projectId).ifPresent(p -> {
+                p.setAiProgressNote(note);
+                projectRepository.save(p);
+            });
+        } catch (Exception e) {
+            log.debug("Could not record progress for project {}: {}", projectId, e.toString());
+        }
+    }
+
+    /**
+     * The commentary for one mask attempt.
+     *
+     * <p>Says "looking for the walls" rather than naming the model on the first try —
+     * the model's identity is noise to somebody who just wants to know it is working —
+     * and only mentions a retry once there has been something to retry. The count is
+     * included from then on so a long wait reads as bounded rather than open-ended.
+     */
+    private static String maskNote(String modelId, int attempt, int budget) {
+        if (attempt <= 1) return "Finding the walls in your photo…";
+        return "Still finding the walls — attempt " + attempt + " of " + budget + ".";
+    }
+
 
     /**
      * Wall detection came back empty. Finish the run anyway — on the canvas that DID
@@ -1089,6 +1177,7 @@ public class SegmentationService {
             p.setFailureReason(null);
             p.setFailureStage(null);
             p.setAutoMaskFailed(true);
+            p.setAiProgressNote(null);
             projectRepository.save(p);
         });
         log.warn("Auto wall detection produced nothing for project {} (cleanedCanvas={}, " +
@@ -1114,6 +1203,9 @@ public class SegmentationService {
             p.setStatus(ProjectStatus.FAILED);
             p.setFailureReason(reason);
             p.setFailureStage(stage);
+            // The commentary described a run in flight; the failure reason replaces it.
+            // Leaving both would put "trying Nano Banana Pro…" beside "we gave up".
+            p.setAiProgressNote(null);
             projectRepository.save(p);
         });
     }
