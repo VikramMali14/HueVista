@@ -233,10 +233,15 @@ public class SegmentationService {
             // of what a testing knob is for.
             boolean cleanRequired = !skipClean
                     && (imageCleaner.isAvailable() || simulateCleanFailure);
+            // ADMIN testing knob: run this ONE clean on a named model instead of the
+            // configured one, so two models can be compared on the same photo. Null —
+            // the normal case — leaves the configured model in charge. Validated against
+            // the catalogue when the request was taken, so it is safe to pass on.
+            String cleanModel = projectRepository.findCleanModelById(projectId).orElse(null);
             try {
                 Optional<byte[]> cleanedOpt = (skipClean || simulateCleanFailure)
                         ? Optional.empty()
-                        : imageCleaner.cleanImage(imageUrl, scene);
+                        : imageCleaner.cleanImage(imageUrl, scene, cleanModel);
                 if (cleanedOpt.isPresent()) {
                     cleanedBytes = cleanedOpt.get();
                     String cleanedKey = storageService.store(
@@ -497,7 +502,12 @@ public class SegmentationService {
                 return null;
             }
         } else {
-            colorRaw = maskSegmenter.generateColorCodedMask(imageUrl, scene);
+            // ADMIN testing knob, read here rather than carried down from segmentAsync:
+            // one single-column read beside a 60-90s model call is free, and it keeps the
+            // knob out of a signature every caller and test would then have to carry.
+            // Null (the normal case) = the configured mask model.
+            colorRaw = maskSegmenter.generateColorCodedMask(imageUrl, scene,
+                    projectRepository.findMaskModelById(projectId).orElse(null));
         }
         if (colorRaw.isEmpty()) {
             log.info("Mask segmenter returned no color-coded mask for project {}", projectId);

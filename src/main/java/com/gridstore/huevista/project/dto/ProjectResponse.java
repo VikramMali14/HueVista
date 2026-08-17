@@ -58,6 +58,12 @@ public class ProjectResponse {
     // studio asks for them by hand. The team has already been told: the pipeline files
     // its own report in this case, because a user with a working room has no reason to.
     private boolean autoMaskFailed;
+    // The image models this project's last run was PINNED to by an admin comparing
+    // models, or null (the overwhelmingly normal case) for the configured ones. Carried
+    // so the admin mask viewer can say which models made the canvas and the mask it is
+    // showing — a comparison whose result nobody can attribute afterwards was not one.
+    private String cleanModel;
+    private String maskModel;
     private List<RegionResponse> regions;
     private boolean hasShareLink;
     private LocalDateTime shareExpiresAt;
@@ -158,6 +164,8 @@ public class ProjectResponse {
                         ? project.getFailureStage().name() : null)
                 .maskMode(project.getMaskMode())
                 .autoMaskFailed(project.isAutoMaskFailed())
+                .cleanModel(project.getCleanModel())
+                .maskModel(project.getMaskModel())
                 .regions(regions)
                 .hasShareLink(project.getShareToken() != null)
                 .shareExpiresAt(project.getShareExpiresAt())

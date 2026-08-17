@@ -91,6 +91,10 @@ class ApiContractTest {
                 // failure — the project opens and works — so the studio needs its own
                 // flag to know to ask for hand-marked walls.
                 "autoMaskFailed",
+                // Which image models an admin pinned this run to, null for the
+                // configured ones. The mask viewer names them beside the canvas: a
+                // model comparison nobody can attribute afterwards was not one.
+                "cleanModel", "maskModel",
                 "regions",
                 "hasShareLink", "shareExpiresAt", "sharedBrands", "sentToShopAt",
                 "createdAt", "updatedAt",

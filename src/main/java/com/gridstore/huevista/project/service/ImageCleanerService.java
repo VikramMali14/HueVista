@@ -90,6 +90,14 @@ import java.util.concurrent.Callable;
  * ({@code ClaudeVisionService}) and describing this photo's clutter for the prompt
  * ({@link CleaningHintService}).
  *
+ * <h2>The admin override</h2>
+ *
+ * An ADMIN can pin ONE run to a named model ({@code cleanModel} on the segment request,
+ * validated against {@code AiModelCatalogue}), which is how two models get compared on
+ * the same photo. An override replaces the primary AND switches the hierarchy off: the
+ * chain above exists so a paying user's run survives a busy model, but a comparison that
+ * might quietly have been answered by a different model answers nothing.
+ *
  * Configuration:
  *   replicate.image-cleaner.enabled          — kill switch (default false)
  *   replicate.image-cleaner.model            — primary, default google/nano-banana-pro
@@ -213,6 +221,11 @@ public class ImageCleanerService {
         return List.copyOf(ordered);
     }
 
+    /** The default chain: the configured primary, with the whole hierarchy behind it. */
+    public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType) {
+        return cleanImage(imageUrl, imageType, null);
+    }
+
     /**
      * Runs the cleaning prompt on the input image. Returns the cleaned
      * image bytes on success. Empty when every provider in the hierarchy declined
@@ -223,13 +236,34 @@ public class ImageCleanerService {
      * rather than ending the clean. What is NOT retried anywhere is a refusal about the
      * image itself — a safety block gets the same answer from every model, and spending
      * four minutes proving that costs the user their run.
+     *
+     * @param modelOverride an ADMIN's per-run choice of model (already checked against
+     *                      {@code AiModelCatalogue}), or null for the configured one.
+     *                      An override is asked ALONE: no Google route, no fallback
+     *                      family. The hierarchy exists so a user's run survives a busy
+     *                      model, but an override is a question about one specific model
+     *                      — answering it with an image from a different one is worse
+     *                      than answering it with nothing, because the admin has no way
+     *                      to tell the two apart by looking.
      */
-    public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType) {
-        boolean replicateOn = isConfigured();
-        boolean geminiOn = gemini.isConfigured();
+    public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType, String modelOverride) {
+        // An override is honoured even when it names the model the config already uses:
+        // "run this on Nano Banana Pro" is a request for that one model, and answering it
+        // with FLUX because Replicate was busy would misattribute the image just as badly
+        // as it would for any other pick.
+        boolean overridden = modelOverride != null && !modelOverride.isBlank();
+        String primary = overridden ? modelOverride.trim() : model;
+        boolean replicateOn = enabled
+                && replicateApiToken != null && !replicateApiToken.isBlank()
+                && primary != null && !primary.isBlank();
+        boolean geminiOn = !overridden && gemini.isConfigured();
         if (!replicateOn && !geminiOn) {
             log.debug("ImageCleaner not configured — skipping");
             return Optional.empty();
+        }
+        if (overridden) {
+            log.info("ImageCleaner [{}]: ADMIN model override for this run — it is the only "
+                    + "model asked, so a refusal fails the clean instead of falling over", primary);
         }
 
         String prompt = cleanPromptFor(imageType);
@@ -253,14 +287,19 @@ public class ImageCleanerService {
         // Set when Replicate refuses our token: the rest of the Replicate models would
         // each discover the same dead token, so the chain skips straight past them.
         boolean replicateDead = false;
+        // WHICH provider's image this is. Worth carrying: the canvas the user ends up
+        // painting on may well have come from the third model in the chain, and the
+        // success line used to name none of them.
+        String producedBy = null;
 
         // 1. The primary model on Replicate.
         if (replicateOn) {
-            Attempt attempt = askProvider("Replicate[" + model + "]",
-                    () -> runOnReplicate(model, finalPrompt, imageUrl, imageType, hints.isPresent()));
+            Attempt attempt = askProvider("Replicate[" + primary + "]",
+                    () -> runOnReplicate(primary, finalPrompt, imageUrl, imageType, hints.isPresent()));
             cleaned = attempt.image();
             keepGoing = attempt.worthFailingOver();
             replicateDead = attempt.platformDead();
+            if (cleaned != null) producedBy = primary;
         }
 
         // 2. The same model, asked through Google instead of Replicate's queue.
@@ -279,11 +318,13 @@ public class ImageCleanerService {
                         () -> gemini.edit(finalPrompt, source, resolution));
                 cleaned = attempt.image();
                 keepGoing = attempt.worthFailingOver();
+                if (cleaned != null) producedBy = "GeminiAPI[" + gemini.model() + "]";
             }
         }
 
         // 3. Different model families, in configured order, until one delivers.
-        if (cleaned == null && keepGoing && replicateOn && !replicateDead) {
+        //    Skipped entirely under an override — see the parameter doc.
+        if (cleaned == null && keepGoing && replicateOn && !replicateDead && !overridden) {
             for (String fallback : fallbackModelList()) {
                 if (!replicate.canRun(fallback)) {
                     log.info("ImageCleaner skipping {} — it is not configured "
@@ -295,20 +336,28 @@ public class ImageCleanerService {
                 Attempt attempt = askProvider("Replicate[" + fallback + "]",
                         () -> runOnReplicate(fallback, finalPrompt, imageUrl, imageType, hints.isPresent()));
                 cleaned = attempt.image();
-                if (cleaned != null) break;
+                if (cleaned != null) {
+                    producedBy = fallback;
+                    break;
+                }
                 if (!attempt.worthFailingOver() || attempt.platformDead()) break;
             }
         }
 
         if (cleaned == null) {
-            log.warn("ImageCleaner produced nothing — every provider in the hierarchy "
-                    + "declined, so this run has no cleaned canvas and no masks will be "
-                    + "generated from it");
+            if (overridden) {
+                log.warn("ImageCleaner produced nothing — the admin pinned this run to {} and "
+                        + "that model declined, so nothing else was asked", primary);
+            } else {
+                log.warn("ImageCleaner produced nothing — every provider in the hierarchy "
+                        + "declined, so this run has no cleaned canvas and no masks will be "
+                        + "generated from it");
+            }
             return Optional.empty();
         }
         byte[] upscaled = upscaleToLongestEdge(cleaned, upscaleLongestPx);
-        log.info("ImageCleaner produced cleaned image: {} bytes (gen={}, upscaled to ~{}px: {} bytes)",
-                cleaned.length, resolution, upscaleLongestPx, upscaled.length);
+        log.info("ImageCleaner produced cleaned image on {}: {} bytes (gen={}, upscaled to ~{}px: {} bytes)",
+                producedBy, cleaned.length, resolution, upscaleLongestPx, upscaled.length);
         return Optional.of(upscaled);
     }
 

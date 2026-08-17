@@ -78,6 +78,8 @@ public class ProjectService {
     private final com.gridstore.huevista.account.service.FeatureAccessService featureAccessService;
     /** Where a link handed to a human points — the website, not this API. */
     private final com.gridstore.huevista.common.web.SiteUrls siteUrls;
+    /** The image models an ADMIN may pin a run to, and the only thing that says so. */
+    private final com.gridstore.huevista.common.ai.AiModelCatalogue modelCatalogue;
 
     @Autowired(required = false)
     private SegmentationJobQueue segmentationJobQueue;
@@ -887,7 +889,9 @@ public class ProjectService {
      *                callers — it decides whether AI wall detection runs after
      *                the compulsory clean-up; cleanImage=false is an ADMIN
      *                testing knob (the controller strips it for other roles)
-     *                that skips the image-cleaner step.
+     *                that skips the image-cleaner step, and cleanModel/maskModel
+     *                are the ADMIN's per-run choice of which image model runs
+     *                each half.
      */
     @Transactional
     public ProjectResponse requestSegmentation(String userId, String projectId,
@@ -910,6 +914,19 @@ public class ProjectService {
             // whatever the last run was given, exactly like skipImageClean above — an
             // explicit "NONE" is how a simulation is switched back off.
             project.setSimulatedFailure(AiFailureSimulator.parse(options.getSimulateFailure()));
+        }
+        // ADMIN model overrides. An empty string is how the studio says "back to the
+        // configured model", so blank clears rather than being ignored — otherwise a
+        // model picked once would keep running for every later run of that project with
+        // nothing on screen saying so, which is the trap simulateFailure documents above.
+        // A non-blank value must name a model in the catalogue: an unknown one is a 400
+        // rather than a silent fall back to the default, because an admin comparing two
+        // models has no way to tell from the image which one produced it.
+        if (options != null && options.getCleanModel() != null) {
+            project.setCleanModel(modelCatalogue.resolveOverride(options.getCleanModel()).orElse(null));
+        }
+        if (options != null && options.getMaskModel() != null) {
+            project.setMaskModel(modelCatalogue.resolveOverride(options.getMaskModel()).orElse(null));
         }
 
         // Gate WITHOUT charging yet: throws 402 when the paying account has no active
