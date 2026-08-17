@@ -220,9 +220,23 @@ class ApiContractTest {
                 "twoFactorRequired");
     }
 
+    /**
+     * The kiosk receipt carries a real session, because the walk-in's account is opened
+     * for them at the till. If {@code session} ever goes missing from this shape, the
+     * customer is paying and then being asked to sign up — which is the queue at the
+     * counter this whole flow exists to remove.
+     */
     @Test
-    void guest_redeem_response_matches_frontend_GuestSession() {
-        assertThat(propsOf("GuestRedeemResponse")).containsExactlyInAnyOrder(
-                "guestToken", "code", "shopName", "validDays", "expiresAt", "allowedBrands");
+    void store_checkout_response_matches_frontend_StoreCheckoutResult() {
+        assertThat(propsOf("StoreCheckoutResponse")).containsExactlyInAnyOrder(
+                "code", "shopName", "validDays", "expiresAt", "amountPaise",
+                "session", "accountEmail", "existingAccount");
+    }
+
+    @Test
+    void guest_merge_response_matches_frontend_GuestMergeResult() {
+        assertThat(propsOf("GuestMergeResponse")).containsExactlyInAnyOrder(
+                "mergedFromUserId", "projectsMoved", "imagesMoved",
+                "projectAllowanceMoved", "aiCreditsMoved", "shopName");
     }
 }

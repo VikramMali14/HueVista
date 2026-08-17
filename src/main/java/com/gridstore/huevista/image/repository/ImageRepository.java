@@ -22,6 +22,16 @@ public interface ImageRepository extends JpaRepository<UploadedImage, String> {
     long countByStorageKey(String storageKey);
 
     /**
+     * Hand every uploaded photo owned by one account to another, for an account merge.
+     * The photos have to travel with the rooms built on them — a room whose image still
+     * belonged to a retired account would 404 the moment its owner opened it.
+     */
+    @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE UploadedImage i SET i.user = :target WHERE i.user.id = :fromUserId")
+    int reassignOwner(@Param("target") com.gridstore.huevista.auth.model.User target,
+                      @Param("fromUserId") String fromUserId);
+
+    /**
      * The same count for many files at once, as {@code [storageKey, count]} pairs.
      *
      * Free-library templates are the reason this exists: every copy someone starts

@@ -12,6 +12,16 @@ import java.util.Optional;
 
 public interface ProjectCreditRepository extends JpaRepository<ProjectCredit, String> {
 
+    /**
+     * Move every project credit — spent and unspent alike — to another account, for an
+     * account merge. Spent ones travel too: they name the project that consumed them, and
+     * those projects are moving, so leaving the credit behind would put a room's paid-for
+     * receipt on an account that no longer exists.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE ProjectCredit c SET c.userId = :toUserId WHERE c.userId = :fromUserId")
+    int reassignOwner(@Param("fromUserId") String fromUserId, @Param("toUserId") String toUserId);
+
     /** Unspent credits, oldest first — the one a new project should consume. */
     @Query("""
             SELECT c FROM ProjectCredit c

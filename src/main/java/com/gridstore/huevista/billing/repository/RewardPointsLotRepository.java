@@ -13,6 +13,15 @@ import java.util.List;
 public interface RewardPointsLotRepository extends JpaRepository<RewardPointsLot, String> {
 
     /**
+     * Move a retired account's point lots to the account it merged into. Expiry dates
+     * ride along untouched — points age from when they were earned, and a merge is not
+     * a fresh earning.
+     */
+    @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE RewardPointsLot l SET l.userId = :toUserId WHERE l.userId = :fromUserId")
+    int reassignOwner(@Param("fromUserId") String fromUserId, @Param("toUserId") String toUserId);
+
+    /**
      * Spendable balance: live lots plus any outstanding debt (which is negative, so it
      * subtracts). Expired and written-off lots are excluded.
      */
