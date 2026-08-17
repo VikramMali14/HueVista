@@ -82,7 +82,7 @@ class RetailerComboIntegrationTest {
                 .user(retailer).organization(org).role(OrgMemberRole.OWNER).build());
 
         codeRepository.save(CustomerAccessCode.builder()
-                .organization(org).code(CODE).validDays(7)
+                .organization(org).code(CODE)
                 .expiresAt(LocalDateTime.now().plusDays(7)).build());
 
         retailerToken = login("shop@example.com", "password123");

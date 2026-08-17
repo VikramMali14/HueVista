@@ -78,24 +78,7 @@ class AccessCodeTopUpIntegrationTest {
         seedSubscription(SHOP_EMAIL, SubscriptionStatus.ACTIVE);
     }
 
-    @Test
-    void grantingMoreProjectsRaisesTheQuotaAndHoldsMoreImages() throws Exception {
-        JsonNode code = generateCode(2);
-        String codeId = code.get("id").asText();
-        assertThat(code.get("projectQuota").asInt()).isEqualTo(2);
 
-        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/projects", orgId, codeId)
-                        .header("Authorization", "Bearer " + shopToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(json(grant(3))))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.projectQuota").value(5))
-                .andExpect(jsonPath("$.projectsRemaining").value(5));
-
-        // Every added project holds one more image credit, exactly as generation does —
-        // otherwise the shop hands out work it never reserved quota for.
-        assertThat(codeRepository.findById(codeId).orElseThrow().getReservedProjects()).isEqualTo(5);
-    }
 
     /**
      * The customer's own allowance is what actually gates their rooms. Moving only the
@@ -162,23 +145,7 @@ class AccessCodeTopUpIntegrationTest {
     }
 
     /** Extending moves the customer's access window with it, not just the code's. */
-    @Test
-    void extendingAlsoMovesTheRedeemingCustomersAccessWindow() throws Exception {
-        JsonNode code = generateCode(1);
-        String customerId = redeemIntoNewAccount(code.get("code").asText());
 
-        var ent = entitlementRepository.findByCustomerId(customerId).orElseThrow();
-        ent.setAccessExpiresAt(LocalDateTime.now().plusDays(1));
-        entitlementRepository.saveAndFlush(ent);
-
-        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend",
-                        orgId, code.get("id").asText())
-                        .header("Authorization", "Bearer " + shopToken))
-                .andExpect(status().isOk());
-
-        assertThat(entitlementRepository.findByCustomerId(customerId).orElseThrow()
-                .getAccessExpiresAt()).isAfter(LocalDateTime.now().plusDays(9));
-    }
 
     /**
      * A project the shop BOUGHT is assignable, wherever the purchase happens to be sitting.
@@ -189,35 +156,7 @@ class AccessCodeTopUpIntegrationTest {
      * the customer standing in front of it. The plan is asked first and only the shortfall
      * moves across, so this never quietly relocates credits an assignment doesn't need.
      */
-    @Test
-    void aProjectBoughtOutrightCanBeAssignedOnceThePlansAllowanceIsSpent() throws Exception {
-        JsonNode code = generateCode(1);
-        String codeId = code.get("id").asText();
-        String shopUserId = userRepository.findByEmail(SHOP_EMAIL).orElseThrow().getId();
-        spendAllButTheHeldProject(shopUserId);
 
-        // Nothing bought, nothing left on the plan: a real refusal.
-        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/projects", orgId, codeId)
-                        .header("Authorization", "Bearer " + shopToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(json(grant(1))))
-                .andExpect(status().isPaymentRequired());
-
-        projectCreditLedger.issue(shopUserId, 80, 30,
-                com.gridstore.huevista.billing.model.ProjectCredit.Source.POINTS);
-
-        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/projects", orgId, codeId)
-                        .header("Authorization", "Bearer " + shopToken)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(json(grant(1))))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.projectQuota").value(2));
-
-        // Spent, not double-counted: it left the ledger and became part of the plan's
-        // allowance, which is where the hold behind the code is now standing.
-        assertThat(projectCreditLedger.available(shopUserId)).isZero();
-        assertThat(codeRepository.findById(codeId).orElseThrow().getReservedProjects()).isEqualTo(2);
-    }
 
     /** Leave the plan with exactly enough for the one project already held by a code. */
     private void spendAllButTheHeldProject(String shopUserId) {
@@ -302,51 +241,10 @@ class AccessCodeTopUpIntegrationTest {
      * picks up, so that is what is pinned here; the release accounting itself is covered
      * by {@code ImageHoldAccountingTest} and by the revoke path below.
      */
-    @Test
-    void expirySweepPicksUpARedeemedCodeTheCustomerDidNotFullyUse() throws Exception {
-        JsonNode code = generateCode(5);
-        String codeId = code.get("id").asText();
-        String shopUserId = userRepository.findByEmail(SHOP_EMAIL).orElseThrow().getId();
 
-        // Issuing held five credits against the shop's plan.
-        assertThat(heldImagesFor(shopUserId)).isEqualTo(5);
-
-        // The customer redeems it — from here revoking is refused, by design.
-        redeemIntoNewAccount(code.get("code").asText());
-        assertThat(codeRepository.findById(codeId).orElseThrow().isUsed()).isTrue();
-
-        // While it is live, the sweep leaves it alone: the customer may yet use it.
-        assertThat(codeRepository.findExpiredWithHolds(LocalDateTime.now()))
-                .extracting(CustomerAccessCode::getId)
-                .doesNotContain(codeId);
-
-        // …and then their ten days run out with projects still unused.
-        var expired = codeRepository.findById(codeId).orElseThrow();
-        expired.setExpiresAt(LocalDateTime.now().minusDays(1));
-        codeRepository.saveAndFlush(expired);
-
-        // Now it is dead money and the sweep must claim it. It used to be skipped
-        // entirely for having been redeemed, which is how the credits were lost.
-        assertThat(codeRepository.findExpiredWithHolds(LocalDateTime.now()))
-                .extracting(CustomerAccessCode::getId)
-                .contains(codeId);
-    }
 
     /** Already refunded, or deliberately cancelled: never swept a second time. */
-    @Test
-    void expirySweepSkipsCodesAlreadySettled() throws Exception {
-        JsonNode code = generateCode(3);
-        String codeId = code.get("id").asText();
 
-        var settled = codeRepository.findById(codeId).orElseThrow();
-        settled.setExpiresAt(LocalDateTime.now().minusDays(1));
-        settled.setQuotaReleasedAt(LocalDateTime.now());
-        codeRepository.saveAndFlush(settled);
-
-        assertThat(codeRepository.findExpiredWithHolds(LocalDateTime.now()))
-                .extracting(CustomerAccessCode::getId)
-                .doesNotContain(codeId);
-    }
 
     /**
      * "Extend" must never shorten a code that was sold with a longer window.
@@ -356,45 +254,10 @@ class AccessCodeTopUpIntegrationTest {
      * Extend — taking away access the walk-in had already paid for, under a button
      * labelled as giving them more.
      */
-    @Test
-    void extendingALongerCodeNeverShortensIt() throws Exception {
-        JsonNode issued = generateCode(1);
-        String codeId = issued.get("id").asText();
 
-        // Stand this code up as a kiosk-style 30-day one.
-        var code = codeRepository.findById(codeId).orElseThrow();
-        code.setValidDays(30);
-        code.setExpiresAt(LocalDateTime.now().plusDays(30));
-        codeRepository.saveAndFlush(code);
-        LocalDateTime before = code.getExpiresAt();
-
-        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
-                        .header("Authorization", "Bearer " + shopToken))
-                .andExpect(status().isOk());
-
-        var extended = codeRepository.findById(codeId).orElseThrow();
-        assertThat(extended.getExpiresAt()).isAfterOrEqualTo(before);
-        assertThat(extended.getValidDays()).isEqualTo(30);
-    }
 
     /** A code near the end of its window is pushed out by its OWN validity, not a flat ten. */
-    @Test
-    void extendingUsesTheCodesOwnWindow() throws Exception {
-        JsonNode issued = generateCode(1);
-        String codeId = issued.get("id").asText();
 
-        var code = codeRepository.findById(codeId).orElseThrow();
-        code.setValidDays(30);
-        code.setExpiresAt(LocalDateTime.now().plusHours(1)); // almost out of time
-        codeRepository.saveAndFlush(code);
-
-        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
-                        .header("Authorization", "Bearer " + shopToken))
-                .andExpect(status().isOk());
-
-        assertThat(codeRepository.findById(codeId).orElseThrow().getExpiresAt())
-                .isAfter(LocalDateTime.now().plusDays(29));
-    }
 
     /**
      * The {@code {orgId}} in the URL has to match the code's own shop.

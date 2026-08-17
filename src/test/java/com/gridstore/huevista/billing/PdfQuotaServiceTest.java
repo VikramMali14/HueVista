@@ -143,7 +143,6 @@ class PdfQuotaServiceTest {
         CustomerEntitlement ent = CustomerEntitlement.builder()
                 .customer(user(CUSTOMER, UserRole.CUSTOMER))
                 .retailerOrg(org)
-                .accessExpiresAt(java.time.LocalDateTime.now().plusDays(5))
                 .build();
         when(entitlements.findByCustomerId(CUSTOMER)).thenReturn(Optional.of(ent));
         when(memberships.findUserIdsByOrganizationIdAndRole(ORG, OrgMemberRole.OWNER))

@@ -15,12 +15,16 @@ public class AccessCodeResponse {
     private String code;
     private String organizationId;
     private String organizationName;
-    private int validDays;
+    /**
+     * The deadline for redeeming this code, 30 days from issue. Stops applying once
+     * somebody redeems it — a customer's access does not expire.
+     */
     private LocalDateTime expiresAt;
     private boolean used;
+    /** Unredeemed and past its 30 days. Always false once {@code used} is true. */
     private boolean expired;
     // Cancelled by the shop before anyone redeemed it. A revoked code can never be
-    // redeemed; its held image credits are already back in the shop's quota.
+    // redeemed. Nothing is refunded — the projects on it are spent.
     private boolean revoked;
     private LocalDateTime revokedAt;
     // True while the code can still be cancelled or edited (nobody has redeemed it and
@@ -44,14 +48,9 @@ public class AccessCodeResponse {
     // Resolved individual products, populated by the service for list/detail views.
     // Null on the lightweight from() projection.
     private List<ShopProductResponse> assignedProducts;
-    // When the shop last pushed this code's expiry out, and how often they have. Each
-    // extension resets the window to a fresh 10 days, so a code never carries more than
-    // 10 days ahead however many times it is renewed.
-    private LocalDateTime extendedAt;
-    private int extensionCount;
-    // True while the shop can still top this code up — add projects or add 10 more days.
-    // Unlike `editable` this survives redemption: topping up a code the customer is
-    // actively using is the whole point. A cancelled code can never be topped up.
+    // True while the shop can still add projects to this code. Unlike `editable` this
+    // survives redemption: topping up a code the customer is actively using is the whole
+    // point. A cancelled code can never be topped up.
     private boolean topUpAllowed;
 
     public static AccessCodeResponse from(CustomerAccessCode c) {
@@ -60,7 +59,6 @@ public class AccessCodeResponse {
                 .code(c.getCode())
                 .organizationId(c.getOrganization().getId())
                 .organizationName(c.getOrganization().getName())
-                .validDays(c.getValidDays())
                 .expiresAt(c.getExpiresAt())
                 .used(c.isUsed())
                 .expired(c.isExpired())
@@ -74,8 +72,6 @@ public class AccessCodeResponse {
                 .projectsRemaining(c.getProjectQuota())
                 .allowedBrands(c.getAllowedBrandList())
                 .allowedProductIds(c.getAllowedProductIdList())
-                .extendedAt(c.getExtendedAt())
-                .extensionCount(c.getExtensionCount())
                 .topUpAllowed(!c.isRevoked())
                 .build();
     }

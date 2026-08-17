@@ -102,7 +102,6 @@ class AiCreditWalletIntegrationTest {
         customerId = customer.getId();
         entitlementRepository.saveAndFlush(CustomerEntitlement.builder()
                 .customer(customer)
-                .accessExpiresAt(LocalDateTime.now().plusDays(10))
                 .projectAllowance(2)
                 .projectsCreated(0)
                 .build());

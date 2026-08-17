@@ -57,15 +57,9 @@ class AccessCodeRoleGuardTest {
     private final com.gridstore.huevista.billing.service.ProjectCreditService projectCredits =
             mock(com.gridstore.huevista.billing.service.ProjectCreditService.class);
 
-    // The self-reference the expiry sweep uses for its per-code REQUIRES_NEW; only the
-    // scheduled sweep touches it, so the unit under test here never resolves it.
-    @SuppressWarnings("unchecked")
-    private final org.springframework.beans.factory.ObjectProvider<AccessCodeService> self =
-            mock(org.springframework.beans.factory.ObjectProvider.class);
-
     private final AccessCodeService service = new AccessCodeService(
-            codes, orgs, memberships, users, entitlements, jwt, auth, subscriptions,
-            billing, audit, brandAccess, shopProducts, projects, grants, projectCredits, self);
+            codes, orgs, memberships, users, entitlements, subscriptions,
+            billing, audit, brandAccess, shopProducts, projects, grants, projectCredits);
 
     private static CustomerAccessCode validCode() {
         Organization org = new Organization();
@@ -74,7 +68,6 @@ class AccessCodeRoleGuardTest {
                 .id("code-1")
                 .organization(org)
                 .code("ABCD2345")
-                .validDays(7)
                 .expiresAt(LocalDateTime.now().plusDays(7))
                 .build();
     }
@@ -116,7 +109,7 @@ class AccessCodeRoleGuardTest {
 
         service.redeemCode("user-1", "ABCD2345");
 
-        verify(entitlements).onAccessCodeRedeemed(any(User.class), eq(code.getOrganization()), eq(7), eq(1));
+        verify(entitlements).onAccessCodeRedeemed(any(User.class), eq(code.getOrganization()), eq(1));
         assertThat(code.getUsedAt()).isNotNull();
     }
 }

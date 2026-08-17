@@ -3,8 +3,6 @@ package com.gridstore.huevista.account.service;
 import com.gridstore.huevista.account.dto.AccessCodeResponse;
 import com.gridstore.huevista.account.dto.AssignedProductsResponse;
 import com.gridstore.huevista.account.dto.GenerateAccessCodeRequest;
-import com.gridstore.huevista.account.dto.GuestRedeemResponse;
-import com.gridstore.huevista.account.dto.RedeemAccountResponse;
 import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.model.OrgType;
@@ -12,12 +10,9 @@ import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.repository.OrgMembershipRepository;
 import com.gridstore.huevista.account.repository.OrganizationRepository;
-import com.gridstore.huevista.auth.dto.AuthResponse;
-import com.gridstore.huevista.auth.model.AuthProvider;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
-import com.gridstore.huevista.auth.service.AuthService;
 import com.gridstore.huevista.billing.model.Subscription;
 import com.gridstore.huevista.billing.model.SubscriptionStatus;
 import com.gridstore.huevista.billing.repository.SubscriptionRepository;
@@ -27,7 +22,6 @@ import com.gridstore.huevista.paint.dto.ShopProductResponse;
 import com.gridstore.huevista.paint.repository.ShopProductRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,7 +29,6 @@ import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 @Slf4j
 @Service
@@ -47,8 +40,6 @@ public class AccessCodeService {
     private final OrgMembershipRepository membershipRepository;
     private final UserRepository userRepository;
     private final CustomerEntitlementService entitlementService;
-    private final com.gridstore.huevista.auth.service.JwtService jwtService;
-    private final AuthService authService;
     private final SubscriptionRepository subscriptionRepository;
     private final com.gridstore.huevista.billing.service.BillingService billingService;
     private final com.gridstore.huevista.common.audit.AuditService auditService;
@@ -58,23 +49,15 @@ public class AccessCodeService {
     private final ProjectGrantService projectGrantService;
     private final com.gridstore.huevista.billing.service.ProjectCreditService projectCreditService;
 
-    /**
-     * This bean through its own proxy, for the expiry sweep's per-code REQUIRES_NEW.
-     *
-     * A self-reference has to be resolved lazily or the bean cannot be constructed at
-     * all. An {@code ObjectProvider} does that by construction — {@code @Lazy} would
-     * need Lombok told to copy the annotation onto the generated constructor parameter
-     * (a build-wide {@code lombok.config} change), and without that it is silently
-     * dropped and the context fails to start.
-     */
-    private final org.springframework.beans.factory.ObjectProvider<AccessCodeService> self;
-
     private static final String CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
     private static final int CODE_LENGTH = 8;
     private static final SecureRandom RANDOM = new SecureRandom();
 
-    /** Retailer-assigned customer codes are always valid for 10 days. */
-    private static final int FIXED_VALID_DAYS = 10;
+    /**
+     * How long an UNREDEEMED code stays redeemable. Once a customer redeems it, this
+     * stops applying — their access does not expire.
+     */
+    private static final int UNREDEEMED_VALID_DAYS = 30;
 
     /** Most projects a single top-up may add to a code — a typo guard, not a policy. */
     private static final int MAX_GRANT_PROJECTS = 20;
@@ -107,24 +90,24 @@ public class AccessCodeService {
         }
 
         // Charge the assigned projects against the retailer OWNER's monthly image quota
-        // BEFORE creating the code — one image reserved per assigned project. A single
-        // atomic all-or-nothing reservation; if it won't fit, nothing is charged.
-        reserveProjectQuota(orgId, request.getProjectQuota());
+        // BEFORE creating the code — one image per assigned project, in a single atomic
+        // all-or-nothing charge. If it won't fit, nothing is charged and no code exists.
+        //
+        // This is a PURCHASE, not a hold: nothing here is ever given back. A shop that
+        // assigns three projects has spent three, whether the customer creates three
+        // rooms, one, or none. That is what makes the rest of this class simple — there
+        // is no reservation to track, no lock-step to keep with the subscription, and no
+        // sweep to reconcile the two.
+        chargeProjectQuota(orgId, request.getProjectQuota());
 
         String code = generateUniqueCode();
-        LocalDateTime expiresAt = LocalDateTime.now().plusDays(FIXED_VALID_DAYS);
 
         CustomerAccessCode accessCode = CustomerAccessCode.builder()
                 .organization(org)
                 .code(code)
-                .validDays(FIXED_VALID_DAYS)
-                .expiresAt(expiresAt)
+                .expiresAt(LocalDateTime.now().plusDays(UNREDEEMED_VALID_DAYS))
                 .customerName(request.getCustomerName().trim())
                 .projectQuota(request.getProjectQuota())
-                // One held image credit per assigned project. Spent as projects are
-                // actually segmented; returned to the shop if the code is revoked or
-                // expires with nobody redeeming it.
-                .reservedProjects(request.getProjectQuota())
                 .build();
         accessCode.setAllowedBrandList(request.getAllowedBrands());
         accessCode.setAllowedProductIdList(productIds);
@@ -137,18 +120,16 @@ public class AccessCodeService {
     }
 
     /**
-     * Reserve {@code projectQuota} projects against the retailer owner's ACTIVE subscription
-     * (one held per assigned project). Throws {@link QuotaExceededException} when the shop
-     * has no active plan or not enough left to hold — the retailer must buy another project
-     * from the studio or assign fewer.
+     * Charge {@code projectQuota} projects against the retailer owner's ACTIVE subscription,
+     * permanently. Throws {@link QuotaExceededException} when the shop has no active plan or
+     * not enough left — the retailer must buy another project from the studio or assign fewer.
      *
      * <p>The plan's own monthly allowance is not the whole of what a shop may assign: extra
-     * projects it bought outright count too (see
-     * {@code SubscriptionRepository#reserveProjectsIfWithinLimit}), and any it bought while
-     * between plans are pulled onto the plan here before the second attempt. A project the
-     * shop paid for is assignable wherever it happens to be sitting.
+     * projects it bought outright count too, and any it bought while between plans are pulled
+     * onto the plan here before the second attempt. A project the shop paid for is assignable
+     * wherever it happens to be sitting.
      */
-    private Subscription reserveProjectQuota(String orgId, int projectQuota) {
+    private Subscription chargeProjectQuota(String orgId, int projectQuota) {
         String ownerId = resolveOrgOwnerUserId(orgId);
         Subscription sub = subscriptionRepository
                 .findEntitling(ownerId, SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED,
@@ -162,40 +143,21 @@ public class AccessCodeService {
                     + (projectQuota == 1 ? "" : "s") + ". Buy another project from the studio, "
                     + "upgrade your plan, or assign fewer.");
         }
-        log.info("Held {} project(s) on subscription {} for access-code assignment", projectQuota, sub.getId());
+        log.info("Charged {} project(s) to subscription {} for access-code assignment", projectQuota, sub.getId());
         return sub;
     }
 
     /**
-     * Hand a code's unspent image credits back to the issuing shop. Idempotent: the
-     * {@code quotaReleasedAt} compare-and-set means a revoke racing the expiry sweep
-     * refunds exactly once. Returns how many credits went back.
-     */
-    private int releaseHeldQuota(CustomerAccessCode code) {
-        int held = code.getReservedProjects();
-        if (held <= 0) {
-            codeRepository.markQuotaReleased(code.getId(), LocalDateTime.now());
-            return 0;
-        }
-        if (codeRepository.markQuotaReleased(code.getId(), LocalDateTime.now()) == 0) {
-            return 0; // someone else already refunded this code
-        }
-        resolveOrgOwnerUserIdOptional(code.getOrganization().getId())
-                .ifPresent(ownerId -> billingService.releaseReservedProjects(ownerId, held));
-        log.info("Released {} held image(s) back to shop {} from code {}",
-                held, code.getOrganization().getId(), code.getCode());
-        return held;
-    }
-
-    /**
-     * Cancel a code the shop issued but nobody has redeemed yet, returning its unspent
-     * image credits to the shop's quota.
+     * Cancel a code the shop issued but nobody has redeemed yet.
      *
-     * Without this a mistyped customer name or a wrong project count could only be fixed
-     * by issuing a SECOND code — paying the quota twice — while the wrong one stayed live
-     * for its full 10 days. A code that has already been redeemed is deliberately NOT
-     * revocable: the customer may already have work under it, and pulling access after
-     * the fact would strand them mid-visit at the counter.
+     * <p>Without this a mistyped customer name or a wrong project count could only be fixed
+     * by issuing a SECOND code while the wrong one stayed live. A code that has already been
+     * redeemed is deliberately NOT revocable: the customer's projects are theirs from the
+     * moment they redeem, and taking them back afterwards is not something a counter should
+     * be able to do.
+     *
+     * <p>Nothing is refunded. The projects on the code were bought when it was issued and
+     * they are spent — cancelling only stops anyone redeeming it.
      */
     @Transactional
     public AccessCodeResponse revokeCode(String requestingUserId, String orgId, String codeId) {
@@ -204,18 +166,16 @@ public class AccessCodeService {
         if (code.isUsed()) {
             throw new IllegalStateException(
                     "This code has already been used, so it can't be cancelled. "
-                    + "The customer's access ends on its own when the code expires.");
+                    + "The projects on it belong to the customer now.");
         }
         if (codeRepository.revokeIfUnused(codeId, LocalDateTime.now()) == 0) {
             throw new IllegalStateException("This code was already cancelled or used.");
         }
-        int returned = releaseHeldQuota(code);
 
         auditService.record(requestingUserId, "ACCESS_CODE_REVOKED", "ACCESS_CODE", codeId,
-                "org=" + code.getOrganization().getId() + " code=" + code.getCode()
-                        + " imagesReturned=" + returned);
-        log.info("Access code revoked: org={} code={} imagesReturned={}",
-                code.getOrganization().getId(), code.getCode(), returned);
+                "org=" + code.getOrganization().getId() + " code=" + code.getCode());
+        log.info("Access code revoked: org={} code={}",
+                code.getOrganization().getId(), code.getCode());
         return AccessCodeResponse.from(codeRepository.findById(codeId).orElse(code));
     }
 
@@ -270,11 +230,11 @@ public class AccessCodeService {
      * in the customer's hand.
      *
      * Requires a LIVE subscription, for the same reason issuing a code does: each added
-     * project reserves an image credit against the shop's monthly quota, and there is no
-     * quota to reserve against without a plan. The reservation is all-or-nothing.
+     * project is charged against the shop's monthly quota, and there is nothing to charge
+     * without a plan. The charge is all-or-nothing, and permanent.
      *
-     * Unlike {@link #updateCode} this deliberately DOES work on a redeemed code — a code
-     * nobody has redeemed yet has no customer to give more projects to.
+     * Unlike {@link #updateCode} this deliberately DOES work on a redeemed code — topping
+     * up the code in a customer's hand is the whole point of it.
      */
     @Transactional
     public AccessCodeResponse grantExtraProjects(String requestingUserId, String orgId,
@@ -288,25 +248,25 @@ public class AccessCodeService {
         if (code.isRevoked()) {
             throw new IllegalStateException("This code was cancelled — issue a new one instead.");
         }
+        // Only an UNREDEEMED code can run out of time, and nobody can ever redeem it now.
         if (code.isExpired()) {
             throw new IllegalStateException(
-                    "This code has expired. Add another 10 days to it first, then grant the projects.");
+                    "Nobody redeemed this code within 30 days, so it can no longer be used. "
+                    + "Issue a new one instead.");
         }
         // One lookup, not two. This used to resolve the subscription once for the gate and
-        // again inside the reservation, through two different queries — so the grant could
-        // be recorded against a different row than the one actually charged.
-        Subscription funding = reserveProjectQuota(orgId, projects);
+        // again inside the charge, through two different queries — so the grant could be
+        // recorded against a different row than the one actually charged.
+        Subscription funding = chargeProjectQuota(orgId, projects);
 
-        // Recorded so the shop can take it back if nobody uses it — and only while the
-        // billing period that paid for it is still running.
+        // Recorded for the shop's own ledger of what it has given away.
         projectGrantService.recordCodeGrant(orgId, codeId, projects, funding);
 
         code.setProjectQuota(code.getProjectQuota() + projects);
-        code.setReservedProjects(code.getReservedProjects() + projects);
         codeRepository.save(code);
 
-        // A code already redeemed into an account has a live entitlement behind it; the
-        // extra projects are worthless unless that allowance grows too.
+        // A code already redeemed into an account has an entitlement behind it; the extra
+        // projects are worthless unless that allowance grows too.
         if (code.getUsedByUser() != null) {
             entitlementService.addProjectAllowance(code.getUsedByUser().getId(), projects);
         }
@@ -319,127 +279,11 @@ public class AccessCodeService {
         return withProjectsUsed(code);
     }
 
-    /**
-     * Give a code another window.
-     *
-     * Each extension REPLACES the window with a fresh one measured from now rather than
-     * adding to whatever is left, so a code can never carry more than its own validity
-     * ahead of it however often it is renewed. That keeps the promise the customer was
-     * made when they were handed it true at every point in its life, and stops a code
-     * quietly becoming a permanent credential through repeated top-ups.
-     *
-     * The window is the CODE's own {@code validDays}, not a flat ten. A kiosk code is
-     * sold with its shop's chosen validity — often much longer — and hardcoding ten here
-     * meant "extend" silently cut a 30-day code the customer had paid for down to ten.
-     * For the same reason it never moves the expiry backwards: an extension that shortens
-     * access is not an extension.
-     *
-     * Requires a LIVE subscription: extending access is extending the shop's service to
-     * that customer, and a shop with no plan has no service to extend. Nothing is charged
-     * — the projects on the code were already paid for; only their deadline moves.
-     */
-    @Transactional
-    public AccessCodeResponse extendValidity(String requestingUserId, String orgId, String codeId) {
-        CustomerAccessCode code = requireCodeOfOrg(requestingUserId, orgId, codeId);
-
-        if (code.isRevoked()) {
-            throw new IllegalStateException("This code was cancelled — issue a new one instead.");
-        }
-        int window = code.getValidDays() > 0 ? code.getValidDays() : FIXED_VALID_DAYS;
-        requireActiveSubscription(orgId,
-                "Your subscription has ended, so you can't extend a customer's access. "
-                + "Renew your plan to give this code another " + window + " days.");
-
-        LocalDateTime newExpiry = LocalDateTime.now().plusDays(window);
-        // Never backwards: a code with longer left than the window it was sold with keeps
-        // what it has. Extending must not be a way to take access away.
-        if (code.getExpiresAt() != null && code.getExpiresAt().isAfter(newExpiry)) {
-            newExpiry = code.getExpiresAt();
-        }
-        code.setExpiresAt(newExpiry);
-        code.setExtendedAt(LocalDateTime.now());
-        code.setExtensionCount(code.getExtensionCount() + 1);
-        codeRepository.save(code);
-
-        // The customer's own access window is what actually gates their projects; moving
-        // only the code's expiry would leave them locked out with a "valid" code in hand.
-        if (code.getUsedByUser() != null) {
-            entitlementService.extendAccessTo(code.getUsedByUser().getId(), newExpiry);
-        }
-
-        auditService.record(requestingUserId, "ACCESS_CODE_EXTENDED", "ACCESS_CODE", codeId,
-                "org=" + orgId + " code=" + code.getCode() + " until=" + newExpiry
-                        + " extensions=" + code.getExtensionCount());
-        log.info("Access code {} extended to {} (extension #{})",
-                code.getCode(), newExpiry, code.getExtensionCount());
-        return withProjectsUsed(code);
-    }
-
-    /** The shop's OWNER must hold a live plan for the top-up paths; returns it. */
-    private Subscription requireActiveSubscription(String orgId, String message) {
-        String ownerId = resolveOrgOwnerUserId(orgId);
-        return billingService.findEntitlingSubscription(ownerId)
-                .orElseThrow(() ->
-                        new com.gridstore.huevista.common.exception.SubscriptionRequiredException(message));
-    }
-
     /** Response carrying this code's live "projects used / remaining" counters. */
     private AccessCodeResponse withProjectsUsed(CustomerAccessCode code) {
         AccessCodeResponse res = withAssignedProducts(code);
         res.applyProjectsUsed((int) projectRepository.countByAccessCodeId(code.getId()));
         return res;
-    }
-
-    /**
-     * Daily sweep: hand back the image credits still held by EXPIRED codes.
-     *
-     * A shop pays a credit per assigned project the moment it prints a code. Two ways
-     * that credit becomes dead money, and this covers both:
-     *
-     * <ul>
-     *   <li>Nobody ever redeemed the code — the customer never walked back in.</li>
-     *   <li>The code WAS redeemed, but the customer created fewer projects than the shop
-     *       assigned. This was the bigger leak and had no path back at all: revoking is
-     *       refused once a code is redeemed, the sweep used to skip redeemed codes, and
-     *       {@code reservedProjects} deliberately survives a renewal — so the unspent
-     *       credits were subtracted from the shop's quota in every period thereafter,
-     *       forever. A shop issuing codes at any steady rate eventually had none left.</li>
-     * </ul>
-     *
-     * Past expiry a code can neither create a project nor be billed against, so anything
-     * still held is a project that will never exist.
-     *
-     * Runs an hour after the subscription expiry job so the two never interleave on the
-     * same rows. Each code is refunded in its own transaction — one bad row must not
-     * abort the whole sweep.
-     */
-    @org.springframework.scheduling.annotation.Scheduled(cron = "0 0 2 * * *")
-    public void releaseExpiredCodeQuota() {
-        List<CustomerAccessCode> stale =
-                codeRepository.findExpiredWithHolds(LocalDateTime.now());
-        if (stale.isEmpty()) return;
-        int refunded = 0;
-        for (CustomerAccessCode code : stale) {
-            try {
-                // Through the proxy, NOT this.release…() — a self-call bypasses Spring's
-                // transaction interceptor entirely, so REQUIRES_NEW was silently ignored
-                // and every code shared one transaction. The try/catch then read as
-                // isolation it did not have: one failing row marks the shared transaction
-                // rollback-only, and every refund after it fails at commit. Exactly the
-                // "one bad row must not abort the whole sweep" the comment promises.
-                refunded += self.getObject().releaseHeldQuotaInNewTransaction(code.getId());
-            } catch (Exception e) {
-                log.warn("Could not release held quota for expired code {}: {}",
-                        code.getId(), e.getMessage());
-            }
-        }
-        log.info("Expired-code sweep returned {} image credit(s) across {} code(s)",
-                refunded, stale.size());
-    }
-
-    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
-    public int releaseHeldQuotaInNewTransaction(String codeId) {
-        return codeRepository.findById(codeId).map(this::releaseHeldQuota).orElse(0);
     }
 
     @Transactional(readOnly = true)
@@ -481,21 +325,23 @@ public class AccessCodeService {
             throw new IllegalStateException("This access code was cancelled by the shop");
         }
         if (accessCode.isExpired()) {
-            throw new IllegalStateException("This access code has expired");
+            throw new IllegalStateException(
+                    "Nobody redeemed this code within 30 days of the shop issuing it, "
+                    + "so it can no longer be used. Ask the shop for a new one.");
         }
 
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
-        // Redeeming flips the account to CUSTOMER — for a shop, distributor, painter
-        // or admin account that would silently destroy their real role (and with it
-        // org ownership checks, subscriptions, the admin console…). Public signups
-        // are CUSTOMER already, so only customers ever legitimately redeem here.
-        if (user.getRole() != null && user.getRole() != UserRole.CUSTOMER) {
+        // A code may only ever be added to a CUSTOMER account. For a shop, distributor,
+        // painter or admin account this would destroy their real role (and with it org
+        // ownership checks, subscriptions, the admin console…). Public signups are
+        // CUSTOMER already, so only customers ever legitimately redeem.
+        if (user.getRole() != UserRole.CUSTOMER) {
             throw new IllegalStateException(
-                    "This account is a " + user.getRole().name().toLowerCase()
-                    + " account — access codes are for walk-in customers. "
-                    + "Ask your customer to unlock with it, or open it in a private window.");
+                    "This account is a " + String.valueOf(user.getRole()).toLowerCase()
+                    + " account — access codes can only be added to a customer account. "
+                    + "Ask your customer to sign in and redeem it themselves.");
         }
 
         // Compare-and-set consumption: if a concurrent request redeemed this code
@@ -505,124 +351,16 @@ public class AccessCodeService {
             throw new IllegalStateException("This access code has already been used");
         }
 
-        user.setRole(UserRole.CUSTOMER);
-        userRepository.save(user);
-
         // Mirror what the UPDATE wrote so the response (and any flush) is consistent.
         accessCode.setUsedByUser(user);
         accessCode.setUsedAt(now);
 
-        // Create/refresh the customer's project entitlement: the assigned quota, valid for validDays.
+        // Open or top up the customer's project entitlement with the assigned quota.
         entitlementService.onAccessCodeRedeemed(user, accessCode.getOrganization(),
-                accessCode.getValidDays(), accessCode.getProjectQuota());
+                accessCode.getProjectQuota());
 
         log.info("Access code redeemed: user={} org={} code={}", userId, accessCode.getOrganization().getId(), code);
         return AccessCodeResponse.from(accessCode);
-    }
-
-    /**
-     * Redeems a retailer access code with NO login: auto-provisions a passwordless
-     * CUSTOMER account named as the retailer entered, signs it in, and returns a full
-     * session. The customer lands on their dashboard with their own name and their
-     * assigned project quota + products.
-     *
-     * RE-ENTRY: because the account has no password, a customer who loses their session
-     * (dead phone, closed tab) must be able to get back in with the same code while it is
-     * valid. So a code already redeemed into an account re-mints a session for that SAME
-     * account rather than stranding them — the entitlement is NOT reset, so any projects
-     * they already created are preserved. One account per code; a code consumed by the
-     * signed-in role-flip path ({@link #redeemCode}) stays as-is.
-     */
-    @Transactional
-    public RedeemAccountResponse redeemAsNewCustomer(String code) {
-        CustomerAccessCode accessCode = codeRepository.findByCode(code.toUpperCase())
-                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + code));
-
-        if (accessCode.isRevoked()) {
-            throw new IllegalStateException("This access code was cancelled by the shop");
-        }
-        if (accessCode.isExpired()) {
-            throw new IllegalStateException("This access code has expired");
-        }
-
-        // A code already consumed by an ACCOUNT can only be re-entered by that same
-        // auto-provisioned customer account (re-entry). A guest-consumed legacy code has
-        // no account to sign into here.
-        if (accessCode.getUsedByUser() != null) {
-            User existing = accessCode.getUsedByUser();
-            if (existing.getProvider() != AuthProvider.ACCESS_CODE) {
-                throw new IllegalStateException("This access code has already been used");
-            }
-            // Re-entry must not reset the allowance, but the account MUST end up with an
-            // entitlement: without one every project read answers 403 "Your access is not
-            // set up" and the customer is signed in to a dashboard that can load nothing.
-            entitlementService.ensureEntitlementForCode(existing, accessCode);
-            AuthResponse session = authService.buildAuthResponse(existing);
-            log.info("Access code re-entered by customer account: user={} code={}", existing.getId(), code);
-            return toRedeemResponse(session, accessCode);
-        }
-        if (accessCode.isUsed()) {
-            throw new IllegalStateException("This access code has already been used");
-        }
-
-        // First redemption: create the account, consume the code, set the entitlement. The
-        // synthetic e-mail is derived from the code, so an account left behind by an earlier
-        // partial redemption is found here and simply signed back in.
-        String email = customerEmailForCode(accessCode.getCode());
-        Optional<User> orphaned = userRepository.findByEmail(email);
-        if (orphaned.isPresent() && orphaned.get().getProvider() == AuthProvider.ACCESS_CODE) {
-            User owner = orphaned.get();
-            // The account exists but the code was never consumed, so the earlier redemption
-            // stopped half-way. Finish it here instead of handing back a session that owns
-            // nothing: claim the code for this account (the e-mail is derived from the code,
-            // so it can belong to no one else) and make sure the entitlement is in place.
-            // Losing the compare-and-set means someone else consumed it concurrently — the
-            // account is still this code's, so sign them in anyway.
-            LocalDateTime consumedAt = LocalDateTime.now();
-            if (codeRepository.consumeForUser(accessCode.getId(), owner, consumedAt) == 1) {
-                accessCode.setUsedByUser(owner);
-                accessCode.setUsedAt(consumedAt);
-            }
-            entitlementService.ensureEntitlementForCode(owner, accessCode);
-            AuthResponse session = authService.buildAuthResponse(owner);
-            log.info("Access code re-entered by existing customer account: user={} code={}", owner.getId(), code);
-            return toRedeemResponse(session, accessCode);
-        }
-
-        User customer;
-        try {
-            customer = userRepository.saveAndFlush(User.builder()
-                    .name(accessCode.getCustomerName() != null && !accessCode.getCustomerName().isBlank()
-                            ? accessCode.getCustomerName().trim() : "Customer")
-                    .email(email)
-                    .password(null) // passwordless — never logs in with credentials
-                    .provider(AuthProvider.ACCESS_CODE)
-                    .role(UserRole.CUSTOMER)
-                    .emailVerified(false)
-                    .createdById(resolveOrgOwnerUserIdOrNull(accessCode.getOrganization().getId()))
-                    .build());
-        } catch (DataIntegrityViolationException race) {
-            // A concurrent redeem of the same code won the insert. The transaction is already
-            // poisoned at this point, so it cannot be recovered in place — the customer retries
-            // and the pre-check above signs them into the winner's account.
-            log.warn("Concurrent redeem of access code {}: {}", code, race.getMostSpecificCause().getMessage());
-            throw new IllegalStateException("This access code is being used. Please try again.");
-        }
-
-        LocalDateTime now = LocalDateTime.now();
-        if (codeRepository.consumeForUser(accessCode.getId(), customer, now) == 0) {
-            throw new IllegalStateException("This access code has already been used");
-        }
-        accessCode.setUsedByUser(customer);
-        accessCode.setUsedAt(now);
-
-        entitlementService.onAccessCodeRedeemed(customer, accessCode.getOrganization(),
-                accessCode.getValidDays(), accessCode.getProjectQuota());
-
-        AuthResponse session = authService.buildAuthResponse(customer);
-        log.info("Access code redeemed into new customer account: user={} org={} code={} quota={}",
-                customer.getId(), accessCode.getOrganization().getId(), code, accessCode.getProjectQuota());
-        return toRedeemResponse(session, accessCode);
     }
 
     /** The paint (companies + individual products) a redeemed customer was assigned. */
@@ -637,20 +375,6 @@ public class AccessCodeService {
                 .products(resolveProducts(code))
                 .build();
     }
-
-    private RedeemAccountResponse toRedeemResponse(AuthResponse session, CustomerAccessCode code) {
-        return RedeemAccountResponse.builder()
-                .accessToken(session.getAccessToken())
-                .refreshToken(session.getRefreshToken())
-                .tokenType(session.getTokenType())
-                .expiresIn(session.getExpiresIn())
-                .user(session.getUser())
-                .shopName(code.getOrganization().getName())
-                .validDays(code.getValidDays())
-                .customerName(code.getCustomerName())
-                .build();
-    }
-
     /** AccessCodeResponse with the individually-assigned products resolved to full listings. */
     private AccessCodeResponse withAssignedProducts(CustomerAccessCode code) {
         AccessCodeResponse res = AccessCodeResponse.from(code);
@@ -664,11 +388,6 @@ public class AccessCodeService {
         return shopProductRepository.findAllById(ids).stream()
                 .map(ShopProductResponse::from)
                 .toList();
-    }
-
-    /** Synthetic, unique, passwordless-account e-mail derived from the code. */
-    private String customerEmailForCode(String code) {
-        return "ac-" + code.toLowerCase() + "@customers.huevista.local";
     }
 
     private String resolveOrgOwnerUserId(String orgId) {
@@ -686,104 +405,34 @@ public class AccessCodeService {
                 .stream().findFirst();
     }
 
-    /**
-     * Redeems an access code for an ANONYMOUS guest (no account). Marks the code
-     * consumed (usedAt set, usedByUser null, guestRedeemed=true) and returns a guest
-     * token scoped to this code, valid until the code expires. The guest owns their
-     * single image+project by this code; the issuing shop sees it via the code.
-     *
-     * RE-ENTRY: a code already redeemed BY A GUEST may be redeemed again while it is
-     * still valid, returning a fresh token for the SAME code (and therefore the same
-     * saved project). The guest's only credential is a browser cookie — a dead phone
-     * or a closed incognito window used to burn the code and strand the customer at
-     * the counter. The code stays scoped to one customer, per-IP redeem rate limits
-     * still apply, and the validity window is unchanged. A code consumed by an
-     * ACCOUNT remains strictly single-use.
-     */
-    @Transactional
-    public GuestRedeemResponse redeemAsGuest(String code) {
-        CustomerAccessCode accessCode = codeRepository.findByCode(code.toUpperCase())
-                .orElseThrow(() -> new ResourceNotFoundException("Access code not found: " + code));
-
-        if (accessCode.isRevoked()) {
-            throw new IllegalStateException("This access code was cancelled by the shop");
-        }
-        if (accessCode.isExpired()) {
-            throw new IllegalStateException("This access code has expired");
-        }
-        boolean reEntry = accessCode.isUsed();
-        if (reEntry && (!accessCode.isGuestRedeemed() || accessCode.getUsedByUser() != null)) {
-            throw new IllegalStateException("This access code has already been used");
-        }
-        // Re-entry exists for the customer whose phone died mid-visit, and it costs
-        // something: the code is 8 characters on a printed slip, and anyone who reads one
-        // gets a fresh session into that customer's room — able to see and overwrite the
-        // colours they chose — for the code's whole life. Closing the loop at handover
-        // bounds that window to the visit it was meant for. After "send to shop" the
-        // customer is done and the counter has what it needs.
-        if (reEntry && projectRepository.countSentToShopByAccessCodeId(accessCode.getId()) > 0) {
-            throw new IllegalStateException(
-                    "This code's room has already been sent to the shop. "
-                    + "Ask at the counter if you'd like to change anything.");
-        }
-
-        if (!reEntry) {
-            // Same compare-and-set as redeemCode: only one concurrent redeemer flips the
-            // row. Losing to another GUEST redeem of this code is just the re-entry
-            // case (proceed); losing to an ACCOUNT redeem must still reject — that
-            // path stays strictly single-use. The re-check is a scalar query so the
-            // answer comes from the database, not our stale managed entity.
-            LocalDateTime now = LocalDateTime.now();
-            if (codeRepository.consumeForGuest(accessCode.getId(), now) == 1) {
-                accessCode.setUsedAt(now);
-                accessCode.setGuestRedeemed(true);
-            } else if (!codeRepository.usedByAccountUserIds(accessCode.getId()).isEmpty()) {
-                throw new IllegalStateException("This access code has already been used");
-            }
-        }
-
-        long ttlMs = java.time.Duration.between(LocalDateTime.now(), accessCode.getExpiresAt()).toMillis();
-        String token = jwtService.generateGuestToken(accessCode.getId(), ttlMs);
-
-        log.info("Access code redeemed by guest{}: org={} code={}",
-                reEntry ? " (re-entry)" : "", accessCode.getOrganization().getId(), code);
-        return GuestRedeemResponse.builder()
-                .guestToken(token)
-                .code(accessCode.getCode())
-                .shopName(accessCode.getOrganization().getName())
-                .validDays(accessCode.getValidDays())
-                .expiresAt(accessCode.getExpiresAt().atZone(java.time.ZoneId.systemDefault()).toInstant())
-                .allowedBrands(accessCode.getAllowedBrandList())
-                .build();
-    }
 
     /**
      * Issues a code on behalf of a retailer's public store kiosk — the caller is a
      * verified PAYMENT, not a signed-in shop member, so there is no membership check
-     * here. Kiosk codes carry no brand restriction (the customer paid; they browse
-     * everything). The kiosk immediately guest-redeems the code; the shop later reads
-     * the real shade codes from it exactly like a counter-issued guest code.
+     * here. Kiosk codes carry no brand restriction: the customer paid, so they browse
+     * everything.
      *
      * <p>Marked SELF-FUNDED, which is the whole difference from a counter-issued code:
      * the walk-in bought this project at the store link, so the shop's subscription is
-     * not consulted in either direction. It reserves no image credit (there is nothing
-     * of the shop's to reserve) and runs under it are neither charged to the shop nor
-     * gated on it — the kiosk used to take the money and only then discover the SHOP's
-     * plan had lapsed, refusing work that was already paid for with no refund behind it.
+     * not consulted in either direction. It costs the shop no image credit (there is
+     * nothing of the shop's to spend) and work under it is neither charged to the shop
+     * nor gated on it — the kiosk used to take the money and only then discover the
+     * SHOP's plan had lapsed, refusing work that was already paid for.
+     *
+     * <p>Like every other code this is redeemed onto a customer ACCOUNT. The buyer is
+     * handed the code and redeems it once signed in, so a payment can never end up
+     * attached to nothing.
      */
     @Transactional
-    public CustomerAccessCode issueForStore(Organization org, int validDays) {
+    public CustomerAccessCode issueForStore(Organization org) {
         String code = generateUniqueCode();
-        CustomerAccessCode accessCode = CustomerAccessCode.builder()
+        CustomerAccessCode accessCode = codeRepository.save(CustomerAccessCode.builder()
                 .organization(org)
                 .code(code)
-                .validDays(validDays)
-                .expiresAt(LocalDateTime.now().plusDays(validDays))
+                .expiresAt(LocalDateTime.now().plusDays(UNREDEEMED_VALID_DAYS))
                 .selfFunded(true)
-                .build();
-        accessCode = codeRepository.save(accessCode);
-        log.info("Store kiosk code issued (self-funded): org={} code={} validDays={}",
-                org.getId(), code, validDays);
+                .build());
+        log.info("Store kiosk code issued (self-funded): org={} code={}", org.getId(), code);
         return accessCode;
     }
 

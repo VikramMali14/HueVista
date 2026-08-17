@@ -127,7 +127,7 @@ public class RetailerComboService {
                 .orElse(null);
         if (memberOrg != null) return memberOrg;
         return entitlementRepository.findByCustomerId(userId)
-                .filter(ent -> !ent.isExpired() && ent.getRetailerOrg() != null)
+                .filter(ent -> ent.getRetailerOrg() != null)
                 .map(ent -> ent.getRetailerOrg().getId())
                 .orElse(null);
     }

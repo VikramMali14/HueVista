@@ -149,12 +149,9 @@ public class ProjectService {
             if (credit != null) {
                 projectCreditLedger.attach(credit.getId(), project.getId());
             }
-            // Work under a shop's code is the SHOP's to pay for, not this account's: the
-            // shop reserved a credit per assigned project when it generated the code, so
-            // this spends that hold rather than taking a second one.
-            if (linkedCode != null) {
-                spendShopCredit(linkedCode);
-            }
+            // Nothing is charged here. Work under a shop's code was paid for when the
+            // shop issued it — one image credit per assigned project, spent outright —
+            // so charging again at creation would bill the same room twice.
 
             log.info("Project created: id={} user={} paidBy={}", project.getId(), userId, payment.describe());
             return toResponse(project, image);
@@ -394,9 +391,6 @@ public class ProjectService {
             }
             regionRepository.saveAll(copies);
 
-            if (linkedCode != null) {
-                spendShopCredit(linkedCode);
-            }
 
             auditService.record(userId, "SHARED_PROJECT_CLAIMED", "PROJECT", project.getId(),
                     "from=" + source.getId() + " walls=" + copies.size());
@@ -440,58 +434,6 @@ public class ProjectService {
     private static String extensionOf(String key) {
         int dot = key.lastIndexOf('.');
         return dot > -1 && dot > key.lastIndexOf('/') ? key.substring(dot) : ".png";
-    }
-
-    /**
-     * Spend the credit the issuing shop is holding for one access-code project.
-     *
-     * The hold comes off the CODE first; only if that succeeds may the matching hold move
-     * on the subscription, so the two counters — which are the same reservation counted in
-     * two places — can never drift. A code with no hold left (a legacy one, or more
-     * projects than were reserved) falls back to a normal charge, so work is never
-     * silently free. Best-effort throughout: a missing org or owner means nobody to bill,
-     * and that must not fail a project the customer is entitled to.
-     */
-    private void spendShopCredit(CustomerAccessCode code) {
-        if (code.isSelfFunded()) {
-            return; // the walk-in paid at the kiosk; the shop's plan was never part of it
-        }
-        try {
-            String ownerId = resolveShopOwnerUserId(code);
-            if (ownerId == null) return;
-            // The hold is one fact stored twice — on the code and on the subscription —
-            // and it has to move on both or neither. This was a single `&&`, which reads
-            // as one decision but is two writes with a short-circuit between them: when
-            // the code gave up a hold and the subscription could not (the shop's plan had
-            // lapsed, so findEntitlingSubscription returns nothing), the code's hold was
-            // destroyed and the subscription kept it.
-            //
-            // That stranded hold is permanent. Cycle rollover deliberately preserves
-            // reservedProjects — a code issued last month is still redeemable this one —
-            // so the phantom counts against the shop's limit in every period thereafter,
-            // and the expiry sweep can only ever refund the smaller number the code now
-            // carries. It is the same failure the sweep's own comment describes as fixed:
-            // a shop issuing codes at a steady rate eventually has no quota left.
-            //
-            // A lapsed shop is not a rare corner here either: a project funded by a code
-            // deliberately does NOT gate on the shop's subscription, precisely so a
-            // walk-in is never refused for their shop's billing.
-            boolean spentHold = false;
-            if (accessCodeRepository.consumeReservedProject(code.getId()) == 1) {
-                spentHold = billingService.consumeReservedProject(ownerId);
-                if (!spentHold) {
-                    // Nothing consumed it, so the code keeps it and the pair stays honest.
-                    accessCodeRepository.restoreReservedProject(code.getId());
-                }
-            }
-            if (!spentHold) {
-                billingService.incrementProjectUsage(ownerId);
-            }
-            log.info("Access-code project charged to {}: {} (code={})",
-                    ownerId, spentHold ? "held-credit" : "charged", code.getId());
-        } catch (RuntimeException e) {
-            log.warn("Could not charge access-code project (code={}): {}", code.getId(), e.getMessage());
-        }
     }
 
     /**
@@ -1500,9 +1442,7 @@ public class ProjectService {
                 .rendersAllowed(includedRenders(true))
                 .build());
 
-        // Charged to the issuing shop at creation, exactly like a signed-in one — a kiosk
-        // code is skipped inside, because the walk-in already paid for it themselves.
-        spendShopCredit(code);
+        // Nothing is charged here: the shop paid for this room when it issued the code.
 
         log.info("Guest project created: id={} accessCode={}", project.getId(), accessCodeId);
         return toPublicResponse(project);
@@ -1704,44 +1644,6 @@ public class ProjectService {
         return projectRepository.findByAccessCodeIdOrderByUpdatedAtDesc(accessCodeId).stream()
                 .map(this::toResponse)
                 .toList();
-    }
-
-    /**
-     * Links the projects a guest created (owned by their access code) to a real user
-     * account — called when the guest signs up. The accessCode link is kept, so the
-     * issuing shop keeps visibility; the user becomes the owner and can keep working.
-     * Only valid while the guest token (and thus the code) is still live.
-     */
-    @Transactional
-    public int linkGuestProjectsToUser(String userId, String guestToken) {
-        if (guestToken == null || !jwtService.isTokenValid(guestToken)
-                || !"guest".equals(jwtService.extractScope(guestToken))) {
-            throw new IllegalArgumentException("Invalid or expired guest session.");
-        }
-        String accessCodeId = jwtService.extractUserId(guestToken); // subject
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
-
-        List<Project> projects = projectRepository.findByAccessCodeIdOrderByUpdatedAtDesc(accessCodeId);
-        int claimed = 0;
-        for (Project p : projects) {
-            if (p.getUser() == null) {
-                p.setUser(user);          // claim ownership…
-                projectRepository.save(p); // …keeping accessCode so the shop still sees it.
-                claimed++;
-            }
-        }
-
-        // A CUSTOMER without an entitlement row is locked out of every project read
-        // ("Your access is not set up"), which would freeze the projects the moment
-        // they were claimed. Mirror the guest's access onto the new account: same
-        // shop, same code expiry, claimed projects counted against the allowance.
-        final int claimedCount = claimed;
-        accessCodeRepository.findById(accessCodeId).ifPresent(code ->
-                entitlementService.onGuestProjectsClaimed(user, code, claimedCount));
-
-        log.info("Linked {} guest project(s) for code {} to user {}", claimedCount, accessCodeId, userId);
-        return claimedCount;
     }
 
     /** Masked (public) projection — hides real shade codes from the guest. */

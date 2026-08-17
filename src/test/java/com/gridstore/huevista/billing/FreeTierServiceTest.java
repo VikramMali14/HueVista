@@ -212,7 +212,7 @@ class FreeTierServiceTest {
         Subscription dead = Subscription.builder()
                 .id("dead").user(retailer()).plan(Plan.STARTER)
                 .status(SubscriptionStatus.EXPIRED)
-                .purchasedProjectCredits(3).reservedProjects(1).build();
+                .purchasedProjectCredits(3).build();
         when(subs.findWithUnspentCredits(eq(USER), anyString())).thenReturn(List.of(dead));
 
         service.ensureCurrentCycle(USER);

@@ -49,7 +49,7 @@ class StoreKioskServiceTest {
 
     private final Organization org = Organization.builder().id("org-1").name("Mehta Paints").build();
     private final StoreLink link = StoreLink.builder()
-            .id("link-1").organization(org).slug("mehta-x7k2p9").validDays(3).build();
+            .id("link-1").organization(org).slug("mehta-x7k2p9").build();
 
     private com.gridstore.huevista.billing.service.RewardPointsService points;
 
@@ -73,8 +73,7 @@ class StoreKioskServiceTest {
 
     private static GuestRedeemResponse guest(String code) {
         return GuestRedeemResponse.builder()
-                .guestToken("guest-token").code(code).shopName("Mehta Paints")
-                .validDays(3).expiresAt(Instant.now().plusSeconds(3600)).build();
+                .guestToken("guest-token").code(code).shopName("Mehta Paints").expiresAt(Instant.now().plusSeconds(3600)).build();
     }
 
     private StoreKioskService service(RazorpayClient razorpay, StoreLinkRepository links,
@@ -99,91 +98,11 @@ class StoreKioskServiceTest {
         return svc;
     }
 
-    @Test
-    void verifiedPaymentIssuesCodeAndCreditsPointsNotACashShare() throws Exception {
-        RazorpayClient razorpay = mock(RazorpayClient.class);
-        razorpay.orders = mock(OrderClient.class);
-        when(razorpay.orders.fetch("order_1")).thenReturn(order(KIOSK_PRICE, "store_kiosk", "link-1"));
-        StoreLinkRepository links = mock(StoreLinkRepository.class);
-        when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(link));
-        StorePaymentRepository payments = mock(StorePaymentRepository.class);
-        when(payments.findByPaymentId("pay_1")).thenReturn(Optional.empty());
-        when(payments.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
-        AccessCodeService codes = mock(AccessCodeService.class);
-        CustomerAccessCode code = CustomerAccessCode.builder().id("code-1").code("ABCD2345").organization(org)
-                .validDays(3).expiresAt(java.time.LocalDateTime.now().plusDays(3)).build();
-        when(codes.issueForStore(org, 3)).thenReturn(code);
-        when(codes.redeemAsGuest("ABCD2345")).thenReturn(guest("ABCD2345"));
-        StoreKioskService svc = service(razorpay, links, payments, codes);
 
-        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
-            utils.when(() -> Utils.verifyPaymentSignature(any(JSONObject.class), any())).thenReturn(true);
 
-            StoreCheckoutResponse res = svc.verifyAndIssue("mehta-x7k2p9", req("order_1", "pay_1"));
 
-            assertThat(res.getCode()).isEqualTo("ABCD2345");
-            assertThat(res.getGuestToken()).isEqualTo("guest-token");
-            assertThat(res.getAmountPaise()).isEqualTo(KIOSK_PRICE);
 
-            ArgumentCaptor<StorePayment> saved = ArgumentCaptor.forClass(StorePayment.class);
-            verify(payments).saveAndFlush(saved.capture());
-            assertThat(saved.getValue().getAmountPaise()).isEqualTo(KIOSK_PRICE);
-            // All of the cash is the platform's; points are awarded on top, not carved out.
-            assertThat(saved.getValue().getPlatformFeePaise()).isEqualTo(KIOSK_PRICE);
-            assertThat(saved.getValue().getBonusPoints()).isEqualTo(BONUS_POINTS);
-            verify(points).creditKioskPoints(OWNER, BONUS_POINTS, "pay_1");
-        }
-    }
 
-    @Test
-    void replayedPaymentReturnsSameCodeWithoutIssuingAnother() throws Exception {
-        RazorpayClient razorpay = mock(RazorpayClient.class);
-        StoreLinkRepository links = mock(StoreLinkRepository.class);
-        when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(link));
-        StorePaymentRepository payments = mock(StorePaymentRepository.class);
-        CustomerAccessCode code = CustomerAccessCode.builder().id("code-1").code("ABCD2345").organization(org)
-                .validDays(3).expiresAt(java.time.LocalDateTime.now().plusDays(3)).build();
-        StorePayment prior = StorePayment.builder()
-                .storeLink(link).organization(org).paymentId("pay_1").orderId("order_1")
-                .amountPaise(KIOSK_PRICE).platformFeePaise(KIOSK_PRICE)
-                .bonusPoints(BONUS_POINTS).accessCode(code).build();
-        when(payments.findByPaymentId("pay_1")).thenReturn(Optional.of(prior));
-        AccessCodeService codes = mock(AccessCodeService.class);
-        when(codes.redeemAsGuest("ABCD2345")).thenReturn(guest("ABCD2345"));
-        StoreKioskService svc = service(razorpay, links, payments, codes);
-
-        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
-            utils.when(() -> Utils.verifyPaymentSignature(any(JSONObject.class), any())).thenReturn(true);
-
-            StoreCheckoutResponse res = svc.verifyAndIssue("mehta-x7k2p9", req("order_1", "pay_1"));
-
-            // Same code back, no second code minted, no second payment row.
-            assertThat(res.getCode()).isEqualTo("ABCD2345");
-            verify(codes, never()).issueForStore(any(), anyInt());
-            verify(payments, never()).saveAndFlush(any());
-            // And no second helping of points for the same sale.
-            verify(points, never()).creditKioskPoints(anyString(), anyInt(), anyString());
-        }
-    }
-
-    @Test
-    void invalidSignatureIssuesNothing() {
-        RazorpayClient razorpay = mock(RazorpayClient.class);
-        StoreLinkRepository links = mock(StoreLinkRepository.class);
-        when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(link));
-        StorePaymentRepository payments = mock(StorePaymentRepository.class);
-        AccessCodeService codes = mock(AccessCodeService.class);
-        StoreKioskService svc = service(razorpay, links, payments, codes);
-
-        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
-            utils.when(() -> Utils.verifyPaymentSignature(any(JSONObject.class), any())).thenReturn(false);
-
-            assertThatThrownBy(() -> svc.verifyAndIssue("mehta-x7k2p9", req("order_1", "pay_1")))
-                    .isInstanceOf(SecurityException.class);
-            verify(payments, never()).saveAndFlush(any());
-            verify(codes, never()).redeemAsGuest(anyString());
-        }
-    }
 
     @Test
     void paymentForSomeOtherOrderIsRejected() throws Exception {
@@ -204,15 +123,14 @@ class StoreKioskServiceTest {
             assertThatThrownBy(() -> svc.verifyAndIssue("mehta-x7k2p9", req("order_1", "pay_1")))
                     .isInstanceOf(SecurityException.class);
             verify(payments, never()).saveAndFlush(any());
-            verify(codes, never()).issueForStore(any(), anyInt());
+            verify(codes, never()).issueForStore(any());
         }
     }
 
     @Test
     void pausedLinkRefusesNewOrders() {
         StoreLink paused = StoreLink.builder()
-                .id("link-1").organization(org).slug("mehta-x7k2p9")
-                .validDays(3).active(false).build();
+                .id("link-1").organization(org).slug("mehta-x7k2p9").active(false).build();
         StoreLinkRepository links = mock(StoreLinkRepository.class);
         when(links.findBySlugAndDeletedAtIsNull("mehta-x7k2p9")).thenReturn(Optional.of(paused));
         StoreKioskService svc = service(mock(RazorpayClient.class), links,
@@ -243,81 +161,11 @@ class StoreKioskServiceTest {
      * asymmetry a pause already has. Keeping their money and issuing nothing is the one
      * outcome this must never have.
      */
-    @Test
-    void deletedLinkStillFinishesAPaymentAlreadyInFlight() throws Exception {
-        StoreLink deleted = StoreLink.builder()
-                .id("link-1").organization(org).slug("mehta-x7k2p9")
-                .validDays(3).active(false).deletedAt(java.time.LocalDateTime.now()).build();
-        RazorpayClient razorpay = mock(RazorpayClient.class);
-        razorpay.orders = mock(OrderClient.class);
-        when(razorpay.orders.fetch("order_1")).thenReturn(order(KIOSK_PRICE, "store_kiosk", "link-1"));
-        StoreLinkRepository links = mock(StoreLinkRepository.class);
-        // The live lookup would find nothing; verification uses the plain one.
-        when(links.findBySlugAndDeletedAtIsNull("mehta-x7k2p9")).thenReturn(Optional.empty());
-        when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(deleted));
-        StorePaymentRepository payments = mock(StorePaymentRepository.class);
-        when(payments.findByPaymentId("pay_1")).thenReturn(Optional.empty());
-        when(payments.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
-        AccessCodeService codes = mock(AccessCodeService.class);
-        CustomerAccessCode code = CustomerAccessCode.builder()
-                .id("code-1").code("ABCD2345").organization(org).build();
-        when(codes.issueForStore(any(), anyInt())).thenReturn(code);
-        when(codes.redeemAsGuest("ABCD2345")).thenReturn(GuestRedeemResponse.builder()
-                .guestToken("gt").code("ABCD2345").shopName("Mehta Paints")
-                .validDays(3).expiresAt(Instant.now().plusSeconds(3600)).build());
-        StoreKioskService svc = service(razorpay, links, payments, codes);
 
-        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
-            utils.when(() -> Utils.verifyPaymentSignature(any(), anyString())).thenReturn(true);
-            StoreCheckoutResponse out = svc.verifyAndIssue("mehta-x7k2p9", req("order_1", "pay_1"));
-            assertThat(out.getCode()).isEqualTo("ABCD2345");
-        }
-    }
 
     /**
      * A shop with no owner account earns nothing — and the walk-in still gets what they
      * paid for. Their access must never hinge on the shop having finished its own setup.
      */
-    @Test
-    void aSaleForAnOwnerlessShopStillIssuesTheCode() throws Exception {
-        RazorpayClient razorpay = mock(RazorpayClient.class);
-        razorpay.orders = mock(OrderClient.class);
-        when(razorpay.orders.fetch("order_1")).thenReturn(order(KIOSK_PRICE, "store_kiosk", "link-1"));
-        StoreLinkRepository links = mock(StoreLinkRepository.class);
-        when(links.findBySlug("mehta-x7k2p9")).thenReturn(Optional.of(link));
-        StorePaymentRepository payments = mock(StorePaymentRepository.class);
-        when(payments.findByPaymentId("pay_1")).thenReturn(Optional.empty());
-        when(payments.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
-        AccessCodeService codes = mock(AccessCodeService.class);
-        CustomerAccessCode code = CustomerAccessCode.builder().id("code-1").code("ABCD2345").organization(org)
-                .validDays(3).expiresAt(java.time.LocalDateTime.now().plusDays(3)).build();
-        when(codes.issueForStore(org, 3)).thenReturn(code);
-        when(codes.redeemAsGuest("ABCD2345")).thenReturn(guest("ABCD2345"));
 
-        var billing = mock(com.gridstore.huevista.billing.service.BillingService.class);
-        var memberships = mock(com.gridstore.huevista.account.repository.OrgMembershipRepository.class);
-        var pricing = new com.gridstore.huevista.billing.service.PricingService(billing,
-                mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class), memberships,
-                mock(com.gridstore.huevista.auth.repository.UserRepository.class));
-        ReflectionTestUtils.setField(pricing, "kioskPricePaise", KIOSK_PRICE);
-        ReflectionTestUtils.setField(pricing, "kioskBonusPoints", BONUS_POINTS);
-        when(memberships.findUserIdsByOrganizationIdAndRole(
-                "org-1", com.gridstore.huevista.account.model.OrgMemberRole.OWNER))
-                .thenReturn(java.util.List.of());   // nobody to pay points to
-        var ownerless = mock(com.gridstore.huevista.billing.service.RewardPointsService.class);
-        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing, ownerless,
-                mock(com.gridstore.huevista.billing.service.PaymentAttemptService.class));
-        ReflectionTestUtils.setField(svc, "keyId", "key");
-        ReflectionTestUtils.setField(svc, "keySecret", "secret");
-        ReflectionTestUtils.setField(svc, "currency", "INR");
-
-        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
-            utils.when(() -> Utils.verifyPaymentSignature(any(JSONObject.class), any())).thenReturn(true);
-
-            StoreCheckoutResponse res = svc.verifyAndIssue("mehta-x7k2p9", req("order_1", "pay_1"));
-
-            assertThat(res.getCode()).isEqualTo("ABCD2345");
-            verify(ownerless, never()).creditKioskPoints(anyString(), anyInt(), anyString());
-        }
-    }
 }

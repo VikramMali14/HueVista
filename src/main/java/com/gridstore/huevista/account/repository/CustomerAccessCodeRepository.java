@@ -74,100 +74,15 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
             """)
     int consumeForUser(@Param("id") String id, @Param("user") User user, @Param("now") LocalDateTime now);
 
-    /** Atomic guest-redemption variant of {@link #consumeForUser}. */
+    /**
+     * Cancel a code nobody has redeemed. The {@code usedByUser IS NULL} guard makes this a
+     * compare-and-set, so a revoke racing a redemption loses cleanly rather than pulling a
+     * code out from under the customer who has just claimed it.
+     */
     @Modifying
     @Query("""
-            UPDATE CustomerAccessCode c
-               SET c.usedAt = :now, c.guestRedeemed = true
-             WHERE c.id = :id AND c.usedByUser IS NULL AND c.usedAt IS NULL
-            """)
-    int consumeForGuest(@Param("id") String id, @Param("now") LocalDateTime now);
-
-    /**
-     * Who (if anyone) consumed the code for an ACCOUNT — as a scalar projection so
-     * the answer comes from the database, not the persistence context's possibly
-     * stale managed entity. Used after a lost guest-redeem CAS to tell "lost to
-     * another guest re-entry" (fine) apart from "lost to an account redeem" (reject).
-     * The inner join means an empty result = no account consumed it.
-     */
-    @Query("SELECT u.id FROM CustomerAccessCode c JOIN c.usedByUser u WHERE c.id = :id")
-    java.util.List<String> usedByAccountUserIds(@Param("id") String id);
-
-    /**
-     * Atomically spend one of this code's held image credits. The {@code reservedProjects
-     * > 0} guard makes it a compare-and-set: concurrent segmentations of two projects
-     * under the same code can never both claim the last hold. Returns 1 when a hold was
-     * taken (the caller then moves it on the subscription too), 0 when the code has none
-     * left — e.g. a legacy code issued before holds existed, or a shop that granted more
-     * projects than it reserved.
-     */
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("""
-            UPDATE CustomerAccessCode c SET c.reservedProjects = c.reservedProjects - 1
-             WHERE c.id = :id AND c.reservedProjects > 0
-            """)
-    int consumeReservedProject(@Param("id") String id);
-
-    /**
-     * Put back a hold taken by {@link #consumeReservedProject} when the matching decrement
-     * on the SUBSCRIPTION could not be made — the shop's plan lapsed, so there is no
-     * entitling row to move the credit on.
-     *
-     * The two counters are one fact stored twice, and the pair is what the expiry sweep
-     * refunds against. Leaving the code short by a hold the subscription never gave up
-     * strands that hold on the subscription for good: cycle rollover deliberately keeps
-     * {@code reservedProjects}, so it counts against the shop's limit in every period
-     * thereafter — a project that already happened, charged forever.
-     */
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("""
-            UPDATE CustomerAccessCode c SET c.reservedProjects = c.reservedProjects + 1
-             WHERE c.id = :id
-            """)
-    int restoreReservedProject(@Param("id") String id);
-
-    /**
-     * Atomically zero a code's remaining holds, stamping when they were returned.
-     * The {@code quotaReleasedAt IS NULL} guard makes the release idempotent, so a
-     * revoke racing the expiry sweep can never refund the same code twice. Returns
-     * the number of rows updated (1 = this caller won and must credit the shop back).
-     */
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("""
-            UPDATE CustomerAccessCode c SET c.reservedProjects = 0, c.quotaReleasedAt = :now
-             WHERE c.id = :id AND c.quotaReleasedAt IS NULL
-            """)
-    int markQuotaReleased(@Param("id") String id, @Param("now") LocalDateTime now);
-
-    /** Atomically stamp a code revoked; 0 when it was already revoked or already used. */
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("""
             UPDATE CustomerAccessCode c SET c.revokedAt = :now
-             WHERE c.id = :id AND c.revokedAt IS NULL AND c.usedAt IS NULL AND c.usedByUser IS NULL
+             WHERE c.id = :id AND c.usedByUser IS NULL AND c.revokedAt IS NULL
             """)
     int revokeIfUnused(@Param("id") String id, @Param("now") LocalDateTime now);
-
-    /**
-     * Codes whose holds are dead money: expired, never revoked, not yet refunded, and
-     * still holding image credits. The daily sweep hands these holds back to the issuing
-     * shop — without it, quota reserved for projects nobody created is lost forever.
-     *
-     * <p>Deliberately NOT limited to unredeemed codes. It once was, and that was the
-     * larger half of the leak: a code redeemed for five projects whose customer created
-     * two left THREE credits held on the shop's subscription with no path back. Revoking
-     * refuses on a redeemed code (the customer may have work under it), the old sweep
-     * skipped it, and {@code reservedProjects} deliberately survives a renewal — so those
-     * credits were subtracted from the shop's effective quota in every future billing
-     * period, forever. A shop issuing codes at a steady rate simply ran out.
-     *
-     * <p>Expiry is the safe moment to reclaim either way: past it no project can be
-     * created against the code and no run can be billed to it, so a remaining hold can
-     * only ever be a project that will never exist.
-     */
-    @Query("""
-            SELECT c FROM CustomerAccessCode c
-             WHERE c.expiresAt < :cutoff
-               AND c.revokedAt IS NULL AND c.quotaReleasedAt IS NULL AND c.reservedProjects > 0
-            """)
-    List<CustomerAccessCode> findExpiredWithHolds(@Param("cutoff") LocalDateTime cutoff);
 }

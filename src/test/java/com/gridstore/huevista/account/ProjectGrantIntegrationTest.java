@@ -91,7 +91,6 @@ class ProjectGrantIntegrationTest {
         entitlementRepository.saveAndFlush(CustomerEntitlement.builder()
                 .customer(customer)
                 .retailerOrg(organizationRepository.findById(orgId).orElseThrow())
-                .accessExpiresAt(LocalDateTime.now().plusDays(10))
                 .projectAllowance(1)
                 .projectsCreated(0)
                 .build());
@@ -216,7 +215,6 @@ class ProjectGrantIntegrationTest {
         codeRepository.saveAndFlush(CustomerAccessCode.builder()
                 .organization(organizationRepository.findById(orgId).orElseThrow())
                 .code("SHOPAAA1")
-                .validDays(10)
                 .expiresAt(LocalDateTime.now().plusDays(10))
                 .customerName("Walk-in")
                 .usedByUser(userRepository.findById(customerId).orElseThrow())

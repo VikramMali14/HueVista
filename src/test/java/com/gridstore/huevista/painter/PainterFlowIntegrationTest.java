@@ -117,7 +117,6 @@ class PainterFlowIntegrationTest {
         entitlementRepository.save(com.gridstore.huevista.account.model.CustomerEntitlement.builder()
                 .customer(customer)
                 .retailerOrg(retailer)
-                .accessExpiresAt(java.time.LocalDateTime.now().plusDays(10))
                 .projectAllowance(1)
                 .projectsCreated(1)
                 .build());
