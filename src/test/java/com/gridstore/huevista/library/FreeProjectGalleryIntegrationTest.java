@@ -34,9 +34,11 @@ import org.springframework.transaction.annotation.Transactional;
 import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -390,6 +392,70 @@ class FreeProjectGalleryIntegrationTest {
         Project copy = projectRepository.findById(projectId).orElseThrow();
         // It belongs to the visitor, not to the admin who published the room.
         assertThat(copy.getUser().getEmail()).isEqualTo("asha@example.com");
+        assertThat(regionRepository.findByProjectIdOrderByDisplayOrderAsc(projectId)).hasSize(2);
+    }
+
+    /** A valid 1x1 PNG, so the request passes validation and reaches the guard under test. */
+    private static final String ONE_PIXEL_PNG =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    /**
+     * A library room's WALLS are fixed; its paint is not.
+     *
+     * <p>The room is a copy of a finished, curated template: its surfaces were cut once,
+     * by an admin, and the shelf's thumbnail is a promise about what a copy looks like. A
+     * copy that re-cuts its own walls quietly stops being the room it names, and nothing
+     * on the shelf shows that it has. There is also nothing to repair — a room the
+     * account uploaded can hand-mark its way out of a bad detection, but these walls were
+     * correct when they were published.
+     *
+     * <p>So four writes are refused and everything else is untouched. Painting in
+     * particular has to keep working, because it is the entire point of taking a room off
+     * the shelf.
+     */
+    @Test
+    void a_library_room_refuses_wall_edits_but_still_takes_paint() throws Exception {
+        User root = admin();
+        String adminToken = adminToken();
+        String slug = slugOf(publish(adminToken, projectWith(root, 2), true));
+
+        customer();
+        String token = tokenFor("asha@example.com");
+
+        MvcResult res = mockMvc.perform(post("/api/free-projects/" + slug + "/start")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isCreated()).andReturn();
+        String projectId = objectMapper.readTree(res.getResponse().getContentAsString())
+                .path("projectId").asText();
+        Long regionId = regionRepository.findByProjectIdOrderByDisplayOrderAsc(projectId)
+                .get(0).getId();
+
+        // Drawing a new wall.
+        mockMvc.perform(post("/api/projects/" + projectId + "/regions/custom-mask")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"maskBase64\":\"" + ONE_PIXEL_PNG
+                                + "\",\"category\":\"MAIN_WALL\",\"label\":\"Wall\"}"))
+                .andExpect(status().isConflict());
+
+        // Re-cutting one that is already there.
+        mockMvc.perform(put("/api/projects/" + projectId + "/regions/" + regionId + "/mask")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"maskBase64\":\"" + ONE_PIXEL_PNG + "\"}"))
+                .andExpect(status().isConflict());
+
+        // Removing one.
+        mockMvc.perform(delete("/api/projects/" + projectId + "/regions/" + regionId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isConflict());
+
+        // …and the thing the room exists for still works.
+        mockMvc.perform(put("/api/projects/" + projectId + "/regions")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("[{\"regionId\":" + regionId + ",\"hexCode\":\"#88AACC\"}]"))
+                .andExpect(status().isNoContent());
         assertThat(regionRepository.findByProjectIdOrderByDisplayOrderAsc(projectId)).hasSize(2);
     }
 

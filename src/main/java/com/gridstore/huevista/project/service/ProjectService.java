@@ -674,6 +674,41 @@ public class ProjectService {
         return project;
     }
 
+    /**
+     * The gate for changing a room's WALLS, as opposed to changing its colours.
+     *
+     * <h2>Why a library room is different</h2>
+     *
+     * A room off the library shelf is a copy of a finished, curated template: its photo
+     * was cleaned and its surfaces were cut once, by an admin, and everything published
+     * after it is measured against that. The paint is the customer's to change; the
+     * geometry is not. Letting a copy re-cut its own walls means every copy diverges from
+     * the template it names — a "Jaipur living room" that no longer has the Jaipur living
+     * room's walls — and the divergence is invisible from the shelf, because the thumbnail
+     * still shows the original.
+     *
+     * <p>The trade is deliberate and it only goes one way. A room the account UPLOADED is
+     * theirs end to end: they paid for the detection, and hand-marking is how a bad
+     * detection gets fixed. A library room cost nobody anything and had nothing to fix —
+     * its walls were correct when it was published — so there is no repair to offer, only
+     * damage to prevent.
+     *
+     * <p>Everything else about a library room is unchanged: paint any wall, ask for AI
+     * suggestions, take colour boards, buy a render. This refuses exactly four things —
+     * drawing a wall, click-to-segment, re-cutting a mask, deleting a wall.
+     */
+    private Project findWallEditable(String userId, String projectId) {
+        Project project = findEditable(userId, projectId);
+        if (project.isFromLibrary()) {
+            throw new IllegalStateException(
+                    "This room came from the library, so its walls are fixed — they were "
+                    + "marked out when it was published. You can still paint every surface, "
+                    + "ask for colour suggestions and take your colour board. To mark walls "
+                    + "yourself, start a room from your own photo.");
+        }
+        return project;
+    }
+
     // ─── Colour boards and closing ───────────────────────────────────────────
 
     /**
@@ -1192,7 +1227,7 @@ public class ProjectService {
     @Transactional
     public RegionResponse segmentPoint(String userId, String projectId,
                                        double x, double y, String label) {
-        Project project = findEditable(userId, projectId);
+        Project project = findWallEditable(userId, projectId);
         UploadedImage image = project.getImage();
         ensureDimensionsCached(image);
 
@@ -1226,7 +1261,7 @@ public class ProjectService {
      */
     @Transactional
     public RegionResponse createCustomMaskRegion(String userId, String projectId, CustomMaskRequest request) {
-        findEditable(userId, projectId);
+        findWallEditable(userId, projectId);
         return persistCustomMask(userId, projectId, request);
     }
 
@@ -1240,7 +1275,7 @@ public class ProjectService {
      */
     @Transactional
     public RegionResponse updateRegionMask(String userId, String projectId, Long regionId, CustomMaskRequest request) {
-        findEditable(userId, projectId);
+        findWallEditable(userId, projectId);
         return replaceRegionMask(userId, projectId, regionId, request);
     }
 
@@ -1248,7 +1283,7 @@ public class ProjectService {
      *  of the stored mask; the row delete is what matters. */
     @Transactional
     public void deleteRegion(String userId, String projectId, Long regionId) {
-        findEditable(userId, projectId);
+        findWallEditable(userId, projectId);
         deleteRegionRow(projectId, regionId);
     }
 
