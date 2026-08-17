@@ -423,13 +423,19 @@ public class SegmentationService {
             // chain collapses to it — the same reasoning as the cleaner's override. A
             // usable mask produced by a sibling tier would answer a question nobody asked
             // and be indistinguishable, afterwards, from one the pinned model made.
-            String override = projectRepository.findMaskModelById(projectId).orElse(null);
-            List<String> chain = (override != null && !override.isBlank())
-                    ? List.of(override.trim())
-                    : maskSegmenter.modelChain();
             // Stub mode never talks to Replicate, so there is no chain to walk — one
             // pseudo-model, still retried, so the retry path itself stays exercised.
-            if (stubAiPipeline.isEnabled()) chain = List.of("stub");
+            // Decided BEFORE the chain is resolved, not after: asking the segmenter for
+            // its models is itself a call into the thing stub mode exists to avoid.
+            List<String> chain;
+            if (stubAiPipeline.isEnabled()) {
+                chain = List.of("stub");
+            } else {
+                String override = projectRepository.findMaskModelById(projectId).orElse(null);
+                chain = (override != null && !override.isBlank())
+                        ? List.of(override.trim())
+                        : maskSegmenter.modelChain();
+            }
             // A chain that came back empty must not silently mean "make no attempt". One
             // null entry is the pre-chain behaviour exactly: ask whatever the segmenter's
             // own configuration says. Reachable through misconfiguration

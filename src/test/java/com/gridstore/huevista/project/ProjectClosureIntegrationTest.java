@@ -39,10 +39,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * A project's ending, end to end: the colour board, closure, the combos that survive it,
  * and what a closed project will and will not let its owner do.
  *
- * A project hands over ONE board and is finished — see
- * {@code app.project.colour-boards-per-project} — so "the last board" and "the first
- * board" are the same download here, and the assertions below are written to say so
- * rather than to count to two.
+ * The board cap is PINNED to one here, so "the last board" and "the first board" are the
+ * same download and the assertions can say so rather than counting to four. Pinned
+ * rather than inherited from {@code app.project.colour-boards-per-project}: this suite is
+ * about what CLOSING does, not about how many sheets a project is sold with, and it
+ * should not start failing the next time that number is repriced (it has already moved
+ * from one to four once).
  *
  * The subscription here is deliberately an ACTIVE paid plan, because that is the case
  * closure has to outrank. A subscribed account can normally edit anything it owns, so if
@@ -54,7 +56,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @Transactional
-@TestPropertySource(locations = "classpath:application-test.properties")
+@TestPropertySource(
+        locations = "classpath:application-test.properties",
+        properties = "app.project.colour-boards-per-project=1")
 class ProjectClosureIntegrationTest {
 
     @MockitoBean
