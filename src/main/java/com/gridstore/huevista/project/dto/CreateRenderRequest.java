@@ -37,6 +37,16 @@ public class CreateRenderRequest {
     @NotNull(message = "Choose a look.")
     private ProjectRender.RenderStyle style;
 
+    /**
+     * How good an image to make, and therefore how many credits it costs.
+     *
+     * <p>The one optional enum on this request. Null reads as BASIC — every render made
+     * before the tiers existed was one, and a client that names no quality is asking for
+     * the ordinary picture at the ordinary price. Defaulting the other way would charge
+     * somebody four credits for saying nothing.
+     */
+    private ProjectRender.Quality quality;
+
     @Size(max = 500, message = "Keep the note under 500 characters.")
     private String note;
 }

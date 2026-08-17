@@ -30,7 +30,10 @@ public enum PaymentFlow {
     AI_CREDITS("AI image credits"),
 
     /** In-store kiosk — the buyer is a walk-in customer, not a signed-in user. */
-    STORE_KIOSK("Store kiosk");
+    STORE_KIOSK("Store kiosk"),
+
+    /** A customer's basket off the catalogue: projects, AI credits and combos, at once. */
+    CART("Projects and credits basket");
 
     private final String displayName;
 

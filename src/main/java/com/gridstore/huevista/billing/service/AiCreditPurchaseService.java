@@ -70,9 +70,13 @@ public class AiCreditPurchaseService {
                     "Buy between " + min + " and " + max + " AI image credits at a time.");
         }
 
-        int amountPaise = pricingService.aiCreditPricePaise(credits);
-        int discountPercent = pricingService.aiCreditDiscountPercent();
-        int listPricePaise = pricingService.aiCreditListPricePaise();
+        // The buyer's own rate: a CUSTOMER buys off the catalogue, a shop at the shop
+        // price. Both travel onto the order below, so verification checks the amount
+        // against what this buyer was actually quoted rather than against a rate that may
+        // have moved — or against a different rate belonging to a different kind of buyer.
+        int amountPaise = pricingService.aiCreditPricePaise(userId, credits);
+        int discountPercent = pricingService.aiCreditDiscountPercent(userId);
+        int listPricePaise = pricingService.aiCreditListPricePaise(userId);
         if (amountPaise <= 0) {
             // A 100% discount would open a zero-rupee order, which Razorpay refuses with a
             // message nobody can act on. Say the true thing instead.
@@ -177,7 +181,8 @@ public class AiCreditPurchaseService {
             throw new IllegalStateException("This payment has already been redeemed.");
         }
 
-        return aiCreditService.creditPurchased(userId, credits, req.getPaymentId());
+        return aiCreditService.creditPurchased(userId, credits, req.getPaymentId(),
+                pricingService.aiCreditValidityDays(userId));
     }
 
     /**

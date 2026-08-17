@@ -3,8 +3,10 @@ package com.gridstore.huevista.billing.service;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
+import com.gridstore.huevista.billing.model.AiCreditLot;
 import com.gridstore.huevista.billing.model.AiCreditTransaction;
 import com.gridstore.huevista.billing.model.AiCreditWallet;
+import com.gridstore.huevista.billing.repository.AiCreditLotRepository;
 import com.gridstore.huevista.billing.repository.AiCreditTransactionRepository;
 import com.gridstore.huevista.billing.repository.AiCreditWalletRepository;
 import com.gridstore.huevista.common.exception.QuotaExceededException;
@@ -14,6 +16,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
 
@@ -42,6 +45,14 @@ import java.util.Set;
  * Never read-then-write. A render spends on the request thread, and two tabs both reading
  * "1 credit left" must not both start a paid model call — so the balance check IS the
  * WHERE clause of the UPDATE and the database decides which one wins.
+ *
+ * <h2>Some credits now carry a date</h2>
+ * A credit sold off the customer catalogue is good for a year, which the cart says on the
+ * line before any money moves. A credit sold to a shop still never expires, as it always
+ * has. Both live in the same wallet and are spent through the same debit; the difference is
+ * recorded on {@link AiCreditLot}, the batch a purchase opens — see that class for why the
+ * balance alone could not carry it. The rule this ledger enforces is that a spend eats the
+ * batch that lapses SOONEST, so nobody loses a dated credit while a later one sits unspent.
  */
 @Slf4j
 @Service
@@ -50,6 +61,7 @@ public class AiCreditService {
 
     private final AiCreditWalletRepository walletRepository;
     private final AiCreditTransactionRepository transactionRepository;
+    private final AiCreditLotRepository lotRepository;
     private final UserRepository userRepository;
 
     /** Accounts that can own a project, and therefore have something to spend a credit on. */
@@ -92,11 +104,25 @@ public class AiCreditService {
      */
     @Transactional
     public int creditPurchased(String userId, int credits, String paymentId) {
+        return creditPurchased(userId, credits, paymentId, null);
+    }
+
+    /**
+     * Credit AI images a shop or customer paid for, good for {@code validDays}.
+     *
+     * @param validDays days these credits are good for, or null when they never lapse.
+     *        Decided by the RATE they were bought at (see
+     *        {@link PricingService#aiCreditValidityDays}) and stamped on the batch here, so
+     *        a change to the rule tomorrow cannot age a credit somebody has already paid for.
+     */
+    @Transactional
+    public int creditPurchased(String userId, int credits, String paymentId, Integer validDays) {
         requireEligible(userId);
         int balance = credit(userId, credits, AiCreditTransaction.Type.PURCHASED, paymentId,
-                credits + (credits == 1 ? " AI image credit bought" : " AI image credits bought"));
-        log.info("AI credits purchased: user={} credits={} payment={} balance={}",
-                userId, credits, paymentId, balance);
+                credits + (credits == 1 ? " AI image credit bought" : " AI image credits bought"),
+                validDays);
+        log.info("AI credits purchased: user={} credits={} payment={} validDays={} balance={}",
+                userId, credits, paymentId, validDays, balance);
         return balance;
     }
 
@@ -111,8 +137,10 @@ public class AiCreditService {
     public int grant(String userId, int credits, String grantedBy, String reason) {
         requireEligible(userId);
         requirePositive(credits);
+        // No date on a gift. An administrator hands these out for support and goodwill,
+        // and a goodwill credit that quietly lapses is worse than none at all.
         int balance = credit(userId, credits, AiCreditTransaction.Type.GRANTED, grantedBy,
-                reason == null || reason.isBlank() ? "Given by HueVista" : reason.trim());
+                reason == null || reason.isBlank() ? "Given by HueVista" : reason.trim(), null);
         log.info("AI credits granted: user={} credits={} by={} balance={}",
                 userId, credits, grantedBy, balance);
         return balance;
@@ -142,8 +170,41 @@ public class AiCreditService {
                     + " to make this image and you have " + held
                     + ". Top up your AI wallet to carry on.");
         }
+        drawDownLots(userId, credits);
         journal(userId, -credits, AiCreditTransaction.Type.SPENT_ON_RENDER, projectId, note);
         log.info("AI credits spent: user={} credits={} project={}", userId, credits, projectId);
+    }
+
+    /**
+     * Take the same credits out of the dated batches, soonest to lapse first.
+     *
+     * <p>The wallet has already agreed to the spend by the time this runs — that debit is
+     * what decides whether the customer may have the image, and it is the one that must be
+     * atomic. This half is the accounting behind it: which of the buyer's batches the
+     * credits came out of, so the panel can go on saying truthfully how many lapse in March.
+     *
+     * <p>Deliberately does not throw when the batches come up short. That can only happen
+     * to a wallet whose balance predates a batch (the migration opens one for every existing
+     * balance, so in practice it cannot) and the customer has already been charged and is
+     * owed their image — refusing here would take the credit and give nothing back. It is
+     * logged instead, loudly enough to find.
+     */
+    private void drawDownLots(String userId, int credits) {
+        int outstanding = credits;
+        for (AiCreditLot lot : lotRepository.findSpendable(userId)) {
+            if (outstanding <= 0) break;
+            int take = Math.min(outstanding, lot.getCreditsRemaining());
+            if (lotRepository.drawDown(lot.getId(), take) == 1) {
+                outstanding -= take;
+            }
+            // A lost compare-and-set means another render drew from this batch first.
+            // The next batch in the list is tried, which is exactly the right answer.
+        }
+        if (outstanding > 0) {
+            log.error("AI credit batches came up {} short of a {}-credit spend: user={}. The "
+                      + "wallet was debited and the image will be made; the batch ledger is "
+                      + "behind the wallet for this account.", outstanding, credits, userId);
+        }
     }
 
     /**
@@ -160,13 +221,18 @@ public class AiCreditService {
      * held credits a minute ago, and a role changed in between must not swallow a refund.
      */
     @Transactional
-    public void refundRender(String userId, int credits, String projectId) {
+    public void refundRender(String userId, int credits, String projectId, Integer validDays) {
         if (userId == null || credits <= 0) {
             return;
         }
         try {
+            // A fresh window rather than the remains of the one it was spent from. The
+            // batch it came out of may be days from lapsing, and handing back a credit with
+            // a week on it for an image the model refused to make is a refund worth less
+            // than the charge. Which window that is comes from the caller, because the
+            // caller is what knows the rate this buyer buys at.
             int balance = credit(userId, credits, AiCreditTransaction.Type.RENDER_REFUNDED,
-                    projectId, "Credit returned — the image could not be made");
+                    projectId, "Credit returned — the image could not be made", validDays);
             log.info("AI credit returned after a failed render: user={} credits={} project={} balance={}",
                     userId, credits, projectId, balance);
         } catch (RuntimeException e) {
@@ -188,7 +254,7 @@ public class AiCreditService {
      * is why the constraint is on the column and not merely in the model.
      */
     private int credit(String userId, int credits, AiCreditTransaction.Type type,
-                       String reference, String note) {
+                       String reference, String note, Integer validDays) {
         if (walletRepository.addCredits(userId, credits) == 0) {
             try {
                 walletRepository.saveAndFlush(AiCreditWallet.builder()
@@ -200,9 +266,95 @@ public class AiCreditService {
                 walletRepository.addCredits(userId, credits);
             }
         }
+        // The batch, opened in the same transaction as the balance it accounts for, so the
+        // two can never disagree about what an account holds.
+        lotRepository.save(AiCreditLot.builder()
+                .userId(userId)
+                .credits(credits)
+                .creditsRemaining(credits)
+                .expiresAt(validDays == null || validDays <= 0 ? null
+                        : LocalDateTime.now().plusDays(validDays))
+                .sourceReference(reference)
+                .build());
         int balance = balance(userId);
         journalAt(userId, credits, type, reference, note, balance);
         return balance;
+    }
+
+    // ── Expiry ──────────────────────────────────────────────────────────────
+
+    /**
+     * When the soonest dated batch lapses, for an account that holds one.
+     *
+     * <p>Empty for a wallet holding only never-expiring credits, which is every shop's and
+     * every wallet filled before the catalogue existed — there is nothing to warn those
+     * about, and a date invented for them would be a promise nobody made.
+     */
+    @Transactional(readOnly = true)
+    public java.util.Optional<LocalDateTime> soonestExpiry(String userId) {
+        return lotRepository.findSpendable(userId).stream()
+                .map(AiCreditLot::getExpiresAt)
+                .filter(java.util.Objects::nonNull)
+                .findFirst();
+    }
+
+    /** How many credits go with {@link #soonestExpiry} — the batches sharing that day. */
+    @Transactional(readOnly = true)
+    public int creditsExpiringSoonest(String userId) {
+        List<AiCreditLot> spendable = lotRepository.findSpendable(userId);
+        LocalDateTime soonest = spendable.stream()
+                .map(AiCreditLot::getExpiresAt)
+                .filter(java.util.Objects::nonNull)
+                .findFirst()
+                .orElse(null);
+        if (soonest == null) return 0;
+        return spendable.stream()
+                .filter(l -> soonest.equals(l.getExpiresAt()))
+                .mapToInt(AiCreditLot::getCreditsRemaining)
+                .sum();
+    }
+
+    /**
+     * Write off every batch whose year has run out, taking the same credits off the wallet.
+     *
+     * <p>Batch first, then the balance, and never the other way round: a crash between the
+     * two leaves a batch marked spent and a wallet still holding the credits, which is a
+     * customer keeping something they should have lost. The reverse leaves the customer
+     * short of credits the ledger still says they have — the same accident, aimed at the
+     * person who paid.
+     *
+     * <p>The wallet debit is the ordinary conditional UPDATE, so a render spending the last
+     * credit at the same moment simply wins and the sweep finds an empty batch. Balances
+     * can never go negative, which is what the {@code balance >= :credits} guard is for.
+     *
+     * @return how many credits were written off
+     */
+    @Transactional
+    public int expireDueLots() {
+        LocalDateTime now = LocalDateTime.now();
+        int expired = 0;
+        for (AiCreditLot lot : lotRepository.findDue(now)) {
+            int remaining = lot.getCreditsRemaining();
+            if (lotRepository.expire(lot.getId(), remaining, now) != 1) {
+                continue; // spent from under us; tomorrow's run picks up whatever is left
+            }
+            int taken = walletRepository.spendIfAvailable(lot.getUserId(), remaining) == 1
+                    ? remaining
+                    : 0;
+            if (taken == 0) {
+                // The wallet was already short — a spend beat the sweep to it. The batch is
+                // closed either way; there is simply nothing left to take off the balance.
+                log.warn("AI credit batch {} expired with nothing to debit: user={} credits={}",
+                        lot.getId(), lot.getUserId(), remaining);
+                continue;
+            }
+            expired += taken;
+            journal(lot.getUserId(), -taken, AiCreditTransaction.Type.EXPIRED, lot.getId(),
+                    taken + (taken == 1 ? " AI image credit expired" : " AI image credits expired"));
+            log.info("AI credits expired: user={} credits={} batch={}",
+                    lot.getUserId(), taken, lot.getId());
+        }
+        return expired;
     }
 
     private void journal(String userId, int credits, AiCreditTransaction.Type type,
