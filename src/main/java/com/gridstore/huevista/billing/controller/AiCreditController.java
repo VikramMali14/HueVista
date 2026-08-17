@@ -83,12 +83,22 @@ public class AiCreditController {
         return AiCreditSummaryResponse.builder()
                 .balance(aiCreditService.balance(userId))
                 .eligible(aiCreditService.isEligible(userId))
-                .pricePaise(pricingService.aiCreditPricePaise())
-                .listPricePaise(pricingService.aiCreditListPricePaise())
-                .discountPercent(pricingService.aiCreditDiscountPercent())
+                // Priced for THIS account: a customer reads the catalogue's ₹35, a shop the
+                // shop rate. The panel quotes whatever comes back here, so the button can
+                // never name a price the order would then be opened at differently.
+                .pricePaise(pricingService.aiCreditPricePaise(userId, 1))
+                .listPricePaise(pricingService.aiCreditListPricePaise(userId))
+                .discountPercent(pricingService.aiCreditDiscountPercent(userId))
                 .minPurchase(pricingService.aiCreditMinPurchase())
                 .maxPurchase(pricingService.aiCreditMaxPurchase())
                 .renderCost(pricingService.aiCreditRenderCost())
+                .renderTiers(java.util.Arrays.stream(
+                                com.gridstore.huevista.project.model.ProjectRender.Quality.values())
+                        .map(q -> AiCreditSummaryResponse.RenderTier.of(
+                                q.name(), pricingService.aiCreditRenderCost(q)))
+                        .toList())
+                .soonestExpiryAt(aiCreditService.soonestExpiry(userId).orElse(null))
+                .expiringCredits(aiCreditService.creditsExpiringSoonest(userId))
                 .currency(pricingService.currency())
                 .recentActivity(aiCreditService.recentActivity(userId).stream()
                         .map(AiCreditSummaryResponse.ActivityRow::from).toList())
