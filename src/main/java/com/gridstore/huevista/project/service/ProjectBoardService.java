@@ -57,7 +57,23 @@ public class ProjectBoardService {
     private final PdfQuotaService pdfQuotaService;
     private final com.gridstore.huevista.paint.service.ShadeDecodeService shadeDecodeService;
 
-    @Value("${app.project.colour-boards-per-project:1}")
+    /**
+     * How many colour boards one project hands over before it closes itself.
+     *
+     * <p>Four. One was the number when a board WAS the job — pick the colours, take the
+     * sheet, done — and it made the cap invisible, because nobody meets a limit they hit
+     * on their first try. What people actually do with a room is compare: the greens on
+     * one board, the greys on another, and a third for the pair somebody at home
+     * preferred. At a cap of one, the second of those was a closed project and a ₹99
+     * reopen, so the natural way to use the product was the way that charged for it.
+     *
+     * <p>Four is enough for that comparison and still finite, which is what keeps the
+     * close meaningful: a project that never closes never unlocks its render either.
+     * Configuration, so it can be moved without a deploy — and the studio reads the
+     * number off the API rather than printing its own copy, so a change here shows up in
+     * the sentence the customer reads.
+     */
+    @Value("${app.project.colour-boards-per-project:4}")
     private int boardsPerProject;
 
     /**
