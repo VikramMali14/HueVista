@@ -215,7 +215,6 @@ public class ProjectGrantService {
         codeRepository.findById(grant.getAccessCodeId()).ifPresent(code -> {
             int created = (int) projectRepository.countByAccessCodeId(code.getId());
             code.setProjectQuota(Math.max(created, code.getProjectQuota() - grant.getProjects()));
-            code.setReservedProjects(Math.max(0, code.getReservedProjects() - grant.getProjects()));
             codeRepository.save(code);
         });
     }

@@ -29,15 +29,27 @@ public class CustomerAccessCode {
     @Column(unique = true, nullable = false, length = 8)
     private String code;
 
-    @Column(nullable = false)
-    private int validDays; // fixed 10-day window for retailer-assigned codes
-
+    /**
+     * The deadline for REDEEMING this code — thirty days from the moment the shop
+     * created it, and meaningful only while nobody has.
+     *
+     * <p>Once a customer redeems, this column stops governing anything: their access is
+     * permanent (see {@link #isExpired()}). A shop hands a slip across the counter and
+     * the customer's work is theirs from then on, so there is no window to run out, no
+     * extension to grant, and no view-only state to fall into. What the thirty days
+     * protect is only the unclaimed case: a code nobody ever used should not sit
+     * redeemable forever.
+     */
     @Column(nullable = false)
     private LocalDateTime expiresAt;
 
-    // The customer's name, entered by the retailer when the code is generated. Used
-    // as the display name of the auto-provisioned CUSTOMER account at redeem time, so
-    // the customer sees their own name in the header after redeeming.
+    /**
+     * The customer's name as the shop typed it — a LABEL on the shop's own list so the
+     * counter can tell one printed slip from another.
+     *
+     * <p>It no longer names an account. Codes are redeemed onto an account the customer
+     * already created, and that account carries its own name.
+     */
     @Column(length = 120)
     private String customerName;
 
@@ -48,33 +60,9 @@ public class CustomerAccessCode {
     @Builder.Default
     private int projectQuota = 1;
 
-    // Image credits this code still HOLDS on the issuing shop's subscription: starts at
-    // projectQuota, drops by one each time a project under this code is actually
-    // segmented, and is released back to the shop when the code is revoked or swept
-    // after expiring unredeemed. Kept in lock-step with Subscription#reservedProjects —
-    // every mutation moves both — so a shop is never billed twice for one project and
-    // never loses quota to a code nobody used.
-    @Column(nullable = false, columnDefinition = "integer not null default 0")
-    @Builder.Default
-    private int reservedProjects = 0;
-
-    // Set when a retailer revokes the code before it was redeemed. A revoked code can
-    // never be redeemed or re-entered; its held quota has already gone back to the shop.
+    // Set when a retailer revokes a code nobody has redeemed yet. A revoked code can
+    // never be redeemed. Nothing is refunded — see AccessCodeService#revokeCode.
     private LocalDateTime revokedAt;
-
-    // Set once the held quota has been returned to the shop (revoke or expiry sweep), so
-    // the sweep is idempotent and a code can never be refunded twice.
-    private LocalDateTime quotaReleasedAt;
-
-    // When the shop last pushed this code's expiry out, and how many times they have.
-    // Each extension replaces the window with a fresh 10 days from that moment, so the
-    // code can never carry more than 10 days ahead of it however often it is renewed —
-    // the count is here so the counter can see a code that keeps being propped up.
-    private LocalDateTime extendedAt;
-
-    @Column(nullable = false, columnDefinition = "integer not null default 0")
-    @Builder.Default
-    private int extensionCount = 0;
 
     // Individual shop products (ShopProduct UUIDs) the retailer unlocked for this
     // customer, stored comma-separated. Combined with allowedBrands (whole companies):
@@ -82,18 +70,18 @@ public class CustomerAccessCode {
     @Column(length = 4096)
     private String allowedProductIds;
 
+    /**
+     * The customer account this code belongs to, set at redemption and never cleared.
+     *
+     * <p>A code is redeemed onto an account that already exists — there is no anonymous
+     * route and nothing auto-provisions an account any more — so a used code always
+     * names a real, reachable customer.
+     */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "used_by_user_id")
     private User usedByUser;
 
     private LocalDateTime usedAt;
-
-    // True when the code was redeemed by an anonymous guest (no account). usedByUser
-    // stays null in that case; usedAt is still set. Lets the shop tell guest
-    // redemptions apart, and keeps isUsed() correct for single-use enforcement.
-    @Column(nullable = false, columnDefinition = "boolean not null default false")
-    @Builder.Default
-    private boolean guestRedeemed = false;
 
     // True when the END CUSTOMER paid for this code, not the shop — today that means a
     // kiosk code bought at the public store link. The shop's plan is not part of that
@@ -112,9 +100,8 @@ public class CustomerAccessCode {
     @Builder.Default
     private int pdfDownloadsUsed = 0;
 
-    // Paint companies (brand display names) the shop has unlocked for this guest, stored
-    // comma-separated. Empty/null means "no restriction" — the guest may browse every brand.
-    // The guest only ever sees these brands in the studio; real shade codes stay hidden.
+    // Paint companies (brand display names) the shop has unlocked for this customer,
+    // stored comma-separated. Empty/null means "no restriction" — every brand is browsable.
     @Column(length = 512)
     private String allowedBrands;
 
@@ -165,25 +152,35 @@ public class CustomerAccessCode {
                 .orElse(null);
     }
 
+    /**
+     * Whether the window for REDEEMING this code has closed.
+     *
+     * <p>A redeemed code is never expired. The customer's access does not run out, so
+     * asking whether their code has "expired" after they have used it is asking the
+     * wrong question — the only deadline in this model is the one on an unclaimed slip.
+     *
+     * <p>Null-safe for an unredeemed row with no deadline (legacy data, or a partially
+     * built code): that reads as expired rather than throwing, because this is called
+     * from the public redemption path where an NPE would surface as a 500 instead of a
+     * clear refusal.
+     */
     public boolean isExpired() {
-        // Null-safe: a row with no expiry (legacy or a partially-built code) reads as
-        // expired rather than throwing — this is called from public redemption and kiosk
-        // replay paths, where an NPE would surface as a 500 instead of a clear refusal.
+        if (isUsed()) return false;
         return expiresAt == null || LocalDateTime.now().isAfter(expiresAt);
     }
 
-    /** Single-use: consumed once a real user redeems it OR a guest redeems it (usedAt set). */
+    /** Single-use: consumed once a customer account redeems it. */
     public boolean isUsed() {
-        return usedByUser != null || usedAt != null;
+        return usedByUser != null;
     }
 
-    /** Revoked by the shop before redemption — can never be redeemed or re-entered. */
+    /** Revoked by the shop before redemption — can never be redeemed. */
     public boolean isRevoked() {
         return revokedAt != null;
     }
 
-    /** Usable right now: not revoked, not expired. */
-    public boolean isLive() {
-        return !isRevoked() && !isExpired();
+    /** Redeemable right now: not already used, not revoked, not past its 30 days. */
+    public boolean isRedeemable() {
+        return !isUsed() && !isRevoked() && !isExpired();
     }
 }

@@ -149,17 +149,17 @@ public class ProjectAccessService {
     }
 
     /**
-     * Has this customer's shop-issued access window closed?
+     * Has this customer's shop-issued access closed? It never does.
      *
-     * Only a CUSTOMER can have one, and only one a shop onboarded: an account that signed
-     * up alone has no entitlement row and is governed entirely by what it bought.
+     * <p>Kept as a named constant rather than deleted outright because it states the
+     * rule the rest of this class is written against: a room a shop's code paid for is
+     * the customer's permanently, so nothing here can send one view-only. The other
+     * view-only reasons — a lapsed subscription, a bought room past its window, a closed
+     * project — are unaffected and still apply.
      */
     @Transactional(readOnly = true)
     public boolean shopAccessExpired(String userId, UserRole role) {
-        if (role != UserRole.CUSTOMER) return false;
-        return entitlementRepository.findByCustomerId(userId)
-                .map(com.gridstore.huevista.account.model.CustomerEntitlement::isExpired)
-                .orElse(false);
+        return false;
     }
 
     /**

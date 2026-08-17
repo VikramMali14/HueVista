@@ -1,6 +1,5 @@
 package com.gridstore.huevista.store.service;
 
-import com.gridstore.huevista.account.dto.GuestRedeemResponse;
 import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.service.AccessCodeService;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
@@ -200,7 +199,7 @@ public class StoreKioskService {
             return reissue(link, winner);
         }
 
-        CustomerAccessCode code = accessCodeService.issueForStore(link.getOrganization(), link.getValidDays());
+        CustomerAccessCode code = accessCodeService.issueForStore(link.getOrganization());
         payment.setAccessCode(code);
 
         // Reward the shop whose link made the sale. Shares this transaction with the
@@ -218,39 +217,46 @@ public class StoreKioskService {
         log.info("Store kiosk payment verified: slug={} order={} payment={} amount={} points={}",
                 slug, req.getOrderId(), req.getPaymentId(), paidPaise, bonusPoints);
 
-        GuestRedeemResponse guest = accessCodeService.redeemAsGuest(code.getCode());
-        return toResponse(guest, paidPaise);
+        return toResponse(code, paidPaise);
     }
 
-    /** Same payment seen again: same code, fresh guest token (guest re-entry). */
+    /** Same payment seen again: hand back the same code. */
     private StoreCheckoutResponse reissue(StoreLink link, StorePayment payment) {
         if (payment.getAccessCode() == null || !payment.getStoreLink().getId().equals(link.getId())) {
             throw new IllegalStateException("This payment has already been redeemed.");
         }
-        // Replay is for the customer whose network dropped mid-verify, not a permanent
-        // key. Without this check the (order, payment, signature) triple minted fresh
-        // guest sessions forever — long after the code it bought had expired.
+        // A replayed payment shows the buyer their code again — for the customer whose
+        // network dropped mid-verify. Once the code is REDEEMED it is theirs on their
+        // account, and isExpired() is false forever after, so this only ever refuses a
+        // code nobody claimed inside its 30 days.
         if (payment.getAccessCode().isExpired()) {
             throw new IllegalStateException(
-                    "The access this payment bought has expired. Please ask at the counter.");
+                    "Nobody redeemed the code this payment bought within 30 days. "
+                    + "Please ask at the counter.");
         }
         if (payment.isReversed()) {
             throw new IllegalStateException("This payment was refunded.");
         }
         log.info("Store kiosk payment replayed: payment={} code re-issued", payment.getPaymentId());
-        GuestRedeemResponse guest = accessCodeService.redeemAsGuest(payment.getAccessCode().getCode());
-        return toResponse(guest, payment.getAmountPaise());
+        return toResponse(payment.getAccessCode(), payment.getAmountPaise());
     }
 
-    private StoreCheckoutResponse toResponse(GuestRedeemResponse guest, int amountPaise) {
+    private StoreCheckoutResponse toResponse(CustomerAccessCode code, int amountPaise) {
         return StoreCheckoutResponse.builder()
-                .guestToken(guest.getGuestToken())
-                .code(guest.getCode())
-                .shopName(guest.getShopName())
-                .validDays(guest.getValidDays())
-                .expiresAt(guest.getExpiresAt())
+                .code(code.getCode())
+                .shopName(code.getOrganization().getName())
+                .validDays(daysLeftToRedeem(code))
+                .expiresAt(code.getExpiresAt()
+                        .atZone(java.time.ZoneId.systemDefault()).toInstant())
                 .amountPaise(amountPaise)
                 .build();
+    }
+
+    /** Whole days left to redeem, floored at zero so a receipt never shows a negative. */
+    private static int daysLeftToRedeem(CustomerAccessCode code) {
+        long days = java.time.Duration
+                .between(java.time.LocalDateTime.now(), code.getExpiresAt()).toDays();
+        return (int) Math.max(0, days);
     }
 
     /**

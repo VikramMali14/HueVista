@@ -38,10 +38,8 @@ import java.util.List;
  * Policy:
  *  - 1 project is included by default; the shop assigns more on the code, and can top the
  *    same code up afterwards (see AccessCodeService#grantExtraProjects).
- *  - On expiry the customer can no longer CREATE against the code, and the rooms it paid
- *    for go view-only (ProjectAccessService) — the colours they chose stay readable, so
- *    they can still show a painter what they picked. A new code, or the shop extending
- *    the one they hold, opens everything again.
+ *  - Nothing here expires. A code redeemed onto an account buys projects that stay the
+ *    customer's, so the only limit is the allowance itself.
  *  - Only role == CUSTOMER is gated; retailers/distributors/admins are unrestricted.
  */
 @Slf4j
@@ -58,12 +56,15 @@ public class CustomerEntitlementService {
     private static final int DEFAULT_INCLUDED_PROJECTS = 1;
 
     /**
-     * Create or refresh the customer's entitlement when they redeem an access code.
+     * Create or top up the customer's entitlement when they redeem an access code.
      * {@code projectAllowance} is the number of projects the retailer assigned on the
-     * code (at least 1); a freshly redeemed code starts a new period at that allowance.
+     * code (at least 1).
+     *
+     * <p>There is no window to open or refresh: a redeemed code's projects belong to the
+     * customer from then on.
      */
     @Transactional
-    public void onAccessCodeRedeemed(User customer, Organization retailerOrg, int validDays, int projectAllowance) {
+    public void onAccessCodeRedeemed(User customer, Organization retailerOrg, int projectAllowance) {
         CustomerEntitlement existing = entitlementRepository.findByCustomerId(customer.getId()).orElse(null);
         int granted = Math.max(DEFAULT_INCLUDED_PROJECTS, projectAllowance);
 
@@ -71,13 +72,12 @@ public class CustomerEntitlementService {
             CustomerEntitlement ent = CustomerEntitlement.builder()
                     .customer(customer)
                     .retailerOrg(retailerOrg)
-                    .accessExpiresAt(LocalDateTime.now().plusDays(validDays))
                     .projectAllowance(granted)
                     .projectsCreated(0)
                     .build();
             entitlementRepository.save(ent);
-            log.info("Entitlement opened: customer={} retailer={} allowance={} expires={}",
-                    customer.getId(), retailerOrg.getId(), granted, ent.getAccessExpiresAt());
+            log.info("Entitlement opened: customer={} retailer={} allowance={}",
+                    customer.getId(), retailerOrg.getId(), granted);
             return;
         }
 
@@ -87,112 +87,18 @@ public class CustomerEntitlementService {
         // came out with allowance 1 / used 0 — shop A's paid-for slots silently vanished,
         // and the customer's remaining balance changed in whichever direction the newest
         // code happened to point. Accumulating keeps every shop's purchase honoured.
-        LocalDateTime newExpiry = LocalDateTime.now().plusDays(validDays);
-        if (existing.getAccessExpiresAt() == null || newExpiry.isAfter(existing.getAccessExpiresAt())) {
-            existing.setAccessExpiresAt(newExpiry);
-        }
         existing.setProjectAllowance(existing.getProjectAllowance() + granted);
         // The newest shop becomes the "managed by" link for their customer list; the
         // earlier shop keeps visibility of the work through the access code itself.
         existing.setRetailerOrg(retailerOrg);
         entitlementRepository.save(existing);
-        log.info("Entitlement extended: customer={} retailer={} +{} (allowance now {}) expires={}",
-                customer.getId(), retailerOrg.getId(), granted,
-                existing.getProjectAllowance(), existing.getAccessExpiresAt());
+        log.info("Entitlement topped up: customer={} retailer={} +{} (allowance now {})",
+                customer.getId(), retailerOrg.getId(), granted, existing.getProjectAllowance());
     }
 
     /**
-     * Establish (or extend) the entitlement when a guest signs up and claims the
-     * projects they created under an access code. Without this, the freshly-created
-     * CUSTOMER account owns the claimed projects but has NO entitlement row, and
-     * every project read throws "Your access is not set up" — the exact opposite
-     * of the "create an account to keep your work" promise.
-     *
-     * - No existing entitlement: create one mirroring what the guest already had —
-     *   the code's retailer org, the code's own expiry (not a fresh window), the
-     *   default allowance, and the claimed projects counted as used.
-     * - Existing entitlement: only extend, never downgrade. Expiry becomes the later
-     *   of the two, and allowance + used both grow by the claimed count so the
-     *   customer's remaining slots are unchanged while the claimed work stays visible.
-     */
-    @Transactional
-    public void onGuestProjectsClaimed(User customer, CustomerAccessCode code, int projectsClaimed) {
-        LocalDateTime codeExpiry = code.getExpiresAt();
-        CustomerEntitlement ent = entitlementRepository.findByCustomerId(customer.getId()).orElse(null);
-        if (ent == null) {
-            ent = CustomerEntitlement.builder()
-                    .customer(customer)
-                    .retailerOrg(code.getOrganization())
-                    // Column is NOT NULL; a code with no expiry (shouldn't happen) yields
-                    // an already-expired entitlement rather than a constraint violation.
-                    .accessExpiresAt(codeExpiry != null ? codeExpiry : LocalDateTime.now())
-                    .projectAllowance(Math.max(DEFAULT_INCLUDED_PROJECTS, projectsClaimed))
-                    .projectsCreated(projectsClaimed)
-                    .build();
-        } else {
-            if (codeExpiry != null
-                    && (ent.getAccessExpiresAt() == null || codeExpiry.isAfter(ent.getAccessExpiresAt()))) {
-                ent.setAccessExpiresAt(codeExpiry);
-            }
-            if (ent.getRetailerOrg() == null) {
-                ent.setRetailerOrg(code.getOrganization());
-            }
-            ent.setProjectAllowance(ent.getProjectAllowance() + projectsClaimed);
-            ent.setProjectsCreated(ent.getProjectsCreated() + projectsClaimed);
-        }
-        entitlementRepository.save(ent);
-        log.info("Entitlement established from guest claim: customer={} retailer={} claimed={} expires={}",
-                customer.getId(), code.getOrganization().getId(), projectsClaimed, ent.getAccessExpiresAt());
-    }
-
-    /**
-     * Guarantee a redeemed customer HAS an entitlement, without touching what they
-     * have already used. Called on every re-entry into an access-code account: the
-     * account is signed in from the code alone, and a customer with no entitlement
-     * row is locked out of every project read ("Your access is not set up") — the
-     * exact opposite of what redeeming their code just promised.
-     *
-     * - No row: create one mirroring the code — its shop, its own expiry (never a
-     *   fresh window), its assigned quota, nothing used yet.
-     * - Existing row: only ever fill gaps. Usage is never reset and the window is
-     *   never shortened; the code's expiry can only extend an earlier one, which in
-     *   practice is a no-op since the entitlement was opened at redeem time.
-     */
-    @Transactional
-    public void ensureEntitlementForCode(User customer, CustomerAccessCode code) {
-        LocalDateTime codeExpiry = code.getExpiresAt();
-        int codeAllowance = Math.max(DEFAULT_INCLUDED_PROJECTS, code.getProjectQuota());
-        CustomerEntitlement ent = entitlementRepository.findByCustomerId(customer.getId()).orElse(null);
-        if (ent == null) {
-            ent = CustomerEntitlement.builder()
-                    .customer(customer)
-                    .retailerOrg(code.getOrganization())
-                    // Column is NOT NULL; a code with no expiry (shouldn't happen) yields an
-                    // already-expired entitlement rather than a constraint violation.
-                    .accessExpiresAt(codeExpiry != null ? codeExpiry : LocalDateTime.now())
-                    .projectAllowance(codeAllowance)
-                    .projectsCreated(0)
-                    .build();
-            log.info("Entitlement repaired on code re-entry: customer={} retailer={} allowance={} expires={}",
-                    customer.getId(), code.getOrganization().getId(), codeAllowance, ent.getAccessExpiresAt());
-        } else {
-            if (ent.getRetailerOrg() == null) {
-                ent.setRetailerOrg(code.getOrganization());
-            }
-            if (codeExpiry != null
-                    && (ent.getAccessExpiresAt() == null || codeExpiry.isAfter(ent.getAccessExpiresAt()))) {
-                ent.setAccessExpiresAt(codeExpiry);
-            }
-            if (ent.getProjectAllowance() < codeAllowance) {
-                ent.setProjectAllowance(codeAllowance);
-            }
-        }
-        entitlementRepository.save(ent);
-    }
-
-    /**
-     * Try to claim one project slot for a NEW project: expiry + allowance, taken
-     * ATOMICALLY. Returns whether the shop route funded it.
+     * Try to claim one project slot for a NEW project, ATOMICALLY. Returns whether the
+     * shop route funded it.
      *
      * The conditional UPDATE replaces an older check-then-increment pair. Those were two
      * separate calls, so two parallel "create project" requests could both pass the check
@@ -200,69 +106,42 @@ public class CustomerEntitlementService {
      * Non-customers pass straight through as funded — their limits live elsewhere and
      * nothing here applies to them.
      *
-     * <p>It REPORTS rather than throws, which matters for one account in particular: a
-     * customer who bought projects on their own and later redeemed a shop's code holds
-     * both. Throwing from here made the shop's ten-day window the only thing that
-     * counted — when it closed, the rooms and credits they had paid for themselves went
-     * with it, because the caller never got as far as asking about them. The refusal a
-     * shop-onboarded customer should hear is still {@link #projectRefusal}, but only once
-     * nothing else can pay either.
+     * <p>It REPORTS rather than throws, so a customer who ALSO bought projects of their
+     * own is offered those once the shop's allowance is spent, instead of being refused
+     * outright. The refusal a shop-onboarded customer should hear is
+     * {@link #projectRefusal}, but only once nothing else can pay either.
      *
      * <p>The slot is monotonic: deleting a project does not refund it.
      */
     @Transactional
     public boolean tryClaimProjectSlot(String userId) {
         if (!isCustomer(userId)) return true;
-        return entitlementRepository.claimProjectSlot(userId, LocalDateTime.now()) == 1;
+        return entitlementRepository.claimProjectSlot(userId) == 1;
     }
 
     /**
      * Why the shop route could not fund a project — for a caller that has already found
      * nothing else can either.
      *
-     * The two cases read very differently to the person holding the code, so they stay
-     * two exceptions: a window that closed is 403 "your access has ended" (a new code
-     * fixes it), while an allowance used up is the 402 ASK_RETAILER refusal that puts a
-     * "grant one more" request in front of the counter.
+     * <p>Only one reason remains: the allowance is spent. Access no longer expires, so
+     * the old "your access has ended" refusal has nothing left to describe.
      */
     @Transactional(readOnly = true)
     public RuntimeException projectRefusal(String userId) {
-        CustomerEntitlement ent = requireEntitlement(userId);
-        if (ent.isExpired()) {
-            return new AccessExpiredException(
-                    "Your access has ended. Ask your retailer for a new access code.");
-        }
-        return outOfProjects(ent);
+        return outOfProjects(requireEntitlement(userId));
     }
 
     /**
      * Does this account hold a retailer-issued entitlement at all?
      *
      * The dividing line between the two ways an account gets projects. An account WITH a
-     * row was onboarded by a shop, and its allowance and expiry come from the code it
-     * redeemed. An account WITHOUT one signed up on its own and buys projects
-     * individually — asking it for an access code it was never given is the wrong answer.
+     * row was onboarded by a shop, and its allowance comes from the code it redeemed. An
+     * account WITHOUT one signed up on its own and buys projects individually — asking it
+     * for an access code it was never given is the wrong answer.
      */
     @Transactional(readOnly = true)
     public boolean hasEntitlement(String userId) {
         return entitlementRepository.findByCustomerId(userId).isPresent();
-    }
-
-    /**
-     * Extend a customer's access window to at least {@code until} — used when the shop
-     * adds days to the code they redeemed. Only ever lengthens: a shop topping up a code
-     * must never shorten access the customer already has from somewhere else.
-     */
-    @Transactional
-    public void extendAccessTo(String customerUserId, LocalDateTime until) {
-        if (until == null) return;
-        entitlementRepository.findByCustomerId(customerUserId).ifPresent(ent -> {
-            if (ent.getAccessExpiresAt() == null || until.isAfter(ent.getAccessExpiresAt())) {
-                ent.setAccessExpiresAt(until);
-                entitlementRepository.save(ent);
-                log.info("Entitlement window extended to {} for customer {}", until, customerUserId);
-            }
-        });
     }
 
     /** Add {@code count} projects to a customer's allowance — the shop granting more on a code. */

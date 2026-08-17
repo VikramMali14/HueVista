@@ -901,7 +901,6 @@ public class HierarchyService {
                 .joinedAt(entitlement.getCreatedAt())
                 .projectAllowance(entitlement.getProjectAllowance())
                 .projectsUsed(entitlement.getProjectsCreated())
-                .accessExpiresAt(entitlement.getAccessExpiresAt())
                 .build();
     }
 

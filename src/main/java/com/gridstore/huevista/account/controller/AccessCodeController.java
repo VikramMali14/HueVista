@@ -6,8 +6,6 @@ import com.gridstore.huevista.account.dto.AccessCodeResponse;
 import com.gridstore.huevista.account.dto.AssignedProductsResponse;
 import com.gridstore.huevista.account.dto.GenerateAccessCodeRequest;
 import com.gridstore.huevista.account.dto.GrantCodeProjectsRequest;
-import com.gridstore.huevista.account.dto.GuestRedeemResponse;
-import com.gridstore.huevista.account.dto.RedeemAccountResponse;
 import com.gridstore.huevista.account.dto.RedeemCodeRequest;
 import com.gridstore.huevista.account.service.AccessCodeService;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
@@ -16,7 +14,6 @@ import com.gridstore.huevista.project.dto.ProjectResponse;
 import com.gridstore.huevista.project.service.ProjectRenderService;
 import com.gridstore.huevista.project.service.ProjectService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -97,46 +94,15 @@ public class AccessCodeController {
                 userDetails.getUsername(), orgId, codeId, request.getProjects()));
     }
 
-    @Operation(summary = "Give a code another 10 days",
-            description = "Resets the code's validity to a fresh 10 days from now (never more, however "
-                    + "often it is renewed) and moves the unlocking customer's access window with it. "
-                    + "Nothing is charged — the projects were already paid for. Requires an ACTIVE "
-                    + "subscription (402 SUBSCRIPTION_REQUIRED without one).")
-    @PostMapping("/api/organizations/{orgId}/access-codes/{codeId}/extend")
-    public ResponseEntity<AccessCodeResponse> extendValidity(
-            @AuthenticationPrincipal UserDetails userDetails,
-            @PathVariable String orgId,
-            @PathVariable String codeId) {
-        return ResponseEntity.ok(accessCodeService.extendValidity(userDetails.getUsername(), orgId, codeId));
-    }
-
     @Operation(summary = "Redeem access code",
-            description = "Redeems a retailer-issued access code. Sets the calling user's role to CUSTOMER and links them to the retailer.")
+            description = "Redeems a retailer-issued access code onto the signed-in CUSTOMER account, "
+                    + "adding its projects to that account's allowance and linking them to the shop. "
+                    + "Only a customer account may redeem; any other role is refused.")
     @PostMapping("/api/access-codes/redeem")
     public ResponseEntity<AccessCodeResponse> redeemCode(
             @AuthenticationPrincipal UserDetails userDetails,
             @Valid @RequestBody RedeemCodeRequest request) {
         return ResponseEntity.ok(accessCodeService.redeemCode(userDetails.getUsername(), request.getCode()));
-    }
-
-    @Operation(summary = "Redeem access code as a guest",
-            description = "Public. Redeems a code without an account and returns a guest token scoped to it. "
-                    + "The guest can create a single project; the issuing shop sees it via the code.")
-    @SecurityRequirements
-    @PostMapping("/api/access-codes/redeem-guest")
-    public ResponseEntity<GuestRedeemResponse> redeemAsGuest(@Valid @RequestBody RedeemCodeRequest request) {
-        return ResponseEntity.ok(accessCodeService.redeemAsGuest(request.getCode()));
-    }
-
-    @Operation(summary = "Redeem access code (auto-create customer account)",
-            description = "Public. Redeems a retailer-issued code with no login: auto-provisions a "
-                    + "passwordless CUSTOMER account named as the retailer entered and returns a full "
-                    + "session (access + refresh tokens). The customer lands on their dashboard with "
-                    + "their assigned project quota and products.")
-    @SecurityRequirements
-    @PostMapping("/api/access-codes/redeem-account")
-    public ResponseEntity<RedeemAccountResponse> redeemAsNewCustomer(@Valid @RequestBody RedeemCodeRequest request) {
-        return ResponseEntity.ok(accessCodeService.redeemAsNewCustomer(request.getCode()));
     }
 
     @Operation(summary = "My assigned products",
