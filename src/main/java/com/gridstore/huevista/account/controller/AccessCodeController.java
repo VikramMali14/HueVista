@@ -11,7 +11,9 @@ import com.gridstore.huevista.account.dto.RedeemAccountResponse;
 import com.gridstore.huevista.account.dto.RedeemCodeRequest;
 import com.gridstore.huevista.account.service.AccessCodeService;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
+import com.gridstore.huevista.project.dto.MyRenderResponse;
 import com.gridstore.huevista.project.dto.ProjectResponse;
+import com.gridstore.huevista.project.service.ProjectRenderService;
 import com.gridstore.huevista.project.service.ProjectService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
@@ -34,6 +36,7 @@ public class AccessCodeController {
 
     private final AccessCodeService accessCodeService;
     private final ProjectService projectService;
+    private final ProjectRenderService renderService;
 
     @Operation(summary = "Generate access code",
             description = "Generates a time-limited access code for walk-in customers. Only retailer org owners/managers can call this.")
@@ -155,6 +158,21 @@ public class AccessCodeController {
             @PathVariable String codeId) {
         accessCodeService.requireManagedCode(userDetails.getUsername(), codeId);
         return ResponseEntity.ok(projectService.getProjectsForShop(codeId));
+    }
+
+    @Operation(summary = "View every AI image made against a code",
+            description = "Shop-only. Returns the FINISHED AI images from the rooms created against "
+                    + "this code, newest first, each carrying the room it came from and the shades "
+                    + "of the combination it was made in. Requires owner/manager of the issuing org; "
+                    + "empty list when the customer has bought none yet. Read-only — the credit that "
+                    + "paid for these was the customer's, so there is nothing here for a shop to "
+                    + "re-run or remove.")
+    @GetMapping("/api/access-codes/{codeId}/renders")
+    public ResponseEntity<List<MyRenderResponse>> getRendersForShop(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String codeId) {
+        accessCodeService.requireManagedCode(userDetails.getUsername(), codeId);
+        return ResponseEntity.ok(renderService.listForAccessCode(codeId));
     }
 
     @Operation(summary = "View a guest's selections for a code",

@@ -396,8 +396,40 @@ public class ProjectRenderService {
      */
     @Transactional(readOnly = true)
     public List<com.gridstore.huevista.project.dto.MyRenderResponse> listForOwner(String userId) {
-        List<ProjectRender> renders =
-                renderRepository.findByOwnerAndStatus(userId, ProjectRender.Status.READY);
+        return describe(renderRepository.findByOwnerAndStatus(userId, ProjectRender.Status.READY));
+    }
+
+    /**
+     * The same shelf, read by the SHOP that issued the code the rooms were made against.
+     *
+     * <p>A shop pays for the room, prints the colour board and takes the order — and then
+     * had no way to see the one thing the customer actually leaves with. The picture was
+     * visible to the account that made it and to nobody else, so a customer ringing the
+     * counter about "the image you did for my hall" was describing something the shop
+     * could not open.
+     *
+     * <p>Scoped to the code rather than to the customer on purpose — see
+     * {@link ProjectRenderRepository#findByAccessCodeAndStatus}. Read-only in the strongest
+     * sense: there is no shop-facing route that creates, re-runs or deletes one of these,
+     * because the credit that paid for it was the customer's.
+     *
+     * <p>The caller checks that the code is this shop's before calling. This method takes
+     * an id from the request and does not verify it.
+     */
+    @Transactional(readOnly = true)
+    public List<com.gridstore.huevista.project.dto.MyRenderResponse> listForAccessCode(String accessCodeId) {
+        return describe(
+                renderRepository.findByAccessCodeAndStatus(accessCodeId, ProjectRender.Status.READY));
+    }
+
+    /**
+     * Renders → responses, with one HV-code lookup for the whole page rather than one per
+     * swatch — the same bulk call {@link ProjectBoardService#combos} makes. The codes are
+     * needed so a sheet printed from either shelf carries the shop's own customer-facing
+     * numbering, and asking the catalogue once for thirty images beats asking it ninety
+     * times.
+     */
+    private List<com.gridstore.huevista.project.dto.MyRenderResponse> describe(List<ProjectRender> renders) {
         if (renders.isEmpty()) {
             return List.of();
         }

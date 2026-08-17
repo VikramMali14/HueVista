@@ -49,6 +49,32 @@ public interface ProjectRenderRepository extends JpaRepository<ProjectRender, St
     List<ProjectRender> findByOwnerAndStatus(@Param("userId") String userId,
                                              @Param("status") ProjectRender.Status status);
 
+    /**
+     * Every FINISHED image made in rooms created against one access code, newest first —
+     * the shop's side of the same shelf.
+     *
+     * <p>Keyed by the CODE rather than by the customer, which is the only key a shop
+     * actually holds: the counter knows which code it issued and to whom, and the
+     * customer's account id never appears in the portal. It is also the narrower claim —
+     * a code covers the rooms this shop paid for, not everything the account has ever
+     * made with somebody else's code or its own money. A shop seeing a picture from a
+     * room it had no part in would be a leak dressed up as a feature.
+     *
+     * <p>Same READY-only rule and the same fetch joins as the owner query above, for the
+     * same reasons; the ownership check is the caller's ({@code requireManagedCode}),
+     * because unlike that query this one takes an id somebody could substitute.
+     */
+    @Query("""
+           SELECT DISTINCT r FROM ProjectRender r
+           JOIN FETCH r.project p
+           LEFT JOIN FETCH r.page pg
+           LEFT JOIN FETCH pg.shades
+           WHERE p.accessCode.id = :accessCodeId AND r.status = :status
+           ORDER BY r.createdAt DESC
+           """)
+    List<ProjectRender> findByAccessCodeAndStatus(@Param("accessCodeId") String accessCodeId,
+                                                  @Param("status") ProjectRender.Status status);
+
     /** One render, scoped to its project — the project predicate is the ownership guard. */
     Optional<ProjectRender> findByIdAndProjectId(String id, String projectId);
 

@@ -265,6 +265,22 @@ class AccountIntegrationTest {
                 .andExpect(jsonPath("$.length()").value(0));
     }
 
+    /** The same account asked the other question: is a shop behind me?
+     *
+     *  This endpoint's "no" is an EMPTY 200 — {@code ResponseEntity.ok(null)}, and Spring
+     *  writes no body at all for a null one. It is not a 404 and not the JSON literal
+     *  {@code null}, and the difference is load-bearing: the frontend hides the customer's
+     *  "My products" tab and closes the page on it, so a 404 would read as "the backend
+     *  broke" (leave the page open) rather than "this account has no shop" (close it).
+     *  Asserting the empty string rather than merely 200 is the point of the test — the
+     *  status alone passed while the body was being read as a shop that does not exist. */
+    @Test
+    void myEntitlement_forCustomerWithoutOne_isAnEmptyOkNotAnError() throws Exception {
+        mockMvc.perform(get("/api/me/entitlement").header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(content().string(""));
+    }
+
     /** The shop pays an image per assigned project, so the code list has to report
      *  the quota and what is left of it. */
     @Test
