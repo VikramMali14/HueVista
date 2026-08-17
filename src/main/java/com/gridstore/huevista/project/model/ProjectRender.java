@@ -73,6 +73,19 @@ public class ProjectRender {
     @Column(nullable = false, length = 24)
     private RenderStyle style;
 
+    /**
+     * How good an image was asked for — which model made it, and what it cost.
+     *
+     * <p>Stored rather than derived from {@link #creditsSpent}, because the price is
+     * configuration and a tier renamed or re-priced next year must not change what an image
+     * made today says it was. It is also the only record of WHICH model family produced a
+     * given picture, which is the first question asked when one comes back wrong.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 16)
+    @Builder.Default
+    private Quality quality = Quality.BASIC;
+
     /** Anything the customer typed. Clamped and framed as untrusted before it reaches
      *  the model — see ProjectRenderService. */
     @Column(length = 500)
@@ -161,4 +174,34 @@ public class ProjectRender {
     public enum Furnishing { KEEP, STAGED, EMPTY }
 
     public enum RenderStyle { MODERN, MINIMAL, TRADITIONAL, HERITAGE, LUXE }
+
+    /**
+     * How good an image to make: a different model, at a different size, for a different
+     * number of credits.
+     *
+     * <p>Three tiers rather than one, because "one photorealistic image" was never one
+     * thing. The models behind them differ by an order of magnitude in what they cost us to
+     * run, and flattening that into a single price meant either overcharging everybody who
+     * wanted a quick look or losing money on everybody who wanted the good one.
+     *
+     * <p>The ordering matters and is relied on: BASIC is the floor, and every project's
+     * INCLUDED image is a BASIC one. Choosing better on a room that still has its included
+     * image spends the allowance and tops up the difference in credits, rather than
+     * refusing — see {@code ProjectRenderService#charge}.
+     *
+     * <p>What each tier runs on is configuration, not code ({@code app.render.quality.*}),
+     * so a better model can be promoted into a tier without a migration. What is fixed here
+     * is the SHAPE: a primary that is asked first, and a fallback for when it is out of
+     * capacity.
+     */
+    public enum Quality {
+        /** One credit. A quick, honest look at the room. */
+        BASIC,
+        /** Two credits. The one most people want: sharper, and better at keeping the
+         *  building's own architecture. */
+        PRO,
+        /** Four credits. The best model wired in, at the largest size — the picture that
+         *  gets printed and shown to somebody. */
+        MAX
+    }
 }

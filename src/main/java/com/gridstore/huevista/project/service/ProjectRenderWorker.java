@@ -39,33 +39,60 @@ public class ProjectRenderWorker {
         this.stubAiPipeline = stubAiPipeline;
     }
 
-    /** Nano Banana Pro, the same model the clean step uses — the best of the ones wired
-     *  in at preserving a building's own architecture while repainting it. */
-    @Value("${replicate.render.model:google/nano-banana-pro}")
-    private String model;
+    // ── What each tier runs on ──────────────────────────────────────────────
+    //
+    // A render is sold at one of three qualities, and a quality IS a model: BASIC is a
+    // quick, cheap picture, MAX is the best one wired in, and the price difference between
+    // them is a real cost difference rather than a fence. Which model sits in which tier is
+    // configuration on purpose — a better one can be promoted without a migration and
+    // without a deploy — but the SHAPE is fixed here: a primary that is asked first, and
+    // one fallback for when it is merely out of capacity.
+    //
+    // FLUX.2 leads every tier and Nano Banana backs it up. They are different families with
+    // different failure weather, which is the entire point of a fallback: a second model
+    // from the same family tends to be busy at the same moments as the first. Both take a
+    // LIST of images under their own key, which this call needs — the cleaned photo first,
+    // the region masks after it. Flux Kontext is deliberately absent from every tier: it
+    // edits exactly one image, so it would silently drop the masks and ignore "keep the
+    // original borders".
+
+    @Value("${replicate.render.quality.basic.model:black-forest-labs/flux-2-klein}")
+    private String basicModel;
+
+    @Value("${replicate.render.quality.basic.fallback-models:google/nano-banana}")
+    private String basicFallbacks;
+
+    @Value("${replicate.render.quality.basic.resolution:1K}")
+    private String basicResolution;
+
+    @Value("${replicate.render.quality.pro.model:black-forest-labs/flux-2-pro}")
+    private String proModel;
+
+    @Value("${replicate.render.quality.pro.fallback-models:google/nano-banana-pro}")
+    private String proFallbacks;
+
+    @Value("${replicate.render.quality.pro.resolution:2K}")
+    private String proResolution;
+
+    @Value("${replicate.render.quality.max.model:black-forest-labs/flux-2-max}")
+    private String maxModel;
+
+    @Value("${replicate.render.quality.max.fallback-models:google/nano-banana-pro}")
+    private String maxFallbacks;
+
+    @Value("${replicate.render.quality.max.resolution:4K}")
+    private String maxResolution;
 
     /**
-     * The models tried, in order, once the primary above has been asked its full quota of
-     * times and is still out of capacity.
+     * A last resort under every tier, empty by default.
      *
-     * <p>This is the difference between "Nano Banana Pro is busy" costing the customer their
-     * render and costing them a slightly different picture. The render fails LOUD and has no
-     * fallback OUTPUT — the generated image is the whole deliverable, so we never hand back
-     * the photo instead — but a different model still produces a real render, so there is
-     * nothing to protect the customer from by refusing to ask one.
-     *
-     * <p>Both entries take a LIST of images under their own key, which the render needs:
-     * the cleaned photo comes first and the region masks follow it. Flux Kontext is
-     * deliberately absent — it edits exactly one image, so it would silently drop the masks
-     * and ignore "keep the original borders".
+     * <p>It exists so an operator whose whole primary family is down can add a model in one
+     * environment variable rather than in a deploy. Empty by default because a silent third
+     * choice is not a thing to have running unnoticed: a tier is a promise about which model
+     * made the picture, and the fewer ways that promise is quietly broken, the better.
      */
-    @Value("${replicate.render.fallback-models:bytedance/seedream-4,black-forest-labs/flux-2-pro}")
-    private String fallbackModels;
-
-    /** 2K by default here, against 1K for the clean: this image is the thing the customer
-     *  keeps and shows people, not an intermediate the masks are derived from. */
-    @Value("${replicate.render.resolution:2K}")
-    private String resolution;
+    @Value("${replicate.render.fallback-models:}")
+    private String sharedFallbacks;
 
     @Value("${replicate.render.aspect-ratio:match_input_image}")
     private String aspectRatio;
@@ -113,15 +140,45 @@ public class ProjectRenderWorker {
     }
 
     private byte[] callModel(ProjectRenderService.RenderJob job) {
+        Tier tier = tierFor(job.quality());
         // The input keys differ per model family, so the body is built per model down in
-        // ReplicatePredictions rather than assembled here for one of them.
+        // ReplicatePredictions rather than assembled here for one of them. The resolution
+        // travels in Nano Banana's 1K/2K/4K units and is translated per family there, so a
+        // FLUX primary and a Nano Banana fallback both get a size they understand.
         return replicate.run(new ReplicatePredictions.Ask(
-                ReplicatePredictions.chainOf(model, fallbackModels),
+                tier.chain(),
                 job.prompt(),
                 job.imageUrls(),
-                resolution,
+                tier.resolution(),
                 aspectRatio,
-                "jpg"), "Render");
+                "jpg"), "Render[" + job.quality() + "]");
+    }
+
+    /** One tier's model chain and the size it renders at. */
+    private record Tier(java.util.List<String> chain, String resolution) {}
+
+    /**
+     * The chain for a tier: its primary, its own fallback, then the shared last resort.
+     *
+     * <p>Null reads as BASIC. A render row written before the tiers existed carries no
+     * quality, and the cheapest tier is the honest reading of one that was charged a single
+     * credit.
+     */
+    private Tier tierFor(com.gridstore.huevista.project.model.ProjectRender.Quality quality) {
+        return switch (quality == null
+                ? com.gridstore.huevista.project.model.ProjectRender.Quality.BASIC
+                : quality) {
+            case BASIC -> new Tier(chain(basicModel, basicFallbacks), basicResolution);
+            case PRO -> new Tier(chain(proModel, proFallbacks), proResolution);
+            case MAX -> new Tier(chain(maxModel, maxFallbacks), maxResolution);
+        };
+    }
+
+    private java.util.List<String> chain(String primary, String fallbacks) {
+        java.util.List<String> chain = new java.util.ArrayList<>(
+                ReplicatePredictions.chainOf(primary, fallbacks));
+        chain.addAll(ReplicatePredictions.chainOf(null, sharedFallbacks));
+        return chain;
     }
 
     /**

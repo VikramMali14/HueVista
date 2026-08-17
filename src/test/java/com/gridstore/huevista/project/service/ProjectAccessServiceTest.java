@@ -45,7 +45,8 @@ class ProjectAccessServiceTest {
     void setUp() {
         billing = mock(BillingService.class);
         pricing = new PricingService(billing, mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class),
-                mock(OrgMembershipRepository.class));
+                mock(OrgMembershipRepository.class),
+                mock(com.gridstore.huevista.auth.repository.UserRepository.class));
         ReflectionTestUtils.setField(pricing, "pointsPriceReopen", REOPEN_POINTS);
         ReflectionTestUtils.setField(pricing, "pointsPriceReopenClosed", REOPEN_CLOSED_POINTS);
         ReflectionTestUtils.setField(pricing, "projectValidDays", 30);

@@ -36,6 +36,11 @@ public class ProjectRenderResponse {
     private String lighting;
     private String furnishing;
     private String style;
+
+    /** BASIC · PRO · MAX — which model made it, and what it cost in credits. Every render
+     *  written before the tiers existed reads BASIC, which is what it was charged as. */
+    private String quality;
+
     private String note;
 
     private LocalDateTime createdAt;
@@ -53,6 +58,8 @@ public class ProjectRenderResponse {
                 .lighting(render.getLighting().name())
                 .furnishing(render.getFurnishing().name())
                 .style(render.getStyle().name())
+                .quality((render.getQuality() == null
+                        ? ProjectRender.Quality.BASIC : render.getQuality()).name())
                 .note(render.getNote())
                 .createdAt(render.getCreatedAt())
                 .completedAt(render.getCompletedAt())

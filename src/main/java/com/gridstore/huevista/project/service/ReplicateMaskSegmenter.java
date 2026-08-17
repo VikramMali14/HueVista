@@ -1,5 +1,6 @@
 package com.gridstore.huevista.project.service;
 
+import com.gridstore.huevista.common.ai.ReplicateImageEditor;
 import com.gridstore.huevista.common.exception.ExternalServiceException;
 import com.gridstore.huevista.image.model.ImageType;
 import lombok.RequiredArgsConstructor;
@@ -18,16 +19,20 @@ import java.util.Optional;
  * ({@code google/nano-banana-pro}, i.e. Gemini 3 Pro Image) to flood each
  * paintable surface with a flat category colour.
  *
- * Request schema: {@code image_input} + {@code aspect_ratio} (which accepts
- * "match_input_image", so the mask keeps the photo's exact aspect) + an
- * optional 1K/2K/4K {@code resolution}. Sibling models in the same family
- * (e.g. {@code google/nano-banana-2}) speak the same schema and can be set
- * via config without a code change.
- *
  * Honest caveat: this is generative image EDITING, not pixel extraction.
  * Pixel alignment isn't guaranteed. The downstream post-processing
  * (colour gate, morph clean, edge snap — see SegmentationService) exists
  * precisely to absorb the model's small misregistrations.
+ *
+ * <h2>Whose request schema</h2>
+ *
+ * The request body is built by {@link ReplicateImageEditor}, keyed off the model id, for
+ * the same reason the cleaner's is: the families do not agree on the key the photo
+ * arrives under, and sending Nano Banana's {@code image_input} to FLUX gets a 422 and no
+ * mask. This used to be written inline here because there was only ever one model to
+ * talk to. There isn't — an ADMIN can run a single mask on any model in
+ * {@code AiModelCatalogue} to see how it fills to an edge, and a sibling tier can be set
+ * in config — so the schema is looked up rather than assumed.
  *
  * Configuration:
  *   replicate.nano-banana.enabled       — kill switch (default false)
@@ -43,6 +48,8 @@ import java.util.Optional;
 public class ReplicateMaskSegmenter {
 
     private final RestTemplate restTemplate;
+    /** Owns the per-family request body; see the class doc. */
+    private final ReplicateImageEditor imageEditor;
 
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
@@ -82,6 +89,11 @@ public class ReplicateMaskSegmenter {
                 && model != null && !model.isBlank();
     }
 
+    /** The configured model, for a caller that wants to name it in a log or a response. */
+    public String model() {
+        return model;
+    }
+
     /**
      * Produces a SINGLE flat colour-blocked image covering all three paint
      * categories at once. Red = main wall, Green = accent wall, Blue = trim,
@@ -114,18 +126,37 @@ public class ReplicateMaskSegmenter {
      *              accent region — only "main" is required.
      */
     public Optional<byte[]> generateColorCodedMask(String imageUrl, ImageType scene) {
-        if (!isConfigured()) {
+        return generateColorCodedMask(imageUrl, scene, null);
+    }
+
+    /**
+     * @param modelOverride an ADMIN's per-run choice of model (already checked against
+     *                      {@code AiModelCatalogue}), or null for the configured one.
+     *                      A pinned {@code model-version} is NOT applied to an override:
+     *                      a version hash identifies one release of one model, so
+     *                      carrying it onto a different one asks Replicate for something
+     *                      that does not exist.
+     */
+    public Optional<byte[]> generateColorCodedMask(String imageUrl, ImageType scene,
+                                                   String modelOverride) {
+        boolean overridden = modelOverride != null && !modelOverride.isBlank();
+        String modelId = overridden ? modelOverride.trim() : model;
+        boolean ready = enabled
+                && replicateApiToken != null && !replicateApiToken.isBlank()
+                && modelId != null && !modelId.isBlank();
+        if (!ready) {
             log.debug("Mask segmenter not configured — skipping");
             return Optional.empty();
         }
         try {
             boolean forceAccent = scene == ImageType.INDOOR;
-            log.info("Mask segmenter [{}]: requesting COLOR-CODED mask (scene={}, forceAccent={})",
-                    model, scene, forceAccent);
+            log.info("Mask segmenter [{}]: requesting COLOR-CODED mask (scene={}, forceAccent={}{})",
+                    modelId, scene, forceAccent, overridden ? ", ADMIN model override" : "");
 
-            Map<String, Object> input = buildImageEditInput(colorCodedPrompt(forceAccent), imageUrl);
+            Map<String, Object> input = buildImageEditInput(
+                    modelId, colorCodedPrompt(forceAccent), imageUrl);
 
-            String predictionId = startPrediction(input);
+            String predictionId = startPrediction(modelId, input, overridden);
             if (predictionId == null) return Optional.empty();
 
             Map<String, Object> result = pollUntilDone(predictionId);
@@ -423,69 +454,66 @@ public class ReplicateMaskSegmenter {
           + "Return only the finished flat colour-block image.\n";
 
     /**
-     * Base input for an image-edit prediction, plus the OPTIONAL aspect-ratio
-     * and resolution controls when configured. {@code aspect_ratio} with
+     * The image-edit body for {@code modelId}, plus the OPTIONAL aspect-ratio and
+     * resolution controls when configured. {@code aspect_ratio} with
      * "match_input_image" is what keeps the mask pinned to the photo's exact
-     * aspect. If a model variant rejects an optional key,
-     * {@link #startPrediction} retries once without the optional keys.
+     * aspect. If a model variant rejects an optional key, {@link #startPrediction}
+     * retries once without them.
+     *
+     * <p>Delegated to {@link ReplicateImageEditor} so which key the photo goes under is
+     * decided by the model's family rather than assumed to be Nano Banana's.
+     * {@code output_format} stays PNG: the split downstream reads exact RGB values, and
+     * JPEG's ringing around a hard colour boundary is precisely what it must not see.
      */
-    private Map<String, Object> buildImageEditInput(String prompt, String imageUrl) {
-        Map<String, Object> input = new java.util.HashMap<>();
-        input.put("prompt", prompt);
-        input.put("image_input", List.of(imageUrl));
-        input.put("output_format", "png");
-        if (aspectRatio != null && !aspectRatio.isBlank()) {
-            input.put("aspect_ratio", aspectRatio.trim());
-        }
-        if (resolution != null && !resolution.isBlank()) {
-            input.put("resolution", resolution.trim());
-        }
-        return input;
+    private Map<String, Object> buildImageEditInput(String modelId, String prompt, String imageUrl) {
+        return imageEditor.buildInput(
+                modelId, prompt, List.of(imageUrl), aspectRatio, resolution, "png");
     }
 
-    private String startPrediction(Map<String, Object> input) {
+    private String startPrediction(String modelId, Map<String, Object> input, boolean overridden) {
         try {
-            return doStartPrediction(input);
+            return doStartPrediction(modelId, input, overridden);
         } catch (org.springframework.web.client.HttpClientErrorException e) {
             // 400/422 usually means an input the model version doesn't know.
             // Drop the optional tuning keys and retry once — a mask at the
             // model's default aspect/resolution beats no mask at all.
-            boolean hadOptional = input.containsKey("aspect_ratio") || input.containsKey("resolution");
+            boolean hadOptional = ReplicateImageEditor.OPTIONAL_KEYS.stream().anyMatch(input::containsKey);
             if (hadOptional && (e.getStatusCode().value() == 400 || e.getStatusCode().value() == 422)) {
-                log.warn("Mask model rejected optional inputs ({}), retrying without " +
-                        "aspect_ratio/resolution: {}", e.getStatusCode(), e.getResponseBodyAsString());
+                log.warn("Mask model {} rejected optional inputs ({}), retrying with prompt + " +
+                        "image only: {}", modelId, e.getStatusCode(), e.getResponseBodyAsString());
                 Map<String, Object> slim = new java.util.HashMap<>(input);
-                slim.remove("aspect_ratio");
-                slim.remove("resolution");
+                ReplicateImageEditor.OPTIONAL_KEYS.forEach(slim::remove);
                 try {
-                    return doStartPrediction(slim);
+                    return doStartPrediction(modelId, slim, overridden);
                 } catch (Exception retryError) {
                     log.warn("Mask model retry without optional inputs also failed: {}",
                             retryError.getMessage());
                     return null;
                 }
             }
-            log.warn("Failed to start mask prediction: {} {}",
-                    e.getStatusCode(), e.getResponseBodyAsString());
+            log.warn("Failed to start mask prediction on {}: {} {}",
+                    modelId, e.getStatusCode(), e.getResponseBodyAsString());
             return null;
         } catch (Exception e) {
-            log.warn("Failed to start mask prediction: {}", e.getMessage());
+            log.warn("Failed to start mask prediction on {}: {}", modelId, e.getMessage());
             return null;
         }
     }
 
-    private String doStartPrediction(Map<String, Object> input) {
+    private String doStartPrediction(String modelId, Map<String, Object> input, boolean overridden) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set("Authorization", "Token " + replicateApiToken);
 
-        boolean hasPinnedVersion = modelVersion != null && !modelVersion.isBlank();
+        // The pinned version belongs to the CONFIGURED model. An admin testing a
+        // different one gets the model endpoint instead — see generateColorCodedMask.
+        boolean hasPinnedVersion = !overridden && modelVersion != null && !modelVersion.isBlank();
         Map<String, Object> body = hasPinnedVersion
                 ? Map.of("version", modelVersion, "input", input)
                 : Map.of("input", input);
         String endpoint = hasPinnedVersion
                 ? REPLICATE_BASE + "/predictions"
-                : REPLICATE_BASE + "/models/" + model + "/predictions";
+                : REPLICATE_BASE + "/models/" + modelId + "/predictions";
 
         ResponseEntity<Map> response = restTemplate.exchange(
                 endpoint, HttpMethod.POST,

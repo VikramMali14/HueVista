@@ -72,6 +72,20 @@ public class ProjectCreditService {
     }
 
     /**
+     * Projects this account has paid for and not yet started.
+     *
+     * <p>The one number off {@link #getOptions} that a customer's cart actually needs, on
+     * its own. getOptions answers a shop's question — what a project costs on both rails,
+     * what the points balance is, whether points may be spent at all — and every one of
+     * those is a lookup a CUSTOMER's answer is fixed for. Asking it for a count meant three
+     * queries and a plan resolution to read one.
+     */
+    @Transactional(readOnly = true)
+    public int availableCredits(String userId) {
+        return creditLedger.available(userId);
+    }
+
+    /**
      * Buy one project with points, at the account's own plan rate.
      *
      * The price is resolved server-side from the buyer's plan; a client never names it.
@@ -108,6 +122,27 @@ public class ProjectCreditService {
     @Transactional
     public void creditPurchasedProject(String userId, ProjectCredit.Source source) {
         grantOneProject(userId, 0, source);
+    }
+
+    /**
+     * Credit projects bought off the customer catalogue, each opening a room for
+     * {@code validDays}.
+     *
+     * <p>Straight into the ledger, deliberately skipping {@link #grantOneProject}'s "put it
+     * on the live plan if there is one" step. Two reasons, and the second is the one that
+     * matters: a CUSTOMER can hold no subscription at all, so the plan branch is dead code
+     * on this path — and if it somehow were not, a credit moved onto a plan loses the
+     * validity it was sold with, because a plan's allowance is a count and has nowhere to
+     * keep a per-credit window. The catalogue promises a year on the line before the money
+     * moves, and this is where that promise is written down.
+     */
+    @Transactional
+    public void creditCatalogueProjects(String userId, int projects, int validDays) {
+        for (int i = 0; i < projects; i++) {
+            creditLedger.issue(userId, 0, validDays, ProjectCredit.Source.PURCHASE);
+        }
+        log.info("Catalogue projects credited: user={} projects={} validDays={}",
+                userId, projects, validDays);
     }
 
     /**

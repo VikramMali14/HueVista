@@ -50,6 +50,10 @@ public class MyRenderResponse {
     private String lighting;
     private String furnishing;
     private String style;
+
+    /** BASIC · PRO · MAX — which model made it. Kept on the shelf so two images of the
+     *  same room can be told apart by more than the day they were made. */
+    private String quality;
     private String note;
 
     /** The colour-board combination it was made from, when the page still exists. */
@@ -92,6 +96,8 @@ public class MyRenderResponse {
                 .lighting(render.getLighting().name())
                 .furnishing(render.getFurnishing().name())
                 .style(render.getStyle().name())
+                .quality((render.getQuality() == null
+                        ? ProjectRender.Quality.BASIC : render.getQuality()).name())
                 .note(render.getNote())
                 .comboId(page != null ? page.getId() : null)
                 .comboTitle(page != null ? page.getTitle() : null)

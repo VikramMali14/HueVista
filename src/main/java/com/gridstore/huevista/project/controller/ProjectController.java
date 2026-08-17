@@ -2,6 +2,7 @@ package com.gridstore.huevista.project.controller;
 
 import com.gridstore.huevista.account.model.AppFeature;
 import com.gridstore.huevista.account.security.RequiresFeature;
+import com.gridstore.huevista.common.ai.AiModelCatalogue;
 import com.gridstore.huevista.project.dto.*;
 import com.gridstore.huevista.project.service.ProjectService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -15,6 +16,7 @@ import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
@@ -30,6 +32,7 @@ import java.util.Map;
 public class ProjectController {
 
     private final ProjectService projectService;
+    private final AiModelCatalogue modelCatalogue;
 
     /**
      * Longest a share link may live. A share link is a repaint capability handed to
@@ -174,7 +177,9 @@ public class ProjectController {
     ) {
         // maskMode is a real product choice open to everyone; the remaining
         // options are an ADMIN testing panel — silently stripped for every
-        // other role so a crafted request can't alter the pipeline.
+        // other role so a crafted request can't alter the pipeline. Stripping by
+        // REBUILDING the request rather than nulling fields is what keeps a knob
+        // added later (cleanModel/maskModel were) admin-only by default.
         boolean admin = auth.getAuthorities().stream()
                 .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
         SegmentRequest effective = request;
@@ -184,6 +189,28 @@ public class ProjectController {
         }
         return ResponseEntity.ok(projectService.requestSegmentation(
                 userId(auth), id, effective));
+    }
+
+    @Operation(
+            summary = "The image models a run may be pinned to",
+            description = """
+                    The models an ADMIN may pick for the photo clean-up and for wall
+                    detection (`cleanModel` / `maskModel` on the segment request), so two
+                    can be compared on the same photo.
+
+                    Served rather than hard-coded in the client on purpose: this is the
+                    same list the segment endpoint validates against, so the studio can
+                    only ever offer models the backend will actually run — including any
+                    added through `replicate.selectable-models` without a deploy.
+
+                    ROLE_ADMIN only. Sits above `/{id}` in the routing table because
+                    "ai-models" is a literal path segment, not a project id.
+                    """)
+    @ApiResponse(responseCode = "200", description = "The selectable models, in display order")
+    @GetMapping("/ai-models")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<List<AiModelCatalogue.Option>> listAiModels() {
+        return ResponseEntity.ok(modelCatalogue.options());
     }
 
     @Operation(
