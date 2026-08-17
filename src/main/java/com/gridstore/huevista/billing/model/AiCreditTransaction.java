@@ -40,7 +40,16 @@ public class AiCreditTransaction {
          */
         RENDER_REFUNDED,
         /** Given by an administrator — support, goodwill, a launch promotion. */
-        GRANTED
+        GRANTED,
+        /**
+         * Written off because the year it was sold with ran out.
+         *
+         * <p>Only ever reaches credits bought with a validity on them — the customer
+         * catalogue's, which says "valid for a year" on the line before the money moves.
+         * Credits sold under the old promise carry no date at all and are never touched by
+         * the sweep, because expiring those would be changing a deal after it was struck.
+         */
+        EXPIRED
     }
 
     @Id

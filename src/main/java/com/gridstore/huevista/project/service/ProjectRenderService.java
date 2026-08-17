@@ -88,7 +88,7 @@ public class ProjectRenderService {
      * of polling to avoid that would be worse than the bug.
      */
     public record RenderJob(String renderId, String prompt, List<String> imageUrls,
-                            String ownerFolder) {}
+                            String ownerFolder, ProjectRender.Quality quality) {}
 
     /**
      * Accept a render request: check it may be made, pay for it, and hand the work to the
@@ -108,7 +108,12 @@ public class ProjectRenderService {
         // the SUBJECT of the render, not a gate in front of it, and a project that has
         // handed over a board has combinations whether it went on to close or not.
         ProjectPdfPage page = boardService.requirePage(project.getId(), request.getComboId());
-        Funding funding = charge(project);
+        // Null reads as BASIC: a client that names no quality is asking for the ordinary
+        // picture, and defaulting the other way would charge four credits for silence.
+        ProjectRender.Quality quality = request.getQuality() == null
+                ? ProjectRender.Quality.BASIC
+                : request.getQuality();
+        Funding funding = charge(project, quality);
 
         ProjectRender render = renderRepository.save(ProjectRender.builder()
                 .project(project)
@@ -119,22 +124,30 @@ public class ProjectRenderService {
                 .lighting(request.getLighting())
                 .furnishing(request.getFurnishing())
                 .style(request.getStyle())
+                .quality(quality)
                 .note(request.getNote())
                 .paidWithCredit(funding.withCredit())
                 .paidByUserId(funding.walletUserId())
                 .creditsSpent(funding.credits())
                 .build());
 
-        log.info("Render requested: project={} render={} combo={} used={}/{} paidWith={}",
-                project.getId(), render.getId(), page.getId(),
-                project.getRendersUsed(), project.getRendersAllowed(),
-                funding.withCredit() ? funding.credits() + " credit(s)" : "project allowance");
+        log.info("Render requested: project={} render={} combo={} quality={} used={}/{} paidWith={}",
+                project.getId(), render.getId(), page.getId(), quality,
+                project.getRendersUsed(), project.getRendersAllowed(), funding.describe());
 
         dispatchOnceCommitted(render.getId());
         return ProjectRenderResponse.from(render, null);
     }
 
-    /** How one render was paid for, so the failure path can hand back the same thing. */
+    /**
+     * How one render was paid for, so the failure path can hand back the same thing.
+     *
+     * <p>There are now three shapes, not two, and the third is why {@code withCredit} and
+     * {@code credits} are separate fields rather than one flag. A project's included image
+     * covers a BASIC render; asking for a better one on a room that still holds its
+     * included image spends BOTH — the allowance, and the difference in credits. A refund
+     * has to hand back exactly what was taken, so it reads the two independently.
+     */
     private record Funding(boolean withCredit, String walletUserId, int credits) {
         static Funding fromAllowance() {
             return new Funding(false, null, 0);
@@ -142,6 +155,18 @@ public class ProjectRenderService {
 
         static Funding fromWallet(String userId, int credits) {
             return new Funding(true, userId, credits);
+        }
+
+        /** The allowance covered the basic image; the upgrade came out of the wallet. */
+        static Funding fromAllowancePlusCredits(String userId, int credits) {
+            return new Funding(false, userId, credits);
+        }
+
+        String describe() {
+            if (withCredit) return credits + " credit(s)";
+            return credits > 0
+                    ? "project allowance + " + credits + " credit(s)"
+                    : "project allowance";
         }
     }
 
@@ -159,14 +184,37 @@ public class ProjectRenderService {
      * already a purchase. A project with neither — a walk-in guest's room, which has no
      * user account and therefore no wallet — is refused rather than run free.
      */
-    private Funding charge(Project project) {
+    private Funding charge(Project project, ProjectRender.Quality quality) {
+        int cost = pricingService.aiCreditRenderCost(quality);
+        int included = pricingService.aiCreditRenderCost(ProjectRender.Quality.BASIC);
+        String walletUserId = project.getUser() != null ? project.getUser().getId() : null;
+
         if (project.hasRenderLeft()) {
+            // The included image is a BASIC one. Anything better on top of it is charged
+            // the DIFFERENCE, not the full price — the allowance is worth what it is worth
+            // whichever tier is chosen, and making somebody forfeit it to upgrade would be
+            // the one arrangement that leaves them worse off for having a room with an
+            // image included. The upgrade is taken FIRST, so a wallet too short to cover it
+            // fails before the allowance is spent rather than after.
+            int upgrade = Math.max(0, cost - included);
+            if (upgrade > 0) {
+                if (walletUserId == null) {
+                    throw new QuotaExceededException(
+                            "A " + quality.name().toLowerCase(java.util.Locale.ROOT)
+                            + " image costs " + cost + " credits. Sign in with your own "
+                            + "account to buy them, or make the image included with this room.");
+                }
+                aiCreditService.spend(walletUserId, upgrade, project.getId(),
+                        "1 " + quality.name().toLowerCase(java.util.Locale.ROOT)
+                        + " AI image · " + project.getName() + " (upgrade)");
+            }
             project.setRendersUsed(project.getRendersUsed() + 1);
             projectRepository.save(project);
-            return Funding.fromAllowance();
+            return upgrade > 0
+                    ? Funding.fromAllowancePlusCredits(walletUserId, upgrade)
+                    : Funding.fromAllowance();
         }
 
-        String walletUserId = project.getUser() != null ? project.getUser().getId() : null;
         if (walletUserId == null) {
             throw new QuotaExceededException(
                     "This room's AI image has been used. Sign in with your own account to buy "
@@ -176,9 +224,9 @@ public class ProjectRenderService {
         // Throws 402 with the balance in the message when the wallet is short — the same
         // status the allowance gate used to throw, so the studio's "you need to pay for
         // this" branch handles both without knowing which pocket came up empty.
-        int cost = pricingService.aiCreditRenderCost();
         aiCreditService.spend(walletUserId, cost, project.getId(),
-                "1 AI image · " + project.getName());
+                "1 " + quality.name().toLowerCase(java.util.Locale.ROOT)
+                + " AI image · " + project.getName());
         return Funding.fromWallet(walletUserId, cost);
     }
 
@@ -263,7 +311,11 @@ public class ProjectRenderService {
                 renderId,
                 promptBuilder.build(render, render.getPage(), imageType),
                 images,
-                ownerFolder(project)));
+                ownerFolder(project),
+                // Which tier was paid for, carried out to the worker: it decides which
+                // model chain is asked and at what size. Read here rather than out there
+                // because out there is another thread with no session to read it in.
+                render.getQuality() == null ? ProjectRender.Quality.BASIC : render.getQuality()));
     }
 
     /**
@@ -330,11 +382,19 @@ public class ProjectRenderService {
             renderRepository.save(r);
 
             Project project = r.getProject();
-            if (r.isPaidWithCredit()) {
-                aiCreditService.refundRender(r.getPaidByUserId(), r.getCreditsSpent(), project.getId());
-                return;
+            // Both pockets, independently. A render can have been paid for out of the
+            // allowance AND out of the wallet at once — that is what upgrading a room's
+            // included image to PRO or MAX does — so this is two questions, not a branch
+            // between two answers. Handing back only one of them was the exact accident
+            // this record of what was charged exists to prevent.
+            if (r.getCreditsSpent() > 0) {
+                aiCreditService.refundRender(r.getPaidByUserId(), r.getCreditsSpent(),
+                        project.getId(),
+                        // A fresh window on the way back, at the rate this buyer buys at:
+                        // a year for a customer, no expiry at all for a shop.
+                        pricingService.aiCreditValidityDays(r.getPaidByUserId()));
             }
-            if (project.getRendersUsed() > 0) {
+            if (!r.isPaidWithCredit() && project.getRendersUsed() > 0) {
                 project.setRendersUsed(project.getRendersUsed() - 1);
                 projectRepository.save(project);
                 log.info("Render allowance returned after a failure: project={} render={}",
