@@ -78,6 +78,16 @@ public class User {
     // sessions revoked, and the original email freed for re-registration.
     private LocalDateTime deletedAt;
 
+    /**
+     * Set when this account was folded into another one and retired — today that means a
+     * kiosk guest account the customer merged into their real account. The row stays
+     * (tombstoned via {@link #deletedAt}) rather than being deleted, because the shop's
+     * access code still points at it in its own records and support needs to be able to
+     * answer "where did that walk-in's room go".
+     */
+    @Column(name = "merged_into_user_id")
+    private String mergedIntoUserId;
+
     // Hierarchy provenance: the user who provisioned this account (admin → distributor
     // → retailer → painter). Null for self-signups and pre-hierarchy accounts.
     @Column(name = "created_by_user_id")

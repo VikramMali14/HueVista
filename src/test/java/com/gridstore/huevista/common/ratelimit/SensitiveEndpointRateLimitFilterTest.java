@@ -47,7 +47,10 @@ class SensitiveEndpointRateLimitFilterTest {
         assertThat(f.shouldNotFilter(req("POST", "/api/auth/verify/email/send"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/auth/verify/phone/confirm"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/access-codes/redeem"))).isFalse();
-        assertThat(f.shouldNotFilter(req("POST", "/api/access-codes/redeem-guest"))).isFalse();
+        // Kiosk re-entry: the send can be aimed at somebody else's inbox and the confirm
+        // is a six-digit guess, so both are capped.
+        assertThat(f.shouldNotFilter(req("POST", "/api/store/re-entry"))).isFalse();
+        assertThat(f.shouldNotFilter(req("POST", "/api/store/re-entry/confirm"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/images/upload"))).isFalse();
         assertThat(f.shouldNotFilter(req("POST", "/api/guest/images/upload"))).isFalse();
         // Store kiosk rules carry a one-segment wildcard for the slug.

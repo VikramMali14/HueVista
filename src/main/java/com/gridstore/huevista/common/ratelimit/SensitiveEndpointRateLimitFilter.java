@@ -186,8 +186,11 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 new Rule("POST", "/api/auth/verify/email/confirm", otpConfirm),
                 new Rule("POST", "/api/auth/verify/phone/confirm", otpConfirm),
                 new Rule("POST", "/api/access-codes/redeem", redeem),
-                new Rule("POST", "/api/access-codes/redeem-guest", redeem),
-                new Rule("POST", "/api/access-codes/redeem-account", redeem),
+                // Kiosk re-entry. The send costs an email and can be aimed at somebody
+                // else's inbox, so it sits in the otp-send bucket; the confirm is a
+                // 6-digit brute force and sits with the other code confirmations.
+                new Rule("POST", "/api/store/re-entry", otpSend),
+                new Rule("POST", "/api/store/re-entry/confirm", otpConfirm),
                 // Paid-classification / storage-write endpoints.
                 new Rule("POST", "/api/images/upload", upload),
                 new Rule("POST", "/api/guest/images/upload", upload),

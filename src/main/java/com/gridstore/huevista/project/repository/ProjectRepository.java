@@ -24,6 +24,19 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
     Optional<Project> findByIdAndUserId(String id, String userId);
 
     /**
+     * Hand every room owned by one account to another — the move behind merging a kiosk
+     * guest account into the customer's real one. Returns how many changed hands.
+     *
+     * <p>{@code accessCode} is deliberately left alone. It is the shop's link to the
+     * work it sold, not an ownership claim, and clearing it would blank the counter's
+     * "what did this customer pick" screen for a room the shop is still expected to mix.
+     */
+    @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE Project p SET p.user = :target WHERE p.user.id = :fromUserId")
+    int reassignOwner(@Param("target") com.gridstore.huevista.auth.model.User target,
+                      @Param("fromUserId") String fromUserId);
+
+    /**
      * Every room created under a code any of these organizations issued — the shop's
      * side of its customers' work, for the retailer dashboard. The image is fetch-joined
      * for the same N+1 reason as {@link #findByUserIdWithImage}, and the customer's own

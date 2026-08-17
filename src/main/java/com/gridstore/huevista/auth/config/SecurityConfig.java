@@ -162,15 +162,17 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/free-projects", "/api/free-projects/**").permitAll()
                 // Shared project view — public, no auth
                 .requestMatchers(HttpMethod.GET, "/api/share/**").permitAll()
-                // Anonymous guest redemption of a shop access code — issues a guest token
-                .requestMatchers(HttpMethod.POST, "/api/access-codes/redeem-guest").permitAll()
-                // No-login redemption that auto-creates a passwordless CUSTOMER account and
-                // returns a full session — the primary walk-in flow.
-                .requestMatchers(HttpMethod.POST, "/api/access-codes/redeem-account").permitAll()
                 // Public in-store kiosk: view a store link, create the payment order,
                 // verify it (Razorpay signature is the proof) — per-IP rate-limited.
                 .requestMatchers(HttpMethod.GET, "/api/store/*").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/store/*/order", "/api/store/*/verify").permitAll()
+                // Kiosk re-entry: a walk-in asking for a sign-in code by email, and
+                // redeeming it. Public by necessity — the whole point is a customer who
+                // has no session, on a phone that never had one. The request step answers
+                // identically whether or not an account exists, and the confirm step is a
+                // single-use hashed code with an attempt limit. Both per-IP rate-limited.
+                .requestMatchers(HttpMethod.POST, "/api/store/re-entry", "/api/store/re-entry/confirm")
+                    .permitAll()
                 // Public "request a shop account" form and its email verification —
                 // per-IP rate-limited. The verify/resend steps carry an unguessable
                 // request id and create nothing on their own; the account only exists

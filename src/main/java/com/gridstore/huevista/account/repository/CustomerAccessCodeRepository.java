@@ -75,6 +75,23 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
     int consumeForUser(@Param("id") String id, @Param("user") User user, @Param("now") LocalDateTime now);
 
     /**
+     * The most recent code bought at a kiosk by this e-mail address — the walk-in's way
+     * back to what they paid for. Only self-funded codes match: a counter-issued code
+     * carries no buyer, and the address on one would be the SHOP's typing, not a
+     * customer proving who they are.
+     */
+    Optional<CustomerAccessCode> findFirstByBuyerEmailAndSelfFundedTrueOrderByCreatedAtDesc(String buyerEmail);
+
+    /**
+     * Re-point every code a retired guest account redeemed at the account it was merged
+     * into, so the shop's "what did this customer pick" lookups keep resolving to a live
+     * account rather than a tombstone.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE CustomerAccessCode c SET c.usedByUser = :target WHERE c.usedByUser.id = :fromUserId")
+    int reassignRedeemer(@Param("target") User target, @Param("fromUserId") String fromUserId);
+
+    /**
      * Cancel a code nobody has redeemed. The {@code usedByUser IS NULL} guard makes this a
      * compare-and-set, so a revoke racing a redemption loses cleanly rather than pulling a
      * code out from under the customer who has just claimed it.

@@ -13,6 +13,14 @@ public interface UserRepository extends JpaRepository<User, String> {
     Optional<User> findByEmail(String email);
     boolean existsByEmail(String email);
 
+    /**
+     * A LIVE account holding this address. Deleted rows keep a scrubbed placeholder
+     * address, so they can never match here — but a merged-away guest account is
+     * tombstoned the same way, and matching one would hand a returning customer a
+     * session on the account they already emptied.
+     */
+    Optional<User> findByEmailAndDeletedAtIsNull(String email);
+
     /** A user who has VERIFIED this mobile number — the only valid SMS-reset target. */
     Optional<User> findByPhoneNumberAndPhoneVerifiedTrue(String phoneNumber);
 

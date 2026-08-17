@@ -14,6 +14,16 @@ import java.util.Optional;
 public interface MaskReportRepository extends JpaRepository<MaskReport, String> {
 
     /**
+     * Move the "this run came out wrong" reports filed by one account to another, so a
+     * merged customer stays the person admin replies to. Reports filed under an access
+     * code alone keep pointing at the code — nobody signed those.
+     */
+    @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE MaskReport r SET r.reporter = :target WHERE r.reporter.id = :fromUserId")
+    int reassignReporter(@Param("target") com.gridstore.huevista.auth.model.User target,
+                         @Param("fromUserId") String fromUserId);
+
+    /**
      * The admin queue. Everything the list row renders is fetch-joined, because the
      * alternative is four lazy SELECTs per report and this page exists to be
      * skimmed. The access code drags its organization along for the shop name.

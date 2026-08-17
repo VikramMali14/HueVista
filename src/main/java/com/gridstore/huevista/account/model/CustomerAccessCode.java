@@ -93,6 +93,24 @@ public class CustomerAccessCode {
     @Builder.Default
     private boolean selfFunded = false;
 
+    /**
+     * The address the walk-in gave at the kiosk till, normalized. Null for a code the
+     * shop issued at the counter — there is no buyer on those, only a customer name.
+     *
+     * <p>This is the customer's way back to what they paid for, and the reason the
+     * printed code is not. A slip that never expires is a password anyone who picks it
+     * up can use; an e-mailed sign-in code proves the person asking is the person who
+     * bought. So re-entry resolves through here, and the 8 characters stay what they
+     * were always meant to be — the reference the SHOP reads at the counter.
+     *
+     * <p>Deliberately kept on the code rather than only on the account: the buyer's
+     * address may already belong to somebody else's account (a shop owner buying at
+     * their own kiosk), in which case the guest account holds a synthetic address and
+     * this is the only record of where the receipt should go.
+     */
+    @Column(length = 320)
+    private String buyerEmail;
+
     // Colour-board PDFs taken under a self-funded code, counted here rather than against
     // the shop's monthly PDF limit — the customer already paid for the board along with
     // the project. Unused (and left at zero) for ordinary shop-issued codes.

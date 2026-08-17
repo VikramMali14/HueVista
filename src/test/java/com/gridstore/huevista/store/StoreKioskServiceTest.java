@@ -1,6 +1,5 @@
 package com.gridstore.huevista.store;
 
-import com.gridstore.huevista.account.dto.GuestRedeemResponse;
 import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.service.AccessCodeService;
@@ -21,7 +20,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 import org.springframework.test.util.ReflectionTestUtils;
 
-import java.time.Instant;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -71,10 +69,7 @@ class StoreKioskServiceTest {
         return new Order(json);
     }
 
-    private static GuestRedeemResponse guest(String code) {
-        return GuestRedeemResponse.builder()
-                .guestToken("guest-token").code(code).shopName("Mehta Paints").expiresAt(Instant.now().plusSeconds(3600)).build();
-    }
+    private com.gridstore.huevista.account.service.GuestAccountService guestAccounts;
 
     private StoreKioskService service(RazorpayClient razorpay, StoreLinkRepository links,
                                       StorePaymentRepository payments, AccessCodeService codes) {
@@ -90,7 +85,21 @@ class StoreKioskServiceTest {
                 .thenReturn(java.util.List.of(OWNER));
 
         points = mock(com.gridstore.huevista.billing.service.RewardPointsService.class);
-        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes, pricing, points,
+        guestAccounts = mock(com.gridstore.huevista.account.service.GuestAccountService.class);
+        // The account a kiosk purchase lands on. Every verified payment opens or reuses
+        // one, so the money path can't be exercised without it.
+        when(guestAccounts.provisionForKiosk(any(), any(), any()))
+                .thenReturn(com.gridstore.huevista.auth.model.User.builder()
+                        .id("kiosk-user-1").email("walkin@example.com").name("walkin")
+                        .provider(com.gridstore.huevista.auth.model.AuthProvider.ACCESS_CODE)
+                        .role(com.gridstore.huevista.auth.model.UserRole.CUSTOMER).build());
+        when(guestAccounts.isGuestAccount(any())).thenReturn(true);
+
+        StoreKioskService svc = new StoreKioskService(razorpay, links, payments, codes,
+                guestAccounts,
+                mock(com.gridstore.huevista.auth.service.AuthService.class),
+                mock(com.gridstore.huevista.notification.EmailSender.class),
+                pricing, points,
                 mock(com.gridstore.huevista.billing.service.PaymentAttemptService.class));
         ReflectionTestUtils.setField(svc, "keyId", "key");
         ReflectionTestUtils.setField(svc, "keySecret", "secret");

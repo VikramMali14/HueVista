@@ -2,7 +2,11 @@ package com.gridstore.huevista.store.service;
 
 import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.service.AccessCodeService;
+import com.gridstore.huevista.account.service.GuestAccountService;
+import com.gridstore.huevista.auth.model.User;
+import com.gridstore.huevista.auth.service.AuthService;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
+import com.gridstore.huevista.notification.EmailSender;
 import com.gridstore.huevista.store.dto.StoreCheckoutResponse;
 import com.gridstore.huevista.store.dto.StoreOrderResponse;
 import com.gridstore.huevista.store.dto.VerifyStoreOrderRequest;
@@ -42,9 +46,16 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * Mirrors {@link com.gridstore.huevista.billing.service.ProjectCreditService}
  * with one deliberate difference: replaying an already-redeemed payment is NOT
- * an error here — it returns the SAME code with a fresh guest token. A kiosk
- * customer whose network dropped mid-verify must never lose what they paid for,
- * and the (order, payment, signature) triple only exists in the payer's browser.
+ * an error here — it returns the SAME code with a fresh session on the SAME
+ * account. A kiosk customer whose network dropped mid-verify must never lose what
+ * they paid for, and the (order, payment, signature) triple only exists in the
+ * payer's browser.
+ *
+ * <p>The account the code is redeemed onto is opened here if the buyer has none —
+ * see {@link com.gridstore.huevista.account.service.GuestAccountService}. A walk-in
+ * should be choosing colours seconds after paying, not filling in a sign-up form at
+ * the counter, so the sign-up is deferred: they can claim the account later, or fold
+ * it into one they already have.
  */
 @Slf4j
 @Service
@@ -55,6 +66,9 @@ public class StoreKioskService {
     private final StoreLinkRepository linkRepository;
     private final StorePaymentRepository paymentRepository;
     private final AccessCodeService accessCodeService;
+    private final GuestAccountService guestAccountService;
+    private final AuthService authService;
+    private final EmailSender emailSender;
     private final com.gridstore.huevista.billing.service.PricingService pricingService;
     private final com.gridstore.huevista.billing.service.RewardPointsService rewardPointsService;
     private final com.gridstore.huevista.billing.service.PaymentAttemptService paymentAttemptService;
@@ -202,6 +216,12 @@ public class StoreKioskService {
         CustomerAccessCode code = accessCodeService.issueForStore(link.getOrganization());
         payment.setAccessCode(code);
 
+        // Open the account this purchase belongs to and redeem the code onto it, so the
+        // customer walks away from the till already inside their own studio. When the
+        // address they gave already has a customer account, this attaches to that one and
+        // there is nothing for them to merge later.
+        User owner = guestAccountService.provisionForKiosk(code, req.getEmail(), req.getName());
+
         // Reward the shop whose link made the sale. Shares this transaction with the
         // payment row, so points and the record of why they exist land together or not at
         // all. A shop with no owner account earns nothing and the sale still completes —
@@ -214,10 +234,37 @@ public class StoreKioskService {
                     link.getOrganization().getId(), req.getPaymentId());
         }
 
-        log.info("Store kiosk payment verified: slug={} order={} payment={} amount={} points={}",
-                slug, req.getOrderId(), req.getPaymentId(), paidPaise, bonusPoints);
+        log.info("Store kiosk payment verified: slug={} order={} payment={} amount={} points={} account={}",
+                slug, req.getOrderId(), req.getPaymentId(), paidPaise, bonusPoints, owner.getId());
 
-        return toResponse(code, paidPaise);
+        emailReceipt(owner, code, paidPaise);
+        return toResponse(code, paidPaise, owner);
+    }
+
+    /**
+     * Post the receipt. Best-effort by design: the customer is standing at a till with a
+     * completed payment and a working session, and a mail server having a bad afternoon
+     * must not turn that into an error on the screen.
+     */
+    private void emailReceipt(User owner, CustomerAccessCode code, int paidPaise) {
+        String to = code.getBuyerEmail();
+        if (to == null || to.isBlank()) return;
+        try {
+            emailSender.send(to, "Your HueVista room · " + code.getOrganization().getName(),
+                    "Thanks — your payment of " + formatRupees(paidPaise) + " went through.\n\n"
+                    + "Your pickup code is " + code.getCode() + ". Show it at "
+                    + code.getOrganization().getName() + " and they will mix the colours you chose.\n\n"
+                    + "Your room is saved to this email address. If you close the tab or change "
+                    + "phones, come back and ask for a sign-in code — we will email you one.\n\n"
+                    + "You can move this room onto an existing HueVista account at any time from "
+                    + "the studio.");
+        } catch (Exception e) {
+            log.warn("Kiosk receipt email failed for code {}: {}", code.getCode(), e.getMessage());
+        }
+    }
+
+    private static String formatRupees(int paise) {
+        return "₹" + (paise / 100);
     }
 
     /** Same payment seen again: hand back the same code. */
@@ -238,10 +285,19 @@ public class StoreKioskService {
             throw new IllegalStateException("This payment was refunded.");
         }
         log.info("Store kiosk payment replayed: payment={} code re-issued", payment.getPaymentId());
-        return toResponse(payment.getAccessCode(), payment.getAmountPaise());
+        return toResponse(payment.getAccessCode(), payment.getAmountPaise(),
+                payment.getAccessCode().getUsedByUser());
     }
 
-    private StoreCheckoutResponse toResponse(CustomerAccessCode code, int amountPaise) {
+    /**
+     * The receipt, plus a session on the account the purchase lives on.
+     *
+     * <p>A replay comes through here too, and deliberately gets a FRESH session for the
+     * same account. The customer whose network dropped mid-verify is the case this whole
+     * idempotent path exists for, and handing them a code they cannot open would be the
+     * same failure in a politer form.
+     */
+    private StoreCheckoutResponse toResponse(CustomerAccessCode code, int amountPaise, User owner) {
         return StoreCheckoutResponse.builder()
                 .code(code.getCode())
                 .shopName(code.getOrganization().getName())
@@ -249,6 +305,13 @@ public class StoreKioskService {
                 .expiresAt(code.getExpiresAt()
                         .atZone(java.time.ZoneId.systemDefault()).toInstant())
                 .amountPaise(amountPaise)
+                .session(owner == null ? null : authService.buildAuthResponse(owner))
+                .accountEmail(code.getBuyerEmail())
+                // "Offer to move this somewhere" makes sense only while the account is
+                // still unclaimed. Once it is the customer's own — because they paid with
+                // the address of an account they already had, or have since claimed this
+                // one — there is nothing left to move it into.
+                .existingAccount(owner != null && !guestAccountService.isGuestAccount(owner))
                 .build();
     }
 
