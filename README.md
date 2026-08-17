@@ -96,6 +96,7 @@ Retailers subscribe to use HueVista as a sales tool with walk-ins, shortening th
 | GET | `/api/projects/{id}` | Project detail with regions |
 | PUT | `/api/projects/{id}/regions` | Auto-save region colors |
 | POST | `/api/projects/{id}/segment` | Async auto-segmentation (Nano Banana) |
+| GET | `/api/projects/ai-models` | Image models a run may be pinned to (ADMIN) |
 | POST | `/api/projects/{id}/segment/point` | Click-to-segment (SAM 2) |
 | GET | `/api/projects/{id}/status` | Poll segmentation status |
 | POST | `/api/projects/{id}/share` | Generate share link |
@@ -174,6 +175,38 @@ and trim — so region editing, shade picking, compare, PDF export and sharing
 all have something real to work on. No `REPLICATE_API_TOKEN` is needed for that
 path (click-to-segment still uses SAM 2 and still does). Billing is untouched:
 a stub run charges credits like a real one, so plan limits stay testable.
+
+#### Comparing image models on one photo
+
+An **ADMIN** signed into the studio gets a testing panel on the confirm-photo step
+with a radio list for each half of the pipeline: which model cleans the photo, and
+which one generates the colour-coded wall mask. They are picked separately because
+the two jobs reward different things — the clean rewards a model that holds a
+building still while it edits, the mask one that fills flat colour to an edge — so
+holding one fixed while the other changes is how a bad result gets attributed to the
+right model.
+
+The choice travels as `cleanModel` / `maskModel` on `POST /api/projects/{id}/segment`
+and is persisted on the project, so the async worker (possibly another JVM) reads the
+same answer. Three things are worth knowing:
+
+- **A pinned model is the only one asked.** The clean's usual fallback hierarchy
+  (Google's own API, then a different family) is switched off for that run. A
+  comparison that might quietly have been answered by another model answers nothing,
+  so a pinned model that declines simply fails the clean.
+- **The list is an allow-list, not free text.** `GET /api/projects/ai-models`
+  (ROLE_ADMIN) serves it, the segment endpoint validates against it, and a model id
+  outside it is a 400 rather than something forwarded to Replicate. Set
+  `REPLICATE_SELECTABLE_MODELS` to narrow or extend it without a deploy —
+  comma-separated `owner/model` or `owner/model|Human label`.
+- **Ordinary runs are untouched.** The fields are stripped for every non-admin
+  caller, and the studio sends the empty string on a normal run — which clears a
+  pin rather than being ignored, so one comparison cannot keep serving every later
+  run of that room. The admin mask viewer shows the pinned models beside the canvas
+  size for any room that had them.
+
+Both stages still cost a real generation — this panel runs the models, unlike the
+stub above and unlike the "make the AI models fail" rehearsal knob beside it.
 
 ### 2. Run
 

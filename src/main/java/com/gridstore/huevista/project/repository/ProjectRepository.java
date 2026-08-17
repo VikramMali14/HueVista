@@ -188,4 +188,16 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
      */
     @Query("SELECT p.simulatedFailure FROM Project p WHERE p.id = :projectId")
     Optional<String> findSimulatedFailureById(@Param("projectId") String projectId);
+
+    /**
+     * Reads the ADMIN per-run model overrides — which image model this run's clean-up
+     * and wall detection should be sent to instead of the configured ones. Empty
+     * optional / null (the normal case) = use the configured model. Read by the async
+     * worker at the moment of each call, like the two knobs above.
+     */
+    @Query("SELECT p.cleanModel FROM Project p WHERE p.id = :projectId")
+    Optional<String> findCleanModelById(@Param("projectId") String projectId);
+
+    @Query("SELECT p.maskModel FROM Project p WHERE p.id = :projectId")
+    Optional<String> findMaskModelById(@Param("projectId") String projectId);
 }

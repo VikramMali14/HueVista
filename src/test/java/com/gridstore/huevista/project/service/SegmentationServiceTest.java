@@ -107,7 +107,7 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 2);
         when(segmenter.isConfigured()).thenReturn(true);
         // First generation is a dud (trim but no main wall); second is usable.
-        when(segmenter.generateColorCodedMask(anyString(), any()))
+        when(segmenter.generateColorCodedMask(anyString(), any(), any()))
                 .thenReturn(Optional.of(dudCodedPng()))
                 .thenReturn(Optional.of(goodCodedPng()));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
@@ -118,7 +118,7 @@ class SegmentationServiceTest {
                 "p1", "u1", "http://img", ImageType.OUTDOOR, null, null, W, H);
 
         assertThat(ok).isTrue();
-        verify(segmenter, times(2)).generateColorCodedMask(anyString(), any());
+        verify(segmenter, times(2)).generateColorCodedMask(anyString(), any(), any());
 
         // Only the GOOD attempt's regions were saved — the dud's blue trim was
         // never persisted even though it cleared the trim size threshold.
@@ -133,14 +133,14 @@ class SegmentationServiceTest {
     void failsWithoutPersistingAnythingWhenEveryAttemptIsADud() throws Exception {
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 2);
         when(segmenter.isConfigured()).thenReturn(true);
-        when(segmenter.generateColorCodedMask(anyString(), any()))
+        when(segmenter.generateColorCodedMask(anyString(), any(), any()))
                 .thenReturn(Optional.of(dudCodedPng()));
 
         boolean ok = service.tryColorCodedSegmentation(
                 "p1", "u1", "http://img", ImageType.OUTDOOR, null, null, W, H);
 
         assertThat(ok).isFalse();
-        verify(segmenter, times(2)).generateColorCodedMask(anyString(), any());
+        verify(segmenter, times(2)).generateColorCodedMask(anyString(), any(), any());
         verify(regions, never()).save(any());
         verify(storage, never()).store(any(byte[].class), anyString(), anyString(), anyString());
     }
@@ -149,14 +149,14 @@ class SegmentationServiceTest {
     void singleAttemptConfigKeepsOldSingleShotBehaviour() throws Exception {
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         when(segmenter.isConfigured()).thenReturn(true);
-        when(segmenter.generateColorCodedMask(anyString(), any()))
+        when(segmenter.generateColorCodedMask(anyString(), any(), any()))
                 .thenReturn(Optional.of(dudCodedPng()));
 
         boolean ok = service.tryColorCodedSegmentation(
                 "p1", "u1", "http://img", ImageType.OUTDOOR, null, null, W, H);
 
         assertThat(ok).isFalse();
-        verify(segmenter, times(1)).generateColorCodedMask(anyString(), any());
+        verify(segmenter, times(1)).generateColorCodedMask(anyString(), any(), any());
     }
 
     @Test
@@ -166,7 +166,7 @@ class SegmentationServiceTest {
         // aspect and resolution rather than the model's output size.
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         when(segmenter.isConfigured()).thenReturn(true);
-        when(segmenter.generateColorCodedMask(anyString(), any()))
+        when(segmenter.generateColorCodedMask(anyString(), any(), any()))
                 .thenReturn(Optional.of(goodCodedPng()));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("masks/key.png");
@@ -203,7 +203,7 @@ class SegmentationServiceTest {
         // a wall reaching the top of a cropped photo is still adopted as accent.
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         when(segmenter.isConfigured()).thenReturn(true);
-        when(segmenter.generateColorCodedMask(anyString(), any()))
+        when(segmenter.generateColorCodedMask(anyString(), any(), any()))
                 .thenReturn(Optional.of(topTouchingWhiteAccentPng()));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("masks/key.png");
@@ -248,11 +248,11 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
         stubProjectForRun(ImageType.OUTDOOR);
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.empty());
+        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.empty());
 
         service.segmentAsync("p1", "http://img");
 
-        verify(segmenter, never()).generateColorCodedMask(anyString(), any());
+        verify(segmenter, never()).generateColorCodedMask(anyString(), any(), any());
         verify(regions, never()).save(any());
 
         ArgumentCaptor<Project> saved = ArgumentCaptor.forClass(Project.class);
@@ -274,9 +274,9 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         stubProjectForRun(ImageType.OUTDOOR);
         when(cleaner.isAvailable()).thenReturn(false);
-        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.empty());
+        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.empty());
         when(segmenter.isConfigured()).thenReturn(true);
-        when(segmenter.generateColorCodedMask(anyString(), any()))
+        when(segmenter.generateColorCodedMask(anyString(), any(), any()))
                 .thenReturn(Optional.of(goodCodedPng()));
         when(storage.load("orig.jpg")).thenReturn(png(new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB)));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
@@ -285,7 +285,7 @@ class SegmentationServiceTest {
 
         service.segmentAsync("p1", "http://img");
 
-        verify(segmenter, times(1)).generateColorCodedMask(anyString(), any());
+        verify(segmenter, times(1)).generateColorCodedMask(anyString(), any(), any());
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -302,11 +302,11 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         stubProjectForRun(ImageType.OUTDOOR);
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
+        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("cleaned/key.jpg");
         when(segmenter.isConfigured()).thenReturn(true);
-        when(segmenter.generateColorCodedMask(anyString(), any())).thenReturn(Optional.empty());
+        when(segmenter.generateColorCodedMask(anyString(), any(), any())).thenReturn(Optional.empty());
 
         service.segmentAsync("p1", "http://img");
 
@@ -332,11 +332,11 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         stubProjectForRun(ImageType.OUTDOOR);
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
+        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("cleaned/key.jpg");
         when(segmenter.isConfigured()).thenReturn(true);
-        when(segmenter.generateColorCodedMask(anyString(), any())).thenReturn(Optional.empty());
+        when(segmenter.generateColorCodedMask(anyString(), any(), any())).thenReturn(Optional.empty());
         when(maskReports.reportAutoMaskFailure("p1")).thenThrow(new RuntimeException("inbox down"));
 
         service.segmentAsync("p1", "http://img");
@@ -357,7 +357,7 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
         stubProjectForRun(ImageType.OUTDOOR);
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
+        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("cleaned/key.jpg");
         when(segmenter.isConfigured()).thenReturn(false);
@@ -384,7 +384,7 @@ class SegmentationServiceTest {
         stubProjectForRun(ImageType.OUTDOOR);
         when(projects.findSimulatedFailureById("p1")).thenReturn(Optional.of("MASK"));
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
+        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("cleaned/key.jpg");
 
@@ -392,8 +392,8 @@ class SegmentationServiceTest {
 
         // The CLEAN still ran for real — only the simulated half is withheld, which is
         // what makes this a rehearsal of "cleaned but no walls" rather than of nothing.
-        verify(cleaner).cleanImage(anyString(), any());
-        verify(segmenter, never()).generateColorCodedMask(anyString(), any());
+        verify(cleaner).cleanImage(anyString(), any(), any());
+        verify(segmenter, never()).generateColorCodedMask(anyString(), any(), any());
         verify(maskReports).reportAutoMaskFailure("p1");
         ArgumentCaptor<Project> saved = ArgumentCaptor.forClass(Project.class);
         verify(projects, atLeastOnce()).save(saved.capture());
@@ -415,7 +415,7 @@ class SegmentationServiceTest {
         service.segmentAsync("p1", "http://img");
 
         verifyNoInteractions(segmenter);
-        verify(cleaner, never()).cleanImage(anyString(), any());
+        verify(cleaner, never()).cleanImage(anyString(), any(), any());
         ArgumentCaptor<Project> saved = ArgumentCaptor.forClass(Project.class);
         verify(projects, atLeastOnce()).save(saved.capture());
         Project last = saved.getAllValues().get(saved.getAllValues().size() - 1);
@@ -437,13 +437,13 @@ class SegmentationServiceTest {
         when(storage.load("orig.jpg")).thenReturn(png(new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB)));
         when(vision.classifyStored(any(byte[].class))).thenReturn(ImageType.INDOOR);
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), eq(ImageType.INDOOR))).thenReturn(Optional.empty());
+        when(cleaner.cleanImage(anyString(), eq(ImageType.INDOOR), any())).thenReturn(Optional.empty());
 
         service.segmentAsync("p1", "http://img");
 
         // Asked about the right scene, and the answer is written back so a re-run of
         // this project doesn't pay for the same classification again.
-        verify(cleaner).cleanImage(anyString(), eq(ImageType.INDOOR));
+        verify(cleaner).cleanImage(anyString(), eq(ImageType.INDOOR), any());
         assertThat(image.getImageType()).isEqualTo(ImageType.INDOOR);
         verify(images).save(image);
     }
@@ -453,7 +453,7 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
         stubProjectForRun(ImageType.OUTDOOR);
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), any())).thenReturn(Optional.empty());
+        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.empty());
 
         service.segmentAsync("p1", "http://img");
 
@@ -466,7 +466,7 @@ class SegmentationServiceTest {
         // sky and never becomes a paintable accent region.
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         when(segmenter.isConfigured()).thenReturn(true);
-        when(segmenter.generateColorCodedMask(anyString(), any()))
+        when(segmenter.generateColorCodedMask(anyString(), any(), any()))
                 .thenReturn(Optional.of(topTouchingWhiteAccentPng()));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("masks/key.png");

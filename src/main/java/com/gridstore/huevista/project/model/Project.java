@@ -100,6 +100,20 @@ public class Project {
     @Column(length = 16)
     private String simulatedFailure;
 
+    // ADMIN testing knobs, set per segmentation request: run THIS project's clean-up
+    // and/or wall detection on a named Replicate model instead of the configured one
+    // (replicate.image-cleaner.model / replicate.nano-banana.model), so two models can
+    // be compared on the same photo without a redeploy between them. Null = use the
+    // configured model. Validated against AiModelCatalogue before they get here, so
+    // whatever is stored is a model this deployment is willing to call. Persisted for
+    // the same reason as skipImageClean above — the async worker that reads them may be
+    // a different JVM than the one that took the request.
+    @Column(length = 128)
+    private String cleanModel;
+
+    @Column(length = 128)
+    private String maskModel;
+
     // How walls are created after the compulsory AI photo clean-up: "AUTO"
     // (null = default) runs AI wall detection and consumes one auto-mask
     // credit; "MANUAL" stops the pipeline after the clean-up so the user marks

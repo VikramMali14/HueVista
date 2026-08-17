@@ -221,6 +221,63 @@ class ImageCleanerFallbackTest {
     }
 
     @Test
+    void anAdminOverrideReplacesThePrimaryModel() {
+        when(replicate.edit(any())).thenReturn(IMAGE);
+
+        assertThat(cleaner.cleanImage("http://photo", ImageType.OUTDOOR,
+                "black-forest-labs/flux-2-max")).contains(IMAGE);
+
+        ArgumentCaptor<ReplicateImageEditor.Spec> spec =
+                ArgumentCaptor.forClass(ReplicateImageEditor.Spec.class);
+        verify(replicate).edit(spec.capture());
+        assertThat(spec.getValue().model()).isEqualTo("black-forest-labs/flux-2-max");
+    }
+
+    @Test
+    void anOverriddenRunAsksThatModelAndNobodyElse() {
+        // The point of the override is a comparison. A clean quietly served by Gemini or
+        // by FLUX would look exactly like one served by the model under test, and the
+        // admin would attribute the image to the wrong model — worse than no image.
+        when(replicate.edit(any())).thenThrow(ImageEditException.failover("seedream declined"));
+        when(gemini.isConfigured()).thenReturn(true);
+        when(gemini.model()).thenReturn("gemini-3-pro-image-preview");
+        when(gemini.edit(anyString(), any(), any())).thenReturn(IMAGE);
+        photoIsDownloadable();
+
+        assertThat(cleaner.cleanImage("http://photo", ImageType.OUTDOOR,
+                "bytedance/seedream-4")).isEmpty();
+
+        verify(replicate, times(1)).edit(any());
+        verify(gemini, never()).edit(anyString(), any(), any());
+    }
+
+    @Test
+    void overridingWithTheConfiguredModelStillPinsTheRunToIt() {
+        // Picking "Nano Banana Pro" from the radio asks for that one model, even though
+        // it is also what the config says. Falling over to FLUX here would answer a
+        // different question from the one the admin asked.
+        when(replicate.edit(any())).thenThrow(ImageEditException.failover("busy"));
+        when(gemini.isConfigured()).thenReturn(false);
+
+        assertThat(cleaner.cleanImage("http://photo", ImageType.OUTDOOR,
+                "google/nano-banana-pro")).isEmpty();
+
+        verify(replicate, times(1)).edit(any());
+    }
+
+    @Test
+    void aBlankOverrideIsTheOrdinaryRun() {
+        // Null and "" both mean "nothing was pinned" — the studio sends the empty string
+        // when the admin puts the radio back on "the configured model".
+        when(replicate.edit(any())).thenThrow(ImageEditException.failover("nope"));
+        when(gemini.isConfigured()).thenReturn(false);
+
+        assertThat(cleaner.cleanImage("http://photo", ImageType.OUTDOOR, "  ")).isEmpty();
+
+        verify(replicate, times(4)).edit(any()); // primary + three fallbacks
+    }
+
+    @Test
     void theCleanIsAskedForWithTheSceneItWasGiven() {
         when(replicate.edit(any())).thenReturn(IMAGE);
         when(hints.describeCleanup(anyString(), any())).thenReturn(Optional.empty());

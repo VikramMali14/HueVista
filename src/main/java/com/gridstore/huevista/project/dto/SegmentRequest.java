@@ -54,4 +54,34 @@ public class SegmentRequest {
      * the async worker sees it. See {@code AiFailureSimulator}.
      */
     private String simulateFailure;
+
+    /**
+     * ADMIN-only testing knob (ignored for other callers): the Replicate model to run
+     * THIS run's photo clean-up on, instead of {@code replicate.image-cleaner.model}.
+     *
+     * <p>Must be one of the ids in {@code AiModelCatalogue} — anything else is refused
+     * with 400 rather than passed on to Replicate. Null or blank (the normal case)
+     * leaves the configured model in charge.
+     *
+     * <p>An override also NARROWS the run to that one model: the usual hierarchy
+     * (Google's own API, then a different family) is not walked, because a comparison
+     * is worthless if the image might have come from a model other than the one being
+     * compared. A model that declines simply fails the clean.
+     *
+     * <p>Persisted on the project so the async worker — possibly another JVM — sees it.
+     */
+    private String cleanModel;
+
+    /**
+     * ADMIN-only testing knob (ignored for other callers): the Replicate model to
+     * generate THIS run's colour-coded wall mask with, instead of
+     * {@code replicate.nano-banana.model}.
+     *
+     * <p>Same catalogue and the same persistence as {@link #cleanModel}. Set separately
+     * from it on purpose: the two jobs suit different models — the clean rewards a model
+     * that holds architecture still, the mask rewards one that fills flat colour to an
+     * edge — and holding one stage fixed while the other changes is the only way to see
+     * which half of a bad result belongs to which model.
+     */
+    private String maskModel;
 }
