@@ -91,6 +91,14 @@ class ApiContractTest {
                 // failure — the project opens and works — so the studio needs its own
                 // flag to know to ask for hand-marked walls.
                 "autoMaskFailed",
+                // What to SAY about it, written once by the backend so the studio, the
+                // share view and the kiosk stop each carrying their own paraphrase.
+                "autoMaskNotice",
+                // The running commentary while a run is in flight. The pipeline walks a
+                // chain of models and hands over whenever one is busy; without this the
+                // studio shows one motionless spinner for minutes and a working run is
+                // indistinguishable from a dead one.
+                "aiProgressNote",
                 // Which image models an admin pinned this run to, null for the
                 // configured ones. The mask viewer names them beside the canvas: a
                 // model comparison nobody can attribute afterwards was not one.

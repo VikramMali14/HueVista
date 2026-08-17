@@ -15,8 +15,19 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
 
     Optional<CustomerAccessCode> findByCode(String code);
 
-    /** The access code a redeemed customer account was created from (one per account). */
+    /** The most recent code this account redeemed. */
     Optional<CustomerAccessCode> findFirstByUsedByUserIdOrderByCreatedAtDesc(String usedByUserId);
+
+    /**
+     * EVERY code this account has redeemed, newest first.
+     *
+     * <p>Plural on purpose. A customer may hold codes from several shops at once —
+     * nothing stops them redeeming one from the shop near work and another from the shop
+     * near home — and each one unlocks that shop's products. The single-code lookup above
+     * silently answered "your shop" with whichever was newest, so redeeming a second code
+     * appeared to REPLACE the first shop's paint rather than add to it.
+     */
+    List<CustomerAccessCode> findByUsedByUserIdOrderByUsedAtDesc(String usedByUserId);
 
     List<CustomerAccessCode> findByOrganizationIdOrderByCreatedAtDesc(String organizationId);
 

@@ -1,11 +1,9 @@
 package com.gridstore.huevista.billing;
 
 import com.gridstore.huevista.account.model.CustomerAccessCode;
-import com.gridstore.huevista.account.model.CustomerEntitlement;
 import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.model.Organization;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
-import com.gridstore.huevista.account.repository.CustomerEntitlementRepository;
 import com.gridstore.huevista.account.repository.OrgMembershipRepository;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.model.UserRole;
@@ -25,15 +23,16 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /**
- * Colour-board PDF quota: a retailer spends their own plan, a CUSTOMER account and a
- * guest both spend the issuing shop's plan, and reservation is the atomic conditional
- * UPDATE (0 rows updated = limit spent → 402).
+ * Colour-board PDF quota: a retailer spends their own plan, a guest spends the issuing
+ * shop's, a CUSTOMER spends no monthly counter at all, and reservation is the atomic
+ * conditional UPDATE (0 rows updated = limit spent → 402).
  */
 class PdfQuotaServiceTest {
 
@@ -45,12 +44,11 @@ class PdfQuotaServiceTest {
 
     private final SubscriptionRepository subs = mock(SubscriptionRepository.class);
     private final UserRepository users = mock(UserRepository.class);
-    private final CustomerEntitlementRepository entitlements = mock(CustomerEntitlementRepository.class);
     private final CustomerAccessCodeRepository codes = mock(CustomerAccessCodeRepository.class);
     private final OrgMembershipRepository memberships = mock(OrgMembershipRepository.class);
 
     private final PdfQuotaService service =
-            new PdfQuotaService(subs, users, entitlements, codes, memberships,
+            new PdfQuotaService(subs, users, codes, memberships,
                     mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class));
 
     /**
@@ -133,35 +131,39 @@ class PdfQuotaServiceTest {
                 .hasMessageContaining("PDF download limit");
     }
 
-    // ---- customer: the issuing shop's plan ----
+    // ---- customer: no monthly counter; the cap is per project ----
 
+    /**
+     * A customer's boards are limited by the project, not by anybody's subscription.
+     *
+     * <p>This used to walk customer → entitlement → retailerOrg → that org's owner → an
+     * ACTIVE subscription, and every missing link produced the same 402: "PDF downloads
+     * are covered by your paint shop's plan — redeem a shop access code first", shown to
+     * people who had redeemed one. It was wrong twice over. The board was already paid
+     * for — a shop's code costs the shop a project when the code is GENERATED, and a
+     * project bought direct was paid for at the till — so charging it again to a monthly
+     * plan billed the same thing twice; and it let a shop's lapsed subscription silently
+     * take the boards away from every customer it had ever onboarded.
+     */
     @Test
-    void customer_rides_on_the_issuing_shops_plan() {
+    void customer_has_no_monthly_counter_because_the_cap_is_per_project() {
         when(users.findById(CUSTOMER)).thenReturn(Optional.of(user(CUSTOMER, UserRole.CUSTOMER)));
-        Organization org = new Organization();
-        org.setId(ORG);
-        CustomerEntitlement ent = CustomerEntitlement.builder()
-                .customer(user(CUSTOMER, UserRole.CUSTOMER))
-                .retailerOrg(org)
-                .build();
-        when(entitlements.findByCustomerId(CUSTOMER)).thenReturn(Optional.of(ent));
-        when(memberships.findUserIdsByOrganizationIdAndRole(ORG, OrgMemberRole.OWNER))
-                .thenReturn(List.of(RETAILER));
-        when(subs.findEntitling(eq(RETAILER), eq(SubscriptionStatus.ACTIVE), eq(SubscriptionStatus.CANCELLED), any()))
-                .thenReturn(java.util.List.of(sub(10, 100)));
 
         PdfAllowanceResponse a = service.allowanceForUser(CUSTOMER);
 
-        assertThat(a.getRemaining()).isEqualTo(90);
+        assertThat(a.isUnlimited()).isTrue();
+        // No shop was consulted in either direction — that is the whole point.
+        verify(memberships, never()).findUserIdsByOrganizationIdAndRole(any(), any());
     }
 
     @Test
-    void customer_without_entitlement_gets_402() {
+    void customer_with_no_shop_at_all_still_gets_their_board() {
+        // The case with no action behind the old advice: somebody who bought their own
+        // project has no retailerOrg and never will, and was told to go and find a code.
         when(users.findById(CUSTOMER)).thenReturn(Optional.of(user(CUSTOMER, UserRole.CUSTOMER)));
-        when(entitlements.findByCustomerId(CUSTOMER)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.allowanceForUser(CUSTOMER))
-                .isInstanceOf(QuotaExceededException.class);
+        assertThat(service.reserveForUser(CUSTOMER).isUnlimited()).isTrue();
+        verify(subs, never()).incrementPdfUsageIfWithinLimit(any());
     }
 
     // ---- guest: the issuing shop's plan via the access code ----
