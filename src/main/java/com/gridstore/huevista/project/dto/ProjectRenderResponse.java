@@ -41,6 +41,10 @@ public class ProjectRenderResponse {
      *  written before the tiers existed reads BASIC, which is what it was charged as. */
     private String quality;
 
+    /** CLEANED · ORIGINAL — which photograph of the room the model was given to paint.
+     *  Every render written before the choice existed reads CLEANED, which is what it got. */
+    private String sourceImage;
+
     private String note;
 
     private LocalDateTime createdAt;
@@ -60,6 +64,8 @@ public class ProjectRenderResponse {
                 .style(render.getStyle().name())
                 .quality((render.getQuality() == null
                         ? ProjectRender.Quality.BASIC : render.getQuality()).name())
+                .sourceImage((render.getSourceImage() == null
+                        ? ProjectRender.SourceImage.CLEANED : render.getSourceImage()).name())
                 .note(render.getNote())
                 .createdAt(render.getCreatedAt())
                 .completedAt(render.getCompletedAt())

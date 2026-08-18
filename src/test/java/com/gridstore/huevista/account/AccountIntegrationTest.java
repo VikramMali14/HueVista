@@ -166,7 +166,10 @@ class AccountIntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.customerName").value("Priya Sharma"))
                 .andExpect(jsonPath("$.projectQuota").value(3))
-                .andExpect(jsonPath("$.validDays").value(10))
+                // An absolute date, not a "valid for N days" count. Per-code validity went
+                // when a code became something an account holds: an UNREDEEMED code lapses
+                // (30 days), and once redeemed the customer's access never does.
+                .andExpect(jsonPath("$.expiresAt").isNotEmpty())
                 .andReturn();
         String code = objectMapper.readTree(genResult.getResponse().getContentAsString()).get("code").asText();
 
@@ -182,29 +185,39 @@ class AccountIntegrationTest {
         org.assertj.core.api.Assertions.assertThat(sub.getReservedProjects()).isEqualTo(3);
         org.assertj.core.api.Assertions.assertThat(sub.getProjectsUsed()).isZero();
 
-        // Redeeming needs NO auth — it auto-creates a signed-in CUSTOMER account.
+        // Redeeming needs a signed-in CUSTOMER. A code cannot mint an account any more and
+        // cannot be held by a browser: the shop issues it, the customer signs in, and the
+        // code is added to the account they are already in.
         RedeemCodeRequest redeem = new RedeemCodeRequest();
         redeem.setCode(code);
-        mockMvc.perform(post("/api/access-codes/redeem-account")
+        mockMvc.perform(post("/api/access-codes/redeem")
+                        .header("Authorization", "Bearer " + customerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(redeem)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.accessToken").isNotEmpty())
-                .andExpect(jsonPath("$.refreshToken").isNotEmpty())
-                .andExpect(jsonPath("$.user.role").value("CUSTOMER"))
-                .andExpect(jsonPath("$.user.name").value("Priya Sharma"))
-                .andExpect(jsonPath("$.shopName").value("Sharda"))
-                .andExpect(jsonPath("$.validDays").value(10));
+                .andExpect(jsonPath("$.used").value(true))
+                .andExpect(jsonPath("$.organizationName").value("Sharda"))
+                .andExpect(jsonPath("$.projectQuota").value(3));
+
+        // The customer now holds the three projects the shop paid for.
+        mockMvc.perform(get("/api/me/entitlement")
+                        .header("Authorization", "Bearer " + customerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.projectAllowance").value(3));
     }
 
     /**
-     * Re-entry is the customer's ONLY way back in — their account has no password.
-     * If it hands back a session without an entitlement, every project read answers
-     * 403 "Your access is not set up" and the dashboard they land on can load
-     * nothing. Redeeming again must repair that, without resetting what they used.
+     * A code is spent the moment it is claimed, and a second attempt is refused.
+     *
+     * <p>This replaces a test about RE-ENTRY: redemption used to mint a passwordless
+     * account, so typing the code again was the customer's only way back to it, and
+     * re-redeeming had to repair an entitlement that had gone missing. A code is added to
+     * an account the customer is already signed into now — they get back in by signing in
+     * — so the rule that matters is the opposite one: claiming is once, and the projects
+     * belong to whoever claimed first.
      */
     @Test
-    void redeemAccount_reEntry_restoresMissingEntitlement() throws Exception {
+    void aCodeCannotBeRedeemedTwice() throws Exception {
         String retailerOrgId = createOrg(retailerOwnerToken, "Sharda", "sharda-paints", OrgType.RETAILER);
         seedActiveSubscription("retailer-owner@example.com");
 
@@ -221,38 +234,31 @@ class AccountIntegrationTest {
 
         RedeemCodeRequest redeem = new RedeemCodeRequest();
         redeem.setCode(code);
-        mockMvc.perform(post("/api/access-codes/redeem-account")
+        mockMvc.perform(post("/api/access-codes/redeem")
+                        .header("Authorization", "Bearer " + customerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(redeem)))
                 .andExpect(status().isOk());
 
-        // Simulate a redemption that stopped half-way: the passwordless account is
-        // there, its entitlement is not.
-        User customer = userRepository.findByEmail("ac-" + code.toLowerCase() + "@customers.huevista.local")
-                .orElseThrow();
-        entitlementRepository.findByCustomerId(customer.getId()).ifPresent(entitlementRepository::delete);
-        entitlementRepository.flush();
-
-        MvcResult again = mockMvc.perform(post("/api/access-codes/redeem-account")
+        // The same account, asking again: already used, and the allowance does not double.
+        mockMvc.perform(post("/api/access-codes/redeem")
+                        .header("Authorization", "Bearer " + customerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(redeem)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.user.role").value("CUSTOMER"))
-                .andReturn();
-        String customerToken2 = objectMapper.readTree(again.getResponse().getContentAsString())
-                .get("accessToken").asText();
+                .andExpect(status().is4xxClientError());
 
-        // The repaired entitlement mirrors the code: its quota, its own expiry.
-        mockMvc.perform(get("/api/me/entitlement").header("Authorization", "Bearer " + customerToken2))
+        mockMvc.perform(get("/api/me/entitlement").header("Authorization", "Bearer " + customerToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.projectAllowance").value(3))
-                .andExpect(jsonPath("$.projectsCreated").value(0))
-                .andExpect(jsonPath("$.expired").value(false));
+                .andExpect(jsonPath("$.projectAllowance").value(3));
 
-        // And the dashboard's project fetch works instead of 403ing.
-        mockMvc.perform(get("/api/projects").header("Authorization", "Bearer " + customerToken2))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(0));
+        // And a different customer cannot take a code somebody already claimed.
+        String otherToken = registerAndLogin("second-walkin@example.com", "Second Walk-in",
+                com.gridstore.huevista.auth.model.UserRole.CUSTOMER);
+        mockMvc.perform(post("/api/access-codes/redeem")
+                        .header("Authorization", "Bearer " + otherToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(redeem)))
+                .andExpect(status().is4xxClientError());
     }
 
     /** A customer with no entitlement at all owns no shop work, so listing their
@@ -322,7 +328,7 @@ class AccountIntegrationTest {
 
     /** Give a user an ACTIVE subscription with image quota, so they can assign projects. */
     @Test
-    void revokingAnUnredeemedCode_returnsItsHeldQuota_andKillsTheCode() throws Exception {
+    void revokingAnUnredeemedCode_killsTheCodeAndSaysSo() throws Exception {
         String orgId = createOrg(retailerOwnerToken, "Sharda", "sharda-paints", OrgType.RETAILER);
         seedActiveSubscription("retailer-owner@example.com");
 
@@ -344,16 +350,23 @@ class AccountIntegrationTest {
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(owner.getId(), SubscriptionStatus.ACTIVE)
                 .orElseThrow().getReservedProjects()).isEqualTo(3);
 
-        // Cancelling the code hands the three held credits straight back to the shop —
-        // previously a mistyped code could only be replaced by paying the quota twice.
+        // Cancelling stops anyone redeeming the code. It does NOT hand the quota back:
+        // the projects on a code are bought when it is issued and they are spent, which is
+        // what removed the reservation ledger that used to move them back and forth.
+        //
+        // The response must SAY it revoked the code. It used to answer `revoked: false`
+        // straight after revoking one — the guarded UPDATE goes to the database, and the
+        // re-read that builds this response was served the row the persistence context had
+        // cached a moment earlier. See CustomerAccessCodeRepository#revokeIfUnused.
         mockMvc.perform(delete("/api/organizations/{orgId}/access-codes/{codeId}", orgId, codeId)
                         .header("Authorization", "Bearer " + retailerOwnerToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.revoked").value(true));
+                .andExpect(jsonPath("$.revoked").value(true))
+                .andExpect(jsonPath("$.revokedAt").isNotEmpty());
 
         org.assertj.core.api.Assertions.assertThat(subscriptionRepository
                 .findTopByUserIdAndStatusOrderByCreatedAtDesc(owner.getId(), SubscriptionStatus.ACTIVE)
-                .orElseThrow().getReservedProjects()).isZero();
+                .orElseThrow().getReservedProjects()).isEqualTo(3);
 
         // …and the revoked code can never be redeemed.
         RedeemCodeRequest redeem = new RedeemCodeRequest();

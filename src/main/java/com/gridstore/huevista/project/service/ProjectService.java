@@ -134,7 +134,6 @@ public class ProjectService {
                     .notes(blankToNull(request.getNotes()))
                     .status(ProjectStatus.CREATED)
                     .accessCode(linkedCode)
-                    .rendersAllowed(includedRenders(payment.shopEntitled()))
                     .build();
 
             // A bought project carries its own validity. Opened paused when the buyer is
@@ -191,10 +190,6 @@ public class ProjectService {
      * that image was promised when the room was made, and taking it back retroactively
      * would break a promise to settle a pricing question.
      */
-    private static int includedRenders(boolean shopFunded) {
-        return shopFunded ? 0 : 1;
-    }
-
     /**
      * Which of the three ways a new project is paid for, already charged.
      *
@@ -359,7 +354,6 @@ public class ProjectService {
                     .cleanedImageStorageKey(
                             copyBlob(source.getCleanedImageStorageKey(), userId, "cleaned", "image/jpeg"))
                     .accessCode(linkedCode)
-                    .rendersAllowed(includedRenders(payment.shopEntitled()))
                     .build();
 
             if (credit != null) {
@@ -769,9 +763,13 @@ public class ProjectService {
 
     // ─── AI renders ──────────────────────────────────────────────────────────
     //
-    // Read paths, so findOwned and not findEditable: a render is made FROM a closed
-    // project, and a closed project is view-only by definition. Gating these on
-    // editability would make the one thing closing unlocks impossible to reach.
+    // findOwned and not findEditable: a render is normally made from a CLOSED project, and
+    // a closed project is view-only by definition. Gating these on editability would make
+    // the last step of the job unreachable from the state the job ends in.
+    //
+    // Requesting one is not a read — it spends AI credits — but ownership is the whole of
+    // the permission question here. What it costs and whether the wallet can cover it is
+    // ProjectRenderService's answer, and it is the same answer in every room state.
 
     @Transactional
     public ProjectRenderResponse requestRender(String userId, String projectId,
@@ -1477,7 +1475,6 @@ public class ProjectService {
                 .notes(blankToNull(request.getNotes()))
                 .status(ProjectStatus.CREATED)
                 // Always shop-funded: a code IS the shop paying for this room.
-                .rendersAllowed(includedRenders(true))
                 .build());
 
         // Nothing is charged here: the shop paid for this room when it issued the code.
@@ -1786,7 +1783,7 @@ public class ProjectService {
         String cleanedUrl = project.getCleanedImageStorageKey() != null
                 ? storageService.getPublicUrl(project.getCleanedImageStorageKey()) : null;
         ProjectResponse r = ProjectResponse.from(project, originalUrl,
-                boardService.boardsPerProject(), pricingService.renderTopUpPricePaise());
+                boardService.boardsAllowedFor(project));
         r.setCleanedImageUrl(cleanedUrl);
         if (project.getRawMaskStorageKey() != null) {
             r.setRawMaskUrl(storageService.getPublicUrl(project.getRawMaskStorageKey()));

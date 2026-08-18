@@ -206,32 +206,6 @@ public class BillingController {
                 () -> projectPurchaseService.verifyAndCreditReopen(userDetails.getUsername(), request)));
     }
 
-    @Operation(summary = "Buy one more AI render (order)",
-            description = "Creates a Razorpay order for another AI image on a project that has "
-                    + "spent the one it came with. Flat price. Refused up-front (409) when the "
-                    + "project still has a render left, so nobody buys one they already have.")
-    @PostMapping("/projects/{projectId}/renders/order")
-    public ResponseEntity<ProjectOrderResponse> createRenderOrder(
-            @AuthenticationPrincipal UserDetails userDetails,
-            @PathVariable String projectId) {
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(projectPurchaseService.createRenderOrder(userDetails.getUsername(), projectId));
-    }
-
-    @Operation(summary = "Buy one more AI render (verify)",
-            description = "Verifies the Razorpay Checkout signature and adds one render to the "
-                    + "project the ORDER named — read back from the order, not from the client. "
-                    + "Replay-protected: one payment buys exactly one image.")
-    @PostMapping("/projects/renders/verify")
-    public ResponseEntity<Void> verifyRenderPurchase(
-            @AuthenticationPrincipal UserDetails userDetails,
-            @Valid @RequestBody VerifyProjectPurchaseRequest request) {
-        String userId = userDetails.getUsername();
-        paymentAttemptService.recordVerification(request.getOrderId(), request.getPaymentId(),
-                () -> { projectPurchaseService.verifyAndCreditRender(userId, request); return null; });
-        return ResponseEntity.noContent().build();
-    }
-
     @Operation(summary = "Get my colour-board PDF allowance",
             description = "Images-per-PDF and monthly download quota, resolved against whichever plan pays "
                     + "for the caller (a retailer's own; the issuing shop's for customers).")

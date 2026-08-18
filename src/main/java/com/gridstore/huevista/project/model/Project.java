@@ -291,17 +291,19 @@ public class Project {
     private int colourBoardsUsed = 0;
 
     /**
-     * AI renders this project may produce, and how many it has.
+     * AI images this project has produced.
      *
-     * One is included, and a project only ever earns the right to it by closing. Further
-     * renders are bought one at a time; the allowance is stored per project rather than
-     * as an account balance because a render is only meaningful against the combos of the
-     * project that produced it.
+     * A COUNT of what this room has produced, not an entitlement to produce more. There is
+     * no per-project allowance any more: every AI image is bought with an AI credit, from a
+     * wallet that belongs to the account rather than to the room. The column that used to
+     * sit beside this one — {@code rendersAllowed} — was the last thing in the product that
+     * could hand somebody a picture without a credit moving, and a "free one included"
+     * that only ever applied to rooms bought on one of the three payment routes was a rule
+     * nobody could predict from the outside.
+     *
+     * <p>Kept because it is still true and still useful: it says how many images this room
+     * has made, which is what the logs quote and what a failed render decrements.
      */
-    @Column(nullable = false, columnDefinition = "integer not null default 1")
-    @Builder.Default
-    private int rendersAllowed = 1;
-
     @Column(nullable = false, columnDefinition = "integer not null default 0")
     @Builder.Default
     private int rendersUsed = 0;
@@ -320,11 +322,6 @@ public class Project {
      */
     public boolean isFromLibrary() {
         return libraryTemplateId != null && !libraryTemplateId.isBlank();
-    }
-
-    /** Is there an AI render left to spend on this project? */
-    public boolean hasRenderLeft() {
-        return rendersUsed < rendersAllowed;
     }
 
     /** True when this project carries a paid window at all (running or paused). */

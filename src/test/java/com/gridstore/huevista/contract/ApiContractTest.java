@@ -113,10 +113,12 @@ class ApiContractTest {
                 // not only how it reads: such a room has no board cap, never closes and
                 // never lapses, so the close button and the countdown are withheld.
                 "fromLibrary",
-                // Closing: when the job finished, how many colour boards it has handed
-                // over of the ones it gets, and what is left of its AI render allowance.
-                "closedAt", "boardsUsed", "boardsAllowed",
-                "rendersAllowed", "rendersUsed", "renderPricePaise",
+                // Closing: when the job finished, and how many colour boards it has
+                // handed over of the ones it gets. `rendersUsed` counts the AI images the
+                // room has made — a count, not an allowance: there is no per-project
+                // entitlement to an image and no per-project price for one, because every
+                // image is bought with an AI credit from the account's own wallet.
+                "closedAt", "boardsUsed", "boardsAllowed", "rendersUsed",
                 // Access: the studio disables the palette on readOnly rather than letting
                 // the user paint and then fail on autosave.
                 "readOnly", "readOnlyReason", "accessExpiresAt",

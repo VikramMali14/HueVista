@@ -62,6 +62,7 @@ class AccessCodeTopUpIntegrationTest {
     @Autowired PasswordEncoder passwordEncoder;
     @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired CustomerAccessCodeRepository codeRepository;
+    @Autowired com.gridstore.huevista.account.service.GuestAccountService guestAccountService;
     @Autowired CustomerEntitlementRepository entitlementRepository;
     @Autowired com.gridstore.huevista.account.service.AccessCodeService accessCodeService;
     @Autowired com.gridstore.huevista.billing.service.ProjectCreditLedger projectCreditLedger;
@@ -88,7 +89,7 @@ class AccessCodeTopUpIntegrationTest {
     @Test
     void grantingMoreProjectsAlsoRaisesTheRedeemingCustomersAllowance() throws Exception {
         JsonNode code = generateCode(1);
-        String customerId = redeemIntoNewAccount(code.get("code").asText());
+        String customerId = redeemOntoASignedInCustomer(code.get("code").asText());
         assertThat(entitlementRepository.findByCustomerId(customerId).orElseThrow()
                 .getProjectAllowance()).isEqualTo(1);
 
@@ -103,60 +104,12 @@ class AccessCodeTopUpIntegrationTest {
                 .getProjectAllowance()).isEqualTo(3);
     }
 
-    /**
-     * Extension resets the window to a fresh 10 days rather than adding to what is left,
-     * so however often a code is renewed it never carries more than the 10 days the
-     * customer was promised when they were handed it.
-     */
-    @Test
-    void extendingResetsTheWindowToTenDaysFromNow() throws Exception {
-        JsonNode code = generateCode(1);
-        String codeId = code.get("id").asText();
-
-        // Age the code so the reset is visible: 2 days left, not 10.
-        var stored = codeRepository.findById(codeId).orElseThrow();
-        stored.setExpiresAt(LocalDateTime.now().plusDays(2));
-        codeRepository.saveAndFlush(stored);
-
-        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
-                        .header("Authorization", "Bearer " + shopToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.extensionCount").value(1))
-                .andExpect(jsonPath("$.expired").value(false));
-
-        LocalDateTime expiry = codeRepository.findById(codeId).orElseThrow().getExpiresAt();
-        assertThat(expiry).isAfter(LocalDateTime.now().plusDays(9))
-                .isBefore(LocalDateTime.now().plusDays(11));
-    }
-
-    /** An already-expired code can be brought back — that is the day-11 walk-in. */
-    @Test
-    void anExpiredCodeCanBeExtendedBackToLife() throws Exception {
-        JsonNode code = generateCode(1);
-        String codeId = code.get("id").asText();
-        var stored = codeRepository.findById(codeId).orElseThrow();
-        stored.setExpiresAt(LocalDateTime.now().minusDays(1));
-        codeRepository.saveAndFlush(stored);
-
-        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
-                        .header("Authorization", "Bearer " + shopToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.expired").value(false));
-    }
-
-    /** Extending moves the customer's access window with it, not just the code's. */
-
-
-    /**
-     * A project the shop BOUGHT is assignable, wherever the purchase happens to be sitting.
-     *
-     * One bought while the shop had no plan lands in the standalone credit ledger, which
-     * only project creation ever read — so a shop that had paid for extras could paint
-     * those rooms itself and still be told, at the counter, that it had nothing to give
-     * the customer standing in front of it. The plan is asked first and only the shortfall
-     * moves across, so this never quietly relocates credits an assignment doesn't need.
-     */
-
+    // Extension is gone, and with it the two tests that pinned its 10-day reset and its
+    // day-11 revival. A code's validity is no longer something a shop manages: an
+    // UNREDEEMED code lapses 30 days after it is issued, and a REDEEMED one never lapses
+    // at all, because the projects on it belong to the customer from the moment they claim
+    // them. There is no window left to extend. See the commit that made an access code
+    // something an account holds.
 
     /** Leave the plan with exactly enough for the one project already held by a code. */
     private void spendAllButTheHeldProject(String shopUserId) {
@@ -166,8 +119,9 @@ class AccessCodeTopUpIntegrationTest {
         subscriptionRepository.saveAndFlush(sub);
     }
 
+    /** A shop whose plan has lapsed cannot put more projects on a code it already issued. */
     @Test
-    void aLapsedShopCanNeitherGrantProjectsNorExtend() throws Exception {
+    void aLapsedShopCannotGrantMoreProjects() throws Exception {
         JsonNode code = generateCode(1);
         String codeId = code.get("id").asText();
         expireSubscription(SHOP_EMAIL);
@@ -176,10 +130,6 @@ class AccessCodeTopUpIntegrationTest {
                         .header("Authorization", "Bearer " + shopToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json(grant(1))))
-                .andExpect(status().isPaymentRequired());
-
-        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
-                        .header("Authorization", "Bearer " + shopToken))
                 .andExpect(status().isPaymentRequired());
     }
 
@@ -193,71 +143,36 @@ class AccessCodeTopUpIntegrationTest {
                         .header("Authorization", "Bearer " + shopToken))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
-                        .header("Authorization", "Bearer " + shopToken))
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/projects", orgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(grant(1))))
                 .andExpect(status().is4xxClientError());
     }
 
     /**
-     * An account created by redeeming a code has no real e-mail — only one synthesised
-     * from the code — so nothing user-facing should present it as a contact address.
+     * An account with no reachable address carries a synthesised one — so nothing
+     * user-facing may present it as somewhere to write.
      */
     @Test
-    void aRedeemedAccountReportsNoEmailAnywhereUserFacing() throws Exception {
+    void aGuestAccountReportsNoEmailAnywhereUserFacing() throws Exception {
+        // Redeeming a code cannot mint an account any more, so the account with no real
+        // address is the one the KIOSK opens for a walk-in who declined to give one. Its
+        // stored address is synthesised from the code purely to key the row.
         JsonNode code = generateCode(1);
-        MvcResult redeemed = mockMvc.perform(post("/api/access-codes/redeem-account")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"code\":\"" + code.get("code").asText() + "\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.user.email").doesNotExist())
-                .andReturn();
-        String customerToken = objectMapper.readTree(redeemed.getResponse().getContentAsString())
-                .get("accessToken").asText();
+        var stored = codeRepository.findByCode(code.get("code").asText()).orElseThrow();
+        var guest = guestAccountService.provisionForKiosk(stored, null, null);
 
-        mockMvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + customerToken))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.email").doesNotExist());
+        assertThat(guest.getEmail()).endsWith(com.gridstore.huevista.auth.util.Emails.SYNTHETIC_DOMAIN);
+        assertThat(com.gridstore.huevista.auth.util.Emails.publicEmailOf(guest)).isNull();
 
-        // …and the shop's own customer list shows the name they typed, not the placeholder.
+        // The shop's own customer list shows the name on the code, never the placeholder —
+        // a shop reading one would take it for somewhere they could write.
         mockMvc.perform(get("/api/organizations/{orgId}/customers", orgId)
                         .header("Authorization", "Bearer " + shopToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].customerEmail").doesNotExist());
     }
-
-    /**
-     * The expiry sweep must reclaim holds from a code that WAS redeemed.
-     *
-     * This was the larger half of a permanent quota leak. A shop issuing a code for five
-     * projects reserves five image credits; a customer who creates two leaves three held.
-     * Revoking is refused once a code is redeemed, the sweep only looked at UNREDEEMED
-     * codes, and {@code reservedProjects} deliberately survives a renewal — so those three
-     * credits were subtracted from the shop's effective allowance in every future billing
-     * period, forever. A shop issuing codes at any steady rate eventually had none left.
-     *
-     * <p>Asserted on the sweep's SELECTION rather than by running it end to end: each
-     * code is refunded in its own REQUIRES_NEW transaction, which by design cannot see
-     * this test's uncommitted rows. What changed is precisely which codes the sweep
-     * picks up, so that is what is pinned here; the release accounting itself is covered
-     * by {@code ImageHoldAccountingTest} and by the revoke path below.
-     */
-
-
-    /** Already refunded, or deliberately cancelled: never swept a second time. */
-
-
-    /**
-     * "Extend" must never shorten a code that was sold with a longer window.
-     *
-     * The extension was hardcoded to ten days AND overwrote the code's own validDays, so
-     * a kiosk code sold with (say) thirty days was cut to ten the moment a shop pressed
-     * Extend — taking away access the walk-in had already paid for, under a button
-     * labelled as giving them more.
-     */
-
-
-    /** A code near the end of its window is pushed out by its OWN validity, not a flat ten. */
-
 
     /**
      * The {@code {orgId}} in the URL has to match the code's own shop.
@@ -273,8 +188,11 @@ class AccessCodeTopUpIntegrationTest {
         String codeId = code.get("id").asText();
         String otherOrgId = createOrg(shopToken, "Top-up Paints Two", "topup-paints-two");
 
-        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", otherOrgId, codeId)
-                        .header("Authorization", "Bearer " + shopToken))
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/projects",
+                        otherOrgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(grant(1))))
                 .andExpect(status().isNotFound());
 
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
@@ -283,8 +201,10 @@ class AccessCodeTopUpIntegrationTest {
                 .andExpect(status().isNotFound());
 
         // …and still works through its own shop's URL.
-        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/extend", orgId, codeId)
-                        .header("Authorization", "Bearer " + shopToken))
+        mockMvc.perform(post("/api/organizations/{orgId}/access-codes/{codeId}/projects", orgId, codeId)
+                        .header("Authorization", "Bearer " + shopToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(grant(1))))
                 .andExpect(status().isOk());
     }
 
@@ -309,14 +229,35 @@ class AccessCodeTopUpIntegrationTest {
     }
 
     /** Redeems into a fresh passwordless account and returns its user id. */
-    private String redeemIntoNewAccount(String code) throws Exception {
-        MvcResult result = mockMvc.perform(post("/api/access-codes/redeem-account")
+    /**
+     * A customer who signs in and claims {@code code}, and their user id.
+     *
+     * <p>Named for what it used to do: POST the code and get back a brand-new account with
+     * a session on it. A code cannot mint an account any more — it is added to one the
+     * customer is already signed into — so the account is made first here.
+     */
+    private String redeemOntoASignedInCustomer(String code) throws Exception {
+        String email = "topup-customer-" + java.util.UUID.randomUUID() + "@example.com";
+        User customer = userRepository.save(User.builder()
+                .name("Walk-in Customer").email(email)
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL)
+                .role(UserRole.CUSTOMER)
+                .emailVerified(true)
+                .build());
+        MvcResult login = mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"" + email + "\",\"password\":\"password123\"}"))
+                .andExpect(status().isOk()).andReturn();
+        String token = objectMapper.readValue(login.getResponse().getContentAsString(),
+                com.gridstore.huevista.auth.dto.AuthResponse.class).getAccessToken();
+
+        mockMvc.perform(post("/api/access-codes/redeem")
+                        .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"code\":\"" + code + "\"}"))
-                .andExpect(status().isOk())
-                .andReturn();
-        return objectMapper.readTree(result.getResponse().getContentAsString())
-                .get("user").get("id").asText();
+                .andExpect(status().isOk());
+        return customer.getId();
     }
 
     private static GrantCodeProjectsRequest grant(int projects) {

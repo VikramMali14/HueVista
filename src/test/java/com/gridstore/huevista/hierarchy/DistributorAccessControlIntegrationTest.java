@@ -71,6 +71,30 @@ class DistributorAccessControlIntegrationTest {
         return objectMapper.readValue(login.getResponse().getContentAsString(), AuthResponse.class).getAccessToken();
     }
 
+    /**
+     * A signed-in CUSTOMER who has just redeemed {@code code}, and their access token.
+     *
+     * <p>These tests used to POST the code to {@code /api/access-codes/redeem-account},
+     * which minted an account and handed back a session in one step. A code cannot mint an
+     * account any more — it is added to one the customer is already signed into — so the
+     * account comes first and the code is claimed onto it. What is under test is unaffected:
+     * which paint a redeemed customer may see.
+     */
+    private String customerWhoRedeemed(String code, String email) throws Exception {
+        userRepository.save(User.builder()
+                .name("Anjali").email(email)
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL).role(UserRole.CUSTOMER).emailVerified(true)
+                .build());
+        String token = tokenFor(email, "password123");
+        mockMvc.perform(post("/api/access-codes/redeem")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + code + "\"}"))
+                .andExpect(status().isOk());
+        return token;
+    }
+
     private void seedAdmin() {
         userRepository.save(User.builder()
                 .name("Root Admin").email("root@example.com")
@@ -319,13 +343,8 @@ class DistributorAccessControlIntegrationTest {
         String code = objectMapper.readTree(issued.getResponse().getContentAsString())
                 .path("code").asText();
 
-        // Redeeming into an account and asking for "my" catalogue.
-        MvcResult redeemed = mockMvc.perform(post("/api/access-codes/redeem-account")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"code\":\"" + code + "\"}"))
-                .andExpect(status().isOk()).andReturn();
-        String customerToken = objectMapper.readTree(redeemed.getResponse().getContentAsString())
-                .path("accessToken").asText();
+        // Redeeming onto a signed-in customer account, then asking for "my" catalogue.
+        String customerToken = customerWhoRedeemed(code, "anjali-onecompany@example.com");
 
         MvcResult customerView = mockMvc.perform(get("/api/shades/mine")
                         .header("Authorization", "Bearer " + customerToken))
@@ -374,12 +393,8 @@ class DistributorAccessControlIntegrationTest {
                         .content("{\"brandIds\":[%d],\"unrestricted\":false}".formatted(brands[0].getId())))
                 .andExpect(status().isOk());
 
-        MvcResult redeemed = mockMvc.perform(post("/api/access-codes/redeem-account")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"code\":\"" + code + "\"}"))
-                .andExpect(status().isOk()).andReturn();
-        String customerToken = objectMapper.readTree(redeemed.getResponse().getContentAsString())
-                .path("accessToken").asText();
+        // Redeeming onto a signed-in customer account, then asking for "my" catalogue.
+        String customerToken = customerWhoRedeemed(code, "anjali-pulledback@example.com");
 
         MvcResult customerView = mockMvc.perform(get("/api/shades/mine")
                         .header("Authorization", "Bearer " + customerToken))
@@ -782,12 +797,8 @@ class DistributorAccessControlIntegrationTest {
         String code = objectMapper.readTree(issued.getResponse().getContentAsString())
                 .path("code").asText();
 
-        MvcResult redeemed = mockMvc.perform(post("/api/access-codes/redeem-account")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"code\":\"" + code + "\"}"))
-                .andExpect(status().isOk()).andReturn();
-        String customerToken = objectMapper.readTree(redeemed.getResponse().getContentAsString())
-                .path("accessToken").asText();
+        // Redeeming onto a signed-in customer account, then asking for "my" catalogue.
+        String customerToken = customerWhoRedeemed(code, "anjali-freeshop@example.com");
 
         MvcResult customerView = mockMvc.perform(get("/api/shades/mine")
                         .header("Authorization", "Bearer " + customerToken))

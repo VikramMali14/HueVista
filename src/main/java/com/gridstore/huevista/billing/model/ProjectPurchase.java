@@ -81,7 +81,14 @@ public class ProjectPurchase {
         BUNDLE,
         /** Another validity window, or a closed project opened back up. */
         REOPEN,
-        /** One more AI render on a project that already spent its included one. */
+        /**
+         * HISTORICAL. One more AI render on a project that had spent its included one.
+         *
+         * <p>Nothing writes this any more. The per-project render top-up was removed with
+         * the included image it topped up — an AI image is bought with an AI credit now,
+         * from the account's wallet — but the rows it wrote record money that really moved
+         * and the payment audit still reads them, so the value stays.
+         */
         RENDER
     }
 

@@ -69,6 +69,7 @@ class ProjectClosureIntegrationTest {
     @Autowired UserRepository userRepository;
     @Autowired ImageRepository imageRepository;
     @Autowired ProjectRepository projectRepository;
+    @Autowired com.gridstore.huevista.billing.service.AiCreditService aiCreditService;
     @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired PasswordEncoder passwordEncoder;
 
@@ -242,8 +243,10 @@ class ProjectClosureIntegrationTest {
                 .andExpect(jsonPath("$.closedAt").isNotEmpty())
                 .andExpect(jsonPath("$.boardsUsed").value(1))
                 .andExpect(jsonPath("$.boardsAllowed").value(1))
-                .andExpect(jsonPath("$.rendersAllowed").value(1))
-                .andExpect(jsonPath("$.rendersUsed").value(0));
+                .andExpect(jsonPath("$.rendersUsed").value(0))
+                // No allowance is quoted any more: an AI image is bought with an AI
+                // credit from the account's wallet, whatever room it is made of.
+                .andExpect(jsonPath("$.rendersAllowed").doesNotExist());
     }
 
     // ─── The combos the board leaves behind ──────────────────────────────────
@@ -299,6 +302,11 @@ class ProjectClosureIntegrationTest {
         Project reopened = projectRepository.findById(projectId).orElseThrow();
         reopened.setClosedAt(null);
         projectRepository.save(reopened);
+
+        // …and a credit to spend, because that is now the ONLY thing an image is paid
+        // with. No room includes one any more, so without this the 402 under test would
+        // be an empty wallet rather than the closure gate this is about.
+        aiCreditService.grant(reopened.getUser().getId(), 1, "admin", "closure test");
 
         String comboId = objectMapper.readTree(
                         mockMvc.perform(get("/api/projects/" + projectId + "/combos")
@@ -360,7 +368,6 @@ class ProjectClosureIntegrationTest {
                 .name("Sunlit hall")
                 .status(ProjectStatus.SEGMENTED)
                 .libraryTemplateId("tmpl-sunlit-hall")
-                .rendersAllowed(0)
                 .build()).getId();
     }
 
@@ -447,7 +454,6 @@ class ProjectClosureIntegrationTest {
         mockMvc.perform(get("/api/projects/" + id)
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.rendersAllowed").value(0))
                 .andExpect(jsonPath("$.rendersUsed").value(0));
     }
 }

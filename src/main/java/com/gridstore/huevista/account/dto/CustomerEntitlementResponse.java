@@ -11,6 +11,15 @@ import java.time.LocalDateTime;
 public class CustomerEntitlementResponse {
     private String customerId;
     private String customerName;
+    /**
+     * The customer's address, or null when there isn't an honest one to show.
+     *
+     * Read through {@link com.gridstore.huevista.auth.util.Emails#publicEmailOf} rather
+     * than off the row. A walk-in the kiosk opened an account for may have no reachable
+     * address, in which case the stored one is synthesised from their access code purely
+     * to key the row — {@code ac-7kq2xr9m@customers.huevista.local}. Printing that in a
+     * shop's customer list offers the counter somewhere to write that does not exist.
+     */
     private String customerEmail;
     private String retailerOrgId;
     private int projectAllowance;
@@ -22,7 +31,8 @@ public class CustomerEntitlementResponse {
         return CustomerEntitlementResponse.builder()
                 .customerId(e.getCustomer().getId())
                 .customerName(e.getCustomer().getName())
-                .customerEmail(e.getCustomer().getEmail())
+                .customerEmail(com.gridstore.huevista.auth.util.Emails
+                        .publicEmailOf(e.getCustomer()))
                 .retailerOrgId(e.getRetailerOrg() != null ? e.getRetailerOrg().getId() : null)
                 .projectAllowance(e.getProjectAllowance())
                 .projectsCreated(e.getProjectsCreated())

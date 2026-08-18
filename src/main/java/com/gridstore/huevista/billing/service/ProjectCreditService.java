@@ -283,35 +283,6 @@ public class ProjectCreditService {
     // ── Extra AI renders ────────────────────────────────────────────────────
 
     /**
-     * Refuse a render top-up this project does not need, BEFORE any money moves.
-     *
-     * Mirrors {@link #requireReopenable}: a project with a render still unspent is not
-     * something to sell another one for, and finding that out after the payment sheet has
-     * closed is the failure this exists to prevent.
-     */
-    @Transactional(readOnly = true)
-    public Project requireRenderTopUp(String userId, String projectId) {
-        Project project = projectRepository.findByIdAndUserId(projectId, userId)
-                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
-        if (project.hasRenderLeft()) {
-            throw new IllegalStateException(
-                    "This project still has an AI image to make — there's nothing to buy yet.");
-        }
-        return project;
-    }
-
-    /** Add one render to a project after a verified payment. */
-    @Transactional
-    public void creditExtraRender(String userId, String projectId) {
-        Project project = projectRepository.findByIdAndUserId(projectId, userId)
-                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
-        project.setRendersAllowed(project.getRendersAllowed() + 1);
-        projectRepository.save(project);
-        log.info("Extra AI render credited: user={} project={} allowed={}",
-                userId, projectId, project.getRendersAllowed());
-    }
-
-    /**
      * Give a project another validity window, paid in points.
      *
      * The project id comes from the request rather than from a verified order, which is

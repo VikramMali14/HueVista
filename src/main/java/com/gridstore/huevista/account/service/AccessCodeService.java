@@ -187,7 +187,8 @@ public class AccessCodeService {
      *
      * The assigned project count is deliberately NOT editable here — it is backed by held
      * image credits, and re-reserving mid-flight is a second money path for very little
-     * benefit. To change the count, cancel the code (quota comes back) and issue a new one.
+     * benefit. To change the count, cancel the code and issue a new one — noting that the
+     * projects on the cancelled one are spent, because they were bought when it was issued.
      */
     @Transactional
     public AccessCodeResponse updateCode(String requestingUserId, String orgId, String codeId,

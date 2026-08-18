@@ -68,9 +68,6 @@ public class NetworkNodeResponse {
     /** Projects they have actually created. Never decreases — deleting one does not refund it. */
     private Integer projectsUsed;
 
-    /** When their access lapses. Past dates are the point: an expired customer still shows. */
-    private LocalDateTime accessExpiresAt;
-
     /**
      * Paint brands the distributor has granted this shop (RETAILER nodes only);
      * null on nodes where the concept does not apply.

@@ -109,22 +109,26 @@ class AiCreditWalletIntegrationTest {
 
     // ── What a new project includes ─────────────────────────────────────────
 
+    /**
+     * No room includes an AI image any more, however it was paid for.
+     *
+     * A shop's own room used to carry one and a room the shop gave a customer carried
+     * none, which made "an AI image costs a credit" true or false depending on a payment
+     * route the person reading it could not see. The wallet is the whole answer now, and
+     * these two assertions being identical is the change.
+     */
     @Test
-    void aShopsOwnRoomStillIncludesItsAiImage() {
+    void aShopsOwnRoomIncludesNoAiImage() {
         Project project = projectRepository.findById(createProject(shopId)).orElseThrow();
 
-        assertThat(project.getRendersAllowed()).isEqualTo(1);
-        assertThat(project.hasRenderLeft()).isTrue();
+        assertThat(project.getRendersUsed()).isZero();
     }
 
     @Test
-    void aRoomTheShopGaveAwayIncludesNoAiImage() {
+    void aRoomTheShopGaveAwayIncludesNoAiImageEither() {
         Project project = projectRepository.findById(createProject(customerId)).orElseThrow();
 
-        // The shop spent a project credit so its customer could try colours and take a
-        // colour board away. It did not buy them a Nano Banana Pro call.
-        assertThat(project.getRendersAllowed()).isZero();
-        assertThat(project.hasRenderLeft()).isFalse();
+        assertThat(project.getRendersUsed()).isZero();
     }
 
     // ── Paying for it ───────────────────────────────────────────────────────
@@ -156,33 +160,43 @@ class AiCreditWalletIntegrationTest {
         assertThat(render.getCreditsSpent()).isEqualTo(pricingService.aiCreditRenderCost());
     }
 
+    /**
+     * The FIRST image on a shop's own room comes out of the wallet, like every other.
+     *
+     * <p>It used to be free — a room the account paid for carried one included image — and
+     * this test asserted the wallet was left alone. That is the behaviour that is gone: an
+     * AI image costs an AI credit whoever owns the room and however the room was bought.
+     */
     @Test
-    void theShopsIncludedImageIsSpentBeforeAnyCreditIs() {
+    void theFirstImageOnAShopsOwnRoomComesOutOfTheWallet() {
         aiCreditService.grant(shopId, 1, "admin", "test");
         Project project = closedProjectFor(shopId);
 
         var response = renderService.request(project, renderRequest(project));
 
-        // The included image is the one it already paid for; charging the wallet while it
-        // sat unspent would be billing twice for the same picture.
-        assertThat(aiCreditService.balance(shopId)).isEqualTo(1);
+        assertThat(aiCreditService.balance(shopId)).isZero();
         ProjectRender render = renderRepository.findById(response.getId()).orElseThrow();
-        assertThat(render.isPaidWithCredit()).isFalse();
+        assertThat(render.isPaidWithCredit()).isTrue();
+        assertThat(render.getCreditsSpent()).isEqualTo(pricingService.aiCreditRenderCost());
         assertThat(projectRepository.findById(project.getId()).orElseThrow().getRendersUsed())
                 .isEqualTo(1);
     }
 
+    /** One credit buys one image, so the second one on the same room needs another. */
     @Test
-    void theSecondImageOnAShopsRoomComesOutOfTheWallet() {
+    void aSecondImageNeedsASecondCredit() {
         aiCreditService.grant(shopId, 1, "admin", "test");
         Project project = closedProjectFor(shopId);
 
-        renderService.request(project, renderRequest(project));           // the included one
-        var second = renderService.request(project, renderRequest(project)); // the bought one
-
+        renderService.request(project, renderRequest(project));
         assertThat(aiCreditService.balance(shopId)).isZero();
-        assertThat(renderRepository.findById(second.getId()).orElseThrow().isPaidWithCredit())
-                .isTrue();
+
+        assertThatThrownBy(() -> renderService.request(project, renderRequest(project)))
+                .isInstanceOf(QuotaExceededException.class);
+
+        // The refused one was never counted: the room made one image, not two.
+        assertThat(projectRepository.findById(project.getId()).orElseThrow().getRendersUsed())
+                .isEqualTo(1);
     }
 
     // Refunds on a failed render live in AiCreditRefundIntegrationTest, which cannot be
@@ -216,9 +230,6 @@ class AiCreditWalletIntegrationTest {
         // truncation cannot make the button's price differ from the order's.
         assertThat(pricingService.aiCreditPricePaise(3)).isEqualTo(29_700);
 
-        // The two rails for the same picture are priced alike, so topping up in advance
-        // can never leave a buyer worse off than paying per project.
-        assertThat(pricingService.aiCreditPricePaise()).isEqualTo(pricingService.renderTopUpPricePaise());
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────

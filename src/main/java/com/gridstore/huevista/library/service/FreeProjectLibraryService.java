@@ -527,11 +527,6 @@ public class FreeProjectLibraryService {
                 // paint it, take the colour board, close it, and buy the AI image with an
                 // AI credit.
                 .libraryTemplateId(template.getId())
-                // No included AI image, for the same reason a shop-granted room has none —
-                // nobody paid for this room, and the picture is the one genuinely
-                // expensive thing on it. It is bought from the account's AI wallet, which
-                // is the pocket the customer tops up themselves and can spend on any room.
-                .rendersAllowed(0)
                 .build());
 
         List<Region> copies = new ArrayList<>();
