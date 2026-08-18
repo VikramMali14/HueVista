@@ -47,9 +47,11 @@ class PdfQuotaServiceTest {
     private final CustomerAccessCodeRepository codes = mock(CustomerAccessCodeRepository.class);
     private final OrgMembershipRepository memberships = mock(OrgMembershipRepository.class);
 
+    private final com.gridstore.huevista.billing.service.UnbilledAccounts unbilled =
+            mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class);
+
     private final PdfQuotaService service =
-            new PdfQuotaService(subs, users, codes, memberships,
-                    mock(com.gridstore.huevista.billing.service.UnbilledAccounts.class));
+            new PdfQuotaService(subs, users, codes, memberships, unbilled);
 
     /**
      * The guest board floor, injected by hand because this test builds the service with
@@ -59,6 +61,8 @@ class PdfQuotaServiceTest {
     {
         org.springframework.test.util.ReflectionTestUtils.setField(
                 service, "guestImagesPerBoard", 5);
+        org.springframework.test.util.ReflectionTestUtils.setField(
+                service, "customerImagesPerBoard", 5);
     }
 
     private static User user(String id, UserRole role) {
@@ -156,6 +160,23 @@ class PdfQuotaServiceTest {
         verify(memberships, never()).findUserIdsByOrganizationIdAndRole(any(), any());
     }
 
+    /**
+     * A customer's board carries the same five pictures a walk-in's does.
+     *
+     * It used to carry sixteen, and nobody chose sixteen: a customer holds no plan, so
+     * their allowance is the "unmetered" one, and that helper borrows ENTERPRISE's
+     * per-document cap in order to say "no plan is being charged here" — a statement about
+     * billing that was quietly sizing a sheet. A customer and a walk-in guest are doing the
+     * identical thing at the identical counter, and the guest's board was already five.
+     */
+    @Test
+    void customer_board_carries_five_pictures_like_a_walk_ins() {
+        when(users.findById(CUSTOMER)).thenReturn(Optional.of(user(CUSTOMER, UserRole.CUSTOMER)));
+
+        assertThat(service.allowanceForUser(CUSTOMER).getImagesPerPdf()).isEqualTo(5);
+        assertThat(service.reserveForUser(CUSTOMER).getImagesPerPdf()).isEqualTo(5);
+    }
+
     @Test
     void customer_with_no_shop_at_all_still_gets_their_board() {
         // The case with no action behind the old advice: somebody who bought their own
@@ -164,6 +185,24 @@ class PdfQuotaServiceTest {
 
         assertThat(service.reserveForUser(CUSTOMER).isUnlimited()).isTrue();
         verify(subs, never()).incrementPdfUsageIfWithinLimit(any());
+    }
+
+    /**
+     * An ADMIN is unbilled, not a customer, and keeps the unmetered board.
+     *
+     * The two used to share one branch — `unbilled || cappedPerProject` returning the same
+     * response — so sizing the customer's sheet down to five would have taken the console's
+     * own board with it. They are separate answers to separate questions: an admin is not
+     * charged, a customer has no monthly counter to charge.
+     */
+    @Test
+    void an_unbilled_account_keeps_the_unmetered_board() {
+        when(unbilled.covers(RETAILER)).thenReturn(true);
+
+        PdfAllowanceResponse a = service.allowanceForUser(RETAILER);
+
+        assertThat(a.isUnlimited()).isTrue();
+        assertThat(a.getImagesPerPdf()).isEqualTo(Plan.ENTERPRISE.getPdfImageLimit());
     }
 
     // ---- guest: the issuing shop's plan via the access code ----

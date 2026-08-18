@@ -1,5 +1,7 @@
 package com.gridstore.huevista.project.service;
 
+import com.gridstore.huevista.auth.model.User;
+import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.billing.dto.PdfAllowanceResponse;
 import com.gridstore.huevista.billing.service.PdfQuotaService;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
@@ -37,6 +39,11 @@ import java.util.stream.Collectors;
  * <p>Closing is decided here rather than in the browser. The count lives on the project
  * row, and a client that decided for itself would close a project every time it lost track
  * of how many boards it had already taken — including on a reload.
+ *
+ * <p>How many boards a project gets depends on WHO owns it — see {@link #boardsAllowedFor}.
+ * A shop works a room over several sheets; a customer bought one job that ends with one
+ * board and the render behind it. Both numbers are configuration, and both are served to
+ * the studio rather than printed there.
  *
  * <p>One honest gap, inherited from the charge call this replaces: the studio still fails
  * OPEN on a network error, handing over the board without reaching the server. Such a board
@@ -77,6 +84,30 @@ public class ProjectBoardService {
     private int boardsPerProject;
 
     /**
+     * How many colour boards a CUSTOMER's project hands over before it closes itself.
+     *
+     * <p>One. The four above is a SHOP's number, and it is the right one there: a counter
+     * works a room over several passes, prints the greens for one visitor and the greys for
+     * the next, and closing on the first sheet would end the job in the middle of the
+     * conversation it exists to support.
+     *
+     * <p>A customer is the other half of that transaction and buys the opposite thing. They
+     * bought ONE project — at the till, or through the shop's code — and what they take away
+     * is one sheet with their colours on it and, once the project closes, the AI render that
+     * closing unlocks. Four boards there did not buy four conversations, it just deferred the
+     * ending: the render stayed locked behind a cap the customer had no reason to spend, and
+     * the natural way to finish the job was to press a Close button rather than to finish it.
+     * At one, downloading the board IS finishing, and the render is waiting on the other side
+     * of it.
+     *
+     * <p>Configuration, like its shop-side twin, so the two can be repriced independently
+     * without a deploy — and the studio reads whichever number applies off the API rather
+     * than printing its own copy.
+     */
+    @Value("${app.project.customer-boards-per-project:1}")
+    private int customerBoardsPerProject;
+
+    /**
      * Charge for a colour board, record what was on it, and close the project if that was
      * the last one it had.
      *
@@ -113,20 +144,35 @@ public class ProjectBoardService {
             throw new IllegalStateException(
                     "This project is closed. Reopen it to make another colour board.");
         }
-        if (mayClose && project.getColourBoardsUsed() >= boardsPerProject) {
+        int allowed = boardsAllowedFor(project);
+        if (mayClose && project.getColourBoardsUsed() >= allowed) {
             throw new IllegalStateException(
-                    "This project has already handed over all " + boardsPerProject
-                    + " of its colour boards.");
+                    "This project has already handed over all " + allowed
+                    + " of its colour board" + (allowed == 1 ? "" : "s") + ".");
         }
 
         // Refusals first: this throws 402 when the paying plan has no downloads left.
         PdfAllowanceResponse allowance = billed.get();
 
+        // The sheet has to fit the board the payer was quoted. The studio already caps its
+        // tray at this number (it reads `imagesPerPdf` off the allowance rather than
+        // printing its own), so this only ever fires on a client that ignored it — and it
+        // fires AFTER the reservation because the reservation is where the number comes
+        // from. Throwing rolls the whole transaction back, the conditional UPDATE above
+        // included, so nothing is charged for a board that was refused.
+        int pages = request.getPages() == null ? 0 : request.getPages().size();
+        if (allowance.getImagesPerPdf() > 0 && pages > allowance.getImagesPerPdf()) {
+            throw new IllegalStateException(
+                    "A colour board here carries up to " + allowance.getImagesPerPdf()
+                    + " colour" + (allowance.getImagesPerPdf() == 1 ? "" : "s")
+                    + " — this one has " + pages + ". Remove some and download again.");
+        }
+
         int boardIndex = project.getColourBoardsUsed() + 1;
         recordPages(project, request, boardIndex);
 
         project.setColourBoardsUsed(boardIndex);
-        boolean closed = mayClose && boardIndex >= boardsPerProject
+        boolean closed = mayClose && boardIndex >= allowed
                 && projectAccessService.close(project);
         projectRepository.save(project);
 
@@ -137,7 +183,7 @@ public class ProjectBoardService {
         return ColourBoardResponse.builder()
                 .allowance(allowance)
                 .boardsUsed(boardIndex)
-                .boardsAllowed(boardsPerProject)
+                .boardsAllowed(allowed)
                 .closed(closed)
                 .build();
     }
@@ -207,9 +253,22 @@ public class ProjectBoardService {
                 .toList();
     }
 
-    /** How many boards a project gets, for anyone quoting it before one is spent. */
-    public int boardsPerProject() {
-        return boardsPerProject;
+    /**
+     * How many boards THIS project gets, for anyone quoting it before one is spent.
+     *
+     * <p>A question about the project rather than about the platform, because the two kinds
+     * of owner buy different things: a shop works a room over several sheets, a customer
+     * bought one job that ends with one. A guest room (no user, an access code instead) takes
+     * the shop-side number, which costs it nothing — a guest room never closes on its boards
+     * anyway, and its real cap is the allowance its code was sold with.
+     */
+    public int boardsAllowedFor(Project project) {
+        return isCustomerOwned(project) ? customerBoardsPerProject : boardsPerProject;
+    }
+
+    private static boolean isCustomerOwned(Project project) {
+        User owner = project.getUser();
+        return owner != null && owner.getRole() == UserRole.CUSTOMER;
     }
 
     ProjectPdfPage requirePage(String projectId, String pageId) {

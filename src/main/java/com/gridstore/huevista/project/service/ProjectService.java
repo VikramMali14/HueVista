@@ -1786,7 +1786,7 @@ public class ProjectService {
         String cleanedUrl = project.getCleanedImageStorageKey() != null
                 ? storageService.getPublicUrl(project.getCleanedImageStorageKey()) : null;
         ProjectResponse r = ProjectResponse.from(project, originalUrl,
-                boardService.boardsPerProject(), pricingService.renderTopUpPricePaise());
+                boardService.boardsAllowedFor(project), pricingService.renderTopUpPricePaise());
         r.setCleanedImageUrl(cleanedUrl);
         if (project.getRawMaskStorageKey() != null) {
             r.setRawMaskUrl(storageService.getPublicUrl(project.getRawMaskStorageKey()));

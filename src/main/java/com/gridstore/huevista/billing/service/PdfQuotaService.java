@@ -67,10 +67,31 @@ public class PdfQuotaService {
     @Value("${app.project.guest-images-per-board:5}")
     private int guestImagesPerBoard;
 
+    /**
+     * Pictures a CUSTOMER's colour board carries.
+     *
+     * Five, and a flat number rather than a floor: a customer holds no plan of their own,
+     * so there is nothing underneath this to be raised above. It used to be sixteen, which
+     * was never a decision — a customer's allowance is {@link PdfAllowanceResponse#unmetered()},
+     * and that helper borrows ENTERPRISE's per-document cap because its job is to say "no
+     * plan is being charged here", not to size a sheet. A walk-in guest and a customer are
+     * doing the identical thing at the identical counter, and the guest's board was already
+     * five; sixteen only meant a customer could build a sheet nobody compares colours on
+     * and that a phone struggles to render.
+     *
+     * <p>Account holders with a plan never come through here: their cap stays their own
+     * {@code pdfImageLimit}, and an ADMIN keeps the unmetered one.
+     */
+    @Value("${app.project.customer-images-per-board:5}")
+    private int customerImagesPerBoard;
+
     @Transactional(readOnly = true)
     public PdfAllowanceResponse allowanceForUser(String userId) {
-        if (unbilledAccounts.covers(userId) || boardsCappedPerProject(userId)) {
+        if (unbilledAccounts.covers(userId)) {
             return PdfAllowanceResponse.unmetered();
+        }
+        if (boardsCappedPerProject(userId)) {
+            return customerBoardAllowance();
         }
         return PdfAllowanceResponse.from(billableSubscriptionForUser(userId));
     }
@@ -96,6 +117,21 @@ public class PdfQuotaService {
         return allowance;
     }
 
+    /**
+     * A CUSTOMER's board: no monthly counter, and a sheet sized for the person carrying it.
+     *
+     * The monthly figures are {@code unmetered}'s and stay that way — a customer's boards
+     * are capped PER PROJECT by {@code ProjectBoardService}, so there is no counter here to
+     * spend. Only the per-document number is replaced, and it is SET rather than floored:
+     * unlike the guest case there is no plan underneath a customer to be raised above, so
+     * {@link #customerImagesPerBoard} is the whole answer.
+     */
+    private PdfAllowanceResponse customerBoardAllowance() {
+        PdfAllowanceResponse allowance = PdfAllowanceResponse.unmetered();
+        allowance.setImagesPerPdf(customerImagesPerBoard);
+        return allowance;
+    }
+
     /** Reserve one download for an account holder; returns the post-charge allowance. */
     @Transactional
     public PdfAllowanceResponse reserveForUser(String userId) {
@@ -104,8 +140,11 @@ public class PdfQuotaService {
         // the billing tables. A customer HAS no monthly counter: their boards are capped
         // per project by ProjectBoardService, which has already refused if this project
         // has none left — see boardsCappedPerProject.
-        if (unbilledAccounts.covers(userId) || boardsCappedPerProject(userId)) {
+        if (unbilledAccounts.covers(userId)) {
             return PdfAllowanceResponse.unmetered();
+        }
+        if (boardsCappedPerProject(userId)) {
+            return customerBoardAllowance();
         }
         return reserve(billableSubscriptionForUser(userId));
     }
