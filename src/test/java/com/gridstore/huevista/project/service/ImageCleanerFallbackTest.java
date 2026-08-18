@@ -16,6 +16,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -160,11 +161,37 @@ class ImageCleanerFallbackTest {
         // Said BEFORE each call, so the sentence is on screen for the minute the model
         // is thinking rather than after it has answered.
         assertThat(notes).hasSize(2);
-        assertThat(notes.get(0)).contains("FLUX 2 Pro");
-        assertThat(notes.get(1))
-                .contains("busy")
-                .contains("Nano Banana 2")
-                .contains("2 of 4");
+        // What the note owes the user: proof the run is alive, and where it has got to.
+        // The two sentences DIFFER, which is the whole point — an unchanging line is
+        // indistinguishable from a hung page.
+        assertThat(notes.get(0)).contains("Cleaning up your photo");
+        assertThat(notes.get(1)).contains("2 of 4");
+        assertThat(notes.get(0)).isNotEqualTo(notes.get(1));
+    }
+
+    @Test
+    void theNotesNeverTellTheUserWhichModelIsDoingTheWork() {
+        // Which supplier answered is an operator's fact. It changes without notice, it
+        // means nothing to the person waiting, and naming one that has just declined
+        // reads as an admission that the product is broken. The chain is walked to its
+        // end so every note the user could possibly be shown is checked, not just the
+        // first.
+        when(replicate.edit(any())).thenThrow(ImageEditException.retry("busy"));
+        List<String> notes = new ArrayList<>();
+
+        assertThat(cleaner.cleanImage("http://photo", ImageType.OUTDOOR, null, notes::add))
+                .isEmpty();
+
+        assertThat(notes).hasSize(4);
+        assertThat(notes).allSatisfy(note -> assertThat(note.toLowerCase(Locale.ROOT))
+                .doesNotContain("flux")
+                .doesNotContain("nano banana")
+                .doesNotContain("banana")
+                .doesNotContain("gemini")
+                .doesNotContain("google")
+                .doesNotContain("replicate")
+                .doesNotContain("openai")
+                .doesNotContain("seedream"));
     }
 
     @Test

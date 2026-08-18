@@ -51,8 +51,9 @@ class ProjectCreditServiceTest {
     private static final int POINTS_PROJECT = Plan.FREE.getExtraProjectPoints();
     private static final int POINTS_REOPEN = 9;
     private static final int REOPEN_PAISE = 1000;
-    private static final int REOPEN_CLOSED_PAISE = 9900;
-    private static final int POINTS_REOPEN_CLOSED = 99;
+    /** A closed project's reopen: a WHOLE project, at the catalogue's ₹149. */
+    private static final int REOPEN_CLOSED_PAISE = 14900;
+    private static final int POINTS_REOPEN_CLOSED = 149;
 
     private ProjectCreditLedger ledger;
     private com.gridstore.huevista.billing.repository.SubscriptionRepository subscriptions;

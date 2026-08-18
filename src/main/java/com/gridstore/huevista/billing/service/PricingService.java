@@ -76,12 +76,12 @@ public class PricingService {
     @Value("${app.points.reopen:9}")
     private int pointsPriceReopen;
 
-    /** What reopening a CLOSED project costs — half a project, against a lapsed window's
-     *  flat ₹9. See {@link #reopenPricePaise(boolean)} for why the two differ. */
-    @Value("${app.project-credit.reopen-closed-price-paise:9900}")
+    /** What reopening a CLOSED project costs — a WHOLE project, against a lapsed
+     *  window's flat ₹9. See {@link #reopenPricePaise(boolean)} for why the two differ. */
+    @Value("${app.project-credit.reopen-closed-price-paise:14900}")
     private int reopenClosedPricePaise;
 
-    @Value("${app.points.reopen-closed:99}")
+    @Value("${app.points.reopen-closed:149}")
     private int pointsPriceReopenClosed;
 
     // ── AI image credits ────────────────────────────────────────────────────
@@ -290,11 +290,20 @@ public class PricingService {
     /**
      * What reopening this project costs in paise, GST included.
      *
-     * Two different purchases wear the same name. A LAPSED project ran out of days with
-     * the work unfinished, and ₹9 buys the clock back. A CLOSED one is finished — the
-     * customer took their colour board and an AI render off it and said so — and reopening
-     * unlocks the whole catalogue again on a job that already delivered. That is half a
-     * project's worth of product, so it is priced at half a project.
+     * Two different purchases wear the same name, and only one of them is a discount.
+     *
+     * A LAPSED project ran out of days with the work unfinished. Nothing was delivered,
+     * the customer is buying back a clock they already paid for once, and ₹9 does it.
+     *
+     * A CLOSED one is finished — the customer took their colour board off it and said so.
+     * Reopening resets the board count and unlocks the whole catalogue again on a job
+     * that already delivered everything it promised. What that hands back is not part of
+     * a project, it is a project: the same rooms, the same colours, the same boards to
+     * download. So it is priced as one, at the catalogue's project price, and the "half a
+     * project" discount it used to carry is gone. That discount made finishing a room the
+     * cheapest way to start a new one, which is exactly backwards — a customer who wants
+     * a second room should buy a second room, and one who genuinely wants THIS room back
+     * pays what the room costs.
      *
      * Both the order and the verify side must call this with the same project, or a
      * correctly-paid reopen fails signature verification on an amount mismatch.

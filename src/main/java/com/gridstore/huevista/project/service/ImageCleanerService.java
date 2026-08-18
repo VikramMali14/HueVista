@@ -373,7 +373,12 @@ public class ImageCleanerService {
                 // Said BEFORE the call, not after: the sentence has to be on screen for
                 // the minute the model is thinking, which is exactly the minute the user
                 // is deciding whether anything is happening.
-                say(progress, cleaningNote(candidate, position, chain.size()));
+                // The user is told only that work is happening and how far along it is;
+                // WHICH model is being asked is an operator's business, so it goes to
+                // the log by its catalogue label instead. See cleaningNote.
+                log.info("ImageCleaner asking {} ({} of {})",
+                        catalogue.labelFor(candidate), position, chain.size());
+                say(progress, cleaningNote(position, chain.size()));
                 Attempt attempt = askProvider("Replicate[" + candidate + "]",
                         () -> runOnReplicate(candidate, finalPrompt, imageUrl, imageType, hints.isPresent()));
                 cleaned = attempt.image();
@@ -401,7 +406,7 @@ public class ImageCleanerService {
             } else {
                 log.info("ImageCleaner [{}]: asking Google's API directly after the "
                         + "Replicate chain produced nothing", gemini.model());
-                say(progress, "Still working — asking Google directly.");
+                say(progress, "Still cleaning up your photo — trying another route.");
                 Attempt attempt = askProvider("GeminiAPI[" + gemini.model() + "]",
                         () -> gemini.edit(finalPrompt, source, resolution));
                 cleaned = attempt.image();
@@ -429,18 +434,25 @@ public class ImageCleanerService {
     /**
      * The running commentary for one link in the chain, written for the person waiting.
      *
-     * <p>The first model gets a plain "working on it"; every one after it leads with the
-     * fact that the previous model did not answer, because that is the question the user
-     * actually has by then. Models are named by their catalogue labels — "Nano Banana 2",
-     * not {@code google/nano-banana-2} — and the position is included so a wait that is
-     * genuinely long still reads as bounded progress rather than an open loop.
+     * <p><b>It names no model.</b> Which model cleaned a photo is our supplier
+     * arrangement, not a feature of the product: it changes when a tier is superseded or
+     * a queue misbehaves, it means nothing to the person waiting, and a sentence like
+     * "FLUX 2 Pro was busy" invites them to conclude something is broken — or to go and
+     * compare our vendor with somebody else's. The label is still written to the LOG,
+     * where an operator needs exactly that detail.
+     *
+     * <p>What the user does get is the thing the note exists for: a sentence that
+     * CHANGES. A four-model chain can run for minutes, and an unmoving spinner is
+     * indistinguishable from a hung page — the rational response to which is closing the
+     * tab, the one action that loses the work. So each link restates that the photo is
+     * being worked on and counts its position, which reads as bounded progress rather
+     * than an open loop, without saying who is doing the work.
      */
-    private String cleaningNote(String modelId, int position, int total) {
-        String label = catalogue.labelFor(modelId);
+    private String cleaningNote(int position, int total) {
         if (position <= 1) {
-            return "Cleaning up your photo with " + label + "…";
+            return "Cleaning up your photo…";
         }
-        return "That model was busy — trying " + label + " instead ("
+        return "Still cleaning up your photo — this is taking a moment ("
                 + position + " of " + total + ").";
     }
 
