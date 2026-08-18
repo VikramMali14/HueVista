@@ -70,6 +70,7 @@ class ProjectRenderDispatchIntegrationTest {
     @Autowired ImageRepository imageRepository;
     @Autowired ProjectRepository projectRepository;
     @Autowired ProjectPdfPageRepository pageRepository;
+    @Autowired com.gridstore.huevista.billing.service.AiCreditService aiCreditService;
     @Autowired ProjectRenderRepository renderRepository;
     @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired EntityManager entityManager;
@@ -136,6 +137,11 @@ class ProjectRenderDispatchIntegrationTest {
                 .pageIndex(0)
                 .title("Calm")
                 .build()).getId();
+
+        // Every AI image is bought with an AI credit — there is no included one on any
+        // room any more — so the wallet has to hold enough for the images each test asks
+        // for before dispatch is a question at all.
+        aiCreditService.grant(userId, 5, "admin", "render dispatch test");
     }
 
     @AfterEach
@@ -194,9 +200,9 @@ class ProjectRenderDispatchIntegrationTest {
                 .isTrue();
     }
 
-    /** The allowance is still spent up front — committing later must not have moved that. */
+    /** The credit is still spent up front — committing later must not have moved that. */
     @Test
-    void theAllowanceIsSpentWhenTheRenderIsAccepted() {
+    void theCreditIsSpentWhenTheRenderIsAccepted() {
         projectService.requestRender(userId, projectId, requestFor(pageId));
 
         assertThat(projectRepository.findById(projectId).orElseThrow().getRendersUsed())
@@ -209,7 +215,7 @@ class ProjectRenderDispatchIntegrationTest {
      * the case the old dispatch bug created, and the one a restart creates anyway.
      */
     @Test
-    void aStrandedRenderIsFailedAndItsAllowanceHandedBack() {
+    void aStrandedRenderIsFailedAndItsCreditHandedBack() {
         String renderId = projectService.requestRender(userId, projectId, requestFor(pageId)).getId();
         assertThat(projectRepository.findById(projectId).orElseThrow().getRendersUsed()).isEqualTo(1);
 

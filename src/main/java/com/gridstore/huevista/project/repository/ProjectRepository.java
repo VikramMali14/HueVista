@@ -24,6 +24,30 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
     Optional<Project> findByIdAndUserId(String id, String userId);
 
     /**
+     * The rooms an AI image can be started from cold: this account's CLOSED projects that
+     * actually handed over a colour board.
+     *
+     * <p>Both halves of that are the point. Closed, because the AI-images page offers this
+     * as "make another of a job you finished" — an open room is still being worked on and
+     * is reached from the studio it is open in. Handed over a board, because a render is
+     * made FROM a combination and a room that closed without taking one has nothing to
+     * photograph; listing it would offer a choice that dead-ends on the next screen.
+     *
+     * <p>{@code EXISTS} rather than a join, so a project with eight combos is one row here
+     * and not eight. The image is fetch-joined for the same N+1 reason every other list
+     * query in this repository fetches it — the picker shows a thumbnail per room.
+     */
+    @Query("""
+            SELECT p FROM Project p
+            JOIN FETCH p.image
+            WHERE p.user.id = :userId
+              AND p.closedAt IS NOT NULL
+              AND EXISTS (SELECT 1 FROM ProjectPdfPage pg WHERE pg.project = p)
+            ORDER BY p.closedAt DESC
+            """)
+    List<Project> findClosedWithCombos(@Param("userId") String userId);
+
+    /**
      * Hand every room owned by one account to another — the move behind merging a kiosk
      * guest account into the customer's real one. Returns how many changed hands.
      *

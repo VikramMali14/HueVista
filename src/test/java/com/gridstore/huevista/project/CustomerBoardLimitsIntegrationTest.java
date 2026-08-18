@@ -198,7 +198,7 @@ class CustomerBoardLimitsIntegrationTest {
     }
 
     @Test
-    void theClosedProjectKeepsItsCombosAndUnlocksARender() throws Exception {
+    void theClosedProjectKeepsItsCombos() throws Exception {
         postBoard(5);
 
         mockMvc.perform(get("/api/projects/" + projectId)
@@ -208,7 +208,6 @@ class CustomerBoardLimitsIntegrationTest {
                 .andExpect(jsonPath("$.closedAt").isNotEmpty())
                 .andExpect(jsonPath("$.boardsUsed").value(1))
                 .andExpect(jsonPath("$.boardsAllowed").value(1))
-                .andExpect(jsonPath("$.rendersAllowed").value(1))
                 .andExpect(jsonPath("$.rendersUsed").value(0));
 
         mockMvc.perform(get("/api/projects/" + projectId + "/combos")

@@ -40,12 +40,21 @@ public class CreateRenderRequest {
     /**
      * How good an image to make, and therefore how many credits it costs.
      *
-     * <p>The one optional enum on this request. Null reads as BASIC — every render made
+     * <p>Optional, like {@link #sourceImage}. Null reads as BASIC — every render made
      * before the tiers existed was one, and a client that names no quality is asking for
      * the ordinary picture at the ordinary price. Defaulting the other way would charge
      * somebody four credits for saying nothing.
      */
     private ProjectRender.Quality quality;
+
+    /**
+     * Which photograph of the room to paint — the cleaned one, or the one that was taken.
+     *
+     * <p>Optional, and null reads as CLEANED: that is what every render made before this
+     * choice existed was given, and it is the better starting point in the ordinary case.
+     * A room with no cleaned photo falls back to its original whichever is asked for.
+     */
+    private ProjectRender.SourceImage sourceImage;
 
     @Size(max = 500, message = "Keep the note under 500 characters.")
     private String note;

@@ -44,18 +44,18 @@ import java.util.List;
  * absence is survivable. A render has no fallback: the generated image IS the deliverable,
  * so a failure has to be reported, and the allowance handed back.
  *
- * <p><b>The allowance is spent up front and refunded on failure.</b> Reserving first is
- * what stops two browser tabs each starting a ₹99 render on the same included one. It also
- * means the refund path is real code that runs, rather than the "there is no refund
- * endpoint anywhere in the billing module" the colour-board download has to live with —
- * this allowance is a column on the project, so giving it back is a decrement.
+ * <p><b>It is bought, always, with an AI credit.</b> There used to be a second pocket: a
+ * project the account paid for itself carried one INCLUDED image, while a room a shop
+ * handed over carried none. Which pocket paid depended on how the room had been bought,
+ * three payment routes back — a rule nobody could predict from the outside, and one that
+ * made "an AI image costs a credit" false for exactly the rooms people asked about most.
+ * There is one pocket now, it belongs to the ACCOUNT rather than to the room, and a credit
+ * works on any room the account owns.
  *
- * <p><b>There are two pockets it can be spent from.</b> A project the account paid for
- * itself carries one included render. A project a SHOP handed to a customer carries none —
- * the shop paid for the room, not for the picture — so every image on one of those is
- * bought, and the wallet is where it comes from. Both are charged here, before anything
- * asynchronous starts, and {@link ProjectRender#isPaidWithCredit()} records which so the
- * refund goes back to the pocket the charge came out of.
+ * <p><b>The credit is spent up front and refunded on failure.</b> Charging first is what
+ * stops two browser tabs each starting an image on the same credit. It also means the
+ * refund path is real code that runs, rather than the "there is no refund endpoint
+ * anywhere in the billing module" the colour-board download has to live with.
  *
  * <p>This class owns every database moment; {@link ProjectRenderWorker} owns the minute of
  * HTTP in between. They are separate beans because Spring's {@code @Async} and
@@ -70,6 +70,7 @@ public class ProjectRenderService {
 
     private final ProjectRepository projectRepository;
     private final ProjectRenderRepository renderRepository;
+    private final com.gridstore.huevista.project.repository.ProjectPdfPageRepository pageRepository;
     private final ProjectBoardService boardService;
     private final RenderPromptBuilder promptBuilder;
     private final StorageService storageService;
@@ -113,6 +114,11 @@ public class ProjectRenderService {
         ProjectRender.Quality quality = request.getQuality() == null
                 ? ProjectRender.Quality.BASIC
                 : request.getQuality();
+        // Same rule, same reason: silence means the picture this made before the choice
+        // existed, which is the cleaned one.
+        ProjectRender.SourceImage sourceImage = request.getSourceImage() == null
+                ? ProjectRender.SourceImage.CLEANED
+                : request.getSourceImage();
         Funding funding = charge(project, quality);
 
         ProjectRender render = renderRepository.save(ProjectRender.builder()
@@ -125,15 +131,20 @@ public class ProjectRenderService {
                 .furnishing(request.getFurnishing())
                 .style(request.getStyle())
                 .quality(quality)
+                .sourceImage(sourceImage)
                 .note(request.getNote())
-                .paidWithCredit(funding.withCredit())
+                // Always true now that the allowance is gone. Kept on the row because
+                // renders written before this change record which pocket paid for them,
+                // and a column that answers "was this a credit?" with "sometimes, before
+                // August" is only readable if it keeps being written.
+                .paidWithCredit(true)
                 .paidByUserId(funding.walletUserId())
                 .creditsSpent(funding.credits())
                 .build());
 
-        log.info("Render requested: project={} render={} combo={} quality={} used={}/{} paidWith={}",
-                project.getId(), render.getId(), page.getId(), quality,
-                project.getRendersUsed(), project.getRendersAllowed(), funding.describe());
+        log.info("Render requested: project={} render={} combo={} quality={} source={} used={} paidWith={}",
+                project.getId(), render.getId(), page.getId(), quality, sourceImage,
+                project.getRendersUsed(), funding.describe());
 
         dispatchOnceCommitted(render.getId());
         return ProjectRenderResponse.from(render, null);
@@ -142,92 +153,48 @@ public class ProjectRenderService {
     /**
      * How one render was paid for, so the failure path can hand back the same thing.
      *
-     * <p>There are now three shapes, not two, and the third is why {@code withCredit} and
-     * {@code credits} are separate fields rather than one flag. A project's included image
-     * covers a BASIC render; asking for a better one on a room that still holds its
-     * included image spends BOTH — the allowance, and the difference in credits. A refund
-     * has to hand back exactly what was taken, so it reads the two independently.
+     * <p>One shape now, where there were three. The other two described a project's
+     * included image and the case where a better tier topped that image up out of the
+     * wallet — both gone with the allowance itself, and with them the only reason this
+     * needed to be a record of two independent quantities rather than a number.
      */
-    private record Funding(boolean withCredit, String walletUserId, int credits) {
-        static Funding fromAllowance() {
-            return new Funding(false, null, 0);
-        }
-
-        static Funding fromWallet(String userId, int credits) {
-            return new Funding(true, userId, credits);
-        }
-
-        /** The allowance covered the basic image; the upgrade came out of the wallet. */
-        static Funding fromAllowancePlusCredits(String userId, int credits) {
-            return new Funding(false, userId, credits);
-        }
-
+    private record Funding(String walletUserId, int credits) {
         String describe() {
-            if (withCredit) return credits + " credit(s)";
-            return credits > 0
-                    ? "project allowance + " + credits + " credit(s)"
-                    : "project allowance";
+            return credits + " credit(s)";
         }
     }
 
     /**
-     * Take payment for one render, from the project's own allowance if it has one and from
-     * the owner's AI wallet otherwise.
+     * Take payment for one render, out of the owner's AI credit wallet.
      *
-     * <p>The allowance comes first, always. A shop working its own room has an image
-     * included and must not be charged a credit while it is sitting there unspent; and a
-     * customer who bought a per-project top-up (the other cash rail, which increments
-     * {@code rendersAllowed}) has already paid for this picture once.
+     * <p>The wallet is the only route. It used to be the fallback behind a per-project
+     * allowance, and the allowance came first — which meant the answer to "what does an AI
+     * image cost?" was "it depends how this room was bought", and on some rooms it was
+     * nothing. That included image is gone, so this is one question with one answer.
      *
-     * <p>The wallet is the fallback, and it is the ONLY route on a project a shop handed
-     * over: those are created with no included render at all, so the first image on one is
-     * already a purchase. A project with neither — a walk-in guest's room, which has no
-     * user account and therefore no wallet — is refused rather than run free.
+     * <p>A room with no account behind it — a walk-in guest's, which has no wallet to spend
+     * from — is refused rather than run free. It is the same refusal as before; only the
+     * sentence changed, because there is no longer an included image for it to be about.
      */
     private Funding charge(Project project, ProjectRender.Quality quality) {
         int cost = pricingService.aiCreditRenderCost(quality);
-        int included = pricingService.aiCreditRenderCost(ProjectRender.Quality.BASIC);
         String walletUserId = project.getUser() != null ? project.getUser().getId() : null;
-
-        if (project.hasRenderLeft()) {
-            // The included image is a BASIC one. Anything better on top of it is charged
-            // the DIFFERENCE, not the full price — the allowance is worth what it is worth
-            // whichever tier is chosen, and making somebody forfeit it to upgrade would be
-            // the one arrangement that leaves them worse off for having a room with an
-            // image included. The upgrade is taken FIRST, so a wallet too short to cover it
-            // fails before the allowance is spent rather than after.
-            int upgrade = Math.max(0, cost - included);
-            if (upgrade > 0) {
-                if (walletUserId == null) {
-                    throw new QuotaExceededException(
-                            "A " + quality.name().toLowerCase(java.util.Locale.ROOT)
-                            + " image costs " + cost + " credits. Sign in with your own "
-                            + "account to buy them, or make the image included with this room.");
-                }
-                aiCreditService.spend(walletUserId, upgrade, project.getId(),
-                        "1 " + quality.name().toLowerCase(java.util.Locale.ROOT)
-                        + " AI image · " + project.getName() + " (upgrade)");
-            }
-            project.setRendersUsed(project.getRendersUsed() + 1);
-            projectRepository.save(project);
-            return upgrade > 0
-                    ? Funding.fromAllowancePlusCredits(walletUserId, upgrade)
-                    : Funding.fromAllowance();
-        }
 
         if (walletUserId == null) {
             throw new QuotaExceededException(
-                    "This room's AI image has been used. Sign in with your own account to buy "
-                    + "AI image credits and make another.");
+                    "An AI image is made with AI image credits. Sign in with your own account "
+                    + "to buy them and make one of this room.");
         }
 
-        // Throws 402 with the balance in the message when the wallet is short — the same
-        // status the allowance gate used to throw, so the studio's "you need to pay for
-        // this" branch handles both without knowing which pocket came up empty.
+        // Throws 402 with the balance in the message when the wallet is short, which is the
+        // studio's "you need to pay for this" branch.
         aiCreditService.spend(walletUserId, cost, project.getId(),
                 "1 " + quality.name().toLowerCase(java.util.Locale.ROOT)
                 + " AI image · " + project.getName());
-        return Funding.fromWallet(walletUserId, cost);
+        // Counted only once the credit is actually gone, so a refused charge never moves it.
+        project.setRendersUsed(project.getRendersUsed() + 1);
+        projectRepository.save(project);
+        return new Funding(walletUserId, cost);
     }
 
     /**
@@ -294,12 +261,7 @@ public class ProjectRenderService {
         ImageType imageType = project.getImage().getImageType();
 
         List<String> images = new ArrayList<>();
-        // The cleaned photo when there is one: clutter gone and every paintable surface
-        // flat white, so the model tints a neutral surface instead of fighting the colour
-        // that is already there. The original is the fallback, not the default.
-        images.add(storageService.getPublicUrl(project.getCleanedImageStorageKey() != null
-                ? project.getCleanedImageStorageKey()
-                : project.getImage().getStorageKey()));
+        images.add(storageService.getPublicUrl(sourceImageKey(project, render.getSourceImage())));
         if (render.getBorderMode() == ProjectRender.BorderMode.KEEP_ORIGINAL) {
             images.addAll(maskUrls(project));
         }
@@ -316,6 +278,29 @@ public class ProjectRenderService {
                 // model chain is asked and at what size. Read here rather than out there
                 // because out there is another thread with no session to read it in.
                 render.getQuality() == null ? ProjectRender.Quality.BASIC : render.getQuality()));
+    }
+
+    /**
+     * Which photograph the model is given, and the one case where the answer is not the
+     * one that was asked for.
+     *
+     * <p>CLEANED is what almost every render wants — clutter gone, every paintable surface
+     * flattened to white, so the model tints a neutral wall instead of fighting the colour
+     * already on it. ORIGINAL is a real choice and not a fallback: the clean-up is itself
+     * an AI step, and it sometimes takes a picture rail or a texture with it that was the
+     * point of the photograph.
+     *
+     * <p>A room with no cleaned photo gets its original whichever was asked for. That is
+     * the substitution this code has always made silently; it is unchanged, and it is safe
+     * to make silently because the two answers coincide — there is only one picture of that
+     * room, and it is the one being returned.
+     */
+    private static String sourceImageKey(Project project, ProjectRender.SourceImage choice) {
+        String cleaned = project.getCleanedImageStorageKey();
+        if (choice == ProjectRender.SourceImage.ORIGINAL || cleaned == null) {
+            return project.getImage().getStorageKey();
+        }
+        return cleaned;
     }
 
     /**
@@ -363,15 +348,18 @@ public class ProjectRenderService {
     /**
      * Record the failure and hand back whatever paid for it.
      *
-     * The refund is the important half. A customer who paid ₹99 for a render the model
-     * could not produce has to be able to try again without paying twice, and the included
-     * render is the same promise — spending it on nothing would make "one render included"
-     * a lie in exactly the case where it matters most.
+     * The refund is the important half. A customer whose image the model could not produce
+     * has to be able to try again without paying twice.
      *
-     * <p>Which of the two goes back is read off the render, never guessed from the project.
-     * Guessing is how a shop-granted project — which has no included render, so
-     * {@code rendersUsed} is 0 and {@code rendersAllowed} is 0 — would have had its
-     * customer's credit quietly kept while the decrement found nothing to give back.
+     * <p>How much goes back is read off the RENDER — {@code creditsSpent}, recorded when
+     * the charge was taken — never recomputed from today's prices or guessed from the
+     * project. A tier re-priced between the request and the failure would otherwise refund
+     * the wrong number, and the old two-pocket version of this had a worse version of the
+     * same bug: it guessed which pocket had paid from the project's state, and quietly kept
+     * a customer's credit on any room whose allowance was zero.
+     *
+     * <p>The count of images this room has made comes back too, for every failure and not
+     * just a credit-paid one. It is a count of pictures that exist, and this one does not.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void fail(String renderId, String reason) {
@@ -381,25 +369,26 @@ public class ProjectRenderService {
             r.setCompletedAt(LocalDateTime.now());
             renderRepository.save(r);
 
-            Project project = r.getProject();
-            // Both pockets, independently. A render can have been paid for out of the
-            // allowance AND out of the wallet at once — that is what upgrading a room's
-            // included image to PRO or MAX does — so this is two questions, not a branch
-            // between two answers. Handing back only one of them was the exact accident
-            // this record of what was charged exists to prevent.
+            // By ID, and re-read here. `r.getProject()` is a lazy proxy that may have been
+            // created in the session that WROTE the render — this method runs REQUIRES_NEW
+            // on the worker thread, so that session is long gone and touching a field on
+            // the proxy throws LazyInitializationException rather than loading anything.
+            // The id is the one thing a proxy always answers without initialising.
+            String projectId = r.getProject().getId();
             if (r.getCreditsSpent() > 0) {
-                aiCreditService.refundRender(r.getPaidByUserId(), r.getCreditsSpent(),
-                        project.getId(),
+                aiCreditService.refundRender(r.getPaidByUserId(), r.getCreditsSpent(), projectId,
                         // A fresh window on the way back, at the rate this buyer buys at:
                         // a year for a customer, no expiry at all for a shop.
                         pricingService.aiCreditValidityDays(r.getPaidByUserId()));
+                log.info("Render credits returned after a failure: project={} render={} credits={}",
+                        projectId, renderId, r.getCreditsSpent());
             }
-            if (!r.isPaidWithCredit() && project.getRendersUsed() > 0) {
-                project.setRendersUsed(project.getRendersUsed() - 1);
-                projectRepository.save(project);
-                log.info("Render allowance returned after a failure: project={} render={}",
-                        project.getId(), renderId);
-            }
+            projectRepository.findById(projectId).ifPresent(project -> {
+                if (project.getRendersUsed() > 0) {
+                    project.setRendersUsed(project.getRendersUsed() - 1);
+                    projectRepository.save(project);
+                }
+            });
         });
     }
 
@@ -457,6 +446,51 @@ public class ProjectRenderService {
     @Transactional(readOnly = true)
     public List<com.gridstore.huevista.project.dto.MyRenderResponse> listForOwner(String userId) {
         return describe(renderRepository.findByOwnerAndStatus(userId, ProjectRender.Status.READY));
+    }
+
+    /**
+     * The rooms this account can start a NEW image from: its closed projects that handed
+     * over a colour board.
+     *
+     * <p>Why this exists at all: an image could only ever be asked for from inside the room
+     * that made it. Somebody who wanted another picture of a job they finished last month
+     * had to remember which room it was, find it in a dashboard of finished work, open it,
+     * and only then be offered the choice — for a purchase that no longer depends on the
+     * room's state in any way, since a credit is a credit. The AI-images page is where
+     * "another one, please" is actually said, so the picking happens there.
+     *
+     * <p>Two queries, not one per room. The projects come back with their photographs
+     * fetch-joined, and the combination counts arrive in a single grouped count — a shelf
+     * of finished work is exactly the size at which an N+1 stops being invisible.
+     *
+     * <p>Both image URLs are presigned here rather than left as storage keys, because a key
+     * is worth nothing to a browser and the picker's whole job is to show two pictures side
+     * by side and ask which one to paint.
+     */
+    @Transactional(readOnly = true)
+    public List<com.gridstore.huevista.project.dto.RenderableProjectResponse> renderableProjects(
+            String userId) {
+        List<Project> projects = projectRepository.findClosedWithCombos(userId);
+        if (projects.isEmpty()) {
+            return List.of();
+        }
+        java.util.Map<String, Long> comboCounts = pageRepository
+                .countByProjectIds(projects.stream().map(Project::getId).toList())
+                .stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        row -> (String) row[0], row -> (Long) row[1]));
+        return projects.stream()
+                .map(p -> com.gridstore.huevista.project.dto.RenderableProjectResponse.builder()
+                        .id(p.getId())
+                        .name(p.getName())
+                        .roomType(p.getRoomType())
+                        .imageUrl(storageService.getPublicUrl(p.getImage().getStorageKey()))
+                        .cleanedImageUrl(p.getCleanedImageStorageKey() == null ? null
+                                : storageService.getPublicUrl(p.getCleanedImageStorageKey()))
+                        .closedAt(p.getClosedAt())
+                        .comboCount(comboCounts.getOrDefault(p.getId(), 0L).intValue())
+                        .build())
+                .toList();
     }
 
     /**

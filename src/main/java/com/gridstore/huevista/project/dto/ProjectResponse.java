@@ -114,14 +114,11 @@ public class ProjectResponse {
     // with these so "one board left" can be said before the last one closes the project.
     private int boardsUsed;
     private int boardsAllowed;
-    // AI renders this project may still produce, and how many it has. One is included
-    // and unlocked by closing; the rest are bought one at a time.
-    private int rendersAllowed;
+    // AI images this project has produced. A count, not an allowance: there is no per-
+    // project entitlement any more and no price to quote for one, because an AI image is
+    // bought with an AI credit from the ACCOUNT's wallet. The studio reads what an image
+    // costs off that wallet, which is the only thing that knows.
     private int rendersUsed;
-    // What one more costs, in paise. Quoted here rather than left for the studio to infer
-    // from the reopen price they happen to share today: they are two settings, and a
-    // button that names a price the payment then refuses is worse than no price at all.
-    private int renderPricePaise;
 
     /**
      * True when this room was copied off the free library shelf.
@@ -172,11 +169,10 @@ public class ProjectResponse {
             + "carry on painting.";
 
     public static ProjectResponse from(Project project, String imageUrl) {
-        return from(project, imageUrl, 0, 0);
+        return from(project, imageUrl, 0);
     }
 
-    public static ProjectResponse from(Project project, String imageUrl,
-                                       int boardsAllowed, int renderPricePaise) {
+    public static ProjectResponse from(Project project, String imageUrl, int boardsAllowed) {
         List<RegionResponse> regions = project.getRegions().stream()
                 .map(RegionResponse::from)
                 .toList();
@@ -208,9 +204,7 @@ public class ProjectResponse {
                 .closedAt(project.getClosedAt())
                 .boardsUsed(project.getColourBoardsUsed())
                 .boardsAllowed(boardsAllowed)
-                .rendersAllowed(project.getRendersAllowed())
                 .rendersUsed(project.getRendersUsed())
-                .renderPricePaise(renderPricePaise)
                 .createdAt(project.getCreatedAt())
                 .updatedAt(project.getUpdatedAt())
                 .build();

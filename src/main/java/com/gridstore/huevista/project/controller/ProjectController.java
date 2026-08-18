@@ -436,11 +436,17 @@ public class ProjectController {
 
                     Only from a combination that was actually on one of this project's colour
                     boards — the picture shows a scheme the customer committed to on paper.
-                    The project does NOT have to be closed: one render is included, and every
-                    further one is paid for with an AI image credit, so the wallet is the only
-                    thing standing between a customer and another image. The allowance is
-                    spent as the request is accepted and handed back if the image cannot be
-                    made, so a failure never costs anything.
+                    The project does NOT have to be closed.
+
+                    EVERY image is paid for with AI image credits from the account's wallet.
+                    There is no per-project included render and no per-project way to buy
+                    one: a credit belongs to the account and works on any room it owns. The
+                    credits are spent as the request is accepted and handed back if the image
+                    cannot be made, so a failure never costs anything.
+
+                    `sourceImage` chooses which photograph the model paints — CLEANED (the
+                    default, and what every image made before the choice existed was given)
+                    or ORIGINAL. A room with no cleaned photo gets its original either way.
 
                     Returns immediately with status QUEUED — poll the render until it reaches
                     READY or FAILED.
@@ -448,7 +454,7 @@ public class ProjectController {
     )
     @ApiResponses({
             @ApiResponse(responseCode = "202", description = "Accepted; poll for the image"),
-            @ApiResponse(responseCode = "402", description = "No render left and the AI credit wallet is short"),
+            @ApiResponse(responseCode = "402", description = "The AI credit wallet is short"),
             @ApiResponse(responseCode = "404", description = "No such project, or no such combination on it")
     })
     @PostMapping("/{id}/renders")

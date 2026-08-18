@@ -48,10 +48,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Because there is no rollback, each test cleans up what it made.
  *
- * <p>The rule being pinned: the refund goes back to whichever pocket paid. That has teeth
- * now in a way it did not before credits existed — a room a shop gave away carries NO
- * render allowance, so {@code rendersUsed} is 0 and the old "decrement it" refund would
- * have found nothing to give back and quietly kept the customer's ₹99.
+ * <p>The rule being pinned: an image the model could not make costs nothing. There is one
+ * pocket now — the account's AI credit wallet — so the refund is the credits the render
+ * recorded spending, read off the render rather than recomputed from today's prices. It
+ * used to be two pockets and the wrong one could be picked: a room a shop gave away carried
+ * no included render, so the old "decrement the allowance" refund found nothing to give
+ * back and quietly kept the customer's credit.
  */
 @SpringBootTest
 @TestPropertySource(locations = "classpath:application-test.properties")
@@ -117,10 +119,9 @@ class AiCreditRefundIntegrationTest {
     }
 
     @Test
-    void aFailedRenderPaidWithACreditHandsTheCreditBack() {
+    void aFailedRenderHandsTheCreditBack() {
         aiCreditService.grant(userId, 1, "admin", "test");
-        // No included render: this is the shape a shop-granted room has.
-        Project project = closedProject(0);
+        Project project = closedProject();
         ProjectRenderResponse started = renderService.request(project, renderRequest());
         assertThat(aiCreditService.balance(userId)).isZero();
 
@@ -130,24 +131,40 @@ class AiCreditRefundIntegrationTest {
         assertThat(projectRepository.findById(projectId).orElseThrow().getRendersUsed()).isZero();
     }
 
+    /**
+     * The count of images this room has made goes back too, because the image does not
+     * exist. It is the last trace of the render on the project itself now that there is no
+     * allowance beside it, and a room that reads "1 image made" with nothing to show for it
+     * is the kind of wrong that only surfaces in a support call.
+     */
     @Test
-    void aFailedIncludedRenderHandsTheAllowanceBackAndTouchesNoWallet() {
+    void aFailedRenderUncountsItselfFromTheRoom() {
         aiCreditService.grant(userId, 1, "admin", "test");
-        Project project = closedProject(1);
+        Project project = closedProject();
         ProjectRenderResponse started = renderService.request(project, renderRequest());
         assertThat(projectRepository.findById(projectId).orElseThrow().getRendersUsed()).isEqualTo(1);
 
         renderService.fail(started.getId(), "The model declined this image.");
 
         assertThat(projectRepository.findById(projectId).orElseThrow().getRendersUsed()).isZero();
-        // Untouched: the wallet never paid, so it has nothing to be given.
-        assertThat(aiCreditService.balance(userId)).isEqualTo(1);
+    }
+
+    /** No wallet, no image — there is no second pocket to fall through to any more. */
+    @Test
+    void anEmptyWalletIsRefusedRatherThanGivenAFreeImage() {
+        Project project = closedProject();
+
+        org.assertj.core.api.Assertions
+                .assertThatThrownBy(() -> renderService.request(project, renderRequest()))
+                .isInstanceOf(com.gridstore.huevista.common.exception.QuotaExceededException.class);
+
+        assertThat(projectRepository.findById(projectId).orElseThrow().getRendersUsed()).isZero();
     }
 
     @Test
     void theRefundIsVisibleOnTheStatementAsARefundAndNotAsAPurchase() {
         aiCreditService.grant(userId, 1, "admin", "test");
-        Project project = closedProject(0);
+        Project project = closedProject();
         ProjectRenderResponse started = renderService.request(project, renderRequest());
 
         renderService.fail(started.getId(), "The model declined this image.");
@@ -161,15 +178,14 @@ class AiCreditRefundIntegrationTest {
 
     // ── helpers ─────────────────────────────────────────────────────────────
 
-    /** A closed project with one board page, carrying the given render allowance. */
-    private Project closedProject(int rendersAllowed) {
+    /** A closed project with one board page on it. */
+    private Project closedProject() {
         Project project = projectRepository.save(Project.builder()
                 .user(userRepository.findById(userId).orElseThrow())
                 .image(imageRepository.findById(imageId).orElseThrow())
                 .name("Refund room")
                 .status(ProjectStatus.SEGMENTED)
                 .closedAt(LocalDateTime.now())
-                .rendersAllowed(rendersAllowed)
                 .build());
         projectId = project.getId();
 

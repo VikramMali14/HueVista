@@ -86,6 +86,19 @@ public class ProjectRender {
     @Builder.Default
     private Quality quality = Quality.BASIC;
 
+    /**
+     * Which photograph of the room the model was given to work from.
+     *
+     * <p>Stored rather than assumed, for the same reason {@link #quality} is: it is the
+     * first thing worth knowing when two images of the same room come back different, and
+     * "whichever one the code preferred in August" is not an answer. Renders written before
+     * the choice existed read CLEANED, which is what they were given.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 16)
+    @Builder.Default
+    private SourceImage sourceImage = SourceImage.CLEANED;
+
     /** Anything the customer typed. Clamped and framed as untrusted before it reaches
      *  the model — see ProjectRenderService. */
     @Column(length = 500)
@@ -169,6 +182,25 @@ public class ProjectRender {
     public enum BorderMode { KEEP_ORIGINAL, AI_SUGGESTED }
 
     public enum Lighting { NATURAL, WARM, COOL, DRAMATIC }
+
+    /**
+     * Which photograph of the room to paint: the cleaned one, or the one that was taken.
+     *
+     * <p>CLEANED is the better starting point and stays the default. It has the clutter
+     * removed and every paintable surface flattened to white, so the model tints a neutral
+     * wall instead of arguing with the colour already on it — which is why it was the only
+     * option for as long as this was a decision the code made silently.
+     *
+     * <p>ORIGINAL exists because the clean-up is itself an AI step and sometimes takes
+     * something real with it: a picture rail, a texture, a shadow that was the point of the
+     * photograph. Somebody who can see both pictures knows which of them is their room
+     * better than the pipeline does, and the credit is theirs to spend either way.
+     *
+     * <p>ORIGINAL is also what a room with no cleaned photo silently fell back to. That
+     * fallback is unchanged — asking for CLEANED on a room that has none still gets the
+     * original — but it is now the answer to a question rather than a hidden substitution.
+     */
+    public enum SourceImage { CLEANED, ORIGINAL }
 
     /** KEEP leaves the room as photographed; STAGED dresses it; EMPTY clears it out. */
     public enum Furnishing { KEEP, STAGED, EMPTY }

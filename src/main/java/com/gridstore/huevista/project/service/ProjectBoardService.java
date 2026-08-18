@@ -75,7 +75,7 @@ public class ProjectBoardService {
      * reopen, so the natural way to use the product was the way that charged for it.
      *
      * <p>Four is enough for that comparison and still finite, which is what keeps the
-     * close meaningful: a project that never closes never unlocks its render either.
+     * close meaningful: a job that never ends is a job nobody ever files away.
      * Configuration, so it can be moved without a deploy — and the studio reads the
      * number off the API rather than printing its own copy, so a change here shows up in
      * the sentence the customer reads.
@@ -93,12 +93,11 @@ public class ProjectBoardService {
      *
      * <p>A customer is the other half of that transaction and buys the opposite thing. They
      * bought ONE project — at the till, or through the shop's code — and what they take away
-     * is one sheet with their colours on it and, once the project closes, the AI render that
-     * closing unlocks. Four boards there did not buy four conversations, it just deferred the
-     * ending: the render stayed locked behind a cap the customer had no reason to spend, and
-     * the natural way to finish the job was to press a Close button rather than to finish it.
-     * At one, downloading the board IS finishing, and the render is waiting on the other side
-     * of it.
+     * is one sheet with their colours on it. Four boards there did not buy four conversations,
+     * it just deferred the ending, and the natural way to finish the job became pressing a
+     * Close button rather than finishing it. At one, downloading the board IS finishing.
+     * An AI image of any combination on that board is a separate purchase, bought with an AI
+     * credit, and it neither waits for the close nor is unlocked by it.
      *
      * <p>Configuration, like its shop-side twin, so the two can be repriced independently
      * without a deploy — and the studio reads whichever number applies off the API rather

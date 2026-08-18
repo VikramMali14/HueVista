@@ -54,7 +54,6 @@ public class ProjectPurchaseService {
 
     private static final String ORDER_PURPOSE = "project_purchase";
     private static final String REOPEN_PURPOSE = "project_reopen";
-    private static final String RENDER_PURPOSE = "project_render";
 
     /** Create the Razorpay order the client opens in Checkout, for one project. */
     public ProjectOrderResponse createOrder(String userId) {
@@ -291,86 +290,6 @@ public class ProjectPurchaseService {
         ProjectReopenResponse reopened = projectCreditService.creditReopen(userId, projectId, amountPaise);
         billingEmailService.sendProjectReopened(userId, 0, amountPaise, reopened.getDaysAdded());
         return reopened;
-    }
-
-    // ── Render top-up: one more AI image on a project that spent its included one ──
-
-    /**
-     * Create the Razorpay order for an extra AI render.
-     *
-     * Refused up front when the project still has a render left, for the same reason a
-     * reopen is: selling somebody a thing they already have is the failure this check
-     * exists to prevent, and discovering it after the payment sheet is too late.
-     */
-    public ProjectOrderResponse createRenderOrder(String userId, String projectId) {
-        if (keyId.isBlank() || keySecret.isBlank()) {
-            throw new IllegalStateException("Online payment is not configured.");
-        }
-        projectCreditService.requireRenderTopUp(userId, projectId);
-        int amountPaise = pricingService.renderTopUpPricePaise();
-        try {
-            JSONObject req = new JSONObject();
-            req.put("amount", amountPaise);
-            req.put("currency", pricingService.currency());
-            req.put("receipt", "render_" + System.currentTimeMillis());
-            JSONObject notes = new JSONObject();
-            notes.put("userId", userId);
-            notes.put("purpose", RENDER_PURPOSE);
-            notes.put("projectId", projectId);
-            req.put("notes", notes);
-
-            Order order = razorpayClient.orders.create(req);
-            String orderId = order.get("id");
-            log.info("Render order created: user={} order={} project={} amountPaise={}",
-                    userId, orderId, projectId, amountPaise);
-            paymentAttemptService.open(orderId, PaymentFlow.RENDER, userId, amountPaise,
-                    pricingService.currency(), "1 AI image for project " + projectId, null);
-
-            return ProjectOrderResponse.builder()
-                    .orderId(orderId)
-                    .pricingPlan(pricingService.pricingPlanFor(userId).name())
-                    .amount(amountPaise)
-                    .currency(pricingService.currency())
-                    .razorpayKeyId(keyId)
-                    .build();
-        } catch (RazorpayException e) {
-            log.error("Razorpay render order creation failed: {}", e.getMessage());
-            throw new IllegalStateException("Could not start the payment. Please try again.");
-        }
-    }
-
-    /** Verify the Checkout signature and add one render to the project the ORDER named. */
-    @Transactional
-    public void verifyAndCreditRender(String userId, VerifyProjectPurchaseRequest req) {
-        verifySignature(req);
-
-        String projectId;
-        int amountPaise;
-        try {
-            Order order = razorpayClient.orders.fetch(req.getOrderId());
-            amountPaise = ((Number) order.get("amount")).intValue();
-            JSONObject notes = order.get("notes");
-            String purpose = notes != null ? notes.optString("purpose", "") : "";
-            String orderUserId = notes != null ? notes.optString("userId", "") : "";
-            projectId = notes != null ? notes.optString("projectId", "") : "";
-
-            if (!RENDER_PURPOSE.equals(purpose) || !userId.equals(orderUserId)
-                    || projectId.isBlank()
-                    || amountPaise != pricingService.renderTopUpPricePaise()) {
-                log.warn("Render order mismatch: user={} order={} amount={} purpose={} orderUser={} project={}",
-                        userId, req.getOrderId(), amountPaise, purpose, orderUserId, projectId);
-                throw new SecurityException("Payment verification failed.");
-            }
-        } catch (RazorpayException e) {
-            log.error("Razorpay order fetch failed during render verification: {}", e.getMessage());
-            throw new SecurityException("Payment verification error.");
-        }
-
-        claimPayment(req, userId, null, amountPaise,
-                ProjectPurchase.Purpose.RENDER, 0, projectId);
-        projectCreditService.creditExtraRender(userId, projectId);
-        log.info("Extra AI render bought: user={} project={} amountPaise={}",
-                userId, projectId, amountPaise);
     }
 
     /** The Checkout signature must belong to this merchant account. */

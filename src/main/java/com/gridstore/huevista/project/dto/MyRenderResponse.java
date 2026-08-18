@@ -54,6 +54,10 @@ public class MyRenderResponse {
     /** BASIC · PRO · MAX — which model made it. Kept on the shelf so two images of the
      *  same room can be told apart by more than the day they were made. */
     private String quality;
+
+    /** CLEANED · ORIGINAL — which photograph of the room this was painted from. */
+    private String sourceImage;
+
     private String note;
 
     /** The colour-board combination it was made from, when the page still exists. */
@@ -98,6 +102,8 @@ public class MyRenderResponse {
                 .style(render.getStyle().name())
                 .quality((render.getQuality() == null
                         ? ProjectRender.Quality.BASIC : render.getQuality()).name())
+                .sourceImage((render.getSourceImage() == null
+                        ? ProjectRender.SourceImage.CLEANED : render.getSourceImage()).name())
                 .note(render.getNote())
                 .comboId(page != null ? page.getId() : null)
                 .comboTitle(page != null ? page.getTitle() : null)

@@ -84,15 +84,12 @@ public class PricingService {
     @Value("${app.points.reopen-closed:99}")
     private int pointsPriceReopenClosed;
 
-    /** A second AI render on a project that already spent its included one. Flat. */
-    @Value("${app.render.top-up-price-paise:9900}")
-    private int renderTopUpPricePaise;
-
     // ── AI image credits ────────────────────────────────────────────────────
     //
-    // The wallet rail for the same picture the per-project top-up above buys. One credit
-    // is one AI image, and the two prices are kept deliberately equal at launch (₹198 less
-    // 50% is ₹99) so a customer can never be worse off for having topped up in advance.
+    // The ONLY rail an AI image is bought on. There used to be a per-project top-up
+    // beside it, priced to match (₹198 less 50% is ₹99) so nobody could be worse off for
+    // having bought in advance; it is gone, along with the included image it topped up.
+    // One credit is one AI image, it belongs to the account, and it works on any room.
 
     /** The undiscounted price of one AI image credit, in paise. */
     @Value("${app.ai-credit.list-price-paise:19800}")
@@ -314,11 +311,6 @@ public class PricingService {
     /** The points twin of {@link #reopenPricePaise(boolean)}, on the same split. */
     public int pointsPriceReopen(boolean closed) {
         return closed ? pointsPriceReopenClosed : pointsPriceReopen;
-    }
-
-    /** What one more AI render on an already-rendered project costs, in paise. */
-    public int renderTopUpPricePaise() {
-        return renderTopUpPricePaise * (100 + Plan.GST_PERCENT) / 100;
     }
 
     // ── AI image credits ────────────────────────────────────────────────────

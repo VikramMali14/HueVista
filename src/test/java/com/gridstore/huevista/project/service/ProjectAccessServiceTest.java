@@ -368,7 +368,6 @@ class ProjectAccessServiceTest {
         access.reopenClosed(project);
 
         assertThat(project.getRendersUsed()).isEqualTo(1);
-        assertThat(project.hasRenderLeft()).isFalse();
     }
 
     // ─── Rooms off the free library shelf ────────────────────────────────────

@@ -3,6 +3,7 @@ package com.gridstore.huevista.project.controller;
 import com.gridstore.huevista.account.model.AppFeature;
 import com.gridstore.huevista.account.security.RequiresFeature;
 import com.gridstore.huevista.project.dto.MyRenderResponse;
+import com.gridstore.huevista.project.dto.RenderableProjectResponse;
 import com.gridstore.huevista.project.service.ProjectRenderService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -57,5 +58,34 @@ public class MyRendersController {
     @GetMapping("/renders")
     public ResponseEntity<List<MyRenderResponse>> listMyRenders(Authentication auth) {
         return ResponseEntity.ok(renderService.listForOwner(auth.getName()));
+    }
+
+    @Operation(
+            summary = "Rooms I can make another AI image from",
+            description = """
+                    The signed-in account's CLOSED projects that handed over a colour
+                    board, newest-finished first — the rooms a new AI image can be started
+                    from without opening the studio.
+
+                    Both are required. Closed, because this is the "make another of a job
+                    you finished" route and an open room is reached from the studio it is
+                    open in. Handed over a board, because an image is made FROM a
+                    combination, so a room that closed without taking one has nothing to
+                    photograph and offering it would dead-end on the next screen.
+
+                    Each entry carries BOTH photographs — the cleaned one and the original
+                    — because choosing between them is the next thing asked.
+                    `cleanedImageUrl` is null when the room never got one, which is how a
+                    client knows not to offer a choice with one real option in it.
+
+                    An image itself is still requested against the project it belongs to
+                    (`POST /api/projects/{id}/renders`), and is paid for with an AI credit
+                    like every other.
+                    """
+    )
+    @ApiResponse(responseCode = "200", description = "Closed rooms with combinations to render")
+    @GetMapping("/renderable-projects")
+    public ResponseEntity<List<RenderableProjectResponse>> renderableProjects(Authentication auth) {
+        return ResponseEntity.ok(renderService.renderableProjects(auth.getName()));
     }
 }

@@ -53,7 +53,6 @@ class ProjectCreditServiceTest {
     private static final int REOPEN_PAISE = 1000;
     private static final int REOPEN_CLOSED_PAISE = 9900;
     private static final int POINTS_REOPEN_CLOSED = 99;
-    private static final int RENDER_PAISE = 9900;
 
     private ProjectCreditLedger ledger;
     private com.gridstore.huevista.billing.repository.SubscriptionRepository subscriptions;
@@ -80,7 +79,6 @@ class ProjectCreditServiceTest {
         ReflectionTestUtils.setField(pricing, "reopenPricePaise", REOPEN_PAISE);
         ReflectionTestUtils.setField(pricing, "reopenClosedPricePaise", REOPEN_CLOSED_PAISE);
         ReflectionTestUtils.setField(pricing, "pointsPriceReopenClosed", POINTS_REOPEN_CLOSED);
-        ReflectionTestUtils.setField(pricing, "renderTopUpPricePaise", RENDER_PAISE);
         ReflectionTestUtils.setField(pricing, "currency", "INR");
 
         users = mock(com.gridstore.huevista.auth.repository.UserRepository.class);
@@ -407,33 +405,4 @@ class ProjectCreditServiceTest {
         assertThat(pricing.pointsPriceReopen()).isEqualTo(POINTS_REOPEN);
     }
 
-    // ─── Extra AI renders ────────────────────────────────────────────────────
-
-    @Test
-    void aProjectThatStillHasARenderCannotBuyAnother() {
-        com.gridstore.huevista.project.model.Project project =
-                new com.gridstore.huevista.project.model.Project();
-        project.setRendersAllowed(1);
-        project.setRendersUsed(0);
-        when(projects.findByIdAndUserId("p1", USER)).thenReturn(Optional.of(project));
-
-        assertThatThrownBy(() -> svc.requireRenderTopUp(USER, "p1"))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("nothing to buy");
-    }
-
-    @Test
-    void aSpentProjectMayBuyAnotherRenderAndGetsExactlyOne() {
-        com.gridstore.huevista.project.model.Project project =
-                new com.gridstore.huevista.project.model.Project();
-        project.setRendersAllowed(1);
-        project.setRendersUsed(1);
-        when(projects.findByIdAndUserId("p1", USER)).thenReturn(Optional.of(project));
-
-        assertThat(svc.requireRenderTopUp(USER, "p1")).isSameAs(project);
-
-        svc.creditExtraRender(USER, "p1");
-        assertThat(project.getRendersAllowed()).isEqualTo(2);
-        assertThat(project.hasRenderLeft()).isTrue();
-    }
 }
