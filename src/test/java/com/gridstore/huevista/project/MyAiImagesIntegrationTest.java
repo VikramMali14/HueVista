@@ -60,7 +60,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @Transactional
-@TestPropertySource(locations = "classpath:application-test.properties")
+// One board closes a project here, so a test that wants a CLOSED room can take a single
+// download to get one. Pinned rather than inherited: the product's cap is four and may
+// move again, and this suite is about what a closed room does with its AI image.
+@TestPropertySource(
+        locations = "classpath:application-test.properties",
+        properties = "app.project.colour-boards-per-project=1")
 class MyAiImagesIntegrationTest {
 
     @MockitoBean

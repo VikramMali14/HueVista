@@ -34,6 +34,25 @@ public class ShadeCodeSchemeResponse {
     @Builder.Default
     private boolean showNames = true;
     /**
+     * Whether the paint COMPANY may be printed against an individual shade.
+     *
+     * False for every customer and guest, always — not a per-shop switch like
+     * {@code showNames}. A shade's identity is company plus name plus code, and hiding
+     * two of the three while printing "Asian Paints" on the swatch leaves a colour that
+     * one phone call to that company's helpline resolves. The scheme only means anything
+     * if all three go together.
+     *
+     * <p>This is NOT a rule about the company as a filter. A customer still chooses
+     * which companies they are looking at — they have to, since they will be buying from
+     * a shop that stocks some and not others — and the picker is expected to name them.
+     * What goes is the per-shade attribution: a colour is a swatch and a code, and the
+     * counter is where those turn back into a tin.
+     *
+     * <p>True for shop staff and administrators, who are the people opening the tin.
+     */
+    @Builder.Default
+    private boolean showBrands = true;
+    /**
      * Whether this viewer may see the manufacturer's own shade codes.
      *
      * True for shop staff and administrators — the people who have to open the right
@@ -100,6 +119,16 @@ public class ShadeCodeSchemeResponse {
      */
     public ShadeCodeSchemeResponse forViewer(boolean showRealCodes) {
         this.showRealCodes = showRealCodes;
+        // One decision, not three. Whoever may not read the manufacturer's code may not
+        // read the company or the shade name either — those identify the colour just as
+        // completely, and a screen that withholds the number while printing "Asian
+        // Paints · Wine Sensation" has withheld nothing at all. Applied here, at the one
+        // point every factory funnels through, so no path can set two of the three and
+        // quietly leak by the third.
+        if (!showRealCodes) {
+            this.showNames = false;
+            this.showBrands = false;
+        }
         return this;
     }
 

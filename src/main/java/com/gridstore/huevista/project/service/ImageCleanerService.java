@@ -1,5 +1,6 @@
 package com.gridstore.huevista.project.service;
 
+import com.gridstore.huevista.common.ai.AiModelCatalogue;
 import com.gridstore.huevista.common.ai.GeminiImageClient;
 import com.gridstore.huevista.common.ai.ImageEditException;
 import com.gridstore.huevista.common.ai.ReplicateAuthException;
@@ -55,61 +56,74 @@ import java.util.concurrent.Callable;
  * of generative regeneration). Opt-in by default; falls through silently
  * when not enabled.
  *
- * <h2>The provider hierarchy</h2>
+ * <h2>The model chain</h2>
  *
- * The clean is now the pipeline's load-bearing step — {@link SegmentationService}
- * will not generate masks without it — so one model saying no can no longer end the
- * run. Providers are asked in this order, and the first image produced wins:
+ * The clean is the pipeline's load-bearing step — {@link SegmentationService} will not
+ * generate masks without it — so one model saying no can no longer end the run. Models
+ * are asked in a flat, configured order, and the first image produced wins:
  *
  * <ol>
- *   <li><b>Nano Banana Pro on Replicate</b> ({@code google/nano-banana-pro}) — the
- *       best of these at holding a building's architecture still while it edits.</li>
- *   <li><b>The same model on Google's own API</b> ({@link GeminiImageClient}) —
- *       {@code google/nano-banana-pro} on Replicate IS Gemini 3 Pro Image, but the
- *       queue in front of it is different, and the queue is what fails. A busy
- *       Replicate pool ends a prediction {@code failed} with {@code ModelRateLimitError:
- *       Service is currently unavailable due to high demand (E003)}, which says nothing
- *       about the photo. Asking Google directly usually just works, and it is the
- *       cheapest possible failover because the output is identical in kind.</li>
- *   <li><b>A DIFFERENT model family</b>, in configured order — FLUX 2 Pro, then GPT
- *       Image, then Seedream. These are only reached once both routes to Gemini are
- *       out, at which point the problem is more likely to be the model than the queue,
- *       so what is wanted is a different model rather than another attempt at the same
- *       one. They edit to a slightly different look; the downstream mask step reads
- *       whichever canvas comes back, so the pipeline does not care which one did it.</li>
+ *   <li>{@code black-forest-labs/flux-2-pro}</li>
+ *   <li>{@code google/nano-banana-2}</li>
+ *   <li>{@code black-forest-labs/flux-2-max}</li>
+ *   <li>{@code google/nano-banana-pro}</li>
  * </ol>
  *
- * Each model's request body differs; {@link ReplicateImageEditor} owns that. A refusal
- * about the PHOTO itself (a safety block) stops the chain immediately — every provider
- * would give the same answer, and spending four minutes proving it costs the user their
- * run.
+ * <h3>One attempt each, and why</h3>
  *
- * <p>Not in the hierarchy: Claude. Anthropic's models read images but do not generate
- * or edit them, so there is no Claude image-edit endpoint to fall back to. Claude does
- * the two jobs here it is actually able to do — classifying the photo
+ * Each model gets exactly ONE try before the chain moves on ({@code max-attempts}
+ * defaults to 1). The chain alternates families deliberately — FLUX, Gemini, FLUX,
+ * Gemini — so the model after any failure is from the OTHER family, with its own queue
+ * and its own weather. Nearly everything that ends a prediction here is the queue rather
+ * than the photo ({@code ModelRateLimitError: Service is currently unavailable due to
+ * high demand (E003)}), and a second go at a pool that is already full mostly buys
+ * another minute of the run's eight-minute budget to learn the same thing. Asking a
+ * different family instead is both faster and more likely to answer.
+ *
+ * <p>Each model's request body differs; {@link ReplicateImageEditor} owns that. A refusal
+ * about the PHOTO itself (a safety block) stops the chain immediately — every model would
+ * give the same answer, and spending four minutes proving it costs the user their run.
+ *
+ * <p>When the whole chain declines, the run has no canvas and the user is told the honest
+ * thing: the system is under load, try again shortly. That sentence is written once, in
+ * {@link #SYSTEM_UNDER_LOAD}, and {@link SegmentationService} shows it verbatim.
+ *
+ * <p>Not in the chain: Claude. Anthropic's models read images but do not generate or edit
+ * them, so there is no Claude image-edit endpoint to fall back to. Claude does the two
+ * jobs here it is actually able to do — classifying the photo
  * ({@code ClaudeVisionService}) and describing this photo's clutter for the prompt
  * ({@link CleaningHintService}).
+ *
+ * <h3>Google's own API</h3>
+ *
+ * {@link GeminiImageClient} talks to Gemini directly rather than through Replicate's
+ * queue, which used to sit second in this hierarchy. It is now a tail step behind
+ * {@code gemini-fallback}, OFF by default: the chain above already visits Gemini twice
+ * through Replicate, and a fifth provider nobody listed makes "every model we ask turned
+ * it down" mean something different from what the chain says. Deployments that have a
+ * {@code google.gemini.api-key} and want the extra rail can switch it back on.
  *
  * <h2>The admin override</h2>
  *
  * An ADMIN can pin ONE run to a named model ({@code cleanModel} on the segment request,
  * validated against {@code AiModelCatalogue}), which is how two models get compared on
- * the same photo. An override replaces the primary AND switches the hierarchy off: the
- * chain above exists so a paying user's run survives a busy model, but a comparison that
- * might quietly have been answered by a different model answers nothing.
+ * the same photo. An override replaces the whole chain: it exists so a paying user's run
+ * survives a busy model, but a comparison that might quietly have been answered by a
+ * different model answers nothing.
  *
  * Configuration:
  *   replicate.image-cleaner.enabled          — kill switch (default false)
- *   replicate.image-cleaner.model            — primary, default google/nano-banana-pro
- *   replicate.image-cleaner.fallback-models  — comma-separated, tried in order after
- *                                              the primary and the direct Gemini route
- *   replicate.image-cleaner.max-attempts     — tries per provider before moving on
- *   google.gemini.api-key                    — set to enable the direct Google route
+ *   replicate.image-cleaner.model            — first in the chain, default flux-2-pro
+ *   replicate.image-cleaner.fallback-models  — comma-separated, the rest of the chain
+ *   replicate.image-cleaner.max-attempts     — tries per model before moving on (1)
+ *   replicate.image-cleaner.gemini-fallback  — ask Google directly once the chain is
+ *                                              out (default false)
+ *   google.gemini.api-key                    — required by the tail step above
  *   openai.api-key                           — required by openai/* models, which are
  *                                              skipped without it
  *
- * Cost: ~$0.10 per clean on Nano Banana Pro, and only the provider that SUCCEEDS
- * bills a full generation — the rest failed before producing an image.
+ * Cost: ~$0.10 per clean, and only the model that SUCCEEDS bills a full generation —
+ * the rest failed before producing an image.
  */
 @Slf4j
 @Service
@@ -120,26 +134,39 @@ public class ImageCleanerService {
     private final CleaningHintService cleaningHintService;
     private final GeminiImageClient gemini;
     private final ReplicateImageEditor replicate;
+    /** Turns a Replicate model id into the name a user should see it under. */
+    private final AiModelCatalogue catalogue;
 
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
 
-    @Value("${replicate.image-cleaner.model:google/nano-banana-pro}")
+    @Value("${replicate.image-cleaner.model:black-forest-labs/flux-2-pro}")
     private String model;
 
     /**
-     * The models tried, in order, after the primary and the direct Google route have
-     * both failed — a comma-separated list of Replicate model ids.
+     * The rest of the chain after {@link #model}, in order — a comma-separated list of
+     * Replicate model ids.
      *
-     * <p>Deliberately a different FAMILY each time rather than another Gemini tier: by
-     * the time the chain gets here, two routes to Gemini have already declined, so the
-     * useful next question is "does a different model see this photo differently?".
-     * The ids are configuration so a newer tier (flux-2-max, seedream-4-5,
-     * gpt-image-1-mini) can be swapped in without a deploy of new code —
+     * <p>The order alternates FAMILIES on purpose: FLUX 2 Pro, Nano Banana 2, FLUX 2
+     * Max, Nano Banana Pro. What ends a prediction here is almost always the queue in
+     * front of a model rather than anything about the photo, and a queue is a
+     * per-family fact — so the model asked immediately after a failure should be one
+     * whose capacity is unrelated to the one that just declined. Alternating also means
+     * the chain has visited both families before it has exhausted either, which is the
+     * cheapest way to find out whether the problem is the platform or the picture.
+     *
+     * <p>The ids are configuration so a newer tier can be swapped in without a deploy —
      * {@link ReplicateImageEditor} picks the request schema off the model name.
      */
-    @Value("${replicate.image-cleaner.fallback-models:black-forest-labs/flux-2-pro,openai/gpt-image-1,bytedance/seedream-4}")
+    @Value("${replicate.image-cleaner.fallback-models:google/nano-banana-2,black-forest-labs/flux-2-max,google/nano-banana-pro}")
     private String fallbackModels;
+
+    /**
+     * Ask Google's own API once the Replicate chain is out. Off by default — see the
+     * class doc; the chain already reaches Gemini twice without it.
+     */
+    @Value("${replicate.image-cleaner.gemini-fallback:false}")
+    private boolean geminiFallback;
 
     @Value("${replicate.image-cleaner.enabled:false}")
     private boolean enabled;
@@ -164,14 +191,16 @@ public class ImageCleanerService {
     private int upscaleLongestPx;
 
     /**
-     * How many times ONE provider is asked before we move on to the next.
+     * How many times ONE model is asked before we move on to the next.
      *
-     * Deliberately small. The whole clean sits inside the deadline the studio gives the
-     * run (8 minutes for clean + mask together), a single attempt already takes the best
-     * part of a minute, and the second provider is a better use of the remaining budget
-     * than a third go at the first one.
+     * <p>One. The chain is four models deep and alternates families, so the next thing
+     * to ask after a failure is always a model with a different queue — which is both
+     * quicker and likelier to answer than a second go at a pool that just said it was
+     * full. A single attempt already takes the best part of a minute out of the run's
+     * eight-minute budget, and spending two of them on the same busy model is how a run
+     * reaches its deadline having asked half the chain.
      */
-    @Value("${replicate.image-cleaner.max-attempts:2}")
+    @Value("${replicate.image-cleaner.max-attempts:1}")
     private int maxAttempts;
 
     /** Base wait before re-asking the same provider; multiplied by the attempt number. */
@@ -215,15 +244,47 @@ public class ImageCleanerService {
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-        // The primary is already the first thing asked; listing it again would just
+        // The first model is already the first thing asked; listing it again would just
         // repeat a model that has already had its attempts.
         ordered.remove(model == null ? "" : model.trim());
         return List.copyOf(ordered);
     }
 
-    /** The default chain: the configured primary, with the whole hierarchy behind it. */
+    /**
+     * The whole chain in order: the configured first model, then the fallbacks.
+     *
+     * <p>One list rather than a head and a tail, because nothing downstream treats the
+     * first entry differently — it is simply the one asked first.
+     */
+    List<String> modelChain() {
+        LinkedHashSet<String> chain = new LinkedHashSet<>();
+        if (model != null && !model.isBlank()) chain.add(model.trim());
+        chain.addAll(fallbackModelList());
+        return List.copyOf(chain);
+    }
+
+    /**
+     * What the user is told when the entire chain declines.
+     *
+     * <p>Load, not blame. Every model in the chain refusing within a few minutes of each
+     * other is a statement about capacity — full queues across two independent families —
+     * and almost never about this particular photo, which a safety refusal would have
+     * stopped the chain over immediately instead. So the sentence says what is true and
+     * what to do about it, and does not ask the user to change or re-take anything.
+     */
+    static final String SYSTEM_UNDER_LOAD =
+            "Our image system is under heavy load right now, so we couldn't clean your "
+            + "photo — every model we ask is full. Nothing has been charged. Please try "
+            + "again in a few minutes; your photo is saved and ready to run.";
+
+    /** The default chain, with nothing to report progress to. */
     public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType) {
-        return cleanImage(imageUrl, imageType, null);
+        return cleanImage(imageUrl, imageType, null, ProgressListener.NONE);
+    }
+
+    /** The default chain under an admin override, with nothing to report progress to. */
+    public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType, String modelOverride) {
+        return cleanImage(imageUrl, imageType, modelOverride, ProgressListener.NONE);
     }
 
     /**
@@ -239,31 +300,37 @@ public class ImageCleanerService {
      *
      * @param modelOverride an ADMIN's per-run choice of model (already checked against
      *                      {@code AiModelCatalogue}), or null for the configured one.
-     *                      An override is asked ALONE: no Google route, no fallback
-     *                      family. The hierarchy exists so a user's run survives a busy
-     *                      model, but an override is a question about one specific model
-     *                      — answering it with an image from a different one is worse
-     *                      than answering it with nothing, because the admin has no way
-     *                      to tell the two apart by looking.
+     *                      An override is asked ALONE: no chain, no Google route. The
+     *                      chain exists so a user's run survives a busy model, but an
+     *                      override is a question about one specific model — answering
+     *                      it with an image from a different one is worse than answering
+     *                      it with nothing, because the admin has no way to tell the two
+     *                      apart by looking.
+     * @param progress      where to narrate the chain as it advances, so the studio's
+     *                      loader can say which model is being asked and why the last one
+     *                      was not enough. {@link ProgressListener#NONE} outside a run.
      */
-    public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType, String modelOverride) {
+    public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType, String modelOverride,
+                                       ProgressListener progress) {
         // An override is honoured even when it names the model the config already uses:
         // "run this on Nano Banana Pro" is a request for that one model, and answering it
         // with FLUX because Replicate was busy would misattribute the image just as badly
         // as it would for any other pick.
         boolean overridden = modelOverride != null && !modelOverride.isBlank();
-        String primary = overridden ? modelOverride.trim() : model;
+        List<String> chain = overridden ? List.of(modelOverride.trim()) : modelChain();
         boolean replicateOn = enabled
                 && replicateApiToken != null && !replicateApiToken.isBlank()
-                && primary != null && !primary.isBlank();
-        boolean geminiOn = !overridden && gemini.isConfigured();
+                && !chain.isEmpty();
+        // The direct-Google tail, off unless a deployment asks for it — see the class doc.
+        boolean geminiOn = !overridden && geminiFallback && gemini.isConfigured();
         if (!replicateOn && !geminiOn) {
             log.debug("ImageCleaner not configured — skipping");
             return Optional.empty();
         }
         if (overridden) {
             log.info("ImageCleaner [{}]: ADMIN model override for this run — it is the only "
-                    + "model asked, so a refusal fails the clean instead of falling over", primary);
+                    + "model asked, so a refusal fails the clean instead of falling over",
+                    chain.get(0));
         }
 
         String prompt = cleanPromptFor(imageType);
@@ -287,22 +354,44 @@ public class ImageCleanerService {
         // Set when Replicate refuses our token: the rest of the Replicate models would
         // each discover the same dead token, so the chain skips straight past them.
         boolean replicateDead = false;
-        // WHICH provider's image this is. Worth carrying: the canvas the user ends up
+        // WHICH model's image this is. Worth carrying: the canvas the user ends up
         // painting on may well have come from the third model in the chain, and the
         // success line used to name none of them.
         String producedBy = null;
 
-        // 1. The primary model on Replicate.
+        // The chain, in order, one attempt each. Nothing distinguishes the first entry
+        // from the rest — it is simply the one asked first.
         if (replicateOn) {
-            Attempt attempt = askProvider("Replicate[" + primary + "]",
-                    () -> runOnReplicate(primary, finalPrompt, imageUrl, imageType, hints.isPresent()));
-            cleaned = attempt.image();
-            keepGoing = attempt.worthFailingOver();
-            replicateDead = attempt.platformDead();
-            if (cleaned != null) producedBy = primary;
+            int position = 0;
+            for (String candidate : chain) {
+                position++;
+                if (!replicate.canRun(candidate)) {
+                    log.info("ImageCleaner skipping {} — it is not configured "
+                            + "(openai/* models need OPENAI_API_KEY)", candidate);
+                    continue;
+                }
+                // Said BEFORE the call, not after: the sentence has to be on screen for
+                // the minute the model is thinking, which is exactly the minute the user
+                // is deciding whether anything is happening.
+                say(progress, cleaningNote(candidate, position, chain.size()));
+                Attempt attempt = askProvider("Replicate[" + candidate + "]",
+                        () -> runOnReplicate(candidate, finalPrompt, imageUrl, imageType, hints.isPresent()));
+                cleaned = attempt.image();
+                if (cleaned != null) {
+                    producedBy = candidate;
+                    break;
+                }
+                keepGoing = attempt.worthFailingOver();
+                replicateDead = attempt.platformDead();
+                // A safety refusal about the photo, or a dead token: every remaining
+                // model would answer the same way, so stop rather than spend the run's
+                // budget proving it.
+                if (!keepGoing || replicateDead) break;
+            }
         }
 
-        // 2. The same model, asked through Google instead of Replicate's queue.
+        // The tail: the same job asked through Google's own queue rather than Replicate's.
+        // Off by default; a deployment that wants the extra rail opts in.
         if (cleaned == null && keepGoing && geminiOn) {
             // Gemini wants the photo's bytes inline, not a link to it.
             byte[] source = readSource(imageUrl);
@@ -310,48 +399,24 @@ public class ImageCleanerService {
                 log.warn("ImageCleaner cannot fall back to Gemini: the original photo "
                         + "could not be read back from storage");
             } else {
-                if (replicateOn) {
-                    log.info("ImageCleaner [{}]: retrying the clean on Google's API directly "
-                            + "after Replicate could not serve it", gemini.model());
-                }
+                log.info("ImageCleaner [{}]: asking Google's API directly after the "
+                        + "Replicate chain produced nothing", gemini.model());
+                say(progress, "Still working — asking Google directly.");
                 Attempt attempt = askProvider("GeminiAPI[" + gemini.model() + "]",
                         () -> gemini.edit(finalPrompt, source, resolution));
                 cleaned = attempt.image();
-                keepGoing = attempt.worthFailingOver();
                 if (cleaned != null) producedBy = "GeminiAPI[" + gemini.model() + "]";
-            }
-        }
-
-        // 3. Different model families, in configured order, until one delivers.
-        //    Skipped entirely under an override — see the parameter doc.
-        if (cleaned == null && keepGoing && replicateOn && !replicateDead && !overridden) {
-            for (String fallback : fallbackModelList()) {
-                if (!replicate.canRun(fallback)) {
-                    log.info("ImageCleaner skipping {} — it is not configured "
-                            + "(openai/* models need OPENAI_API_KEY)", fallback);
-                    continue;
-                }
-                log.info("ImageCleaner falling over to {} after the models before it in the "
-                        + "hierarchy produced nothing", fallback);
-                Attempt attempt = askProvider("Replicate[" + fallback + "]",
-                        () -> runOnReplicate(fallback, finalPrompt, imageUrl, imageType, hints.isPresent()));
-                cleaned = attempt.image();
-                if (cleaned != null) {
-                    producedBy = fallback;
-                    break;
-                }
-                if (!attempt.worthFailingOver() || attempt.platformDead()) break;
             }
         }
 
         if (cleaned == null) {
             if (overridden) {
                 log.warn("ImageCleaner produced nothing — the admin pinned this run to {} and "
-                        + "that model declined, so nothing else was asked", primary);
+                        + "that model declined, so nothing else was asked", chain.get(0));
             } else {
-                log.warn("ImageCleaner produced nothing — every provider in the hierarchy "
+                log.warn("ImageCleaner produced nothing — all {} model(s) in the chain "
                         + "declined, so this run has no cleaned canvas and no masks will be "
-                        + "generated from it");
+                        + "generated from it", chain.size());
             }
             return Optional.empty();
         }
@@ -359,6 +424,41 @@ public class ImageCleanerService {
         log.info("ImageCleaner produced cleaned image on {}: {} bytes (gen={}, upscaled to ~{}px: {} bytes)",
                 producedBy, cleaned.length, resolution, upscaleLongestPx, upscaled.length);
         return Optional.of(upscaled);
+    }
+
+    /**
+     * The running commentary for one link in the chain, written for the person waiting.
+     *
+     * <p>The first model gets a plain "working on it"; every one after it leads with the
+     * fact that the previous model did not answer, because that is the question the user
+     * actually has by then. Models are named by their catalogue labels — "Nano Banana 2",
+     * not {@code google/nano-banana-2} — and the position is included so a wait that is
+     * genuinely long still reads as bounded progress rather than an open loop.
+     */
+    private String cleaningNote(String modelId, int position, int total) {
+        String label = catalogue.labelFor(modelId);
+        if (position <= 1) {
+            return "Cleaning up your photo with " + label + "…";
+        }
+        return "That model was busy — trying " + label + " instead ("
+                + position + " of " + total + ").";
+    }
+
+    /**
+     * Report progress without ever letting it break the run.
+     *
+     * <p>A note lands in the middle of a model chain and is written to the database by
+     * the caller that supplied the listener. Losing a paid run because that write hit a
+     * closed connection would be an absurd trade, so anything thrown here is logged and
+     * dropped — the clean carries on and the user simply sees a slightly staler line.
+     */
+    private static void say(ProgressListener progress, String note) {
+        if (progress == null) return;
+        try {
+            progress.say(note);
+        } catch (Exception e) {
+            log.debug("ImageCleaner could not report progress: {}", e.toString());
+        }
     }
 
     /**

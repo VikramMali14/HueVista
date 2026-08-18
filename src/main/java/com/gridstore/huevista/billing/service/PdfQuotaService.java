@@ -3,7 +3,6 @@ package com.gridstore.huevista.billing.service;
 import com.gridstore.huevista.account.model.CustomerAccessCode;
 import com.gridstore.huevista.account.model.OrgMemberRole;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
-import com.gridstore.huevista.account.repository.CustomerEntitlementRepository;
 import com.gridstore.huevista.account.repository.OrgMembershipRepository;
 import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.model.UserRole;
@@ -21,11 +20,26 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Colour-board PDF quota, mirroring how AI previews are billed: a retailer spends
- * their own plan's allowance, while a CUSTOMER account or an anonymous guest spends
- * the allowance of the shop that onboarded them (the entitlement's / access code's
- * organization). Reservation is a single conditional UPDATE, so parallel downloads
- * can't both take the last credit.
+ * Colour-board PDF quota — who pays for a board, and what runs out.
+ *
+ * <p>Three answers, because there are three kinds of buyer here:
+ *
+ * <ul>
+ *   <li><b>A retailer</b> spends their own plan's monthly allowance. Reservation is a
+ *       single conditional UPDATE, so parallel downloads can't both take the last one.</li>
+ *   <li><b>An anonymous guest</b> spends the issuing shop's allowance — the shop
+ *       onboarded that walk-in and the board is part of what it is selling them — unless
+ *       the code is SELF-FUNDED (bought at a kiosk), in which case the board comes out of
+ *       the code's own allowance and the shop's plan is neither spent nor consulted.</li>
+ *   <li><b>A CUSTOMER account</b> has no monthly counter at all. Their boards are capped
+ *       PER PROJECT by {@code ProjectBoardService}, which is the limit that was actually
+ *       sold: a shop's code costs the shop a project when the code is generated, and a
+ *       project the customer bought was paid for at the till. See
+ *       {@link #boardsCappedPerProject} — this used to walk customer → entitlement →
+ *       retailer → that retailer's live subscription, which billed a paid-for sheet a
+ *       second time and let a lapsed shop plan silently take the boards away from every
+ *       customer it had ever onboarded.</li>
+ * </ul>
  */
 @Slf4j
 @Service
@@ -34,7 +48,6 @@ public class PdfQuotaService {
 
     private final SubscriptionRepository subscriptionRepository;
     private final UserRepository userRepository;
-    private final CustomerEntitlementRepository entitlementRepository;
     private final CustomerAccessCodeRepository accessCodeRepository;
     private final OrgMembershipRepository orgMembershipRepository;
     private final UnbilledAccounts unbilledAccounts;
@@ -56,7 +69,7 @@ public class PdfQuotaService {
 
     @Transactional(readOnly = true)
     public PdfAllowanceResponse allowanceForUser(String userId) {
-        if (unbilledAccounts.covers(userId)) {
+        if (unbilledAccounts.covers(userId) || boardsCappedPerProject(userId)) {
             return PdfAllowanceResponse.unmetered();
         }
         return PdfAllowanceResponse.from(billableSubscriptionForUser(userId));
@@ -86,9 +99,12 @@ public class PdfQuotaService {
     /** Reserve one download for an account holder; returns the post-charge allowance. */
     @Transactional
     public PdfAllowanceResponse reserveForUser(String userId) {
-        // Nothing to reserve against: an unbilled account has no subscription row, and
-        // inventing one to decrement would put a phantom plan in the billing tables.
-        if (unbilledAccounts.covers(userId)) {
+        // Nothing to reserve against, for two different reasons. An unbilled account has
+        // no subscription row, and inventing one to decrement would put a phantom plan in
+        // the billing tables. A customer HAS no monthly counter: their boards are capped
+        // per project by ProjectBoardService, which has already refused if this project
+        // has none left — see boardsCappedPerProject.
+        if (unbilledAccounts.covers(userId) || boardsCappedPerProject(userId)) {
             return PdfAllowanceResponse.unmetered();
         }
         return reserve(billableSubscriptionForUser(userId));
@@ -155,20 +171,52 @@ public class PdfQuotaService {
     private Subscription billableSubscriptionForUser(String userId) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
-        // Customers ride on the shop that onboarded them — they have no plan of their own.
-        if (user.getRole() == UserRole.CUSTOMER) {
-            return entitlementRepository.findByCustomerId(userId)
-                    .filter(e -> e.getRetailerOrg() != null)
-                    .map(e -> activeSubscriptionForOrgOwner(e.getRetailerOrg().getId()))
-                    .orElseThrow(() -> new QuotaExceededException(
-                            "PDF downloads are covered by your paint shop's plan — redeem a shop "
-                            + "access code first."));
-        }
+        // A CUSTOMER never reaches here — see isCustomer / the board-capped path above.
         return subscriptionRepository
                 .findEntitling(userId, SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED,
                         java.time.LocalDateTime.now()).stream().findFirst()
                 .orElseThrow(() -> new QuotaExceededException(
                         "No active subscription. Subscribe to download colour-board PDFs."));
+    }
+
+    /**
+     * Whether this account's boards are capped per PROJECT rather than by a monthly plan.
+     *
+     * <h2>The bug this removes</h2>
+     *
+     * A customer pressing Download used to get:
+     *
+     * <pre>402 — PDF downloads are covered by your paint shop's plan, redeem a shop
+     * access code first.</pre>
+     *
+     * …having already redeemed one. The lookup walked customer → entitlement →
+     * retailerOrg → that org's owner → an ACTIVE subscription, and any missing link in
+     * that chain produced the same sentence: a shop whose own plan had lapsed, a shop
+     * with no owner membership row, a customer who bought their project themselves and
+     * has no retailerOrg at all. The advice was wrong in every one of those cases, and
+     * in the last two there was no action that could have fixed it.
+     *
+     * <h2>Why a plan was the wrong thing to ask about</h2>
+     *
+     * The board was already paid for. A shop's code costs the shop a project the moment
+     * it is GENERATED (see {@code AccessCodeService#chargeProjectQuota}), and a project
+     * that the customer bought themselves was paid for at the till. Charging the sheet
+     * against the shop's live monthly plan billed the same thing a second time, and
+     * gated a finished, paid-for job on a subscription the customer has no control over
+     * and no visibility of — the shop could let its plan lapse and silently take away
+     * the boards of every customer it had ever onboarded.
+     *
+     * <p>So a customer's boards are limited by the thing that was actually sold to them:
+     * {@code app.project.colour-boards-per-project}, enforced per project in
+     * {@code ProjectBoardService}. There is nothing left for a monthly counter to add,
+     * and no retailer plan to consult — which is the point. A redeemed code makes the
+     * shop's PRODUCTS visible to the customer and nothing else; it does not put the
+     * customer inside the shop's billing.
+     */
+    private boolean boardsCappedPerProject(String userId) {
+        return userRepository.findById(userId)
+                .map(u -> u.getRole() == UserRole.CUSTOMER)
+                .orElse(false);
     }
 
     private Subscription billableSubscriptionForGuest(String accessCodeId) {

@@ -315,15 +315,27 @@ class ShadeCodeSchemeIntegrationTest {
                 .andExpect(jsonPath("$.shadeCodeScheme.showNames").value(false));
     }
 
-    /** A shop that has decided nothing shows names and runs no pattern. */
+    /**
+     * A shop that has decided nothing and runs no pattern — and a share link that still
+     * names no paint.
+     *
+     * <p>The pattern is empty because the shop never set one, so codes fall back to the
+     * platform-wide HV code. Names and companies do NOT fall back with it: whoever may
+     * not read the manufacturer's code may not read the company or the shade name
+     * either, because those identify a colour just as completely. A forwarded link is
+     * the most-copied surface there is, and it used to be the one still printing "Asian
+     * Paints - Wine Sensation" beside a code that had been carefully anonymised.
+     */
     @Test
-    void aShareLinkFromAShopWithNoSchemeIsUnchanged() throws Exception {
+    void aShareLinkNamesNoPaintEvenWhenTheShopSetNoPattern() throws Exception {
         String token = sharedProjectToken();
 
         mockMvc.perform(get("/api/share/" + token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.shadeCodeScheme.prefix").value(""))
-                .andExpect(jsonPath("$.shadeCodeScheme.showNames").value(true));
+                .andExpect(jsonPath("$.shadeCodeScheme.showRealCodes").value(false))
+                .andExpect(jsonPath("$.shadeCodeScheme.showNames").value(false))
+                .andExpect(jsonPath("$.shadeCodeScheme.showBrands").value(false));
     }
 
     /** A room owned by the shop, shared. Built directly: this test is about what

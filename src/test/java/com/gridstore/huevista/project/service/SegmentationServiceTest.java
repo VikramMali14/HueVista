@@ -26,6 +26,7 @@ import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -146,6 +147,79 @@ class SegmentationServiceTest {
     }
 
     @Test
+    void eachModelGetsItsTwoTriesBeforeTheSiblingTierIsAsked() throws Exception {
+        // The mask chain, and the shape that distinguishes it from the cleaner's. A dud
+        // mask is usually non-determinism rather than a busy queue — the model answered,
+        // the answer was unusable — so a second roll of the SAME model is the cheapest
+        // thing to try. Only after two duds is the model itself the suspect, and the
+        // sibling tier gets its turn.
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 2);
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.modelChain())
+                .thenReturn(List.of("google/nano-banana-pro", "google/nano-banana-2"));
+        when(segmenter.generateColorCodedMask(anyString(), any(), any()))
+                .thenReturn(Optional.of(dudCodedPng()))
+                .thenReturn(Optional.of(dudCodedPng()))
+                .thenReturn(Optional.of(dudCodedPng()))
+                .thenReturn(Optional.of(goodCodedPng()));
+        when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
+                .thenReturn("masks/key.png");
+        when(projects.getReferenceById("p1")).thenReturn(mock(Project.class));
+
+        boolean ok = service.tryColorCodedSegmentation(
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, null, W, H);
+
+        assertThat(ok).isTrue();
+        ArgumentCaptor<String> asked = ArgumentCaptor.forClass(String.class);
+        verify(segmenter, times(4)).generateColorCodedMask(anyString(), any(), asked.capture());
+        assertThat(asked.getAllValues()).containsExactly(
+                "google/nano-banana-pro", "google/nano-banana-pro",
+                "google/nano-banana-2", "google/nano-banana-2");
+    }
+
+    @Test
+    void theWholeChainProducingDudsGivesUpRatherThanLoopingForever() throws Exception {
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 2);
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.modelChain())
+                .thenReturn(List.of("google/nano-banana-pro", "google/nano-banana-2"));
+        when(segmenter.generateColorCodedMask(anyString(), any(), any()))
+                .thenReturn(Optional.of(dudCodedPng()));
+
+        boolean ok = service.tryColorCodedSegmentation(
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, null, W, H);
+
+        // False, not an exception: the caller hands the cleaned canvas over for
+        // hand-marked walls and files the report itself.
+        assertThat(ok).isFalse();
+        verify(segmenter, times(4)).generateColorCodedMask(anyString(), any(), any());
+        verify(regions, never()).save(any());
+    }
+
+    @Test
+    void anAdminPinCollapsesTheMaskChainToThatOneModel() throws Exception {
+        // Same reasoning as the cleaner's override: a usable mask quietly produced by
+        // the sibling tier would answer a question nobody asked, and afterwards nothing
+        // distinguishes it from one the pinned model made.
+        ReflectionTestUtils.setField(service, "autoMaskAttempts", 2);
+        when(segmenter.isConfigured()).thenReturn(true);
+        when(segmenter.modelChain())
+                .thenReturn(List.of("google/nano-banana-pro", "google/nano-banana-2"));
+        when(projects.findMaskModelById("p1")).thenReturn(Optional.of("black-forest-labs/flux-2-max"));
+        when(segmenter.generateColorCodedMask(anyString(), any(), any()))
+                .thenReturn(Optional.of(dudCodedPng()));
+
+        boolean ok = service.tryColorCodedSegmentation(
+                "p1", "u1", "http://img", ImageType.OUTDOOR, null, null, W, H);
+
+        assertThat(ok).isFalse();
+        ArgumentCaptor<String> asked = ArgumentCaptor.forClass(String.class);
+        verify(segmenter, times(2)).generateColorCodedMask(anyString(), any(), asked.capture());
+        assertThat(asked.getAllValues())
+                .containsOnly("black-forest-labs/flux-2-max");
+    }
+
+    @Test
     void singleAttemptConfigKeepsOldSingleShotBehaviour() throws Exception {
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         when(segmenter.isConfigured()).thenReturn(true);
@@ -248,7 +322,7 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
         stubProjectForRun(ImageType.OUTDOOR);
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.empty());
+        when(cleaner.cleanImage(anyString(), any(), any(), any())).thenReturn(Optional.empty());
 
         service.segmentAsync("p1", "http://img");
 
@@ -260,9 +334,14 @@ class SegmentationServiceTest {
         Project failed = saved.getAllValues().get(saved.getAllValues().size() - 1);
         assertThat(failed.getStatus()).isEqualTo(ProjectStatus.FAILED);
         assertThat(failed.getFailureStage()).isEqualTo(FailureStage.CLEAN);
-        // The reason is what the studio shows and what the report carries, so it has to
-        // point at the one thing the user can actually do.
-        assertThat(failed.getFailureReason()).contains("report");
+        // The reason is what the studio shows, so it has to point at the one thing the
+        // user can actually do. Four models across two families declining inside a few
+        // minutes is a statement about capacity, not about this photo — so it says the
+        // system is loaded and to come back, and does NOT ask them to report a picture
+        // there is nothing wrong with.
+        assertThat(failed.getFailureReason())
+                .isEqualTo(ImageCleanerService.SYSTEM_UNDER_LOAD)
+                .contains("try again in a few minutes");
     }
 
     @Test
@@ -274,7 +353,7 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         stubProjectForRun(ImageType.OUTDOOR);
         when(cleaner.isAvailable()).thenReturn(false);
-        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.empty());
+        when(cleaner.cleanImage(anyString(), any(), any(), any())).thenReturn(Optional.empty());
         when(segmenter.isConfigured()).thenReturn(true);
         when(segmenter.generateColorCodedMask(anyString(), any(), any()))
                 .thenReturn(Optional.of(goodCodedPng()));
@@ -302,7 +381,7 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         stubProjectForRun(ImageType.OUTDOOR);
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
+        when(cleaner.cleanImage(anyString(), any(), any(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("cleaned/key.jpg");
         when(segmenter.isConfigured()).thenReturn(true);
@@ -332,7 +411,7 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "autoMaskAttempts", 1);
         stubProjectForRun(ImageType.OUTDOOR);
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
+        when(cleaner.cleanImage(anyString(), any(), any(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("cleaned/key.jpg");
         when(segmenter.isConfigured()).thenReturn(true);
@@ -357,7 +436,7 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
         stubProjectForRun(ImageType.OUTDOOR);
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
+        when(cleaner.cleanImage(anyString(), any(), any(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("cleaned/key.jpg");
         when(segmenter.isConfigured()).thenReturn(false);
@@ -384,7 +463,7 @@ class SegmentationServiceTest {
         stubProjectForRun(ImageType.OUTDOOR);
         when(projects.findSimulatedFailureById("p1")).thenReturn(Optional.of("MASK"));
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
+        when(cleaner.cleanImage(anyString(), any(), any(), any())).thenReturn(Optional.of(new byte[]{1, 2, 3}));
         when(storage.store(any(byte[].class), anyString(), anyString(), anyString()))
                 .thenReturn("cleaned/key.jpg");
 
@@ -392,7 +471,7 @@ class SegmentationServiceTest {
 
         // The CLEAN still ran for real — only the simulated half is withheld, which is
         // what makes this a rehearsal of "cleaned but no walls" rather than of nothing.
-        verify(cleaner).cleanImage(anyString(), any(), any());
+        verify(cleaner).cleanImage(anyString(), any(), any(), any());
         verify(segmenter, never()).generateColorCodedMask(anyString(), any(), any());
         verify(maskReports).reportAutoMaskFailure("p1");
         ArgumentCaptor<Project> saved = ArgumentCaptor.forClass(Project.class);
@@ -415,7 +494,7 @@ class SegmentationServiceTest {
         service.segmentAsync("p1", "http://img");
 
         verifyNoInteractions(segmenter);
-        verify(cleaner, never()).cleanImage(anyString(), any(), any());
+        verify(cleaner, never()).cleanImage(anyString(), any(), any(), any());
         ArgumentCaptor<Project> saved = ArgumentCaptor.forClass(Project.class);
         verify(projects, atLeastOnce()).save(saved.capture());
         Project last = saved.getAllValues().get(saved.getAllValues().size() - 1);
@@ -437,13 +516,13 @@ class SegmentationServiceTest {
         when(storage.load("orig.jpg")).thenReturn(png(new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB)));
         when(vision.classifyStored(any(byte[].class))).thenReturn(ImageType.INDOOR);
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), eq(ImageType.INDOOR), any())).thenReturn(Optional.empty());
+        when(cleaner.cleanImage(anyString(), eq(ImageType.INDOOR), any(), any())).thenReturn(Optional.empty());
 
         service.segmentAsync("p1", "http://img");
 
         // Asked about the right scene, and the answer is written back so a re-run of
         // this project doesn't pay for the same classification again.
-        verify(cleaner).cleanImage(anyString(), eq(ImageType.INDOOR), any());
+        verify(cleaner).cleanImage(anyString(), eq(ImageType.INDOOR), any(), any());
         assertThat(image.getImageType()).isEqualTo(ImageType.INDOOR);
         verify(images).save(image);
     }
@@ -453,7 +532,7 @@ class SegmentationServiceTest {
         ReflectionTestUtils.setField(service, "replicateApiToken", "tok");
         stubProjectForRun(ImageType.OUTDOOR);
         when(cleaner.isAvailable()).thenReturn(true);
-        when(cleaner.cleanImage(anyString(), any(), any())).thenReturn(Optional.empty());
+        when(cleaner.cleanImage(anyString(), any(), any(), any())).thenReturn(Optional.empty());
 
         service.segmentAsync("p1", "http://img");
 

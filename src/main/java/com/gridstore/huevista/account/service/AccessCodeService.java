@@ -27,6 +27,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -363,17 +365,65 @@ public class AccessCodeService {
         return AccessCodeResponse.from(accessCode);
     }
 
-    /** The paint (companies + individual products) a redeemed customer was assigned. */
+    /**
+     * The paint every shop this customer has redeemed a code from has unlocked for them.
+     *
+     * <p>All of them, not the latest. A customer may hold codes from several shops, each
+     * unlocking that shop's own brands and products, and the customer sees the union —
+     * grouped per shop, because "which of these can I actually walk in and buy" is the
+     * question the page exists to answer.
+     *
+     * <p>Codes from the SAME shop are merged into one section rather than listed twice: a
+     * shop that issued a second code to top a customer up has not become two shops, and
+     * showing its name twice with overlapping paint under each reads as a bug. The merged
+     * brand list is a union too — a later code that named fewer brands adds to what the
+     * customer may browse and never takes any away, because the earlier unlock was
+     * separately paid for and nothing has expired it.
+     *
+     * <p>404 when the account has redeemed nothing, which the client reads as "no shop
+     * has singled anything out — the whole catalogue is yours".
+     */
     @Transactional(readOnly = true)
     public AssignedProductsResponse getAssignedProducts(String customerUserId) {
-        CustomerAccessCode code = codeRepository.findFirstByUsedByUserIdOrderByCreatedAtDesc(customerUserId)
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "No access code is linked to this account."));
+        List<CustomerAccessCode> codes =
+                codeRepository.findByUsedByUserIdOrderByUsedAtDesc(customerUserId);
+        if (codes.isEmpty()) {
+            throw new ResourceNotFoundException("No access code is linked to this account.");
+        }
+        // LinkedHashMap: newest redemption first, which is the order the repository
+        // returned and the order the customer expects — the shop they have just visited
+        // at the top.
+        Map<String, AssignedProductsResponse.Shop> byShop = new LinkedHashMap<>();
+        for (CustomerAccessCode code : codes) {
+            String shopId = code.getOrganization().getId();
+            AssignedProductsResponse.Shop existing = byShop.get(shopId);
+            if (existing == null) {
+                byShop.put(shopId, AssignedProductsResponse.Shop.builder()
+                        .shopId(shopId)
+                        .shopName(code.getOrganization().getName())
+                        .allowedBrands(new ArrayList<>(code.getAllowedBrandList()))
+                        .products(new ArrayList<>(resolveProducts(code)))
+                        .build());
+                continue;
+            }
+            mergeDistinct(existing.getAllowedBrands(), code.getAllowedBrandList());
+            for (ShopProductResponse product : resolveProducts(code)) {
+                if (existing.getProducts().stream()
+                        .noneMatch(p -> java.util.Objects.equals(p.getId(), product.getId()))) {
+                    existing.getProducts().add(product);
+                }
+            }
+        }
         return AssignedProductsResponse.builder()
-                .shopName(code.getOrganization().getName())
-                .allowedBrands(code.getAllowedBrandList())
-                .products(resolveProducts(code))
+                .shops(List.copyOf(byShop.values()))
                 .build();
+    }
+
+    /** Append what isn't already there, preserving order. */
+    private static void mergeDistinct(List<String> into, List<String> extra) {
+        for (String value : extra) {
+            if (!into.contains(value)) into.add(value);
+        }
     }
     /** AccessCodeResponse with the individually-assigned products resolved to full listings. */
     private AccessCodeResponse withAssignedProducts(CustomerAccessCode code) {
