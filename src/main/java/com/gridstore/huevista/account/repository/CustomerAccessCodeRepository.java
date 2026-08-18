@@ -107,7 +107,14 @@ public interface CustomerAccessCodeRepository extends JpaRepository<CustomerAcce
      * compare-and-set, so a revoke racing a redemption loses cleanly rather than pulling a
      * code out from under the customer who has just claimed it.
      */
-    @Modifying
+    // clearAutomatically, because the caller has ALREADY loaded this code (to check it is
+    // the org's and not yet used) and then re-reads it to build the response. A bulk UPDATE
+    // goes straight to the database and leaves the persistence context holding the row as
+    // it was, so without this the re-read returned the cached copy and the revoke answered
+    // `revoked: false` — the API contradicting the thing it had just done. flushAutomatically
+    // for the other half of the same problem: any pending change to this row must reach the
+    // database before the compare-and-set reads it, or the guard tests stale state.
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
             UPDATE CustomerAccessCode c SET c.revokedAt = :now
              WHERE c.id = :id AND c.usedByUser IS NULL AND c.revokedAt IS NULL

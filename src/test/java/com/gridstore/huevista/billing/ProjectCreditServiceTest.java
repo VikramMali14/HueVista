@@ -292,6 +292,7 @@ class ProjectCreditServiceTest {
     void aProjectThatIsStillOpenCannotBeReopened() {
         Project open = Project.builder()
                 .id("proj-1")
+                .accessExpiresAt(LocalDateTime.now().plusDays(5))
                 .build();
         when(projects.findByIdAndUserId("proj-1", USER)).thenReturn(Optional.of(open));
 
@@ -342,6 +343,7 @@ class ProjectCreditServiceTest {
     void reopeningALapsedProjectSpendsTheReopenPriceAndExtendsIt() {
         Project lapsed = Project.builder()
                 .id("proj-2")
+                .accessExpiresAt(LocalDateTime.now().minusDays(1))
                 .build();
         when(projects.findByIdAndUserId("proj-2", USER)).thenReturn(Optional.of(lapsed));
 

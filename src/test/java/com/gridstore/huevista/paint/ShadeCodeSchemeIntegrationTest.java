@@ -11,6 +11,7 @@ import com.gridstore.huevista.account.repository.OrganizationRepository;
 import com.gridstore.huevista.auth.dto.AuthResponse;
 import com.gridstore.huevista.auth.model.AuthProvider;
 import com.gridstore.huevista.auth.model.User;
+import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.image.model.ImageType;
 import com.gridstore.huevista.image.model.UploadedImage;
@@ -175,23 +176,17 @@ class ShadeCodeSchemeIntegrationTest {
     }
 
     @Test
-    void guest_on_a_shop_code_reads_the_shops_scheme_and_a_stranger_reads_empty() throws Exception {
+    void a_customer_on_a_shop_code_reads_the_shops_scheme_and_a_stranger_reads_empty() throws Exception {
         mockMvc.perform(put("/api/organizations/" + orgId + "/shade-code-scheme")
                         .header("Authorization", "Bearer " + retailerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"prefix\":\"AB\",\"infix\":\"XY\",\"suffix\":\"CD\"}"))
                 .andExpect(status().isOk());
 
-        MvcResult r = mockMvc.perform(post("/api/access-codes/redeem-guest")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"code\":\"" + CODE + "\"}"))
-                .andExpect(status().isOk())
-                .andReturn();
-        String guestToken = objectMapper.readTree(r.getResponse().getContentAsString())
-                .get("guestToken").asText();
+        String customerToken = redeemedCustomerToken("walkin-scheme@example.com");
 
         mockMvc.perform(get("/api/me/shade-code-scheme")
-                        .header("Authorization", "Bearer " + guestToken))
+                        .header("Authorization", "Bearer " + customerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.prefix").value("AB"))
                 .andExpect(jsonPath("$.infix").value("XY"))
@@ -258,25 +253,19 @@ class ShadeCodeSchemeIntegrationTest {
                 .andExpect(jsonPath("$.showNames").value(false));
     }
 
-    /** Everyone under the shop reads the same settings — including guests. */
+    /** Everyone under the shop reads the same settings — including its customers. */
     @Test
-    void theNameChoiceReachesGuestsToo() throws Exception {
+    void theNameChoiceReachesRedeemedCustomersToo() throws Exception {
         mockMvc.perform(put("/api/organizations/" + orgId + "/shade-code-scheme")
                         .header("Authorization", "Bearer " + retailerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"prefix\":\"AB\",\"showNames\":false}"))
                 .andExpect(status().isOk());
 
-        MvcResult r = mockMvc.perform(post("/api/access-codes/redeem-guest")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"code\":\"" + CODE + "\"}"))
-                .andExpect(status().isOk())
-                .andReturn();
-        String guestToken = objectMapper.readTree(r.getResponse().getContentAsString())
-                .get("guestToken").asText();
+        String customerToken = redeemedCustomerToken("walkin-names@example.com");
 
         mockMvc.perform(get("/api/me/shade-code-scheme")
-                        .header("Authorization", "Bearer " + guestToken))
+                        .header("Authorization", "Bearer " + customerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.showNames").value(false));
     }
@@ -357,6 +346,33 @@ class ShadeCodeSchemeIntegrationTest {
                 .shareExpiresAt(LocalDateTime.now().plusDays(10))
                 .build());
         return project.getShareToken();
+    }
+
+    /**
+     * A customer who has redeemed this shop's code, signed in and ready to read.
+     *
+     * <p>The redemption used to be anonymous — {@code POST /api/access-codes/redeem-guest}
+     * minted a throwaway "guest token" with no account behind it. That endpoint is gone: a
+     * code is something an ACCOUNT holds now, so redeeming means signing in first. The rule
+     * these tests are about is unchanged, and is the reason they still exist — everyone
+     * under a shop reads that shop's numbering, whether they work there or bought from it.
+     */
+    private String redeemedCustomerToken(String email) throws Exception {
+        userRepository.save(User.builder()
+                .name("Walk-in")
+                .email(email)
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL)
+                .role(UserRole.CUSTOMER)
+                .emailVerified(true)
+                .build());
+        String token = login(email, "password123");
+        mockMvc.perform(post("/api/access-codes/redeem")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"" + CODE + "\"}"))
+                .andExpect(status().isOk());
+        return token;
     }
 
     private String login(String email, String password) throws Exception {

@@ -201,20 +201,31 @@ class RetailerComboIntegrationTest {
                 .andExpect(jsonPath("$.length()").value(0));
     }
 
+    /**
+     * A customer who redeemed this shop's code sees the shop's combinations.
+     *
+     * <p>This used to redeem anonymously through {@code /api/access-codes/redeem-guest},
+     * which minted a throwaway token with no account behind it. That endpoint is gone — a
+     * code is something an ACCOUNT holds now — so the redemption signs in first. What is
+     * being pinned is unchanged: redeeming a code is what puts a shop's own work in front
+     * of the person who bought from it.
+     */
     @Test
-    void guest_on_a_shop_code_sees_the_shops_combos() throws Exception {
+    void a_customer_on_a_shop_code_sees_the_shops_combos() throws Exception {
         createCombo();
 
-        MvcResult r = mockMvc.perform(post("/api/access-codes/redeem-guest")
+        userRepository.save(User.builder().name("Walk-in").email("walkin-combos@example.com")
+                .password(passwordEncoder.encode("password123"))
+                .provider(AuthProvider.LOCAL).role(UserRole.CUSTOMER).emailVerified(true).build());
+        String customerToken = login("walkin-combos@example.com", "password123");
+        mockMvc.perform(post("/api/access-codes/redeem")
+                        .header("Authorization", "Bearer " + customerToken)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"code\":\"" + CODE + "\"}"))
-                .andExpect(status().isOk())
-                .andReturn();
-        String guestToken = objectMapper.readTree(r.getResponse().getContentAsString())
-                .get("guestToken").asText();
+                .andExpect(status().isOk());
 
         mockMvc.perform(get("/api/me/retailer-combos")
-                        .header("Authorization", "Bearer " + guestToken))
+                        .header("Authorization", "Bearer " + customerToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
                 .andExpect(jsonPath("$[0].shades[0].code").value("AP-2118"));

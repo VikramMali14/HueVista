@@ -390,8 +390,8 @@ class HierarchyFlowIntegrationTest {
         createRetailer(distToken, "Priya", "shop@example.com", "Mehta Paints");
         Organization shopOrg = orgOf("shop@example.com");
 
-        seedCustomer(shopOrg, "Anjali", "anjali@example.com", 2, 3, LocalDateTime.now().plusDays(30));
-        seedCustomer(shopOrg, "Farhan", "farhan@example.com", 0, 1, LocalDateTime.now().plusDays(60));
+        seedCustomer(shopOrg, "Anjali", "anjali@example.com", 2, 3);
+        seedCustomer(shopOrg, "Farhan", "farhan@example.com", 0, 1);
 
         JsonNode admin = report(adminToken);
         assertThat(admin.get("totals").get("customers").asLong()).isEqualTo(2);
@@ -414,7 +414,10 @@ class HierarchyFlowIntegrationTest {
         assertThat(customer).isNotNull();
         assertThat(customer.get("projectAllowance").asInt()).isEqualTo(3);
         assertThat(customer.get("projectsUsed").asInt()).isEqualTo(2);
-        assertThat(customer.get("accessExpiresAt").isNull()).isFalse();
+        // No expiry is reported, because a customer's shop-issued access does not lapse —
+        // see ProjectAccessService#shopAccessExpired, which answers "it never does". The
+        // allowance/usage pair above is the whole of what a shop reads about a customer.
+        assertThat(customer.has("accessExpiresAt")).isFalse();
 
         // A distributor sees their own shops' customers; the shop sees its own.
         assertThat(report(distToken).get("totals").get("customers").asLong()).isEqualTo(2);
@@ -433,9 +436,9 @@ class HierarchyFlowIntegrationTest {
         createRetailer(tokenFor("theirs@example.com", "password123"), "B", "theirshop@example.com", "Their Shop");
 
         seedCustomer(orgOf("mineshop@example.com"), "Mine Cust", "mc@example.com",
-                1, 1, LocalDateTime.now().plusDays(10));
+                1, 1);
         seedCustomer(orgOf("theirshop@example.com"), "Their Cust", "tc@example.com",
-                1, 1, LocalDateTime.now().plusDays(10));
+                1, 1);
 
         assertThat(report(tokenFor("mine@example.com", "password123"))
                 .get("totals").get("customers").asLong()).isEqualTo(1);
@@ -604,7 +607,7 @@ class HierarchyFlowIntegrationTest {
 
     /** A customer managed by this shop, with the allowance/usage pair the report reads. */
     private void seedCustomer(Organization shopOrg, String name, String email,
-                              int used, int allowance, LocalDateTime expiresAt) {
+                              int used, int allowance) {
         User customer = userRepository.save(User.builder()
                 .name(name).email(email)
                 .password(passwordEncoder.encode("password123"))
