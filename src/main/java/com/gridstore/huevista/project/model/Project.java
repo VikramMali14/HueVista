@@ -271,7 +271,8 @@ public class Project {
     // and reopening it costs ₹9. Closing is the customer saying they are done: they have
     // taken their colour boards and the AI render off it, and what stays visible
     // afterwards is only the shades that went into those boards. Reopening THAT unlocks
-    // the whole catalogue again on a job that already delivered, so it costs ₹99.
+    // the whole catalogue again on a job that already delivered — which is a whole
+    // project's worth of product, so it costs one: ₹149.
     //
     // It also outranks every other kind of access. A closed project is read-only for its
     // owner whether or not a plan or a shop's code is covering them — see

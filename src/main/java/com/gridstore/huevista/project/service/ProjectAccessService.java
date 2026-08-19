@@ -93,7 +93,7 @@ public class ProjectAccessService {
      *
      * BOTH rails are quoted, and both are read from the project rather than from the
      * account, because reopening no longer has one price. A lapsed window costs ₹9 and a
-     * closed project ₹99, and the account-level quote cannot tell which this is — it
+     * closed project ₹149, and the account-level quote cannot tell which this is — it
      * knows the buyer, not the room. Quoting the wrong one puts a price on the banner
      * that the payment then refuses to match.
      */
@@ -337,14 +337,14 @@ public class ProjectAccessService {
      * Undo a closure, as part of a paid reopen.
      *
      * The colour-board count goes back to zero with it. A reopened project is being
-     * bought a second run at the same job — the catalogue comes back, so the two boards
-     * that produce the next set of combos have to come back too, or the customer pays ₹99
-     * for a project that can no longer hand them anything. The pages already recorded are
-     * kept: they are what the customer was given the first time round, and the next boards
-     * are numbered after them.
+     * bought a second run at the same job — the catalogue comes back, so the boards that
+     * produce the next set of combos have to come back too, or the customer pays a full
+     * project's price for one that can no longer hand them anything. The pages already
+     * recorded are kept: they are what the customer was given the first time round, and
+     * the next boards are numbered after them.
      *
-     * The render allowance is deliberately NOT reset. Renders are bought per image, and a
-     * reopen buys catalogue access, not another ₹99 render on top.
+     * The render allowance is deliberately NOT reset. Renders are bought per image out of
+     * the AI credit wallet, and a reopen buys catalogue access, not a free picture.
      */
     public void reopenClosed(Project project) {
         project.setClosedAt(null);
