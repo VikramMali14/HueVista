@@ -123,6 +123,32 @@ public class Project {
     @Column(length = 16)
     private String maskMode;
 
+    // ADMIN testing knobs, set per segmentation request, all three describing how THIS
+    // run's photo clean-up should be prompted. Persisted for the same reason as
+    // skipImageClean above — the async worker that reads them may be a different JVM
+    // than the one that took the request.
+    //
+    // analysePhoto: TRUE = spend one extra Claude Haiku call looking at the photo
+    // properly (what kind of place it is, what colour the walls are now) and let the
+    // answer tune the prompts. Null/FALSE = the run behaves exactly as it did before
+    // this existed, which is what keeps the customer flow untouched.
+    private Boolean analysePhoto;
+
+    // houseType: an admin's override of what analysePhoto found, so the same photo can
+    // be run under two types and the prompt clauses compared. Validated against
+    // HouseType before it gets here. Null = whatever the analysis decided, or nothing.
+    @Column(length = 32)
+    private String houseType;
+
+    // cleanFurnishing ("KEEP"/"EMPTY") and cleanAngle ("AS_SHOT"/"BEST_VIEW"): what the
+    // clean-up does with the furniture, and which camera the canvas comes back from.
+    // Null on both means the defaults, which reproduce today's prompt byte for byte.
+    @Column(length = 16)
+    private String cleanFurnishing;
+
+    @Column(length = 16)
+    private String cleanAngle;
+
     // When status == FAILED, why. Surfaced to the frontend so we can show the
     // user something actionable ("auto-segmentation not configured — click each
     // wall") instead of a generic failure. Stored as TEXT because Hibernate
