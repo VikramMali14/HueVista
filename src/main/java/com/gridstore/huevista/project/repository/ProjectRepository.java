@@ -237,4 +237,27 @@ public interface ProjectRepository extends JpaRepository<Project, String> {
 
     @Query("SELECT p.maskModel FROM Project p WHERE p.id = :projectId")
     Optional<String> findMaskModelById(@Param("projectId") String projectId);
+
+    /**
+     * Reads the ADMIN prompt-shaping knobs for this run — whether to analyse the photo
+     * before cleaning it, an override of what that analysis found, and how the clean-up
+     * should treat the furniture and the camera.
+     *
+     * <p>One projection rather than four, unlike the knobs above, because the worker
+     * reads all four at the same moment: they are assembled into a single cleaning
+     * prompt, and four round trips to build one string is three too many. Empty optional
+     * / null fields = the defaults, which reproduce the pre-existing prompt exactly.
+     */
+    @Query("SELECT p.analysePhoto AS analysePhoto, p.houseType AS houseType, "
+            + "p.cleanFurnishing AS cleanFurnishing, p.cleanAngle AS cleanAngle "
+            + "FROM Project p WHERE p.id = :projectId")
+    Optional<CleanOptionsView> findCleanOptionsById(@Param("projectId") String projectId);
+
+    /** The four ADMIN prompt-shaping knobs, projected together. */
+    interface CleanOptionsView {
+        Boolean getAnalysePhoto();
+        String getHouseType();
+        String getCleanFurnishing();
+        String getCleanAngle();
+    }
 }

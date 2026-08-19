@@ -103,6 +103,18 @@ class ApiContractTest {
                 // configured ones. The mask viewer names them beside the canvas: a
                 // model comparison nobody can attribute afterwards was not one.
                 "cleanModel", "maskModel",
+                // What a closer look at the photo found, when an admin asked for one,
+                // and which prompt knobs that run used. Null on every project that never
+                // asked — which is every customer project. Carried for the same reason
+                // as the two model overrides above: a prompt experiment nobody can
+                // attribute afterwards was not one.
+                "houseType",
+                // The colour the walls are RIGHT NOW. Shown beside the palette as
+                // context and never used as a paint colour — the cleaned canvas stays
+                // white because the frontend's recolour maths treats it as an
+                // illumination map.
+                "detectedWallHex", "detectedWallColour", "detectedTrimHex",
+                "cleanFurnishing", "cleanAngle",
                 "regions",
                 "hasShareLink", "shareExpiresAt", "sharedBrands", "sentToShopAt",
                 "createdAt", "updatedAt",

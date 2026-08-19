@@ -84,4 +84,56 @@ public class SegmentRequest {
      * which half of a bad result belongs to which model.
      */
     private String maskModel;
+
+    /**
+     * ADMIN-only testing knob (ignored for other callers): take a closer look at the
+     * photo before cleaning it, and let what comes back tune the prompts.
+     *
+     * <p>One extra Claude Haiku call ({@code ClaudeVisionService.analyseStored}) that
+     * returns the scene, what KIND of place this is, and what colour its walls are right
+     * now. The house type then adds a sentence or two to the cleaning and mask prompts —
+     * a bathroom's tile is a finish rather than an unfinished wall, a compound wall has
+     * no roofline to preserve — and the detected colour is recorded so the studio can
+     * show it beside the palette.
+     *
+     * <p>Off by default, and deliberately NOT folded into the upload-time classification
+     * every customer photo already runs through. That call has one job — accept or
+     * reject the upload — and nothing about it needs a house type, so paying for one on
+     * every upload buys the answer at the moment we have least use for it. Null or false
+     * leaves the run behaving exactly as it did before this knob existed.
+     */
+    private Boolean analysePhoto;
+
+    /**
+     * ADMIN-only testing knob (ignored for other callers): treat the photo as this kind
+     * of place, instead of whatever {@link #analysePhoto} decided.
+     *
+     * <p>The point is comparison. The house type only ever changes a couple of sentences
+     * in the prompt, and the only way to learn what those sentences are worth is to run
+     * the same photo under two of them. Must name a {@code HouseType} member; anything
+     * else is refused with 400 rather than silently becoming UNKNOWN, because a
+     * comparison that quietly ran the default answers nothing.
+     *
+     * <p>Blank clears the override and hands the choice back to the analysis.
+     */
+    private String houseType;
+
+    /**
+     * ADMIN-only testing knob (ignored for other callers): what the clean-up does with
+     * the furniture already in the room — {@code "KEEP"} (the default, and exactly
+     * today's behaviour) or {@code "EMPTY"}.
+     *
+     * <p>Persisted on the project so the async worker sees it, same as the knobs above.
+     */
+    private String cleanFurnishing;
+
+    /**
+     * ADMIN-only testing knob (ignored for other callers): which camera the cleaned
+     * canvas is photographed from — {@code "AS_SHOT"} (the default, and exactly today's
+     * behaviour) or {@code "BEST_VIEW"}.
+     *
+     * <p>See {@code CleanAngle} for what BEST_VIEW costs; it is the one option here that
+     * changes something the customer can check against their own house.
+     */
+    private String cleanAngle;
 }

@@ -89,6 +89,30 @@ public class ProjectResponse {
     // showing — a comparison whose result nobody can attribute afterwards was not one.
     private String cleanModel;
     private String maskModel;
+    // What a closer look at the photo found, when an admin asked for one — see
+    // ClaudeVisionService.analyseStored. Null on every project that never asked, which
+    // is every customer project.
+    //
+    // houseType is the kind of place ("BATHROOM", "COMPOUND_WALL"): it decides which
+    // extra sentences the cleaning and mask prompts get, so the studio has to be able to
+    // show WHICH type actually ran — a prompt experiment nobody can attribute afterwards
+    // was not one, exactly as with cleanModel above.
+    private String houseType;
+    // The colour the walls are RIGHT NOW, as they appear under the photo's own light,
+    // plus the model's everyday name for it. Shown beside the palette as context, never
+    // used as a paint colour: the cleaned canvas stays white because the frontend treats
+    // it as an illumination map. Null whenever no colour could be read honestly — an
+    // unpainted wall, deep shadow — and null is the right answer there, because this
+    // sits next to catalogue shades a customer may be about to buy.
+    private String detectedWallHex;
+    private String detectedWallColour;
+    private String detectedTrimHex;
+    // The prompt knobs this project's last run used: "KEEP"/"EMPTY" for the furniture
+    // and "AS_SHOT"/"BEST_VIEW" for the camera. Null = the defaults, which produce the
+    // stock prompt. Carried for the same reason as the model overrides — so a canvas
+    // that came back unlike the others can be traced to the choice that made it.
+    private String cleanFurnishing;
+    private String cleanAngle;
     private List<RegionResponse> regions;
     private boolean hasShareLink;
     private LocalDateTime shareExpiresAt;
@@ -196,6 +220,17 @@ public class ProjectResponse {
                 .aiProgressNote(project.getAiProgressNote())
                 .cleanModel(project.getCleanModel())
                 .maskModel(project.getMaskModel())
+                // The photo's own analysis, and the knobs this run was prompted with.
+                // Owner view only — fromPublic below carries none of it, because a
+                // shared board is a colour scheme rather than a look inside how it was
+                // made. Every field is null on a project that never asked for any of it.
+                .houseType(project.getImage().getHouseType() != null
+                        ? project.getImage().getHouseType().name() : null)
+                .detectedWallHex(project.getImage().getDetectedWallHex())
+                .detectedWallColour(project.getImage().getDetectedWallColour())
+                .detectedTrimHex(project.getImage().getDetectedTrimHex())
+                .cleanFurnishing(project.getCleanFurnishing())
+                .cleanAngle(project.getCleanAngle())
                 .regions(regions)
                 .hasShareLink(project.getShareToken() != null)
                 .shareExpiresAt(project.getShareExpiresAt())

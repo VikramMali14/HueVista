@@ -12,10 +12,13 @@ import com.gridstore.huevista.common.exception.ProcessingInterruptedException;
 import com.gridstore.huevista.common.exception.QuotaExceededException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.common.exception.StorageException;
+import com.gridstore.huevista.image.model.HouseType;
 import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.StorageService;
 import com.gridstore.huevista.project.dto.*;
+import com.gridstore.huevista.project.model.CleanAngle;
+import com.gridstore.huevista.project.model.CleanFurnishing;
 import com.gridstore.huevista.project.model.Project;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
@@ -902,6 +905,40 @@ public class ProjectService {
         }
         if (options != null && options.getMaskModel() != null) {
             project.setMaskModel(modelCatalogue.resolveOverride(options.getMaskModel()).orElse(null));
+        }
+
+        // ADMIN prompt-shaping knobs. All three are null on a normal request and on every
+        // request from a non-admin (the controller rebuilds the request keeping only
+        // maskMode), and null here leaves whatever the last run was given — same
+        // stickiness as skipImageClean and simulateFailure above.
+        if (options != null && options.getAnalysePhoto() != null) {
+            project.setAnalysePhoto(options.getAnalysePhoto());
+        }
+        if (options != null && options.getHouseType() != null) {
+            // Blank is how the studio says "back to whatever the analysis finds", so it
+            // clears rather than being ignored. A non-blank value must NAME a type: an
+            // unrecognised one is a 400 rather than a silent UNKNOWN, because an admin
+            // comparing two house-type clauses cannot tell from the image which clause
+            // actually ran — the same trap the model overrides above document.
+            String raw = options.getHouseType().trim();
+            if (raw.isEmpty()) {
+                project.setHouseType(null);
+            } else {
+                HouseType parsed = HouseType.parse(raw);
+                if (parsed == HouseType.UNKNOWN && !"UNKNOWN".equalsIgnoreCase(raw)) {
+                    throw new IllegalArgumentException(
+                            "houseType must name a known type, or be blank to use the analysis.");
+                }
+                project.setHouseType(parsed.name());
+            }
+        }
+        // These two throw on a typo rather than falling back to the default — a knob
+        // whose whole job is to change the output must never look like it did nothing.
+        if (options != null && options.getCleanFurnishing() != null) {
+            project.setCleanFurnishing(CleanFurnishing.parse(options.getCleanFurnishing()).name());
+        }
+        if (options != null && options.getCleanAngle() != null) {
+            project.setCleanAngle(CleanAngle.parse(options.getCleanAngle()).name());
         }
 
         // Gate WITHOUT charging yet: throws 402 when the paying account has no active

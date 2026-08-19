@@ -6,7 +6,10 @@ import com.gridstore.huevista.common.ai.ImageEditException;
 import com.gridstore.huevista.common.ai.ReplicateAuthException;
 import com.gridstore.huevista.common.ai.ReplicateImageEditor;
 import com.gridstore.huevista.common.exception.ExternalServiceException;
+import com.gridstore.huevista.image.model.HouseType;
 import com.gridstore.huevista.image.model.ImageType;
+import com.gridstore.huevista.project.model.CleanAngle;
+import com.gridstore.huevista.project.model.CleanFurnishing;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.coobird.thumbnailator.Thumbnails;
@@ -277,14 +280,51 @@ public class ImageCleanerService {
             + "photo — every model we ask is full. Nothing has been charged. Please try "
             + "again in a few minutes; your photo is saved and ready to run.";
 
-    /** The default chain, with nothing to report progress to. */
+    /**
+     * How this run's prompt should differ from the default one — the ADMIN knobs, in a
+     * single argument rather than three.
+     *
+     * <p>One parameter because these three always travel together and always arrive from
+     * the same place, and because {@link #DEFAULT} then gives every existing caller the
+     * old behaviour without naming a single field. A future fourth knob is a change to
+     * this record rather than to five signatures.
+     *
+     * @param houseType  what kind of place this is; UNKNOWN adds no clause
+     * @param furnishing what to do with the furniture already in the room
+     * @param angle      which camera the cleaned canvas comes back from
+     */
+    public record PromptOptions(HouseType houseType, CleanFurnishing furnishing, CleanAngle angle) {
+        /** Exactly the prompt this service produced before any of these knobs existed. */
+        public static final PromptOptions DEFAULT = new PromptOptions(
+                HouseType.UNKNOWN, CleanFurnishing.DEFAULT, CleanAngle.DEFAULT);
+
+        public PromptOptions {
+            if (houseType == null) houseType = HouseType.UNKNOWN;
+            if (furnishing == null) furnishing = CleanFurnishing.DEFAULT;
+            if (angle == null) angle = CleanAngle.DEFAULT;
+        }
+
+        /** True when this run wants the stock prompt — worth logging, and worth asserting. */
+        public boolean isDefault() {
+            return DEFAULT.equals(this);
+        }
+    }
+
+    /** The default chain and the default prompt, with nothing to report progress to. */
     public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType) {
-        return cleanImage(imageUrl, imageType, null, ProgressListener.NONE);
+        return cleanImage(imageUrl, imageType, null, ProgressListener.NONE, PromptOptions.DEFAULT);
     }
 
     /** The default chain under an admin override, with nothing to report progress to. */
     public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType, String modelOverride) {
-        return cleanImage(imageUrl, imageType, modelOverride, ProgressListener.NONE);
+        return cleanImage(imageUrl, imageType, modelOverride, ProgressListener.NONE,
+                PromptOptions.DEFAULT);
+    }
+
+    /** The default prompt, with progress reported. */
+    public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType, String modelOverride,
+                                       ProgressListener progress) {
+        return cleanImage(imageUrl, imageType, modelOverride, progress, PromptOptions.DEFAULT);
     }
 
     /**
@@ -309,9 +349,12 @@ public class ImageCleanerService {
      * @param progress      where to narrate the chain as it advances, so the studio's
      *                      loader can say which model is being asked and why the last one
      *                      was not enough. {@link ProgressListener#NONE} outside a run.
+     * @param promptOptions how this run's prompt should differ from the default one —
+     *                      the ADMIN knobs. {@link PromptOptions#DEFAULT} reproduces the
+     *                      prompt every run used before they existed.
      */
     public Optional<byte[]> cleanImage(String imageUrl, ImageType imageType, String modelOverride,
-                                       ProgressListener progress) {
+                                       ProgressListener progress, PromptOptions promptOptions) {
         // An override is honoured even when it names the model the config already uses:
         // "run this on Nano Banana Pro" is a request for that one model, and answering it
         // with FLUX because Replicate was busy would misattribute the image just as badly
@@ -333,13 +376,21 @@ public class ImageCleanerService {
                     chain.get(0));
         }
 
-        String prompt = cleanPromptFor(imageType);
+        PromptOptions opts = promptOptions == null ? PromptOptions.DEFAULT : promptOptions;
+        if (!opts.isDefault()) {
+            // Worth a line of its own: a run prompted differently from every other run is
+            // the first thing to know when its canvas comes back looking unlike the rest.
+            log.info("ImageCleaner: non-default prompt for this run (type={}, furnishing={}, "
+                    + "angle={})", opts.houseType(), opts.furnishing(), opts.angle());
+        }
+        String prompt = cleanPromptFor(imageType, opts.houseType(), opts.furnishing(), opts.angle());
         // Hybrid step: ground the instruction in THIS image's actual clutter/anchors.
         // The hint text is derived from the user-supplied image (vision analysis), so it
         // is UNTRUSTED: a crafted photo could try to smuggle instructions through it.
         // Bound its length and frame it as observations subordinate to the fixed rules
         // above, rather than appending it as further commands (prompt-injection defence).
-        Optional<String> hints = cleaningHintService.describeCleanup(imageUrl, imageType);
+        Optional<String> hints = cleaningHintService.describeCleanup(imageUrl, imageType,
+                opts.houseType());
         String safeHints = hints.map(ImageCleanerService::sanitizeHints).orElse("");
         if (!safeHints.isBlank()) {
             prompt = prompt
@@ -613,7 +664,381 @@ public class ImageCleanerService {
      * exterior prompt.
      */
     static String cleanPromptFor(ImageType imageType) {
-        return imageType == ImageType.INDOOR ? CLEAN_PROMPT_INTERIOR : CLEAN_PROMPT_EXTERIOR;
+        return cleanPromptFor(imageType, HouseType.UNKNOWN,
+                CleanFurnishing.DEFAULT, CleanAngle.DEFAULT);
+    }
+
+    /**
+     * The same two prompts, adjusted for what this particular run asked for.
+     *
+     * <p><b>The defaults reproduce the old prompt byte for byte.</b> With an UNKNOWN
+     * house type, KEEP furnishing and an AS_SHOT camera this returns exactly the string
+     * the one-argument overload above always returned, and {@code CleaningAndMaskPromptTest}
+     * asserts it. That is the property the whole feature rests on: these knobs are an
+     * admin testing surface, and a customer's run must be unable to tell they exist.
+     *
+     * <p>Each non-default option is applied by SWAPPING a named passage of the base
+     * prompt rather than appending a new instruction after it. Appending does not work
+     * here and it is worth saying why: these prompts spend twenty lines insisting the
+     * camera does not move and the furniture does not go anywhere, and a twenty-first
+     * line saying the opposite does not override them — it produces a coin flip. So
+     * "empty the room" replaces the rules that keep the furniture, and "best view"
+     * replaces the rules that pin the camera, and nothing in the returned prompt argues
+     * with itself.
+     *
+     * <p>The house type is the exception: it genuinely is extra information rather than
+     * a contradiction, so it is appended as a short clause. UNKNOWN appends nothing,
+     * which is what makes a wrong classification a missed optimisation rather than a
+     * wrong instruction.
+     */
+    static String cleanPromptFor(ImageType imageType, HouseType houseType,
+                                 CleanFurnishing furnishing, CleanAngle angle) {
+        boolean interior = imageType == ImageType.INDOOR;
+        String prompt = interior ? CLEAN_PROMPT_INTERIOR : CLEAN_PROMPT_EXTERIOR;
+        HouseType type = houseType == null ? HouseType.UNKNOWN : houseType;
+        CleanFurnishing wanted = furnishing == null ? CleanFurnishing.DEFAULT : furnishing;
+        CleanAngle camera = angle == null ? CleanAngle.DEFAULT : angle;
+
+        if (wanted == CleanFurnishing.EMPTY) {
+            prompt = interior ? emptyTheRoom(prompt) : clearTheSurroundings(prompt);
+        }
+        if (camera == CleanAngle.BEST_VIEW) {
+            prompt = reframe(prompt, interior);
+        }
+        // The closing summary names the contents AND the framing in one breath, so both
+        // options want to edit the same sentence. Rewritten once, from both answers,
+        // rather than twice — the second swap would find its anchor already gone.
+        if (wanted != CleanFurnishing.DEFAULT || camera != CleanAngle.DEFAULT) {
+            prompt = rewriteClosingSummary(prompt, interior, wanted, camera);
+        }
+        return prompt + houseTypeClause(type, interior);
+    }
+
+    /**
+     * Replace one passage of a prompt with another, complaining loudly if it is missing.
+     *
+     * <p>An anchor that no longer matches means somebody edited the base prompt without
+     * updating the swap, and the symptom is the worst kind: the option appears in the
+     * studio, the run costs a full generation, and the prompt it produced was the
+     * default one. So it is logged at ERROR with the name of the thing that silently did
+     * nothing — and {@code CleaningAndMaskPromptTest} asserts every swap actually
+     * changes the prompt, which is what turns this from a runtime surprise into a build
+     * failure.
+     *
+     * <p>It does not throw. A prompt that is merely un-adjusted still cleans the photo;
+     * failing the run outright would turn a stale string constant into a customer-facing
+     * outage.
+     */
+    private static String swap(String prompt, String anchor, String replacement, String what) {
+        if (!prompt.contains(anchor)) {
+            log.error("Cleaning prompt has no passage to swap for {} — this run will use "
+                    + "the default wording instead. The base prompt was edited without "
+                    + "updating the swap in ImageCleanerService.", what);
+            return prompt;
+        }
+        return prompt.replace(anchor, replacement);
+    }
+
+    // ── Furnishing: EMPTY ────────────────────────────────────────────────────
+
+    /**
+     * Turn the interior prompt's "every stick of furniture stays" rules into "clear the
+     * loose furniture, keep what is built in".
+     *
+     * <p>Note what is NOT swapped: the DO NOT ADD ANYTHING block stays exactly as it is.
+     * Emptying a room is licence to take things away and nothing else — the failure mode
+     * here is a model that reads "clear the furniture" as "show me a nicer version of
+     * this room", and the block forbidding new objects is the only thing standing
+     * between us and that.
+     */
+    private static String emptyTheRoom(String prompt) {
+        String p = swap(prompt,
+                "- Do NOT replace an object with a different or nicer one: the existing sofa, "
+              + "bed, table, cabinet, fan, switchboard and light fitting must come back as the "
+              + "SAME item, same model, same colour, same position, same size.\n",
+                "- Do NOT replace an object with a different or nicer one. Anything that "
+              + "stays — the built-in cabinetry, the fan, the switchboard, the light "
+              + "fitting — comes back as the SAME item, same model, same colour, same "
+              + "position, same size. Loose furniture is REMOVED per the rule below, "
+              + "never swapped for something else and never restyled on its way out.\n",
+                "empty-room replacement rule");
+
+        p = swap(p,
+                "- ALL furniture already in the room (sofa, bed, dining table, chairs, "
+              + "cupboards, TV unit) stays exactly where it is, as the same item: do not "
+              + "remove it, move it, resize it, reupholster it or swap it for another. Only "
+              + "small loose clutter and mess is cleared.\n",
+                "- CLEAR THE LOOSE FURNITURE so the painted surfaces are fully visible: "
+              + "sofas, beds, dining tables, chairs, free-standing cupboards, TV units, "
+              + "rugs, curtains and floor lamps are removed. Fill the space each one "
+              + "leaves with the wall, floor and skirting that genuinely continue behind "
+              + "it — never with another object, and never with invented detail. What "
+              + "stays is everything FIXED: built-in cabinetry and wardrobes, kitchen "
+              + "units, fireplaces, shelving, radiators, switchboards, sockets, ceiling "
+              + "fans and light fittings, all exactly where they are. An emptied room is "
+              + "still the SAME room — same walls, same openings, same fittings, same "
+              + "proportions — with nothing standing in front of them.\n",
+                "empty-room furniture rule");
+
+        return swap(p,
+                "- Nothing exists in the output that was not in the input photo: no "
+              + "added furniture, decor, curtains, light fittings, mouldings, "
+              + "panelling, patterns or textures.\n",
+                "- Nothing exists in the output that was not in the input photo: no "
+              + "added furniture, decor, curtains, light fittings, mouldings, "
+              + "panelling, patterns or textures. The room is EMPTIED, not restyled — "
+              + "no loose furniture is left standing, and none has been replaced by a "
+              + "tidier version of itself.\n",
+                "empty-room self-check");
+    }
+
+    /**
+     * The exterior equivalent, which is much smaller because the exterior prompt already
+     * clears cars, bins and debris in its REMOVE list. All that is left to say is that
+     * the clearing should be thorough enough to show the whole facade.
+     */
+    private static String clearTheSurroundings(String prompt) {
+        return swap(prompt,
+                "- Parked cars, motorcycles, scooters, bicycles directly in front of the house\n",
+                "- Parked cars, motorcycles, scooters, bicycles, bins, crates, furniture "
+              + "and any other loose object standing anywhere in front of the house — "
+              + "clear the frontage completely so the whole facade is visible from the "
+              + "ground up. Permanent landscaping, paving and boundary walls stay.\n",
+                "cleared-surroundings rule");
+    }
+
+    // ── Angle: BEST_VIEW ─────────────────────────────────────────────────────
+
+    /**
+     * Let the camera move — and then spend most of the words saying how little.
+     *
+     * <p>Three passages have to go, because each of them pins the camera on its own and
+     * any one left standing turns the instruction into a contradiction: the header's
+     * blanket faithfulness claim, the "do not re-frame" line, and the camera entry in
+     * KEEP UNCHANGED (plus the interior's SELF-CHECK, which verifies it explicitly).
+     *
+     * <p>What replaces them is deliberately narrow. "Choose the best angle" with no
+     * bound is how a model ends up drawing a side elevation nobody has ever seen, on a
+     * canvas a customer is about to pick paint from. So the replacement grants exactly
+     * one thing — a modest shift around the SAME elevation, from the same standing
+     * height — and forbids revealing any surface the photo does not already show.
+     */
+    private static String reframe(String prompt, boolean interior) {
+        String p = interior
+                ? swap(prompt,
+                    "Every pixel that is not explicitly covered by a "
+                  + "REMOVE, REPAINT or FINISH rule must come back unchanged.",
+                    "The room, its openings, its fittings and its finishes must all come "
+                  + "back unchanged; the CAMERA may move, within the strict limits set "
+                  + "out under VIEWPOINT below.",
+                    "best-view interior header")
+                : swap(prompt,
+                    "Keep every architectural element pristine and preserve the exact "
+                  + "perspective, layout, dimensions, materials, lighting, and shadows.",
+                    "Keep every architectural element pristine and preserve the exact "
+                  + "layout, dimensions, materials, lighting, and shadows. The CAMERA "
+                  + "may move, within the strict limits set out under VIEWPOINT below.",
+                    "best-view exterior header");
+
+        p = interior
+                ? swap(p,
+                    "- Do NOT re-light, re-frame, re-render or re-photograph the room. Keep the "
+                  + "original camera position, focal length, exposure, white balance, colour cast, "
+                  + "grain and depth of field.\n",
+                    "- Do NOT re-light or re-render the room. The framing may change per "
+                  + "VIEWPOINT, but the exposure, white balance, colour cast, grain and "
+                  + "depth of field are the original photograph's and stay as they are.\n",
+                    "best-view interior re-frame rule")
+                : swap(p,
+                    "- Do NOT re-light, re-frame or re-render the scene. Keep the original camera "
+                  + "position, exposure, white balance, colour cast and grain.\n",
+                    "- Do NOT re-light or re-render the scene. The framing may change per "
+                  + "VIEWPOINT, but the exposure, white balance, colour cast and grain "
+                  + "are the original photograph's and stay as they are.\n",
+                    "best-view exterior re-frame rule");
+
+        p = interior
+                ? swap(p, "- Camera angle, perspective, framing, image dimensions, room proportions.\n",
+                       "- Image dimensions and room proportions. (The camera angle and "
+                     + "framing may change, per VIEWPOINT.)\n",
+                       "best-view interior keep-unchanged entry")
+                : swap(p, "- Camera angle, perspective, framing, image dimensions.\n",
+                       "- Image dimensions. (The camera angle and framing may change, per "
+                     + "VIEWPOINT.)\n",
+                       "best-view exterior keep-unchanged entry");
+
+        if (interior) {
+            p = swap(p,
+                    "- Camera position, framing, aspect and image dimensions are "
+                  + "unchanged.\n",
+                    "- The aspect and image dimensions are unchanged, and the new "
+                  + "viewpoint obeys every limit under VIEWPOINT — same room, same "
+                  + "walls, nothing revealed that the original photograph did not "
+                  + "already show.\n",
+                    "best-view interior self-check");
+        }
+        return p + BEST_VIEW_BLOCK;
+    }
+
+    /**
+     * The bounds on "best", stated last because that is where models weight hardest.
+     *
+     * <p>Every sentence here exists to stop one specific failure. The "same elevation"
+     * rule stops a facade being turned to show a side wall that was never photographed.
+     * The "reveal nothing new" rule stops the model filling that wall in from
+     * imagination. The "same standing height" rule stops the drone shot. And the last
+     * one is the whole reason for the caution: the person looking at this image is
+     * deciding what to paint their actual house, and a surface that does not exist is
+     * not a stylistic liberty, it is a wrong answer.
+     */
+    private static final String BEST_VIEW_BLOCK =
+            "\nVIEWPOINT — a better view of the SAME place, within hard limits:\n"
+          + "- Re-frame this photograph to show the subject more clearly and more "
+          + "attractively: straighten a tilted horizon, level the verticals, centre the "
+          + "subject, and shift the viewpoint slightly for a less flat, more natural "
+          + "three-quarter view.\n"
+          + "- SAME ELEVATION, SAME SIDE. You may move the camera only a modest amount "
+          + "around the face of the subject that was photographed — a small step to one "
+          + "side, not a walk around the building. Never show a different side, a "
+          + "different room, or the back of anything.\n"
+          + "- REVEAL NOTHING NEW. Every surface in the output must be one the original "
+          + "photograph already shows, at least partly. If moving the camera would bring "
+          + "an unseen wall, roof slope, room or corner into view, MOVE LESS. You must "
+          + "never draw a surface you have not seen: inventing one puts a wall in front "
+          + "of somebody that does not exist on their building, and they may be about to "
+          + "buy paint for it.\n"
+          + "- SAME STANDING HEIGHT. Keep the camera at roughly the eye level the photo "
+          + "was taken from. No aerial view, no drone shot, no ground-level angle.\n"
+          + "- The subject itself does not change at all: same size, same proportions, "
+          + "same number of windows, doors and openings, same materials, same light, "
+          + "same time of day. Only where the camera stands changes.\n"
+          + "- Keep the output's aspect ratio and image dimensions exactly as the input's.\n"
+          + "- WHEN IN DOUBT, DO NOT MOVE. The original framing is always an acceptable "
+          + "answer. A slightly flat photograph of the real place beats a flattering "
+          + "photograph of a place that does not exist.\n";
+
+    /**
+     * Rewrite the OUTPUT summary, which names the contents and the framing in the same
+     * sentence and so cannot be left saying "same furniture, same framing" once either
+     * of those is no longer true. Built from both answers at once for exactly that
+     * reason — see the caller.
+     */
+    private static String rewriteClosingSummary(String prompt, boolean interior,
+                                                CleanFurnishing furnishing, CleanAngle angle) {
+        if (interior) {
+            String contents = furnishing == CleanFurnishing.EMPTY
+                    ? "the loose furniture cleared, the fixed fittings kept"
+                    : "same contents, same furniture, same fittings";
+            String framing = angle == CleanAngle.BEST_VIEW ? "re-framed per VIEWPOINT" : "same framing";
+            return swap(prompt,
+                    "OUTPUT: the SAME photograph of the SAME room — same contents, same furniture, "
+                  + "same fittings, same framing — with only the listed clutter removed,",
+                    "OUTPUT: the SAME room — " + contents + ", " + framing
+                  + " — with only the listed clutter removed,",
+                    "interior closing summary");
+        }
+        if (angle != CleanAngle.BEST_VIEW) {
+            // Nothing to say: the exterior summary never mentions the furniture, so an
+            // EMPTY exterior run leaves it accurate as written.
+            return prompt;
+        }
+        return swap(prompt,
+                "house must remain pixel-faithful to the original in shape, proportion "
+              + "and material;",
+                "house must remain faithful to the original in shape, proportion and "
+              + "material — only the camera position may differ, per VIEWPOINT;",
+                "exterior closing summary");
+    }
+
+    // ── House type ───────────────────────────────────────────────────────────
+
+    /**
+     * A sentence or two that is true about THIS kind of building, appended to the base
+     * prompt.
+     *
+     * <p>Every clause here earns its place by naming a failure the base prompt walks
+     * into for that type — not by describing the building. A clause that merely says
+     * "this is a bathroom" spends tokens telling the model something it can already see;
+     * a clause that says "the tile is a finish, not an unfinished wall" stops the FINISH
+     * rules plastering over it.
+     *
+     * <p>{@link HouseType#UNKNOWN} returns the empty string, and so does any type whose
+     * base prompt already handles it well. Appending nothing is the correct behaviour
+     * for a type nobody has found a failure for yet.
+     */
+    static String houseTypeClause(HouseType type, boolean interior) {
+        if (type == null || type == HouseType.UNKNOWN) return "";
+        String body = switch (type) {
+            case COMPOUND_WALL -> "This is a BOUNDARY or COMPOUND WALL, not a building. "
+                  + "There is no roof, no eaves, no windows and no interior — do not "
+                  + "invent any. The whole subject is one or two flat wall planes plus "
+                  + "any gate, gate posts and coping along the top, and those are what "
+                  + "must be preserved exactly. Removing clutter matters far more here "
+                  + "than anywhere else: a boundary wall is usually the most cluttered "
+                  + "surface in the frame — pasted bills and posters, painted "
+                  + "advertising, graffiti, chalk marks, creeper growth, leaning "
+                  + "bicycles and rubbish heaped against its foot — and all of it goes, "
+                  + "leaving one clean continuous wall.";
+            case SHOPFRONT -> "This is a SHOPFRONT. Its SIGNAGE IS PERMANENT: the shop "
+                  + "name board, fascia lettering, logo, hoarding and any painted or "
+                  + "fixed sign stay exactly as they are — same text, same lettering, "
+                  + "same position, same colours — and are never repainted the wall "
+                  + "colour, never blanked out and never rewritten. The same goes for "
+                  + "the shutter, the display window and its glazing, and any awning or "
+                  + "canopy that is built in. Only genuinely temporary material — cloth "
+                  + "banners tied on, loose standees, stacked goods and crates on the "
+                  + "pavement — is cleared.";
+            case APARTMENT_BLOCK -> "This is a MULTI-STOREY APARTMENT BLOCK, and its "
+                  + "repetition is where this edit usually fails. COUNT THE FLOORS and "
+                  + "return exactly that many: do not drop a storey, do not add one, and "
+                  + "do not let two similar floors merge into one. Every balcony, "
+                  + "window, railing and parapet stays in its own bay at its own level, "
+                  + "aligned exactly as photographed — the grid must line up floor to "
+                  + "floor and bay to bay, with no drift, no invented extra bay and no "
+                  + "column of windows quietly becoming regular.";
+            case ROW_HOUSE -> "This is ONE UNIT IN A TERRACE. The neighbouring houses "
+                  + "sharing its walls are in frame and are NOT part of this job: leave "
+                  + "them exactly as photographed, in their own existing colours, and do "
+                  + "not repaint, finish, tidy or extend them. The party-wall line where "
+                  + "this unit meets each neighbour is the edge of every REPAINT and "
+                  + "FINISH rule above — paint up to it, never across it.";
+            case INDEPENDENT_HOUSE -> "";  // the exterior prompt is already written for this
+            case BATHROOM -> "This is a BATHROOM. THE TILE IS A FINISH, NOT UNFINISHED "
+                  + "WORK: wall tile, floor tile, a tiled dado or splashback, marble and "
+                  + "stone are finished materials and are covered by the rule that "
+                  + "non-painted finishes stay EXACTLY as they appear. Never plaster "
+                  + "over them, never paint over them, and never read a tiled wall as a "
+                  + "surface that needs completing — the FINISH rules apply only to the "
+                  + "PLASTERED wall above the tile line and to the ceiling. Sanitaryware, "
+                  + "taps, mirrors, cisterns and pipework are fittings and stay.";
+            case KITCHEN -> "This is a KITCHEN. The cabinetry, worktops, splashback tile "
+                  + "and appliances are finished materials and fittings: they stay "
+                  + "exactly as they appear, in their own colours and finishes, and are "
+                  + "never repainted or replaced. The paintable wall here is often only "
+                  + "a narrow band — between the worktop and the wall units, and above "
+                  + "the units up to the ceiling — so repaint precisely up to the edge "
+                  + "of the cabinetry and the tile, and never over it.";
+            case STAIRWELL_OR_HALLWAY -> "This is a STAIRWELL, LANDING or CORRIDOR. Its "
+                  + "walls run tall and are usually lit unevenly — bright near a window "
+                  + "or a light, deep in shadow under the flight — and that unevenness "
+                  + "is the room's real light: keep it, and repaint through it rather "
+                  + "than flattening the wall into one even tone. Every step, riser, "
+                  + "tread, nosing, landing edge, handrail, balustrade and newel post "
+                  + "keeps its exact shape and position. There is little or no furniture "
+                  + "here, so an empty stairwell is a normal photograph and not a room "
+                  + "waiting to be filled.";
+            case OFFICE_OR_SHOP -> "This is a COMMERCIAL interior — an office, shop or "
+                  + "showroom rather than a home. Fitted counters, display units, "
+                  + "shelving, workstations, partitions and signage are part of the "
+                  + "premises: they stay exactly as they are, and any sign or lettering "
+                  + "keeps its own text and colours rather than being repainted the wall "
+                  + "colour. Stock on the shelves stays too — it is not clutter. Only "
+                  + "loose mess, packaging and cabling is cleared.";
+            case LIVING_ROOM, BEDROOM -> "";  // the interior prompt is already written for these
+            case UNKNOWN -> "";
+        };
+        if (body.isEmpty()) return "";
+        return "\nABOUT THIS " + (interior ? "ROOM" : "BUILDING") + ": " + body + "\n";
     }
 
     private static final String CLEAN_PROMPT_EXTERIOR =

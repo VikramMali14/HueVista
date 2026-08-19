@@ -259,4 +259,88 @@ class SegmentModelOverrideIntegrationTest {
 
         assertThat(projectRepository.findById(retailerRoomId).orElseThrow().getCleanModel()).isNull();
     }
+
+    // ─── The prompt knobs ────────────────────────────────────────────────────
+    //
+    // Same endpoint, same stripping, and pinned separately because these are the knobs
+    // that change what the CUSTOMER's canvas looks like rather than which supplier made
+    // it. A shop that could reach cleanAngle could have its customer colouring a house
+    // the camera never saw.
+
+    @Test
+    void anAdminsPromptChoicesLandOnTheProjectForTheWorkerToRead() throws Exception {
+        segment(adminRoomId, adminToken, """
+                {"maskMode":"AUTO",
+                 "analysePhoto":true,
+                 "houseType":"BATHROOM",
+                 "cleanFurnishing":"EMPTY",
+                 "cleanAngle":"BEST_VIEW"}""")
+                .andExpect(status().isOk());
+
+        Project project = projectRepository.findById(adminRoomId).orElseThrow();
+        assertThat(project.getAnalysePhoto()).isTrue();
+        assertThat(project.getHouseType()).isEqualTo("BATHROOM");
+        assertThat(project.getCleanFurnishing()).isEqualTo("EMPTY");
+        assertThat(project.getCleanAngle()).isEqualTo("BEST_VIEW");
+    }
+
+    @Test
+    void aNonAdminCannotReachAnyOfThePromptKnobs() throws Exception {
+        // The whole point of shipping this admin-first: a customer's run has to be
+        // unable to tell these exist. Not a 403 — maskMode is still their real choice —
+        // so a crafted body runs the ordinary pipeline with the ordinary prompt.
+        segment(retailerRoomId, retailerToken, """
+                {"maskMode":"AUTO",
+                 "analysePhoto":true,
+                 "houseType":"BATHROOM",
+                 "cleanFurnishing":"EMPTY",
+                 "cleanAngle":"BEST_VIEW"}""")
+                .andExpect(status().isOk());
+
+        Project project = projectRepository.findById(retailerRoomId).orElseThrow();
+        assertThat(project.getAnalysePhoto()).isNull();
+        assertThat(project.getHouseType()).isNull();
+        assertThat(project.getCleanFurnishing()).isNull();
+        assertThat(project.getCleanAngle()).isNull();
+        assertThat(project.getMaskMode()).isEqualTo("AUTO");
+    }
+
+    @Test
+    void aHouseTypeOutsideTheEnumIsRefusedRatherThanQuietlyIgnored() throws Exception {
+        // Refused, not defaulted: an admin comparing two house-type clauses cannot tell
+        // from the image which clause actually ran, so a typo that silently ran the
+        // stock prompt would answer nothing. Same reasoning as the model catalogue.
+        segment(adminRoomId, adminToken, "{\"houseType\":\"CONSERVATORY\"}")
+                .andExpect(status().isBadRequest());
+        assertThat(projectRepository.findById(adminRoomId).orElseThrow().getHouseType()).isNull();
+    }
+
+    @Test
+    void aTypoOnFurnishingOrAngleIsRefusedToo() throws Exception {
+        segment(adminRoomId, adminToken, "{\"cleanFurnishing\":\"STAGED\"}")
+                .andExpect(status().isBadRequest());
+        segment(adminRoomId, adminToken, "{\"cleanAngle\":\"DRONE\"}")
+                .andExpect(status().isBadRequest());
+
+        Project project = projectRepository.findById(adminRoomId).orElseThrow();
+        assertThat(project.getCleanFurnishing()).isNull();
+        assertThat(project.getCleanAngle()).isNull();
+    }
+
+    @Test
+    void blankHandsTheHouseTypeBackToTheAnalysis() throws Exception {
+        segment(adminRoomId, adminToken, "{\"houseType\":\"SHOPFRONT\"}")
+                .andExpect(status().isOk());
+        assertThat(projectRepository.findById(adminRoomId).orElseThrow().getHouseType())
+                .isEqualTo("SHOPFRONT");
+
+        finishTheRun();
+
+        // The studio sends "" on every run where the admin did not override, for the
+        // same reason it sends "" for the models: a type pinned once must not keep
+        // shaping every later run of this room with nothing on screen saying so.
+        segment(adminRoomId, adminToken, "{\"houseType\":\"\"}")
+                .andExpect(status().isOk());
+        assertThat(projectRepository.findById(adminRoomId).orElseThrow().getHouseType()).isNull();
+    }
 }

@@ -2,10 +2,14 @@ package com.gridstore.huevista.project.service;
 
 import com.gridstore.huevista.common.exception.ExternalServiceException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
+import com.gridstore.huevista.image.model.HouseType;
 import com.gridstore.huevista.image.model.ImageType;
+import com.gridstore.huevista.image.model.SceneAnalysis;
 import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.StorageService;
+import com.gridstore.huevista.project.model.CleanAngle;
+import com.gridstore.huevista.project.model.CleanFurnishing;
 import com.gridstore.huevista.project.model.FailureStage;
 import com.gridstore.huevista.project.model.ProjectStatus;
 import com.gridstore.huevista.project.model.Region;
@@ -209,6 +213,13 @@ public class SegmentationService {
             // is not a cosmetic detail — see resolveScene.
             ImageType scene = resolveScene(uploadedImage);
 
+            // How THIS run's cleaning prompt should differ from the stock one — the ADMIN
+            // knobs, resolved once here so the cleaner and the hint call are prompted from
+            // the same answer. DEFAULT for every run that did not ask for anything, and
+            // DEFAULT reproduces the prompt this pipeline has always used.
+            ImageCleanerService.PromptOptions promptOptions =
+                    resolvePromptOptions(uploadedImage, projectId, scene);
+
             // TESTING ONLY: this run may have been asked to pretend one half of the
             // pipeline declined, so the recovery paths can be walked through on demand
             // rather than waited for. Resolved once, here, so both halves below read the
@@ -246,7 +257,7 @@ public class SegmentationService {
                         // model it is asking and that the last one was busy, and the
                         // status endpoint hands the sentence straight back.
                         : imageCleaner.cleanImage(imageUrl, scene, cleanModel,
-                                note -> say(projectId, note));
+                                note -> say(projectId, note), promptOptions);
                 if (cleanedOpt.isPresent()) {
                     cleanedBytes = cleanedOpt.get();
                     String cleanedKey = storageService.store(
@@ -1046,6 +1057,85 @@ public class SegmentationService {
             log.warn("Could not resolve the scene for image {} — continuing as UNKNOWN: {}",
                     image.getId(), e.getMessage());
             return ImageType.UNKNOWN;
+        }
+    }
+
+    /**
+     * How this run's cleaning prompt should differ from the stock one, assembled from
+     * the ADMIN knobs on the project.
+     *
+     * <p>Returns {@link ImageCleanerService.PromptOptions#DEFAULT} for every run that
+     * did not ask for anything, which is every customer run and every admin run with the
+     * panel left alone — and DEFAULT produces the exact prompt this pipeline used before
+     * any of these knobs existed. Nothing here is allowed to change a run that did not
+     * opt in.
+     *
+     * <p>The house type is resolved in three steps, most explicit first: an admin's
+     * override wins, then whatever a previous analysis of this photo already found, then
+     * a fresh analysis if this run paid for one. That order is what lets an admin run
+     * the same photo twice under two different types to compare the clauses — an
+     * override that a re-analysis could quietly overrule would make the comparison
+     * meaningless.
+     */
+    private ImageCleanerService.PromptOptions resolvePromptOptions(UploadedImage image,
+                                                                   String projectId,
+                                                                   ImageType scene) {
+        ProjectRepository.CleanOptionsView knobs =
+                projectRepository.findCleanOptionsById(projectId).orElse(null);
+        if (knobs == null) return ImageCleanerService.PromptOptions.DEFAULT;
+
+        CleanFurnishing furnishing = CleanFurnishing.parse(knobs.getCleanFurnishing());
+        CleanAngle angle = CleanAngle.parse(knobs.getCleanAngle());
+
+        HouseType type = HouseType.parse(knobs.getHouseType());
+        if (type == HouseType.UNKNOWN) {
+            type = image.getHouseType() == null ? HouseType.UNKNOWN : image.getHouseType();
+        }
+        if (type == HouseType.UNKNOWN && Boolean.TRUE.equals(knobs.getAnalysePhoto())) {
+            type = analyseAndRemember(image, scene);
+        }
+        // The scene is the answer four downstream decisions already depend on, so a type
+        // that contradicts it — an admin who picked BATHROOM for a facade, or a stale
+        // answer from before the scene was re-resolved — loses rather than winning.
+        if (!type.fits(scene)) {
+            log.warn("House type {} does not fit scene {} for project {} — ignoring it",
+                    type, scene, projectId);
+            type = HouseType.UNKNOWN;
+        }
+        return new ImageCleanerService.PromptOptions(type, furnishing, angle);
+    }
+
+    /**
+     * Spend one Claude Haiku call looking at this photo properly, and write what comes
+     * back onto the image so a second run of it doesn't pay again.
+     *
+     * <p>Best-effort in exactly the way {@link #resolveScene} is: the analysis only ever
+     * adds a sentence to a prompt and a swatch to a screen, so a classifier that is down
+     * costs the run nothing at all. It returns UNKNOWN and the run carries on with the
+     * stock prompt.
+     *
+     * <p>Note what it does NOT do: it never writes back the scene. {@code resolveScene}
+     * has already settled that, possibly from the upload, and letting a second opinion
+     * overwrite it here would mean the cleaning prompt and the mask prompt could be
+     * chosen from different answers to the same question.
+     */
+    private HouseType analyseAndRemember(UploadedImage image, ImageType scene) {
+        try {
+            byte[] bytes = storageService.load(image.getStorageKey());
+            SceneAnalysis analysis = claudeVision.analyseStored(bytes);
+            image.setHouseType(analysis.houseType());
+            image.setDetectedWallHex(analysis.wallHex());
+            image.setDetectedWallColour(analysis.wallColourName());
+            image.setDetectedTrimHex(analysis.trimHex());
+            imageRepository.save(image);
+            log.info("Analysed image {}: type={} wall={} ({}) — scene stays {}",
+                    image.getId(), analysis.houseType(), analysis.wallHex(),
+                    analysis.wallColourName(), scene);
+            return analysis.houseType();
+        } catch (Exception e) {
+            log.warn("Could not analyse image {} — continuing with the stock prompt: {}",
+                    image.getId(), e.getMessage());
+            return HouseType.UNKNOWN;
         }
     }
 

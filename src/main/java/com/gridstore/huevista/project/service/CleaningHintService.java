@@ -1,6 +1,7 @@
 package com.gridstore.huevista.project.service;
 
 import com.gridstore.huevista.common.ai.ClaudeService;
+import com.gridstore.huevista.image.model.HouseType;
 import com.gridstore.huevista.image.model.ImageType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,11 +38,35 @@ public class CleaningHintService {
      * @return a short "REMOVE: … / PRESERVE: …" addendum grounded in this image, or empty.
      */
     public Optional<String> describeCleanup(String imageUrl, ImageType scene) {
+        return describeCleanup(imageUrl, scene, HouseType.UNKNOWN);
+    }
+
+    /**
+     * The same hints, with the kind of place named.
+     *
+     * <p>Naming it is worth a token or two because this prompt asks the model to sort
+     * what it sees into REMOVE / PRESERVE / FINISH, and every one of those three lists
+     * depends on what the place IS. Stock on a shop's shelves is furniture to preserve,
+     * not clutter to clear. A bathroom's tiled dado belongs in PRESERVE, while the same
+     * flat surface in a half-built bedroom belongs in FINISH. Told only "interior room",
+     * the model has to guess which, and it guesses per photo.
+     *
+     * @param houseType {@link HouseType#UNKNOWN} says nothing extra, which is exactly
+     *                  the old behaviour
+     */
+    public Optional<String> describeCleanup(String imageUrl, ImageType scene, HouseType houseType) {
         if (!enabled || !claude.isEnabled()) {
             return Optional.empty();
         }
         boolean exterior = scene != ImageType.INDOOR;
-        String sceneWord = exterior ? "building exterior" : "interior room";
+        HouseType type = houseType == null ? HouseType.UNKNOWN : houseType;
+        // "interior room" / "building exterior" unless we know better, in which case the
+        // specific name replaces the generic one rather than sitting beside it — one
+        // noun for the subject reads as a fact, two read as a hedge.
+        String sceneWord = type == HouseType.UNKNOWN
+                ? (exterior ? "building exterior" : "interior room")
+                : type.getLabel().toLowerCase(java.util.Locale.ROOT)
+                        + (exterior ? " exterior" : "");
         // Both scenes can be photographed mid-construction — an unplastered brick shell is
         // as common indoors as a half-rendered facade — so both get a FINISH list. Indoors
         // the ceiling and floor can be raw too, not just the walls.
