@@ -165,6 +165,39 @@ class CleaningAndMaskPromptTest {
         assertThat(prompt).contains("NO SURFACE IS LEFT UNPAINTED");
     }
 
+    /**
+     * The interior prompt names its colours in WORDS, and stays short enough to read.
+     *
+     * Both halves are the point of this prompt's rewrite, and both are the kind of
+     * property that erodes one well-meant edit at a time: somebody puts {@code #ffffff}
+     * back "for precision", somebody else restates an existing rule "to be safe", and it
+     * is fourteen thousand characters of partly self-contradicting instruction again.
+     * An image model has never seen a hex code on a paint tin — it has seen ten million
+     * captions saying "white wall" — and the instruction it follows worst is the one it
+     * has to read three times in three different phrasings.
+     *
+     * <p>The exterior prompt still uses hex, and is asserted here so the split reads as
+     * a decision rather than a half-finished edit.
+     */
+    @Test
+    void interiorCleanPromptNamesItsColoursInWordsAndStaysShort() {
+        String prompt = ImageCleanerService.cleanPromptFor(ImageType.INDOOR);
+
+        assertThat(prompt).doesNotContainPattern("#[0-9a-fA-F]{6}");
+        assertThat(prompt).contains("clean, bright, pure brilliant white")
+                .contains("dark wood brown")
+                .contains("charcoal grey");
+        // "whitewash" is the name of this prompt's worst failure — white paint with the
+        // brick pattern still legible under it — so it must never become the verb for
+        // the instruction as well. Every occurrence is that failure, and no other.
+        assertThat(prompt.replace("whitewashed brick", "")).doesNotContain("whitewash");
+        // A guard rail, not a target: well under it is fine, creeping back over it is
+        // the regression. The prompt was 14,108 characters before the rewrite.
+        assertThat(prompt.length()).isLessThan(12_000);
+
+        assertThat(ImageCleanerService.cleanPromptFor(ImageType.OUTDOOR)).contains("#ffffff");
+    }
+
     /** The same gap, and the same fix, on a facade left in bare plaster. */
     @Test
     void exteriorCleanPromptPuttiesAndPaintsAPlasteredButUnpaintedWall() {

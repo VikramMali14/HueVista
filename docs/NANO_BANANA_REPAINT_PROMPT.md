@@ -30,10 +30,10 @@ red/green/blue and maps back to the real colours via
 
 | Surface | Mask hue (step 2) | Real colour (exterior) | Real colour (interior) | Recolourable by user? |
 | --- | --- | --- | --- | --- |
-| Main walls | Red `#FF0000` | `#ffffff` white | `#ffffff` white | Yes |
-| Accent / highlight wall | Green `#00FF00` | `#ffffff` white | `#ffffff` white | Yes |
-| Trim / border (window & door **frames**, fascia, parapet edges, ledges, banding) | Blue `#0000FF` | `#ffffff` white | `#ffffff` white | Yes |
-| **Doors + metal/iron railings** | **Black (excluded)** | **`#5c4033` dark brown** | **`#5c4033` dark brown** | **No — kept** |
+| Main walls | Red `#FF0000` | `#ffffff` white | white (named in words) | Yes |
+| Accent / highlight wall | Green `#00FF00` | `#ffffff` white | white (named in words) | Yes |
+| Trim / border (window & door **frames**, fascia, parapet edges, ledges, banding) | Blue `#0000FF` | `#ffffff` white | white (named in words) | Yes |
+| **Doors + metal/iron railings** | **Black (excluded)** | **`#5c4033` dark brown** | **dark wood brown (named in words)** | **No — kept** |
 | Everything else (sky, ground, stone, brick, tile, glass, fixtures…) | Black | original | original | No |
 
 ## Doors & railings are "kept", not recoloured
@@ -41,9 +41,11 @@ red/green/blue and maps back to the real colours via
 Per the requirement *"I don't want a recolour mask for doors/windows/railings —
 keep those"*, doors and metal/iron railings are **not** a recolourable region:
 
-- `ImageCleanerService` paints the door leaves/panels and all metal/iron railings
-  a fixed dark brown `#5c4033` (constant `DOOR_RAILING`). Window/door **frames**
-  stay trim grey; only the door panels and the railings go brown.
+- `ImageCleanerService` paints the door leaves/panels a fixed dark brown
+  (`DOOR_LEAF`, `#5c4033`) and all metal/iron railings a charcoal grey
+  (`RAILING`, `#43464a`) — the exterior prompt by hex, the interior one in
+  words. Window/door **frames** stay trim colour; only the door panels and the
+  railings differ.
 - `ReplicateNanoBananaSegmenter` marks doors and railings **BLACK** in the mask,
   exactly like stone or brick — so `splitColorCodedMask` never creates a region
   for them and the user can't recolour them. They simply keep the brown from the
@@ -55,9 +57,20 @@ category set.
 
 ## Where the colours live (keep in sync)
 
-- `ImageCleanerService` — `EXT_WALL`, `EXT_BORDER`, `INT_WALL`, `INT_BORDER`
-  (must match `defaultHexFor` + frontend `DEFAULT_HEX_FOR_KIND`), and
-  `DOOR_RAILING` (cleaner-only; no region uses it).
+- `ImageCleanerService` — `EXT_WALL`, `EXT_BORDER` (must match `defaultHexFor` +
+  frontend `DEFAULT_HEX_FOR_KIND`), and `DOOR_RAILING` (cleaner-only; no region
+  uses it).
+- `ImageCleanerService.CLEAN_PROMPT_INTERIOR` — the **interior** clean prompt
+  asks for its colours in plain words rather than hex: "a clean, bright, pure
+  brilliant white" for walls, ceiling and trim, "a dark wood brown" for door
+  leaves, "a charcoal grey" for railings. There is no `INT_WALL`/`INT_BORDER`
+  constant any more. The words mean the same white as the hexes above, and if
+  one moves the other must move with it — the interior prompt is the one place
+  the palette is written in English, so nothing greps it out of the code.
+  (Why: the interior prompt is by far the longest of the three and a six-digit
+  code inside it was one more thing to decode. Nothing downstream parses either
+  form — the cleaned photo is an illumination map, and the real per-region
+  colours come from `defaultHexFor` and the user's picks.)
 - `SegmentationService.defaultHexFor` — the per-category real colours applied to
   each recolourable region.
 - Frontend `DEFAULT_HEX_FOR_KIND` — the same wall/accent/trim hexes.
