@@ -1189,6 +1189,24 @@ public class ImageCleanerService {
      * instruction: "whitewash" is the name of its worst failure — white paint with the
      * brick pattern still legible under it — so the verb stays "paint".
      *
+     * <p><b>REPAINT is job (1), and says so.</b> The job list used to name only CLEAN and
+     * FINISH — the repaint, which is the entire reason the picture is generated, was not
+     * on it, and the section heading sat below a DO NOT ADD ANYTHING block labelled "most
+     * important rule". A model reading that top-down learns the job is mostly restraint.
+     * It is now first, named MANDATORY, and the "most important" label moved off DO NOT
+     * ADD ANYTHING (which is instead the rule most often broken) so that exactly one
+     * thing claims to matter most.
+     *
+     * <p><b>A tiled WALL is painted; a tiled FLOOR is not.</b> A product decision, taken
+     * because the prompt read fine either way and so kept coming out differently: a
+     * yellow-tiled stairwell dado matched "repaint EVERY wall" and "decorative tile is a
+     * design choice that stays" at the same time. Wall tile is now resurfaced and painted
+     * with the rest — and "resurfaced" is the load-bearing half, because
+     * {@code ReplicateMaskSegmenter} marks any wall face still showing tile BLACK and
+     * reads the CLEANED image, so white paint over a visible grout grid is a wall the
+     * customer still cannot recolour. Bathrooms and kitchens keep their tile through
+     * their own house-type clauses, which are appended after this prompt and override it.
+     *
      * <p><b>And it is deliberately shorter than it was.</b> It said the same handful of
      * things three and four times over — walls must be plastered, puttied and painted
      * appeared in the job list, in REPAINT, twice in FINISH and again in SELF-CHECK —
@@ -1204,17 +1222,22 @@ public class ImageCleanerService {
           + "must be the SAME photograph of the SAME room, with only the edits listed below"
           + " applied. Every pixel that is not explicitly covered by a REMOVE, REPAINT or "
           + "FINISH rule must come back unchanged.\n\n"
-          + "YOU HAVE TWO JOBS, AND BOTH ARE REQUIRED:\n"
-          + "(1) CLEAN — remove clutter and damage, and add nothing.\n"
-          + "(2) FINISH — complete every unfinished surface: unplastered brick or blockwork"
+          + "YOU HAVE THREE JOBS, AND ALL THREE ARE REQUIRED:\n"
+          + "(1) REPAINT — paint the whole room white. This is the MOST IMPORTANT job and "
+          + "it is MANDATORY: it is the edit this picture exists for, and a room that "
+          + "comes back in its original colours is a FAILED edit, however tidy and "
+          + "well-finished it is.\n"
+          + "(2) CLEAN — remove clutter and damage, and add nothing.\n"
+          + "(3) FINISH — complete every unfinished surface: unplastered brick or blockwork"
           + " walls, WALLS THAT ARE PLASTERED BUT NOT YET PUTTIED OR PAINTED, a bare "
           + "concrete ceiling soffit, a raw cement floor.\n"
-          + "Job (1) is about restraint; job (2) is about completing work the builder has "
-          + "not done yet. Do not let the restraint of job (1) talk you out of job (2): an "
-          + "unfinished surface that comes back unfinished is a failed edit, exactly as "
-          + "much as an invented sofa would be.\n\n"
-          + "DO NOT ADD ANYTHING (most important rule — this is where these edits usually "
-          + "go wrong):\n"
+          + "Job (2) is about restraint; jobs (1) and (3) are about work that must actually "
+          + "happen — repainting the room, and completing what the builder has not done "
+          + "yet. Do not let the restraint of job (2) talk you out of them: a wall that "
+          + "comes back its old colour, or a surface that comes back unfinished, is a "
+          + "failed edit, exactly as much as an invented sofa would be.\n\n"
+          + "DO NOT ADD ANYTHING (the rule most often broken — this is where these edits "
+          + "usually go wrong):\n"
           + "- Do NOT add any object that is not already visible in the photograph: no "
           + "furniture, rugs, cushions or throws, no plants, vases, books or ornaments, no "
           + "wall art, posters, mirrors or picture frames, no lamps, curtains, blinds or "
@@ -1235,11 +1258,22 @@ public class ImageCleanerService {
           + "holes; people and pets. Fill each cleared space with the wall, floor or "
           + "skirting that genuinely continues behind it — never with a new object, and "
           + "never with invented detail.\n\n"
-          + "REPAINT — PAINT THE WHOLE ROOM WHITE:\n"
+          + "REPAINT — PAINT THE WHOLE ROOM WHITE. THIS IS JOB (1): THE MOST IMPORTANT "
+          + "RULE HERE, AND MANDATORY. Every rule below about what to keep governs SHAPE, "
+          + "POSITION and MATERIAL — none of them is a reason to leave a painted surface "
+          + "its old colour:\n"
           + "- Walls: repaint EVERY wall a single even coat of a clean, bright, pure "
           + "brilliant white — the white of a freshly painted new room, with no cream, "
           + "beige, grey or blue tint to it, no stains and no patchiness. EVERY wall means "
           + "the ones already painted AND the ones never painted at all.\n"
+          + "- COVER IT PROPERLY, CORNER TO CORNER. The coat is OPAQUE and UNIFORM across "
+          + "the whole of each wall — no thin or missed areas, no patchy coverage, nowhere "
+          + "the old colour still shows through. Watch the parts that get left behind: the "
+          + "band low down near the skirting, the strip above a door, the wall behind "
+          + "furniture, the far end of a long wall, the returns inside a deep opening. A "
+          + "wall that is bright white at eye level and patchy at the bottom is a FAILED "
+          + "edit. A dado, a lower band or a skirting-height stripe in another colour goes "
+          + "too — the wall is ONE white from floor to ceiling.\n"
           + "- Ceiling, trim, skirting, door frames and window frames: the same clean "
           + "white, so walls, ceiling and trim read as one white.\n"
           + "- Door leaves and panels: a dark wood brown, keeping their natural timber "
@@ -1248,9 +1282,19 @@ public class ImageCleanerService {
           + "powder-coated metalwork. Do NOT paint the doors or the railings white.\n"
           + "- Preserve each surface's existing light and shade — keep the highlights, "
           + "shadows and soft gradients so the new white still looks three-dimensional. "
-          + "Repaint the surfaces, do not flatten them.\n"
+          + "Repaint the surfaces, do not flatten them: it is the FILM OF PAINT that is "
+          + "even, never the brightness, so a wall that is lit at one end and in shadow at "
+          + "the other still reads that way, in white.\n"
+          + "- A TILED WALL IS STILL A WALL, AND IT GETS PAINTED. Wall tile — a tiled dado "
+          + "up a stairwell, a tiled band along a corridor — is repainted white with the "
+          + "rest of the wall, NOT preserved. "
+          + "Resurface it the way you would rough masonry, so it comes back as a plain "
+          + "painted wall with no tile grid and no grout line showing through anywhere, and "
+          + "carry the white straight across the join so the wall reads as ONE surface from "
+          + "floor to ceiling. WALLS ONLY: floor tile stays, and so does any surface a note "
+          + "about THIS room says stays.\n"
           + "- DO NOT change non-painted surfaces that are a FINISHED choice: wood, tile, "
-          + "marble and stone floors, countertops, cabinetry finish, glass and metal stay "
+          + "marble and stone FLOORS, countertops, cabinetry finish, glass and metal stay "
           + "EXACTLY as they appear. Bare cement plaster and a bare putty coat are NOT such"
           + " a finish, however smooth they look — unpainted plaster is a stage of the "
           + "work, not a chosen finish, so complete it per FINISH below.\n\n"
@@ -1297,9 +1341,10 @@ public class ImageCleanerService {
           + "windows, doors or edges. And do NOT furnish or decorate the finished room — a "
           + "bare room that is now plastered and painted is still a bare room.\n"
           + "- This applies ONLY to surfaces meant to be plastered and painted. Do NOT "
-          + "plaster over an intentional exposed-brick feature wall, natural stone cladding"
-          + " or decorative tile in an otherwise finished room — those are design choices "
-          + "and stay exactly as they are.\n\n"
+          + "plaster over an intentional exposed-brick feature wall or natural stone "
+          + "cladding in an otherwise finished room — those are design choices and stay "
+          + "exactly as they are. WALL TILE is the exception — resurfaced and painted per "
+          + "REPAINT; floor tile always stays.\n\n"
           + "KEEP UNCHANGED (shape & position only — painted ones are repainted above):\n"
           + "- Windows, doors, frames, built-in cabinetry and wardrobes, kitchen units, "
           + "fireplaces, shelving and switchboards keep their exact shapes and positions; "

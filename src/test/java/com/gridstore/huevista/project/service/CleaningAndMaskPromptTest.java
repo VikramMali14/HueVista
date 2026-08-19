@@ -1,5 +1,6 @@
 package com.gridstore.huevista.project.service;
 
+import com.gridstore.huevista.image.model.HouseType;
 import com.gridstore.huevista.image.model.ImageType;
 import org.junit.jupiter.api.Test;
 
@@ -59,8 +60,11 @@ class CleaningAndMaskPromptTest {
     void interiorCleanPromptGivesFinishingEqualBillingWithRestraint() {
         String prompt = ImageCleanerService.cleanPromptFor(ImageType.INDOOR);
 
-        assertThat(prompt).contains("YOU HAVE TWO JOBS, AND BOTH ARE REQUIRED");
-        assertThat(prompt).contains("Do not let the restraint of job (1) talk you out of job (2)");
+        assertThat(prompt).contains("YOU HAVE THREE JOBS, AND ALL THREE ARE REQUIRED");
+        // REPAINT is job (1) and says so: it is the edit the picture exists for, and it
+        // was the one job the list did not previously name at all.
+        assertThat(prompt).contains("(1) REPAINT").contains("MOST IMPORTANT job and it is MANDATORY");
+        assertThat(prompt).contains("Do not let the restraint of job (2) talk you out of them");
         assertThat(prompt).contains("CEILING — FINISH IT TOO; DO NOT SKIP IT");
         assertThat(prompt).contains("shuttering plank lines");
         assertThat(prompt).contains("SELF-CHECK");
@@ -191,11 +195,49 @@ class CleaningAndMaskPromptTest {
         // brick pattern still legible under it — so it must never become the verb for
         // the instruction as well. Every occurrence is that failure, and no other.
         assertThat(prompt.replace("whitewashed brick", "")).doesNotContain("whitewash");
-        // A guard rail, not a target: well under it is fine, creeping back over it is
-        // the regression. The prompt was 14,108 characters before the rewrite.
-        assertThat(prompt.length()).isLessThan(12_000);
+        // A ratchet, not a budget: it exists to stop the prompt drifting back to the
+        // 14,108 characters it was before the rewrite, one well-meant restatement at a
+        // time. Deliberate additions may move it — REPAINT being promoted to job (1) and
+        // the tiled-wall rule both did — but they move it by an amount somebody chose.
+        assertThat(prompt.length()).isLessThan(13_000);
 
         assertThat(ImageCleanerService.cleanPromptFor(ImageType.OUTDOOR)).contains("#ffffff");
+    }
+
+    /**
+     * A tiled WALL is painted white; a tiled FLOOR is not.
+     *
+     * This is a product decision rather than a discovered fact, which is exactly why it
+     * needs pinning: the prompt reads perfectly well with the opposite rule, so nothing
+     * but a test says which one was chosen. A yellow-tiled stairwell dado is the case
+     * that forced it — REPAINT said "repaint EVERY wall", the FINISH rules said tile is
+     * a design choice that stays, and the model was left to guess.
+     *
+     * <p>"Resurface it" is load-bearing, not decoration. {@link ReplicateMaskSegmenter}
+     * marks any wall face still showing tile, stone or brick BLACK — excluded from the
+     * paint masks — and it reads the CLEANED image. So a wall that comes back as white
+     * paint over a visible tile grid is not recolourable, and painting it achieved
+     * nothing. The grout lines have to be gone for the choice to mean anything.
+     *
+     * <p>Bathrooms and kitchens keep their tile: those clauses are appended after this
+     * prompt and override it, which is what the base rule's "any surface a note about
+     * THIS room says stays" defers to.
+     */
+    @Test
+    void aTiledWallIsPaintedButATiledFloorIsNot() {
+        String prompt = ImageCleanerService.cleanPromptFor(ImageType.INDOOR);
+
+        assertThat(prompt).contains("A TILED WALL IS STILL A WALL, AND IT GETS PAINTED");
+        assertThat(prompt).contains("no tile grid and no grout line showing through");
+        assertThat(prompt).contains("floor tile always stays");
+        // The FINISH rules must not still be offering tile as a design choice that stays.
+        assertThat(prompt).doesNotContain("natural stone cladding or decorative tile");
+        // Brick and stone are NOT part of this decision and keep their old treatment.
+        assertThat(prompt).contains("intentional exposed-brick feature wall or natural stone");
+
+        // The room-specific clauses are the exception, and still say so.
+        assertThat(ImageCleanerService.houseTypeClause(HouseType.BATHROOM, true))
+                .contains("THE TILE IS A FINISH, NOT UNFINISHED WORK");
     }
 
     /** The same gap, and the same fix, on a facade left in bare plaster. */

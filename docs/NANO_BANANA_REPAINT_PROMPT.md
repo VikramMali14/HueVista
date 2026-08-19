@@ -36,6 +36,15 @@ red/green/blue and maps back to the real colours via
 | **Doors + metal/iron railings** | **Black (excluded)** | **`#5c4033` dark brown** | **dark wood brown (named in words)** | **No — kept** |
 | Everything else (sky, ground, stone, brick, tile, glass, fixtures…) | Black | original | original | No |
 
+**Interior wall tile is an exception to that last row.** The interior clean prompt
+resurfaces and paints a tiled *wall* (a stairwell dado, a corridor band) white
+along with the rest of the wall, so by the time the segmenter sees the cleaned
+image there is no tile face left to mark BLACK and the wall is recolourable like
+any other. Floor tile is untouched, and bathrooms/kitchens keep their tile via
+their `houseTypeClause`. Note the dependency: the prompt says *resurface*, not
+just *paint*, precisely because `CLADDING IS A MATERIAL, NOT PAINT` in the mask
+prompt would otherwise exclude a wall still showing its grout grid.
+
 ## Doors & railings are "kept", not recoloured
 
 Per the requirement *"I don't want a recolour mask for doors/windows/railings —
