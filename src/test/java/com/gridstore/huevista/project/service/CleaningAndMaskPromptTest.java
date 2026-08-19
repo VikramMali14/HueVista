@@ -205,37 +205,42 @@ class CleaningAndMaskPromptTest {
     }
 
     /**
-     * A tiled WALL is painted white; a tiled FLOOR is not.
+     * One block answers "is this a paintable wall?", and answers it for every surface.
      *
-     * This is a product decision rather than a discovered fact, which is exactly why it
-     * needs pinning: the prompt reads perfectly well with the opposite rule, so nothing
-     * but a test says which one was chosen. A yellow-tiled stairwell dado is the case
-     * that forced it — REPAINT said "repaint EVERY wall", the FINISH rules said tile is
-     * a design choice that stays, and the model was left to guess.
+     * The question used to be answered in five places — REPAINT said "repaint EVERY
+     * wall", FINISH said decorative tile is a design choice that stays, another bullet
+     * protected "wood, tile, marble and stone floors" without saying what a tiled WALL
+     * was — and a real photograph hit three of them at once: a verandah with a yellow
+     * scored-render wall, a polished stone dado at its base, and a timber beam ceiling.
+     * The prompt could be read as painting the stone, flattening the grooves, and
+     * whitening the beams, and nothing in it said otherwise.
      *
-     * <p>"Resurface it" is load-bearing, not decoration. {@link ReplicateMaskSegmenter}
-     * marks any wall face still showing tile, stone or brick BLACK — excluded from the
-     * paint masks — and it reads the CLEANED image. So a wall that comes back as white
-     * paint over a visible tile grid is not recolourable, and painting it achieved
-     * nothing. The grout lines have to be gone for the choice to mean anything.
-     *
-     * <p>Bathrooms and kitchens keep their tile: those clauses are appended after this
-     * prompt and override it, which is what the base rule's "any surface a note about
-     * THIS room says stays" defers to.
+     * <p>Each surface now appears exactly once, in one list, so the rules cannot drift
+     * apart from each other.
      */
     @Test
-    void aTiledWallIsPaintedButATiledFloorIsNot() {
+    void oneBlockSaysWhichSurfacesArePainted() {
         String prompt = ImageCleanerService.cleanPromptFor(ImageType.INDOOR);
 
-        assertThat(prompt).contains("A TILED WALL IS STILL A WALL, AND IT GETS PAINTED");
-        assertThat(prompt).contains("no tile grid and no grout line showing through");
-        assertThat(prompt).contains("floor tile always stays");
-        // The FINISH rules must not still be offering tile as a design choice that stays.
-        assertThat(prompt).doesNotContain("natural stone cladding or decorative tile");
-        // Brick and stone are NOT part of this decision and keep their old treatment.
-        assertThat(prompt).contains("intentional exposed-brick feature wall or natural stone");
+        assertThat(prompt).contains("WHAT COUNTS AS A PAINTABLE WALL");
 
-        // The room-specific clauses are the exception, and still say so.
+        // Scored grooves are moulding on a finished wall, not brickwork to be flattened.
+        // This is the one the RESURFACE rule actively got wrong: "every block edge GONE"
+        // reads as an instruction to plaster over a decorative ashlar grid.
+        assertThat(prompt).contains("Those grooves are MOULDING, not brickwork");
+        assertThat(prompt).contains("Tell rough masonry from a scored render by the SURFACE");
+        assertThat(prompt).contains("Grooves scored into a painted render are not masonry");
+
+        // Stone stays, tile does not — the product decision, still pinned.
+        assertThat(prompt).contains("MARBLE, GRANITE OR POLISHED STONE");
+        assertThat(prompt).contains("- WALL TILE: a WALL.");
+        assertThat(prompt).contains("no tile grid and no grout line shows through");
+
+        // A timber ceiling is finished wood, not a slab waiting to be plastered white.
+        assertThat(prompt).contains("exposed TIMBER ceilings, beams, boarding and coffers");
+
+        // Room-specific clauses still override the block, and it says so.
+        assertThat(prompt).contains("A note about THIS room, below, overrides any of these");
         assertThat(ImageCleanerService.houseTypeClause(HouseType.BATHROOM, true))
                 .contains("THE TILE IS A FINISH, NOT UNFINISHED WORK");
     }
