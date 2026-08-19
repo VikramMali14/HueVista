@@ -51,7 +51,7 @@ public class MyRenderResponse {
     private String furnishing;
     private String style;
 
-    /** BASIC · PRO · MAX — which model made it. Kept on the shelf so two images of the
+    /** PREMIUM · LUXURY — which model made it. Kept on the shelf so two images of the
      *  same room can be told apart by more than the day they were made. */
     private String quality;
 
@@ -101,7 +101,7 @@ public class MyRenderResponse {
                 .furnishing(render.getFurnishing().name())
                 .style(render.getStyle().name())
                 .quality((render.getQuality() == null
-                        ? ProjectRender.Quality.BASIC : render.getQuality()).name())
+                        ? ProjectRender.Quality.PREMIUM : render.getQuality()).name())
                 .sourceImage((render.getSourceImage() == null
                         ? ProjectRender.SourceImage.CLEANED : render.getSourceImage()).name())
                 .note(render.getNote())

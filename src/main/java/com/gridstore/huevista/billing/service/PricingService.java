@@ -111,18 +111,14 @@ public class PricingService {
     @Value("${app.ai-credit.max-purchase:50}")
     private int aiCreditMaxPurchase;
 
-    /** Credits the plainest AI image costs — the BASIC tier, and the floor every other
-     *  tier is quoted against. See {@link #aiCreditRenderCost(ProjectRender.Quality)}. */
+    /** Credits a PREMIUM image costs — the floor, and what every other tier is quoted
+     *  against. See {@link #aiCreditRenderCost(ProjectRender.Quality)}. */
     @Value("${app.ai-credit.render-cost:1}")
     private int aiCreditRenderCost;
 
-    /** Credits a PRO image costs: a better model, at a bigger size. */
-    @Value("${app.ai-credit.render-cost-pro:2}")
-    private int aiCreditRenderCostPro;
-
-    /** Credits a MAX image costs: the best model wired in, at the largest size. */
-    @Value("${app.ai-credit.render-cost-max:4}")
-    private int aiCreditRenderCostMax;
+    /** Credits a LUXURY image costs: a better model, at a bigger size. */
+    @Value("${app.ai-credit.render-cost-luxury:2}")
+    private int aiCreditRenderCostLuxury;
 
     // ── The customer catalogue ──────────────────────────────────────────────
     //
@@ -142,10 +138,10 @@ public class PricingService {
     private int cataloguePricePerProject;
 
     /** One AI image credit, bought on its own. */
-    @Value("${app.customer-catalogue.credit-price-paise:3500}")
+    @Value("${app.customer-catalogue.credit-price-paise:7000}")
     private int cataloguePricePerCredit;
 
-    /** The combination: a project and the images to go with it, for less than the two
+    /** The combination: a room and the picture to come out of it, for less than the two
      *  bought separately (₹199 against ₹219). */
     @Value("${app.customer-catalogue.combo-price-paise:19900}")
     private int cataloguePricePerCombo;
@@ -153,8 +149,44 @@ public class PricingService {
     @Value("${app.customer-catalogue.combo-projects:1}")
     private int catalogueComboProjects;
 
-    @Value("${app.customer-catalogue.combo-credits:2}")
+    @Value("${app.customer-catalogue.combo-credits:1}")
     private int catalogueComboCredits;
+
+    // ── The special offer ───────────────────────────────────────────────────
+    //
+    // Three rooms and three pictures for the price of two of each. It is the same two
+    // things already on the counter, in the quantity somebody doing up a whole flat
+    // actually needs, with the third of each thrown in — a discount stated as a thing you
+    // get rather than as a percentage off a subtotal, which is the only kind of offer
+    // people work out in their heads at the counter.
+    //
+    // It is a LINE, not a code. The percentage offers below still apply to a basket that
+    // holds one, and deliberately so: this is the price of the bundle, and an order big
+    // enough to earn HUE10 on top has earned it.
+
+    /** Projects in the special-offer bundle. */
+    @Value("${app.customer-catalogue.bundle-projects:3}")
+    private int catalogueBundleProjects;
+
+    /** AI image credits in the special-offer bundle. */
+    @Value("${app.customer-catalogue.bundle-credits:3}")
+    private int catalogueBundleCredits;
+
+    /**
+     * What the bundle is PAID for, in units of each line — two, against three handed over.
+     *
+     * <p>A ratio rather than a price in paise, on purpose. The bundle's whole promise is
+     * "three for the price of two", and a price typed in rupees stops being that promise
+     * the moment somebody moves the project or credit price and forgets this line. Priced
+     * from the same two numbers the rest of the counter quotes, it cannot drift: at
+     * ₹149 + ₹70 it comes to ₹438 against ₹657, and it will still be two-thirds of the
+     * parts whatever those parts become.
+     */
+    @Value("${app.customer-catalogue.bundle-paid-projects:2}")
+    private int catalogueBundlePaidProjects;
+
+    @Value("${app.customer-catalogue.bundle-paid-credits:2}")
+    private int catalogueBundlePaidCredits;
 
     /**
      * How long a catalogue purchase lasts: a year, for every line on it.
@@ -414,6 +446,41 @@ public class PricingService {
         return Math.max(0, catalogueComboCredits);
     }
 
+    // ── The special offer: three of each for the price of two ───────────────
+
+    public int catalogueBundleProjects() {
+        return Math.max(0, catalogueBundleProjects);
+    }
+
+    public int catalogueBundleCredits() {
+        return Math.max(0, catalogueBundleCredits);
+    }
+
+    /**
+     * What one bundle costs: the paid quantities at the counter's own single-line prices.
+     *
+     * <p>Derived rather than configured, so "three for the price of two" stays true of
+     * whatever those two lines cost today. See the fields for why that matters.
+     */
+    public int cataloguePricePerBundle() {
+        return Math.max(0, catalogueBundlePaidProjects) * cataloguePricePerProject
+                + Math.max(0, catalogueBundlePaidCredits) * cataloguePricePerCredit;
+    }
+
+    /** What the same contents would cost bought line by line — the struck-through figure. */
+    public int catalogueBundleListPricePaise() {
+        return catalogueBundleProjects() * cataloguePricePerProject
+                + catalogueBundleCredits() * cataloguePricePerCredit;
+    }
+
+    /** Whether the bundle is on sale at all. Zero either side of it takes the line off the
+     *  counter rather than offering an empty basket for money. */
+    public boolean catalogueBundleAvailable() {
+        return (catalogueBundleProjects() + catalogueBundleCredits()) > 0
+                && cataloguePricePerBundle() > 0
+                && cataloguePricePerBundle() < catalogueBundleListPricePaise();
+    }
+
     /** Days a catalogue purchase is good for — the room it opens, and the credit it buys. */
     public int catalogueValidityDays() {
         return Math.max(1, catalogueValidityDays);
@@ -529,7 +596,7 @@ public class PricingService {
         return Math.max(aiCreditMinPurchase(), aiCreditMaxPurchase);
     }
 
-    /** Credits the plainest AI image costs. */
+    /** Credits a PREMIUM AI image costs — the cheapest picture on sale. */
     public int aiCreditRenderCost() {
         return Math.max(1, aiCreditRenderCost);
     }
@@ -537,21 +604,21 @@ public class PricingService {
     /**
      * Credits one AI image costs at {@code quality}.
      *
-     * <p>Three tiers, and the ratio between them is the point: a BASIC image is one credit,
-     * a PRO two and a MAX four. They are different MODELS at different sizes (see
+     * <p>Two tiers, and the ratio between them is the point: a PREMIUM image is one credit
+     * and a LUXURY one is two. They are different MODELS at different sizes (see
      * {@code ProjectRenderWorker}), so the price difference is a real cost difference and
-     * not a fence — which is why the cheapest tier is a whole product on its own rather
-     * than a deliberately poor one.
+     * not a fence — which is why the cheaper tier is a whole product on its own rather than
+     * a deliberately poor one. There used to be a third at four credits and nobody chose
+     * it; the dearest picture on sale is now two.
      *
-     * <p>Null reads as BASIC. Every render made before the tiers existed was one, and a
+     * <p>Null reads as PREMIUM. Every render made before the tiers existed was one, and a
      * client that names no quality is asking for the ordinary picture.
      */
     public int aiCreditRenderCost(com.gridstore.huevista.project.model.ProjectRender.Quality quality) {
         if (quality == null) return aiCreditRenderCost();
         return switch (quality) {
-            case BASIC -> aiCreditRenderCost();
-            case PRO -> Math.max(aiCreditRenderCost(), aiCreditRenderCostPro);
-            case MAX -> Math.max(aiCreditRenderCost(), aiCreditRenderCostMax);
+            case PREMIUM -> aiCreditRenderCost();
+            case LUXURY -> Math.max(aiCreditRenderCost(), aiCreditRenderCostLuxury);
         };
     }
 

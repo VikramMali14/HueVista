@@ -39,17 +39,17 @@ public class AiCreditSummaryResponse {
     private int minPurchase;
     private int maxPurchase;
 
-    /** Credits the plainest AI image costs — the BASIC tier, and the floor the others
-     *  are quoted against. Kept for callers that know nothing about the tiers. */
+    /** Credits the plainest AI image costs — the PREMIUM tier, and the floor the dearer
+     *  one is quoted against. Kept for callers that know nothing about the tiers. */
     private int renderCost;
 
     /**
      * What each quality of image costs, so a client can label the choice without holding
      * the numbers itself.
      *
-     * <p>Sent as a list rather than three named fields because the tiers are configuration:
-     * a client that iterates this shows whatever the server sells, and one that hard-codes
-     * "Pro is 2" starts lying the day that changes.
+     * <p>Sent as a list rather than named fields because the tiers are configuration: a
+     * client that iterates this shows whatever the server sells, and one that hard-codes
+     * "Luxury is 2" starts lying the day that changes.
      */
     private List<RenderTier> renderTiers;
 
@@ -69,7 +69,7 @@ public class AiCreditSummaryResponse {
     @Data
     @Builder
     public static class RenderTier {
-        /** BASIC, PRO or MAX — the enum name, so a client can send it straight back. */
+        /** PREMIUM or LUXURY — the enum name, so a client can send it straight back. */
         private String quality;
         private int credits;
 

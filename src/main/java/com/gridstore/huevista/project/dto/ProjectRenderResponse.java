@@ -37,8 +37,8 @@ public class ProjectRenderResponse {
     private String furnishing;
     private String style;
 
-    /** BASIC · PRO · MAX — which model made it, and what it cost in credits. Every render
-     *  written before the tiers existed reads BASIC, which is what it was charged as. */
+    /** PREMIUM · LUXURY — which model made it, and what it cost in credits. Every render
+     *  written before the tiers existed reads PREMIUM, which is what it was charged as. */
     private String quality;
 
     /** CLEANED · ORIGINAL — which photograph of the room the model was given to paint.
@@ -63,7 +63,7 @@ public class ProjectRenderResponse {
                 .furnishing(render.getFurnishing().name())
                 .style(render.getStyle().name())
                 .quality((render.getQuality() == null
-                        ? ProjectRender.Quality.BASIC : render.getQuality()).name())
+                        ? ProjectRender.Quality.PREMIUM : render.getQuality()).name())
                 .sourceImage((render.getSourceImage() == null
                         ? ProjectRender.SourceImage.CLEANED : render.getSourceImage()).name())
                 .note(render.getNote())

@@ -41,9 +41,11 @@ public class ProjectRenderWorker {
 
     // ── What each tier runs on ──────────────────────────────────────────────
     //
-    // A render is sold at one of three qualities, and a quality IS a model: BASIC is a
-    // quick, cheap picture, MAX is the best one wired in, and the price difference between
-    // them is a real cost difference rather than a fence. Which model sits in which tier is
+    // A render is sold at one of two qualities, and a quality IS a model: PREMIUM is the
+    // clear, honest picture, LUXURY is a better model at a bigger size, and the price
+    // difference between them is a real cost difference rather than a fence. There used to
+    // be a third above both — four credits, 4K — and nobody chose it; it is gone, and the
+    // dearest thing on sale is now the tier below it. Which model sits in which tier is
     // configuration on purpose — a better one can be promoted without a migration and
     // without a deploy — but the SHAPE is fixed here: a primary that is asked first, and
     // one fallback for when it is merely out of capacity.
@@ -56,32 +58,23 @@ public class ProjectRenderWorker {
     // edits exactly one image, so it would silently drop the masks and ignore "keep the
     // original borders".
 
-    @Value("${replicate.render.quality.basic.model:black-forest-labs/flux-2-klein}")
-    private String basicModel;
+    @Value("${replicate.render.quality.premium.model:black-forest-labs/flux-2-klein}")
+    private String premiumModel;
 
-    @Value("${replicate.render.quality.basic.fallback-models:google/nano-banana}")
-    private String basicFallbacks;
+    @Value("${replicate.render.quality.premium.fallback-models:google/nano-banana}")
+    private String premiumFallbacks;
 
-    @Value("${replicate.render.quality.basic.resolution:1K}")
-    private String basicResolution;
+    @Value("${replicate.render.quality.premium.resolution:1K}")
+    private String premiumResolution;
 
-    @Value("${replicate.render.quality.pro.model:black-forest-labs/flux-2-pro}")
-    private String proModel;
+    @Value("${replicate.render.quality.luxury.model:black-forest-labs/flux-2-pro}")
+    private String luxuryModel;
 
-    @Value("${replicate.render.quality.pro.fallback-models:google/nano-banana-pro}")
-    private String proFallbacks;
+    @Value("${replicate.render.quality.luxury.fallback-models:google/nano-banana-pro}")
+    private String luxuryFallbacks;
 
-    @Value("${replicate.render.quality.pro.resolution:2K}")
-    private String proResolution;
-
-    @Value("${replicate.render.quality.max.model:black-forest-labs/flux-2-max}")
-    private String maxModel;
-
-    @Value("${replicate.render.quality.max.fallback-models:google/nano-banana-pro}")
-    private String maxFallbacks;
-
-    @Value("${replicate.render.quality.max.resolution:4K}")
-    private String maxResolution;
+    @Value("${replicate.render.quality.luxury.resolution:2K}")
+    private String luxuryResolution;
 
     /**
      * A last resort under every tier, empty by default.
@@ -160,17 +153,16 @@ public class ProjectRenderWorker {
     /**
      * The chain for a tier: its primary, its own fallback, then the shared last resort.
      *
-     * <p>Null reads as BASIC. A render row written before the tiers existed carries no
+     * <p>Null reads as PREMIUM. A render row written before the tiers existed carries no
      * quality, and the cheapest tier is the honest reading of one that was charged a single
      * credit.
      */
     private Tier tierFor(com.gridstore.huevista.project.model.ProjectRender.Quality quality) {
         return switch (quality == null
-                ? com.gridstore.huevista.project.model.ProjectRender.Quality.BASIC
+                ? com.gridstore.huevista.project.model.ProjectRender.Quality.PREMIUM
                 : quality) {
-            case BASIC -> new Tier(chain(basicModel, basicFallbacks), basicResolution);
-            case PRO -> new Tier(chain(proModel, proFallbacks), proResolution);
-            case MAX -> new Tier(chain(maxModel, maxFallbacks), maxResolution);
+            case PREMIUM -> new Tier(chain(premiumModel, premiumFallbacks), premiumResolution);
+            case LUXURY -> new Tier(chain(luxuryModel, luxuryFallbacks), luxuryResolution);
         };
     }
 

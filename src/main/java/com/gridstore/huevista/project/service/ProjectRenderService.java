@@ -109,10 +109,10 @@ public class ProjectRenderService {
         // the SUBJECT of the render, not a gate in front of it, and a project that has
         // handed over a board has combinations whether it went on to close or not.
         ProjectPdfPage page = boardService.requirePage(project.getId(), request.getComboId());
-        // Null reads as BASIC: a client that names no quality is asking for the ordinary
-        // picture, and defaulting the other way would charge four credits for silence.
+        // Null reads as PREMIUM: a client that names no quality is asking for the ordinary
+        // picture, and defaulting the other way would charge double for silence.
         ProjectRender.Quality quality = request.getQuality() == null
-                ? ProjectRender.Quality.BASIC
+                ? ProjectRender.Quality.PREMIUM
                 : request.getQuality();
         // Same rule, same reason: silence means the picture this made before the choice
         // existed, which is the cleaned one.
@@ -277,7 +277,7 @@ public class ProjectRenderService {
                 // Which tier was paid for, carried out to the worker: it decides which
                 // model chain is asked and at what size. Read here rather than out there
                 // because out there is another thread with no session to read it in.
-                render.getQuality() == null ? ProjectRender.Quality.BASIC : render.getQuality()));
+                render.getQuality() == null ? ProjectRender.Quality.PREMIUM : render.getQuality()));
     }
 
     /**
