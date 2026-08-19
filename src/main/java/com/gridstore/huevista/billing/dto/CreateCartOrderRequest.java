@@ -27,6 +27,11 @@ public class CreateCartOrderRequest {
     @Min(value = 0, message = "A quantity cannot be negative.")
     private int combos;
 
+    /** Special-offer bundles — three projects and three credits for the price of two of
+     *  each. Priced server-side like every other line; the client names only how many. */
+    @Min(value = 0, message = "A quantity cannot be negative.")
+    private int bundles;
+
     /**
      * The offer the buyer applied, if any.
      *

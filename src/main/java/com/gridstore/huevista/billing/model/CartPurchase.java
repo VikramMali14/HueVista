@@ -74,6 +74,17 @@ public class CartPurchase {
     @Column(nullable = false)
     private int comboPricePaise;
 
+    /** Special-offer bundles bought, and what one was charged at. Defaulted rather than
+     *  plain {@code nullable = false} because every basket paid for before the offer
+     *  existed has no bundle line, and a receipt must not be rewritten to invent one. */
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int bundleQty = 0;
+
+    @Column(nullable = false, columnDefinition = "integer not null default 0")
+    @Builder.Default
+    private int bundlePricePaise = 0;
+
     // ── What it came to, and what it granted ───────────────────────────────
 
     /** The basket before any offer. */

@@ -84,7 +84,7 @@ public class ProjectRender {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 16)
     @Builder.Default
-    private Quality quality = Quality.BASIC;
+    private Quality quality = Quality.PREMIUM;
 
     /**
      * Which photograph of the room the model was given to work from.
@@ -211,29 +211,33 @@ public class ProjectRender {
      * How good an image to make: a different model, at a different size, for a different
      * number of credits.
      *
-     * <p>Three tiers rather than one, because "one photorealistic image" was never one
+     * <p>Two tiers rather than one, because "one photorealistic image" was never one
      * thing. The models behind them differ by an order of magnitude in what they cost us to
      * run, and flattening that into a single price meant either overcharging everybody who
      * wanted a quick look or losing money on everybody who wanted the good one.
      *
-     * <p>The ordering matters and is relied on: BASIC is the floor, and every project's
-     * INCLUDED image is a BASIC one. Choosing better on a room that still has its included
+     * <p>Two rather than THREE, because the third was not a choice anybody made. The old
+     * top tier cost FOUR credits — twice the tier below it, for a difference most people
+     * could not see on a phone — and a price list with a line nobody picks is a price list
+     * that makes the other two harder to read. It is retired, and the dearest thing on sale
+     * is now two credits.
+     *
+     * <p>The ordering matters and is relied on: PREMIUM is the floor, and every project's
+     * INCLUDED image is a PREMIUM one. Choosing better on a room that still has its included
      * image spends the allowance and tops up the difference in credits, rather than
      * refusing — see {@code ProjectRenderService#charge}.
      *
-     * <p>What each tier runs on is configuration, not code ({@code app.render.quality.*}),
-     * so a better model can be promoted into a tier without a migration. What is fixed here
-     * is the SHAPE: a primary that is asked first, and a fallback for when it is out of
-     * capacity.
+     * <p>What each tier runs on is configuration, not code
+     * ({@code replicate.render.quality.*}), so a better model can be promoted into a tier
+     * without a migration. What is fixed here is the SHAPE: a primary that is asked first,
+     * and a fallback for when it is out of capacity.
      */
     public enum Quality {
-        /** One credit. A quick, honest look at the room. */
-        BASIC,
-        /** Two credits. The one most people want: sharper, and better at keeping the
-         *  building's own architecture. */
-        PRO,
-        /** Four credits. The best model wired in, at the largest size — the picture that
-         *  gets printed and shown to somebody. */
-        MAX
+        /** One credit. A clear, honest photograph of the room in its new colours. */
+        PREMIUM,
+        /** Two credits. A better model at a bigger size: sharper, truer to the building's
+         *  own lines, and the one to make when the picture is going to be printed or shown
+         *  to somebody. */
+        LUXURY
     }
 }

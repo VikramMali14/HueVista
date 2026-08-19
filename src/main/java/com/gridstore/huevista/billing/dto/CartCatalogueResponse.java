@@ -44,6 +44,24 @@ public class CartCatalogueResponse {
     private int comboProjects;
     private int comboCredits;
 
+    /**
+     * The special offer: three rooms and three pictures for the price of two of each.
+     *
+     * <p>{@link #bundleAvailable} is the switch the screen reads. False takes the line off
+     * the counter entirely — a bundle configured down to no discount is hidden rather than
+     * shown as a saving of nothing.
+     *
+     * <p>{@link #bundleListPricePaise} is what the same contents cost bought line by line.
+     * It travels so the strike-through beside the price is the server's own arithmetic
+     * rather than the client's: a screen that multiplies the parts itself will one day
+     * multiply them differently.
+     */
+    private boolean bundleAvailable;
+    private int bundlePricePaise;
+    private int bundleListPricePaise;
+    private int bundleProjects;
+    private int bundleCredits;
+
     /** Days everything on this counter is good for — a year, on every line. */
     private int validDays;
 

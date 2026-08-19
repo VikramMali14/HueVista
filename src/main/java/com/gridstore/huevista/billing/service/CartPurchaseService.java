@@ -24,8 +24,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The customer's basket: several projects, several AI image credits, or the combo of the
- * two, bought in one payment with one offer applied to the lot.
+ * The customer's basket: several projects, several AI image credits, the combo of the two,
+ * or the special-offer bundle, bought in one payment with one offer applied to the lot.
  *
  * <p><b>Why a basket at all.</b> Everything the product sold a customer before this was a
  * single item behind a single button — one project, or one credit, each with its own
@@ -81,6 +81,11 @@ public class CartPurchaseService {
                 .comboPricePaise(pricingService.cataloguePricePerCombo())
                 .comboProjects(pricingService.catalogueComboProjects())
                 .comboCredits(pricingService.catalogueComboCredits())
+                .bundleAvailable(pricingService.catalogueBundleAvailable())
+                .bundlePricePaise(pricingService.cataloguePricePerBundle())
+                .bundleListPricePaise(pricingService.catalogueBundleListPricePaise())
+                .bundleProjects(pricingService.catalogueBundleProjects())
+                .bundleCredits(pricingService.catalogueBundleCredits())
                 .validDays(pricingService.catalogueValidityDays())
                 .maxQuantity(pricingService.catalogueMaxQuantity())
                 .offers(pricingService.catalogueOffers().stream()
@@ -104,9 +109,11 @@ public class CartPurchaseService {
      * A priced basket. Every number the buyer is shown and every number the order is
      * opened at, worked out in one place so the quote and the charge cannot drift.
      */
-    public record Quote(int projectQty, int creditQty, int comboQty,
+    public record Quote(int projectQty, int creditQty, int comboQty, int bundleQty,
                         int projectPricePaise, int creditPricePaise, int comboPricePaise,
+                        int bundlePricePaise,
                         int comboProjects, int comboCredits,
+                        int bundleProjects, int bundleCredits,
                         int subtotalPaise, String discountCode, int discountPercent,
                         int discountPaise, int amountPaise,
                         int projectsGranted, int creditsGranted, int validDays) {}
@@ -124,17 +131,28 @@ public class CartPurchaseService {
         int projectQty = requireQuantity(request.getProjects(), max, "projects");
         int creditQty = requireQuantity(request.getCredits(), max, "AI image credits");
         int comboQty = requireQuantity(request.getCombos(), max, "combos");
-        if (projectQty + creditQty + comboQty == 0) {
+        int bundleQty = requireQuantity(request.getBundles(), max, "offer bundles");
+        if (projectQty + creditQty + comboQty + bundleQty == 0) {
             throw new IllegalArgumentException("Your basket is empty.");
+        }
+        // An offer that has been switched off is refused rather than quietly rung up at
+        // whatever the parts happen to come to — that would charge full price for a line
+        // the buyer only picked because it said "three for the price of two".
+        if (bundleQty > 0 && !pricingService.catalogueBundleAvailable()) {
+            throw new IllegalArgumentException("That offer has ended.");
         }
 
         int projectPrice = pricingService.cataloguePricePerProject();
         int creditPrice = pricingService.cataloguePricePerCredit();
         int comboPrice = pricingService.cataloguePricePerCombo();
+        int bundlePrice = pricingService.cataloguePricePerBundle();
         int comboProjects = pricingService.catalogueComboProjects();
         int comboCredits = pricingService.catalogueComboCredits();
+        int bundleProjects = pricingService.catalogueBundleProjects();
+        int bundleCredits = pricingService.catalogueBundleCredits();
 
-        int subtotal = projectQty * projectPrice + creditQty * creditPrice + comboQty * comboPrice;
+        int subtotal = projectQty * projectPrice + creditQty * creditPrice
+                + comboQty * comboPrice + bundleQty * bundlePrice;
 
         // The offer the buyer asked for if this basket has earned it, and the best one it
         // has earned otherwise. Never worse than what they picked, and never better than
@@ -146,12 +164,13 @@ public class CartPurchaseService {
         int percent = offer == null ? 0 : offer.percentOff();
         int discount = PricingService.discountPaise(subtotal, percent);
 
-        return new Quote(projectQty, creditQty, comboQty,
-                projectPrice, creditPrice, comboPrice, comboProjects, comboCredits,
+        return new Quote(projectQty, creditQty, comboQty, bundleQty,
+                projectPrice, creditPrice, comboPrice, bundlePrice,
+                comboProjects, comboCredits, bundleProjects, bundleCredits,
                 subtotal, offer == null ? null : offer.code(), percent, discount,
                 subtotal - discount,
-                projectQty + comboQty * comboProjects,
-                creditQty + comboQty * comboCredits,
+                projectQty + comboQty * comboProjects + bundleQty * bundleProjects,
+                creditQty + comboQty * comboCredits + bundleQty * bundleCredits,
                 pricingService.catalogueValidityDays());
     }
 
@@ -198,11 +217,15 @@ public class CartPurchaseService {
             notes.put("projectQty", quote.projectQty());
             notes.put("creditQty", quote.creditQty());
             notes.put("comboQty", quote.comboQty());
+            notes.put("bundleQty", quote.bundleQty());
             notes.put("projectPrice", quote.projectPricePaise());
             notes.put("creditPrice", quote.creditPricePaise());
             notes.put("comboPrice", quote.comboPricePaise());
+            notes.put("bundlePrice", quote.bundlePricePaise());
             notes.put("comboProjects", quote.comboProjects());
             notes.put("comboCredits", quote.comboCredits());
+            notes.put("bundleProjects", quote.bundleProjects());
+            notes.put("bundleCredits", quote.bundleCredits());
             notes.put("discountPercent", quote.discountPercent());
             notes.put("discountCode", quote.discountCode() == null ? "" : quote.discountCode());
             notes.put("validDays", quote.validDays());
@@ -211,9 +234,10 @@ public class CartPurchaseService {
             Order order = razorpayClient.orders.create(req);
             String orderId = order.get("id");
             log.info("Cart order created: user={} order={} projects={} credits={} combos={} "
-                     + "subtotal={} discount={}% amount={}",
+                     + "bundles={} subtotal={} discount={}% amount={}",
                     userId, orderId, quote.projectQty(), quote.creditQty(), quote.comboQty(),
-                    quote.subtotalPaise(), quote.discountPercent(), quote.amountPaise());
+                    quote.bundleQty(), quote.subtotalPaise(), quote.discountPercent(),
+                    quote.amountPaise());
             // Opened while the buyer's request is still on the thread — the only moment we
             // can see their IP, browser and originating page.
             paymentAttemptService.open(orderId, PaymentFlow.CART, userId, quote.amountPaise(),
@@ -262,19 +286,26 @@ public class CartPurchaseService {
             int projectQty = notes == null ? 0 : notes.optInt("projectQty", 0);
             int creditQty = notes == null ? 0 : notes.optInt("creditQty", 0);
             int comboQty = notes == null ? 0 : notes.optInt("comboQty", 0);
+            // Zero for an order opened before the offer existed. Its notes carry no bundle
+            // line, and reading one in would inflate what that payment is redeemed for.
+            int bundleQty = notes == null ? 0 : notes.optInt("bundleQty", 0);
             int projectPrice = notes == null ? 0 : notes.optInt("projectPrice", 0);
             int creditPrice = notes == null ? 0 : notes.optInt("creditPrice", 0);
             int comboPrice = notes == null ? 0 : notes.optInt("comboPrice", 0);
+            int bundlePrice = notes == null ? 0 : notes.optInt("bundlePrice", 0);
             int comboProjects = notes == null ? 0 : notes.optInt("comboProjects", 0);
             int comboCredits = notes == null ? 0 : notes.optInt("comboCredits", 0);
+            int bundleProjects = notes == null ? 0 : notes.optInt("bundleProjects", 0);
+            int bundleCredits = notes == null ? 0 : notes.optInt("bundleCredits", 0);
             int discountPercent = notes == null ? 0 : notes.optInt("discountPercent", 0);
             String discountCode = notes == null ? "" : notes.optString("discountCode", "");
             int validDays = notes == null ? 0 : notes.optInt("validDays", 0);
 
-            int subtotal = projectQty * projectPrice + creditQty * creditPrice + comboQty * comboPrice;
+            int subtotal = projectQty * projectPrice + creditQty * creditPrice
+                    + comboQty * comboPrice + bundleQty * bundlePrice;
             int discount = PricingService.discountPaise(subtotal, discountPercent);
-            int projects = projectQty + comboQty * comboProjects;
-            int credits = creditQty + comboQty * comboCredits;
+            int projects = projectQty + comboQty * comboProjects + bundleQty * bundleProjects;
+            int credits = creditQty + comboQty * comboCredits + bundleQty * bundleCredits;
 
             // Every one of these is a way the order could be something other than what it
             // claims: the wrong purpose, another account's basket, an empty grant, or an
@@ -301,6 +332,8 @@ public class CartPurchaseService {
                     .creditPricePaise(creditPrice)
                     .comboQty(comboQty)
                     .comboPricePaise(comboPrice)
+                    .bundleQty(bundleQty)
+                    .bundlePricePaise(bundlePrice)
                     .subtotalPaise(subtotal)
                     .discountCode(discountCode.isBlank() ? null : discountCode)
                     .discountPercent(discountPercent)
@@ -345,7 +378,11 @@ public class CartPurchaseService {
 
     /** What the payment audit and the buyer's bank statement should call this basket. */
     private static String describe(Quote quote) {
-        List<String> parts = new ArrayList<>(3);
+        List<String> parts = new ArrayList<>(4);
+        if (quote.bundleQty() > 0) {
+            parts.add(quote.bundleQty()
+                    + (quote.bundleQty() == 1 ? " offer bundle" : " offer bundles"));
+        }
         if (quote.comboQty() > 0) {
             parts.add(quote.comboQty() + (quote.comboQty() == 1 ? " combo" : " combos"));
         }

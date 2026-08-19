@@ -40,7 +40,7 @@ public class CreateRenderRequest {
     /**
      * How good an image to make, and therefore how many credits it costs.
      *
-     * <p>Optional, like {@link #sourceImage}. Null reads as BASIC — every render made
+     * <p>Optional, like {@link #sourceImage}. Null reads as PREMIUM — every render made
      * before the tiers existed was one, and a client that names no quality is asking for
      * the ordinary picture at the ordinary price. Defaulting the other way would charge
      * somebody four credits for saying nothing.

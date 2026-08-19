@@ -83,7 +83,7 @@ public class AiCreditController {
         return AiCreditSummaryResponse.builder()
                 .balance(aiCreditService.balance(userId))
                 .eligible(aiCreditService.isEligible(userId))
-                // Priced for THIS account: a customer reads the catalogue's ₹35, a shop the
+                // Priced for THIS account: a customer reads the catalogue's ₹70, a shop the
                 // shop rate. The panel quotes whatever comes back here, so the button can
                 // never name a price the order would then be opened at differently.
                 .pricePaise(pricingService.aiCreditPricePaise(userId, 1))
