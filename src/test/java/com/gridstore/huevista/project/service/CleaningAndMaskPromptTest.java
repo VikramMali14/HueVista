@@ -195,11 +195,15 @@ class CleaningAndMaskPromptTest {
         // brick pattern still legible under it — so it must never become the verb for
         // the instruction as well. Every occurrence is that failure, and no other.
         assertThat(prompt.replace("whitewashed brick", "")).doesNotContain("whitewash");
-        // A ratchet, not a budget: it exists to stop the prompt drifting back to the
-        // 14,108 characters it was before the rewrite, one well-meant restatement at a
-        // time. Deliberate additions may move it — REPAINT being promoted to job (1) and
-        // the tiled-wall rule both did — but they move it by an amount somebody chose.
-        assertThat(prompt.length()).isLessThan(13_000);
+        // A ratchet, not a budget. It caught real drift twice, and has been raised twice
+        // for rules somebody deliberately added: REPAINT promoted to job (1), the
+        // paintable-wall block, and the tile-vs-scored-render test. Be honest about where
+        // that leaves things — at 13,604 the prompt is barely shorter than the 14,108 it
+        // started at, and the confusion it was cut to fix was caused by CONTRADICTION
+        // rather than by length. Further real reduction means dropping rules, not
+        // rewording them: the FINISH block is ~4,000 characters written for rooms still
+        // under construction, and is inert for every photo of a finished house.
+        assertThat(prompt.length()).isLessThan(13_800);
 
         assertThat(ImageCleanerService.cleanPromptFor(ImageType.OUTDOOR)).contains("#ffffff");
     }
@@ -233,14 +237,20 @@ class CleaningAndMaskPromptTest {
 
         // Stone stays, tile does not — the product decision, still pinned.
         assertThat(prompt).contains("MARBLE, GRANITE OR POLISHED STONE");
-        assertThat(prompt).contains("- WALL TILE: a WALL.");
+        assertThat(prompt).contains("WALL TILE — but be certain it IS tile before you touch it");
         assertThat(prompt).contains("no tile grid and no grout line shows through");
+        // The vision hints call this house's scored-render wall "tile" on every run, and
+        // the tile rule resurfaces. So the prompt has to carry the discrimination and a
+        // tie-break, or a correct rule destroys a wall on a mislabel.
+        assertThat(prompt).contains("GROUT LINE of different material packed between them");
+        assertThat(prompt).contains("IF YOU CANNOT TELL, TREAT IT AS SCORED RENDER AND DO NOT RESURFACE");
+        assertThat(prompt).contains("that is an observation to CHECK against the tests above");
 
         // A timber ceiling is finished wood, not a slab waiting to be plastered white.
         assertThat(prompt).contains("exposed TIMBER ceilings, beams, boarding and coffers");
 
         // Room-specific clauses still override the block, and it says so.
-        assertThat(prompt).contains("A note about THIS room, below, overrides any of these");
+        assertThat(prompt).contains("A note about THIS room overrides any of these");
         assertThat(ImageCleanerService.houseTypeClause(HouseType.BATHROOM, true))
                 .contains("THE TILE IS A FINISH, NOT UNFINISHED WORK");
     }
