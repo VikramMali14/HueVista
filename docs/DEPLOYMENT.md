@@ -53,12 +53,26 @@ room renders blank.
 
 On startup (S3 enabled, `S3_CONFIGURE_CORS` unset or `true`) the app installs a
 read-only rule for `CORS_ALLOWED_ORIGINS` if the bucket doesn't already allow them.
-It needs **`s3:PutBucketCors`** on the bucket. Without that permission startup still
-succeeds and the log carries the `aws s3api put-bucket-cors …` command to run by
-hand — check for it after the first deploy to a new bucket. Until the rule exists,
-images are served through the frontend's `/api/media` fallback, which works but puts
-image bytes through the frontend server. That fallback needs `S3_BUCKET_NAME` set on
-the **frontend** (same value as here) to arm. See `docs/IMAGE_UPLOAD_FLOW.md` §12.
+It needs **`s3:GetBucketCors`** and **`s3:PutBucketCors`** on the bucket, granted by
+the role's IDENTITY policy — see the snippet in `docs/IMAGE_UPLOAD_FLOW.md`
+"Switching to S3 in practice". A bucket policy is not the same thing and does not
+substitute: it is authorization, not CORS, and the deny-plain-HTTP baseline most
+buckets carry grants nothing at all.
+
+Without the permission startup still succeeds and the log carries the
+`aws s3api put-bucket-cors …` command to run by hand — check for it after the first
+deploy to a new bucket. To see where a bucket currently stands:
+
+```
+aws s3api get-bucket-cors --bucket YOUR-BUCKET-NAME
+```
+
+`NoSuchCORSConfiguration` means there is no rule and every canvas load is being
+blocked. Until one exists, images are served through the frontend's `/api/media`
+fallback, which works but puts image bytes through the frontend server. That
+fallback arms itself from `GET /api/images/storage` on this API, so it needs no
+configuration of its own — `S3_BUCKET_NAME` on the frontend is an override, not a
+requirement. See `docs/IMAGE_UPLOAD_FLOW.md` §12.
 
 ## 3. SWAGGER_ENABLED=false
 

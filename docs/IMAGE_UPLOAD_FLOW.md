@@ -863,14 +863,37 @@ application.properties / env vars
    - Server-side encryption (SSE-S3 AES256): ON
    - Versioning: optional
 
-2. Create an IAM user (for dev) or IAM role (for production) with this bucket policy:
+2. Create an IAM user (for dev) or IAM role (for production) and attach this
+   **identity** policy:
    ```json
    {
-     "Effect": "Allow",
-     "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
-     "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME/*"
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Sid": "Objects",
+         "Effect": "Allow",
+         "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+         "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME/*"
+       },
+       {
+         "Sid": "BrowserReadCors",
+         "Effect": "Allow",
+         "Action": ["s3:GetBucketCors", "s3:PutBucketCors"],
+         "Resource": "arn:aws:s3:::YOUR-BUCKET-NAME"
+       }
+     ]
    }
    ```
+
+   The second statement is what lets the app install the bucket's CORS rule at
+   startup (§12). It is easy to leave out and the omission is quiet: uploads work,
+   presigned URLs work, and the only symptom is that every image the frontend draws
+   onto a canvas is blocked by the browser. Note the resource — the CORS
+   configuration belongs to the BUCKET, so that ARN carries no `/*`.
+
+   A **bucket** policy is a different thing and does not substitute for this. It
+   controls authorization too, not CORS; a bucket policy that only denies plain HTTP
+   (a common baseline) grants nothing and leaves the startup write refused.
 
 3. Uncomment and set these in application.properties (or set as env vars):
    ```properties
