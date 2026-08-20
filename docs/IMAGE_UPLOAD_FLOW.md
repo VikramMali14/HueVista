@@ -1056,10 +1056,33 @@ keeps the product working without the bucket rule — but it routes image bytes 
 the frontend server, which is exactly the cost presigned URLs exist to avoid. The bucket
 rule is the real fix; the proxy is the safety net.
 
-The fallback is armed by setting **`S3_BUCKET_NAME` on the frontend** to the same value
-this application uses. That route fetches from exactly one host, built from that
-variable — never from the incoming request — so with it unset the route answers `503`
-rather than accepting a bucket the caller names.
+### Arming the fallback
+
+That route fetches from exactly one host, built from a bucket name and a region — never
+from the incoming request — so until it has a bucket it answers `503` rather than
+accepting one the caller names. It finds the bucket in one of two places:
+
+1. **`GET /api/images/storage` on this API** (the default). It reports the bucket and
+   region this application presigns from — `{"provider":"s3","bucket":…,"region":…}`, or
+   `{"provider":"local"}` when S3 is off. The frontend re-validates both parts and builds
+   the origin itself; a URL in the response would be ignored. The answer is cached for
+   ten minutes, and concurrent image loads share one lookup.
+
+   It is public, and deliberately so: the bucket and region are already written in full
+   in every presigned URL the API hands out, including on the anonymous share page, and
+   requiring a session would mean the web tier needed one to configure itself.
+
+2. **`S3_BUCKET_NAME` on the frontend container**, which overrides the lookup. Use it for
+   a bucket this API does not report, or a deployment where the web tier cannot reach the
+   API.
+
+The lookup exists because the variable alone was not enough in practice. Nothing about
+the web container suggests it needs the name of *this* application's S3 bucket, so it
+went unset in production: `/api/media` answered `503` for every image, the canvas
+fallback had nothing behind it, and a customer pressing "Download as PDF" on a picture
+they were looking at was told the device could not read it. A setting that has to be
+copied into a second deployment to work is a setting that will be missing from one of
+them, so the API is asked rather than duplicated.
 
 ---
 
