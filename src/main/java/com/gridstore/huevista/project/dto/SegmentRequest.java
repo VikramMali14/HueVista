@@ -86,23 +86,23 @@ public class SegmentRequest {
     private String maskModel;
 
     /**
-     * Available to every signed-in caller: take a closer look at the photo before
-     * cleaning it, and let what comes back tune the prompts.
+     * An OFF SWITCH, available to every signed-in caller. Null — what the studio sends,
+     * because it no longer asks — means the photo IS looked at properly before it is
+     * cleaned. Only an explicit false skips that.
      *
-     * <p>One extra Claude Haiku call ({@code ClaudeVisionService.analyseStored}) that
-     * returns the scene, what KIND of place this is, and what colour its walls are right
-     * now. The house type then adds a sentence or two to the cleaning and mask prompts —
-     * a bathroom's tile is a finish rather than an unfinished wall, a compound wall has
-     * no roofline to preserve — and the detected colour is recorded so the studio can
-     * show it beside the palette.
+     * <p>What it skips: one extra Claude Haiku call ({@code
+     * ClaudeVisionService.analyseStored}) that returns what KIND of place this is and
+     * what colour its walls are right now. The house type then adds a sentence or two to
+     * the cleaning and mask prompts — a bathroom's tile is a finish rather than an
+     * unfinished wall, a compound wall has no roofline to preserve — and the detected
+     * colour is recorded so the studio can show it beside the palette.
      *
-     * <p>The studio now ASKS for it on every run and sends true unless the box is
-     * unticked: it was proved out behind the admin panel, and what it buys — a prompt
-     * that knows a bathroom from a compound wall — is worth the same on a customer's
-     * photo as on a test one. Still not folded into the upload-time classification every
-     * photo already runs through: that call has one job, accept or reject the upload,
-     * and it happens at the moment we have least use for a house type. Null leaves
-     * whatever the last run of this project was given.
+     * <p>It was a knob while it was being proved out, then a tickbox, and is neither now:
+     * a prompt that knows a bathroom from a compound wall is worth the call on every
+     * photo, so asking only invited someone to answer no. Still not folded into the
+     * upload-time classification every photo already runs through: that call has one job,
+     * accept or reject the upload, and it happens at the moment we have least use for a
+     * house type.
      */
     private Boolean analysePhoto;
 

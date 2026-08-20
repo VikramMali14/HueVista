@@ -213,10 +213,11 @@ public class SegmentationService {
             // is not a cosmetic detail — see resolveScene.
             ImageType scene = resolveScene(uploadedImage);
 
-            // How THIS run's cleaning prompt should differ from the stock one — the ADMIN
-            // knobs, resolved once here so the cleaner and the hint call are prompted from
-            // the same answer. DEFAULT for every run that did not ask for anything, and
-            // DEFAULT reproduces the prompt this pipeline has always used.
+            // How THIS run's cleaning prompt should differ from the stock one, resolved
+            // once here so the cleaner and the hint call are prompted from the same
+            // answer. This is where the photo is looked at properly, which every run
+            // does; the furnishing and camera clauses only appear when someone ticked
+            // the box asking for them.
             ImageCleanerService.PromptOptions promptOptions =
                     resolvePromptOptions(uploadedImage, projectId, scene);
 
@@ -1062,20 +1063,18 @@ public class SegmentationService {
 
     /**
      * How this run's cleaning prompt should differ from the stock one, assembled from
-     * the ADMIN knobs on the project.
-     *
-     * <p>Returns {@link ImageCleanerService.PromptOptions#DEFAULT} for every run that
-     * did not ask for anything, which is every customer run and every admin run with the
-     * panel left alone — and DEFAULT produces the exact prompt this pipeline used before
-     * any of these knobs existed. Nothing here is allowed to change a run that did not
-     * opt in.
+     * the choices on the project.
      *
      * <p>The house type is resolved in three steps, most explicit first: an admin's
      * override wins, then whatever a previous analysis of this photo already found, then
-     * a fresh analysis if this run paid for one. That order is what lets an admin run
-     * the same photo twice under two different types to compare the clauses — an
-     * override that a re-analysis could quietly overrule would make the comparison
-     * meaningless.
+     * a fresh analysis. That order is what lets an admin run the same photo twice under
+     * two different types to compare the clauses — an override that a re-analysis could
+     * quietly overrule would make the comparison meaningless — and it is also why the
+     * analysis is not paid for twice on the same photo.
+     *
+     * <p>Furnishing and camera still default to the stock prompt: those two change what
+     * the cleaned photo SHOWS, so they happen only when someone ticked the box asking
+     * for them.
      */
     private ImageCleanerService.PromptOptions resolvePromptOptions(UploadedImage image,
                                                                    String projectId,
@@ -1091,7 +1090,13 @@ public class SegmentationService {
         if (type == HouseType.UNKNOWN) {
             type = image.getHouseType() == null ? HouseType.UNKNOWN : image.getHouseType();
         }
-        if (type == HouseType.UNKNOWN && Boolean.TRUE.equals(knobs.getAnalysePhoto())) {
+        // Not "did this run ask for it" any more — an unset flag means yes. Looking at
+        // the photo is what a run DOES: the studio stopped offering it as a choice once
+        // it was worth spending on every photo, and a guest at a kiosk sends no options
+        // at all, so anything that treated null as no would quietly hand the walk-in a
+        // worse canvas than the shop's own project gets. Only an explicit false — which
+        // nothing but a direct API call sets — still skips it.
+        if (type == HouseType.UNKNOWN && !Boolean.FALSE.equals(knobs.getAnalysePhoto())) {
             type = analyseAndRemember(image, scene);
         }
         // The scene is the answer four downstream decisions already depend on, so a type

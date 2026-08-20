@@ -150,9 +150,11 @@ public class ProjectController {
                       runs AI wall detection (consumes one auto-mask credit;
                       402 AUTO_MASK_UNAVAILABLE when the plan has none),
                       MANUAL stops after the clean-up so walls are marked by
-                      hand (free) — and `analysePhoto`, `cleanFurnishing`
-                      ("KEEP" / "EMPTY") and `cleanAngle` ("AS_SHOT" /
-                      "BEST_VIEW") shape the clean-up itself. ADMIN only:
+                      hand (free) — and `cleanFurnishing` ("KEEP" / "EMPTY")
+                      and `cleanAngle` ("AS_SHOT" / "BEST_VIEW") shape the
+                      clean-up itself. `analysePhoto` is an off switch, not a
+                      request: omit it and the photo is looked at properly
+                      before cleaning; send false to skip that. ADMIN only:
                       `cleanImage: false` skips the image-cleaner step,
                       `simulateFailure` (NONE / CLEAN / MASK / BOTH) makes the
                       image models decline for that half of the run so the
@@ -182,11 +184,12 @@ public class ProjectController {
     ) {
         // Two groups, and the split is what the field DOES rather than who added it.
         //
-        // Open to everyone: maskMode, and the three clean-up choices the studio now
-        // asks every user before it sends the photo — whether to look at it first,
-        // what happens to the furniture, and which camera the cleaned canvas is shot
-        // from. They shape a picture the person in front of the screen is about to
-        // look at, so the person in front of the screen is the one who should answer.
+        // Open to everyone: maskMode, the two clean-up choices the studio asks every
+        // user before it sends the photo — what happens to the furniture, and which
+        // camera the cleaned canvas is shot from — and analysePhoto, which is now an
+        // off switch rather than a question (null means the photo is looked at). The
+        // first two shape a picture the person in front of the screen is about to look
+        // at, so the person in front of the screen is the one who should answer.
         //
         // ADMIN only: cleanImage (skip the clean entirely), simulateFailure (make the
         // models decline), cleanModel/maskModel (pin a supplier) and houseType (force
