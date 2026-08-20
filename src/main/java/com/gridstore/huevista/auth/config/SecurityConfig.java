@@ -162,6 +162,19 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.GET, "/api/free-projects", "/api/free-projects/**").permitAll()
                 // Shared project view — public, no auth
                 .requestMatchers(HttpMethod.GET, "/api/share/**").permitAll()
+                // Which bucket this deployment presigns images out of. Public because it
+                // discloses nothing that is not already spelled out in full in every
+                // presigned URL the API hands out — including on the share page above,
+                // which anonymous readers open by design. It exists so the frontend's
+                // same-origin image passthrough can be configured from the API instead
+                // of from a second copy of the same setting; that copy was missing in
+                // production, so the fallback answered 503 for every image and the
+                // canvas that needs it (PDF export, the studio) had nowhere to fall
+                // back to. Requiring a session would mean the web tier needed one to
+                // configure itself. Exact path, GET only: nothing else under
+                // /api/images is opened, and there is no way to ask about another
+                // bucket.
+                .requestMatchers(HttpMethod.GET, "/api/images/storage").permitAll()
                 // Public in-store kiosk: view a store link, create the payment order,
                 // verify it (Razorpay signature is the proof) — per-IP rate-limited.
                 .requestMatchers(HttpMethod.GET, "/api/store/*").permitAll()
