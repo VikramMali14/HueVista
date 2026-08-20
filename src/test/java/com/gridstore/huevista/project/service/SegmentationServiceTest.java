@@ -3,7 +3,9 @@ package com.gridstore.huevista.project.service;
 import com.gridstore.huevista.account.repository.CustomerAccessCodeRepository;
 import com.gridstore.huevista.account.repository.OrgMembershipRepository;
 import com.gridstore.huevista.billing.service.BillingService;
+import com.gridstore.huevista.image.model.HouseType;
 import com.gridstore.huevista.image.model.ImageType;
+import com.gridstore.huevista.image.model.SceneAnalysis;
 import com.gridstore.huevista.image.model.UploadedImage;
 import com.gridstore.huevista.image.repository.ImageRepository;
 import com.gridstore.huevista.image.service.ClaudeVisionService;
@@ -558,5 +560,59 @@ class SegmentationServiceTest {
         ArgumentCaptor<Region> saved = ArgumentCaptor.forClass(Region.class);
         verify(regions, times(1)).save(saved.capture());
         assertThat(saved.getValue().getCategory()).isEqualTo(RegionCategory.MAIN_WALL);
+    }
+
+    // ── Looking at the photo ─────────────────────────────────────────────────
+
+    /**
+     * A run that says nothing about the analysis still gets one.
+     *
+     * <p>This flag used to be opt-in: a tickbox on the confirm step, and before that an
+     * admin knob, so the code read {@code TRUE.equals(...)} and a null column meant no.
+     * It is not a question any more — looking at the photo properly is what a run does —
+     * and the way that fails quietly is for null to keep meaning no: a guest at a kiosk
+     * sends no options at all, so the walk-in would get a blinder clean than the shop's
+     * own project and nothing on any screen would say so.
+     */
+    @Test
+    void anUnsetAnalyseFlagStillLooksAtThePhoto() throws Exception {
+        ProjectRepository.CleanOptionsView knobs = cleanOptions(null);
+        when(projects.findCleanOptionsById("p1")).thenReturn(Optional.of(knobs));
+        when(storage.load("rooms/p1.jpg")).thenReturn(new byte[]{1, 2, 3});
+        when(vision.analyseStored(any())).thenReturn(
+                new SceneAnalysis(ImageType.INDOOR, HouseType.BATHROOM, "#EEE", "Chalk", null));
+
+        UploadedImage image = new UploadedImage();
+        image.setStorageKey("rooms/p1.jpg");
+
+        ImageCleanerService.PromptOptions options = ReflectionTestUtils.invokeMethod(
+                service, "resolvePromptOptions", image, "p1", ImageType.INDOOR);
+
+        verify(vision).analyseStored(any());
+        // And what it found reached the prompt, rather than being paid for and dropped.
+        assertThat(options.houseType()).isEqualTo(HouseType.BATHROOM);
+    }
+
+    /** The one caller that can still switch it off: an explicit false on the row. */
+    @Test
+    void anExplicitFalseSkipsTheLook() throws Exception {
+        ProjectRepository.CleanOptionsView knobs = cleanOptions(false);
+        when(projects.findCleanOptionsById("p1")).thenReturn(Optional.of(knobs));
+
+        UploadedImage image = new UploadedImage();
+        image.setStorageKey("rooms/p1.jpg");
+
+        ImageCleanerService.PromptOptions options = ReflectionTestUtils.invokeMethod(
+                service, "resolvePromptOptions", image, "p1", ImageType.INDOOR);
+
+        verifyNoInteractions(vision);
+        assertThat(options.houseType()).isEqualTo(HouseType.UNKNOWN);
+    }
+
+    /** A project row with nothing but the analyse flag set — the other three left null. */
+    private static ProjectRepository.CleanOptionsView cleanOptions(Boolean analysePhoto) {
+        ProjectRepository.CleanOptionsView view = mock(ProjectRepository.CleanOptionsView.class);
+        when(view.getAnalysePhoto()).thenReturn(analysePhoto);
+        return view;
     }
 }

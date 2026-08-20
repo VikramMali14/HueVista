@@ -123,18 +123,18 @@ public class Project {
     @Column(length = 16)
     private String maskMode;
 
-    // ADMIN testing knobs, set per segmentation request, all three describing how THIS
-    // run's photo clean-up should be prompted. Persisted for the same reason as
-    // skipImageClean above — the async worker that reads them may be a different JVM
-    // than the one that took the request.
+    // How THIS run's photo clean-up should be prompted, set per segmentation request.
+    // Persisted for the same reason as skipImageClean above — the async worker that
+    // reads them may be a different JVM than the one that took the request.
     //
-    // analysePhoto: TRUE = spend one extra Claude Haiku call looking at the photo
+    // analysePhoto: whether to spend one extra Claude Haiku call looking at the photo
     // properly (what kind of place it is, what colour the walls are now) and let the
-    // answer tune the prompts. Null/FALSE = the run behaves exactly as it did before
-    // this existed, which is what keeps the customer flow untouched.
+    // answer tune the prompts. NULL MEANS YES: this is what every run does now, so the
+    // column exists to record the one case that is unusual — an explicit false, which
+    // only a direct API call sets. It is no longer a question the studio asks.
     private Boolean analysePhoto;
 
-    // houseType: an admin's override of what analysePhoto found, so the same photo can
+    // houseType: an ADMIN's override of what the analysis found, so the same photo can
     // be run under two types and the prompt clauses compared. Validated against
     // HouseType before it gets here. Null = whatever the analysis decided, or nothing.
     @Column(length = 32)

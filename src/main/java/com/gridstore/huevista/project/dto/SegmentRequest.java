@@ -86,27 +86,32 @@ public class SegmentRequest {
     private String maskModel;
 
     /**
-     * ADMIN-only testing knob (ignored for other callers): take a closer look at the
-     * photo before cleaning it, and let what comes back tune the prompts.
+     * An OFF SWITCH, available to every signed-in caller. Null — what the studio sends,
+     * because it no longer asks — means the photo IS looked at properly before it is
+     * cleaned. Only an explicit false skips that.
      *
-     * <p>One extra Claude Haiku call ({@code ClaudeVisionService.analyseStored}) that
-     * returns the scene, what KIND of place this is, and what colour its walls are right
-     * now. The house type then adds a sentence or two to the cleaning and mask prompts —
-     * a bathroom's tile is a finish rather than an unfinished wall, a compound wall has
-     * no roofline to preserve — and the detected colour is recorded so the studio can
-     * show it beside the palette.
+     * <p>What it skips: one extra Claude Haiku call ({@code
+     * ClaudeVisionService.analyseStored}) that returns what KIND of place this is and
+     * what colour its walls are right now. The house type then adds a sentence or two to
+     * the cleaning and mask prompts — a bathroom's tile is a finish rather than an
+     * unfinished wall, a compound wall has no roofline to preserve — and the detected
+     * colour is recorded so the studio can show it beside the palette.
      *
-     * <p>Off by default, and deliberately NOT folded into the upload-time classification
-     * every customer photo already runs through. That call has one job — accept or
-     * reject the upload — and nothing about it needs a house type, so paying for one on
-     * every upload buys the answer at the moment we have least use for it. Null or false
-     * leaves the run behaving exactly as it did before this knob existed.
+     * <p>It was a knob while it was being proved out, then a tickbox, and is neither now:
+     * a prompt that knows a bathroom from a compound wall is worth the call on every
+     * photo, so asking only invited someone to answer no. Still not folded into the
+     * upload-time classification every photo already runs through: that call has one job,
+     * accept or reject the upload, and it happens at the moment we have least use for a
+     * house type.
      */
     private Boolean analysePhoto;
 
     /**
      * ADMIN-only testing knob (ignored for other callers): treat the photo as this kind
-     * of place, instead of whatever {@link #analysePhoto} decided.
+     * of place, instead of whatever {@link #analysePhoto} decided. It stayed admin-only
+     * when the three clean-up choices around it opened up, because it is not a choice
+     * about a photo — it is a way to OVERRIDE what the photo plainly is, and the only
+     * use for that is comparing two prompts.
      *
      * <p>The point is comparison. The house type only ever changes a couple of sentences
      * in the prompt, and the only way to learn what those sentences are worth is to run
@@ -119,21 +124,22 @@ public class SegmentRequest {
     private String houseType;
 
     /**
-     * ADMIN-only testing knob (ignored for other callers): what the clean-up does with
-     * the furniture already in the room — {@code "KEEP"} (the default, and exactly
-     * today's behaviour) or {@code "EMPTY"}.
+     * Available to every signed-in caller: what the clean-up does with the furniture
+     * already in the room — {@code "KEEP"} (the default) or {@code "EMPTY"}.
      *
      * <p>Persisted on the project so the async worker sees it, same as the knobs above.
      */
     private String cleanFurnishing;
 
     /**
-     * ADMIN-only testing knob (ignored for other callers): which camera the cleaned
-     * canvas is photographed from — {@code "AS_SHOT"} (the default, and exactly today's
-     * behaviour) or {@code "BEST_VIEW"}.
+     * Available to every signed-in caller: which camera the cleaned canvas is
+     * photographed from — {@code "AS_SHOT"} (the default) or {@code "BEST_VIEW"}.
      *
-     * <p>See {@code CleanAngle} for what BEST_VIEW costs; it is the one option here that
-     * changes something the customer can check against their own house.
+     * <p>See {@code CleanAngle} for what BEST_VIEW costs. It is the one choice here that
+     * changes something the customer can check against their own house, which is exactly
+     * why it is theirs to make: the studio spells out beside the tickbox that the masks
+     * will then match the new view rather than the photo, and asks before spending the
+     * generation. Off unless asked for.
      */
     private String cleanAngle;
 }

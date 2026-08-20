@@ -103,11 +103,12 @@ class ApiContractTest {
                 // configured ones. The mask viewer names them beside the canvas: a
                 // model comparison nobody can attribute afterwards was not one.
                 "cleanModel", "maskModel",
-                // What a closer look at the photo found, when an admin asked for one,
-                // and which prompt knobs that run used. Null on every project that never
-                // asked — which is every customer project. Carried for the same reason
-                // as the two model overrides above: a prompt experiment nobody can
-                // attribute afterwards was not one.
+                // What a closer look at the photo found, and how the run was asked to
+                // clean it. The look is every signed-in user's to ask for now; houseType
+                // stays the admin's override of what the analysis decided, and is null on
+                // every project that never set one. Carried for the same reason as the two
+                // model overrides above: a clean nobody can attribute afterwards was not
+                // an experiment.
                 "houseType",
                 // The colour the walls are RIGHT NOW. Shown beside the palette as
                 // context and never used as a paint colour — the cleaned canvas stays

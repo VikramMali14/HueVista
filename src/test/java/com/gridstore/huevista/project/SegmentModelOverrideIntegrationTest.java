@@ -260,12 +260,13 @@ class SegmentModelOverrideIntegrationTest {
         assertThat(projectRepository.findById(retailerRoomId).orElseThrow().getCleanModel()).isNull();
     }
 
-    // ─── The prompt knobs ────────────────────────────────────────────────────
+    // ─── The clean-up choices ────────────────────────────────────────────────
     //
-    // Same endpoint, same stripping, and pinned separately because these are the knobs
-    // that change what the CUSTOMER's canvas looks like rather than which supplier made
-    // it. A shop that could reach cleanAngle could have its customer colouring a house
-    // the camera never saw.
+    // Same endpoint, and pinned separately because these change what the CUSTOMER's
+    // canvas looks like rather than which supplier made it. Three of them are now every
+    // signed-in caller's to make — the studio asks before it sends the photo — and the
+    // fourth, houseType, is not: it overrides what the photo plainly is, which serves a
+    // comparison and nothing else.
 
     @Test
     void anAdminsPromptChoicesLandOnTheProjectForTheWorkerToRead() throws Exception {
@@ -285,24 +286,47 @@ class SegmentModelOverrideIntegrationTest {
     }
 
     @Test
-    void aNonAdminCannotReachAnyOfThePromptKnobs() throws Exception {
-        // The whole point of shipping this admin-first: a customer's run has to be
-        // unable to tell these exist. Not a 403 — maskMode is still their real choice —
-        // so a crafted body runs the ordinary pipeline with the ordinary prompt.
+    void aNonAdminsCleanUpChoicesLandOnTheProjectToo() throws Exception {
+        // Shipped admin-first, opened up once the clean-up was worth running for real.
+        // These three describe a picture the person at the screen is about to look at,
+        // so a retailer's answers reach the worker exactly as an admin's do.
         segment(retailerRoomId, retailerToken, """
                 {"maskMode":"AUTO",
                  "analysePhoto":true,
-                 "houseType":"BATHROOM",
                  "cleanFurnishing":"EMPTY",
                  "cleanAngle":"BEST_VIEW"}""")
                 .andExpect(status().isOk());
 
         Project project = projectRepository.findById(retailerRoomId).orElseThrow();
-        assertThat(project.getAnalysePhoto()).isNull();
-        assertThat(project.getHouseType()).isNull();
-        assertThat(project.getCleanFurnishing()).isNull();
-        assertThat(project.getCleanAngle()).isNull();
+        assertThat(project.getAnalysePhoto()).isTrue();
+        assertThat(project.getCleanFurnishing()).isEqualTo("EMPTY");
+        assertThat(project.getCleanAngle()).isEqualTo("BEST_VIEW");
         assertThat(project.getMaskMode()).isEqualTo("AUTO");
+    }
+
+    @Test
+    void aNonAdminStillCannotOverrideWhatThePhotoIs() throws Exception {
+        // houseType is the one that stayed behind: it does not describe a photo, it
+        // contradicts one, and the only thing that buys is a prompt comparison. Not a
+        // 403 — the rest of the body is theirs — so it is simply not there.
+        segment(retailerRoomId, retailerToken, """
+                {"maskMode":"AUTO","houseType":"BATHROOM"}""")
+                .andExpect(status().isOk());
+
+        assertThat(projectRepository.findById(retailerRoomId).orElseThrow().getHouseType())
+                .isNull();
+    }
+
+    @Test
+    void aNonAdminsTypoOnACleanUpChoiceIsRefusedRatherThanIgnored() throws Exception {
+        // Their field now, so their typo gets the same answer an admin's does. Silently
+        // running AS_SHOT for someone who asked for a re-framed view would hand back a
+        // canvas that looks like the request was honoured.
+        segment(retailerRoomId, retailerToken, "{\"cleanAngle\":\"DRONE\"}")
+                .andExpect(status().isBadRequest());
+
+        assertThat(projectRepository.findById(retailerRoomId).orElseThrow().getCleanAngle())
+                .isNull();
     }
 
     @Test
