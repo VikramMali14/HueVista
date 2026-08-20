@@ -144,18 +144,23 @@ public class ProjectController {
                     - Segmentation typically takes 30–90 seconds (image cleaning +
                       mask generation are generative model calls; slow runs can
                       take a few minutes, so poll with a generous deadline)
-                    - Body is optional. `maskMode` ("AUTO" default / "MANUAL")
-                      chooses what happens AFTER the compulsory AI photo
-                      clean-up: AUTO runs AI wall detection (consumes one
-                      auto-mask credit; 402 AUTO_MASK_UNAVAILABLE when the plan
-                      has none), MANUAL stops after the clean-up so walls are
-                      marked by hand (free). `cleanImage: false` (ADMIN only)
-                      skips the image-cleaner step. `simulateFailure` (ADMIN
-                      only: NONE / CLEAN / MASK / BOTH) makes the image models
-                      decline for that half of the run, so the recovery paths
-                      can be tested on demand. Masks are always stored
-                      raw — exactly as the model produced them, with no
-                      post-processing
+                    - Body is optional. Open to every signed-in caller:
+                      `maskMode` ("AUTO" default / "MANUAL") chooses what
+                      happens AFTER the compulsory AI photo clean-up — AUTO
+                      runs AI wall detection (consumes one auto-mask credit;
+                      402 AUTO_MASK_UNAVAILABLE when the plan has none),
+                      MANUAL stops after the clean-up so walls are marked by
+                      hand (free) — and `analysePhoto`, `cleanFurnishing`
+                      ("KEEP" / "EMPTY") and `cleanAngle` ("AS_SHOT" /
+                      "BEST_VIEW") shape the clean-up itself. ADMIN only:
+                      `cleanImage: false` skips the image-cleaner step,
+                      `simulateFailure` (NONE / CLEAN / MASK / BOTH) makes the
+                      image models decline for that half of the run so the
+                      recovery paths can be tested on demand, `houseType`
+                      overrides what the analysis decided, and
+                      `cleanModel`/`maskModel` pin one run to a named model.
+                      Masks are always stored raw — exactly as the model
+                      produced them, with no post-processing
                     - AUTO does not always end in walls, and that is not a
                       failure: when the clean-up succeeds and wall detection
                       returns nothing, the project still comes back SEGMENTED
@@ -175,17 +180,32 @@ public class ProjectController {
             @RequestBody(required = false) SegmentRequest request,
             Authentication auth
     ) {
-        // maskMode is a real product choice open to everyone; the remaining
-        // options are an ADMIN testing panel — silently stripped for every
-        // other role so a crafted request can't alter the pipeline. Stripping by
-        // REBUILDING the request rather than nulling fields is what keeps a knob
-        // added later (cleanModel/maskModel were) admin-only by default.
+        // Two groups, and the split is what the field DOES rather than who added it.
+        //
+        // Open to everyone: maskMode, and the three clean-up choices the studio now
+        // asks every user before it sends the photo — whether to look at it first,
+        // what happens to the furniture, and which camera the cleaned canvas is shot
+        // from. They shape a picture the person in front of the screen is about to
+        // look at, so the person in front of the screen is the one who should answer.
+        //
+        // ADMIN only: cleanImage (skip the clean entirely), simulateFailure (make the
+        // models decline), cleanModel/maskModel (pin a supplier) and houseType (force
+        // the analysis's answer). Every one of them exists to TEST the pipeline, and
+        // three of them can make a run fail or cost a comparison; none belongs to a
+        // customer's photo.
+        //
+        // Stripping by REBUILDING the request rather than nulling fields is what keeps
+        // a knob added later admin-only by default: a new field is invisible to other
+        // roles until someone copies it into the block below on purpose.
         boolean admin = auth.getAuthorities().stream()
                 .anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
         SegmentRequest effective = request;
         if (!admin && request != null) {
             effective = new SegmentRequest();
             effective.setMaskMode(request.getMaskMode());
+            effective.setAnalysePhoto(request.getAnalysePhoto());
+            effective.setCleanFurnishing(request.getCleanFurnishing());
+            effective.setCleanAngle(request.getCleanAngle());
         }
         return ResponseEntity.ok(projectService.requestSegmentation(
                 userId(auth), id, effective));

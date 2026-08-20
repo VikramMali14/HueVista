@@ -863,13 +863,15 @@ public class ProjectService {
     /**
      * @param options Per-run choices, persisted on the project so the async
      *                worker (possibly another JVM reading the Redis queue) sees
-     *                the same choice. maskMode ("AUTO"/"MANUAL") is open to all
-     *                callers — it decides whether AI wall detection runs after
-     *                the compulsory clean-up; cleanImage=false is an ADMIN
-     *                testing knob (the controller strips it for other roles)
-     *                that skips the image-cleaner step, and cleanModel/maskModel
-     *                are the ADMIN's per-run choice of which image model runs
-     *                each half.
+     *                the same choice. Open to all callers: maskMode
+     *                ("AUTO"/"MANUAL"), which decides whether AI wall detection
+     *                runs after the compulsory clean-up, and analysePhoto /
+     *                cleanFurnishing / cleanAngle, which shape the clean-up
+     *                itself. The rest are ADMIN testing knobs the controller
+     *                strips for other roles: cleanImage=false skips the
+     *                image-cleaner step, simulateFailure makes the models
+     *                decline, houseType overrides the analysis, and
+     *                cleanModel/maskModel pin which image model runs each half.
      */
     @Transactional
     public ProjectResponse requestSegmentation(String userId, String projectId,
@@ -907,10 +909,13 @@ public class ProjectService {
             project.setMaskModel(modelCatalogue.resolveOverride(options.getMaskModel()).orElse(null));
         }
 
-        // ADMIN prompt-shaping knobs. All three are null on a normal request and on every
-        // request from a non-admin (the controller rebuilds the request keeping only
-        // maskMode), and null here leaves whatever the last run was given — same
-        // stickiness as skipImageClean and simulateFailure above.
+        // The prompt-shaping choices. analysePhoto, cleanFurnishing and cleanAngle now
+        // arrive from every signed-in caller — the studio asks for them before it sends
+        // the photo — while houseType stays the admin's, because overriding what the
+        // photo plainly is only serves a comparison. Null leaves whatever the last run
+        // was given, same stickiness as skipImageClean and simulateFailure above, which
+        // is why the studio states all three on every run rather than omitting the
+        // untouched ones.
         if (options != null && options.getAnalysePhoto() != null) {
             project.setAnalysePhoto(options.getAnalysePhoto());
         }
