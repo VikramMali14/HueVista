@@ -33,4 +33,14 @@ public class ProjectReopenResponse {
 
     /** Days added by this reopen. */
     private int daysAdded;
+
+    /**
+     * Unstarted projects still on the account after this reopen.
+     *
+     * <p>Sent on every rail, not only the one that spends a credit, so the view-only banner
+     * can redraw its "use one of your projects" offer from the answer it already has. A
+     * card reopen leaves the number alone; the banner still has to be told that, or it goes
+     * back to the account to be told nothing changed.
+     */
+    private int creditsLeft;
 }

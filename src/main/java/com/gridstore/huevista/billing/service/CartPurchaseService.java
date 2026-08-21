@@ -44,6 +44,16 @@ import java.util.List;
  * mid-checkout must neither overcharge the buyer nor let a stale order claim a rate that
  * has gone.
  *
+ * <p><b>The percentage offers price the à-la-carte half of the basket, and only that.</b>
+ * The combo and the special-offer bundle are packages: the saving is already in the price
+ * on the ticket, and stacking HUE25 on "three for the price of two" discounts one basket
+ * twice at a rate nobody set. So the offer is earned on, and taken off, the single
+ * projects and single credits in the basket — {@link Quote#discountBasePaise()} — while the
+ * packages are rung up at the price they are advertised at. It is a switch
+ * ({@code app.customer-catalogue.offers-apply-to-packages}) rather than a rule welded in,
+ * because it is a commercial decision; and the base the discount was struck on travels ON
+ * the Razorpay order, so flipping it never disturbs an order already open in Checkout.
+ *
  * <p><b>CUSTOMER only, for now.</b> A shop's prices move with its plan and its projects land
  * on that plan's allowance; putting a shop through this counter would quote it retail for
  * things it buys at a tier rate. It is refused before any money moves rather than after.
@@ -95,6 +105,7 @@ public class CartPurchaseService {
                                 .percentOff(o.percentOff())
                                 .build())
                         .toList())
+                .offersApplyToPackages(pricingService.catalogueOffersApplyToPackages())
                 .availableProjects(projectCreditService.availableCredits(userId))
                 .creditBalance(aiCreditService.balance(userId))
                 .creditsExpireAt(aiCreditService.soonestExpiry(userId).orElse(null))
@@ -114,7 +125,8 @@ public class CartPurchaseService {
                         int bundlePricePaise,
                         int comboProjects, int comboCredits,
                         int bundleProjects, int bundleCredits,
-                        int subtotalPaise, String discountCode, int discountPercent,
+                        int subtotalPaise, int discountBasePaise,
+                        String discountCode, int discountPercent,
                         int discountPaise, int amountPaise,
                         int projectsGranted, int creditsGranted, int validDays) {}
 
@@ -151,23 +163,31 @@ public class CartPurchaseService {
         int bundleProjects = pricingService.catalogueBundleProjects();
         int bundleCredits = pricingService.catalogueBundleCredits();
 
-        int subtotal = projectQty * projectPrice + creditQty * creditPrice
-                + comboQty * comboPrice + bundleQty * bundlePrice;
+        int singlesSubtotal = projectQty * projectPrice + creditQty * creditPrice;
+        int packagesSubtotal = comboQty * comboPrice + bundleQty * bundlePrice;
+        int subtotal = singlesSubtotal + packagesSubtotal;
+
+        // What the offer is measured against AND taken off — the same number for both, so
+        // there is no basket that earns a discount of nothing. The packages are excluded
+        // from it: their saving is already in their price. See the class note.
+        int discountBase = pricingService.catalogueOffersApplyToPackages()
+                ? subtotal : singlesSubtotal;
 
         // The offer the buyer asked for if this basket has earned it, and the best one it
         // has earned otherwise. Never worse than what they picked, and never better than
-        // what the subtotal deserves — the code is a preference, not a claim.
+        // what the base deserves — the code is a preference, not a claim.
+        final int base = discountBase;
         PricingService.CatalogueOffer offer = pricingService
-                .offerFor(request.getDiscountCode(), subtotal)
-                .or(() -> pricingService.bestOfferFor(subtotal))
+                .offerFor(request.getDiscountCode(), base)
+                .or(() -> pricingService.bestOfferFor(base))
                 .orElse(null);
         int percent = offer == null ? 0 : offer.percentOff();
-        int discount = PricingService.discountPaise(subtotal, percent);
+        int discount = PricingService.discountPaise(discountBase, percent);
 
         return new Quote(projectQty, creditQty, comboQty, bundleQty,
                 projectPrice, creditPrice, comboPrice, bundlePrice,
                 comboProjects, comboCredits, bundleProjects, bundleCredits,
-                subtotal, offer == null ? null : offer.code(), percent, discount,
+                subtotal, discountBase, offer == null ? null : offer.code(), percent, discount,
                 subtotal - discount,
                 projectQty + comboQty * comboProjects + bundleQty * bundleProjects,
                 creditQty + comboQty * comboCredits + bundleQty * bundleCredits,
@@ -226,6 +246,10 @@ public class CartPurchaseService {
             notes.put("comboCredits", quote.comboCredits());
             notes.put("bundleProjects", quote.bundleProjects());
             notes.put("bundleCredits", quote.bundleCredits());
+            // The base the percentage was struck on, so verification re-derives the SAME
+            // amount even if the packages rule is flipped while the buyer is in Checkout.
+            // Its absence is meaningful too — see the read side.
+            notes.put("discountBase", quote.discountBasePaise());
             notes.put("discountPercent", quote.discountPercent());
             notes.put("discountCode", quote.discountCode() == null ? "" : quote.discountCode());
             notes.put("validDays", quote.validDays());
@@ -303,7 +327,12 @@ public class CartPurchaseService {
 
             int subtotal = projectQty * projectPrice + creditQty * creditPrice
                     + comboQty * comboPrice + bundleQty * bundlePrice;
-            int discount = PricingService.discountPaise(subtotal, discountPercent);
+            // Missing on every order opened before the offers stopped applying to packages,
+            // and the whole subtotal is exactly what those were discounted on — so the
+            // default is not a guess, it is the rule they were priced under. Reading a
+            // narrower base into them would refuse a payment the buyer has already made.
+            int discountBase = notes == null ? subtotal : notes.optInt("discountBase", subtotal);
+            int discount = PricingService.discountPaise(discountBase, discountPercent);
             int projects = projectQty + comboQty * comboProjects + bundleQty * bundleProjects;
             int credits = creditQty + comboQty * comboCredits + bundleQty * bundleCredits;
 
@@ -314,6 +343,7 @@ public class CartPurchaseService {
                     || validDays <= 0
                     || projects + credits <= 0
                     || subtotal <= 0
+                    || discountBase < 0 || discountBase > subtotal
                     || amountPaise != subtotal - discount) {
                 log.warn("Cart order mismatch: user={} order={} amount={} purpose={} orderUser={} "
                          + "projects={} credits={} subtotal={} discount={}%",

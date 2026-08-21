@@ -173,15 +173,29 @@ public class ProjectResponse {
     private int reopenPricePoints;
     private int reopenPricePaise;
 
+    /**
+     * Projects this account has already paid for and not yet started — the third way out
+     * of a locked room, and the only one that costs nothing new.
+     *
+     * <p>Quoted on the project rather than left to the studio to fetch because it belongs
+     * beside the two prices above: all three answer "what would it take to work on THIS
+     * room again", and a banner that reads two of them from the project and the third from
+     * a separate call can show a price for a rail that is gone and no offer for one that is
+     * there. Zero while the project is fully open — there is nothing to spend a credit on.
+     */
+    private int reopenCredits;
+
     /** Stamp the viewer's access onto an owner-view response. */
     public ProjectResponse withAccess(boolean readOnly, String reason,
                                       LocalDateTime accessExpiresAt,
-                                      int reopenPricePoints, int reopenPricePaise) {
+                                      int reopenPricePoints, int reopenPricePaise,
+                                      int reopenCredits) {
         this.readOnly = readOnly;
         this.readOnlyReason = reason;
         this.accessExpiresAt = accessExpiresAt;
         this.reopenPricePoints = reopenPricePoints;
         this.reopenPricePaise = reopenPricePaise;
+        this.reopenCredits = reopenCredits;
         return this;
     }
 

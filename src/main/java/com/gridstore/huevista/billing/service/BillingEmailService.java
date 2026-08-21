@@ -181,13 +181,22 @@ public class BillingEmailService {
      * {@code points} for the points one, and exactly one of them is ever non-zero.
      */
     public void sendProjectReopened(String userId, int points, int amountPaise, int validDays) {
+        // Three rails, three true sentences. Neither figure set means the reopen was paid
+        // for out of a project the account had already bought — the one case where nothing
+        // at all moved today, and where "0 points have been spent" would be both wrong and
+        // alarming.
         String paidWith = amountPaise > 0
                 ? "your payment of Rs. %.2f was received".formatted(amountPaise / 100.0)
-                : "%d points have been spent".formatted(points);
+                : points > 0
+                    ? "%d points have been spent".formatted(points)
+                    : "one of the projects you had already bought has been used";
         String invoiceLine = amountPaise > 0
                 ? "Razorpay will email you the tax invoice separately."
-                : "No invoice follows this one — points were paid for (or earned) when they "
-                  + "were added, and spending them is not a fresh charge.";
+                : points > 0
+                    ? "No invoice follows this one — points were paid for (or earned) when they "
+                      + "were added, and spending them is not a fresh charge."
+                    : "No invoice follows this one — nothing was charged today. The project was "
+                      + "paid for when you bought it, and its receipt covers this.";
         userRepository.findById(userId).ifPresent(user -> deliver(user,
                 "HueVista project reopened for another " + validDays + " days",
                 """

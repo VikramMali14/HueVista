@@ -135,9 +135,13 @@ class ApiContractTest {
                 // Access: the studio disables the palette on readOnly rather than letting
                 // the user paint and then fail on autosave.
                 "readOnly", "readOnlyReason", "accessExpiresAt",
-                // Both rails, quoted from the PROJECT: a lapsed window and a closed
-                // project are different purchases at different prices.
-                "reopenPricePoints", "reopenPricePaise");
+                // Both paying rails, quoted from the PROJECT: a lapsed window and a closed
+                // project are different purchases at different prices. `reopenCredits` is
+                // the third way out and the only one that costs nothing new — projects
+                // already bought and not yet started — and it belongs beside them for the
+                // same reason: all three answer "what would it take to work on THIS room
+                // again", and it is already zeroed for the rooms a credit may not open.
+                "reopenPricePoints", "reopenPricePaise", "reopenCredits");
     }
 
     @Test

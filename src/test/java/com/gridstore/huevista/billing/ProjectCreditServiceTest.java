@@ -356,6 +356,105 @@ class ProjectCreditServiceTest {
         assertThat(res.getDaysAdded()).isEqualTo(VALID_DAYS);
     }
 
+    // ── Reopening with a project already paid for ───────────────────────────
+    //
+    // The complaint this rail answers: a customer holding two unstarted projects, looking
+    // at a room whose year had run out, was offered points they may never hold and a card.
+    // The two projects they had already paid for could not be spent on the room in front
+    // of them.
+
+    @Test
+    void anUnstartedProjectCanBeSpentOnReopeningALockedRoom() {
+        Project lapsed = Project.builder()
+                .id("proj-2")
+                .accessExpiresAt(LocalDateTime.now().minusDays(1))
+                .build();
+        when(projects.findByIdAndUserId("proj-2", USER)).thenReturn(Optional.of(lapsed));
+        when(ledger.claimFor(USER, "proj-2")).thenReturn(Optional.of(
+                ProjectCredit.builder().id("credit-1").userId(USER).validDays(365).build()));
+        when(ledger.available(USER)).thenReturn(1);
+
+        var res = svc.reopenWithCredit(USER, "proj-2");
+
+        // Nothing is charged on either paying rail — the money moved when the credit was
+        // bought — and the window opened is the one the credit was SOLD with, not the
+        // configured reopen window.
+        verify(points, never()).spend(any(), anyInt(), any(), any());
+        assertThat(res.getPointsSpent()).isZero();
+        assertThat(res.getAmountPaise()).isZero();
+        assertThat(res.getDaysAdded()).isEqualTo(365);
+        assertThat(res.getCreditsLeft()).isEqualTo(1);
+        assertThat(lapsed.getAccessExpiresAt()).isAfter(LocalDateTime.now().plusDays(364));
+    }
+
+    /** A closed project reopens on this rail too — closure is undone, boards come back. */
+    @Test
+    void spendingACreditOnAClosedProjectReopensItAndResetsTheBoards() {
+        Project closed = Project.builder()
+                .id("proj-5")
+                .closedAt(LocalDateTime.now().minusDays(2))
+                .colourBoardsUsed(2)
+                .build();
+        when(projects.findByIdAndUserId("proj-5", USER)).thenReturn(Optional.of(closed));
+        when(ledger.claimFor(USER, "proj-5")).thenReturn(Optional.of(
+                ProjectCredit.builder().id("credit-2").userId(USER).validDays(VALID_DAYS).build()));
+
+        svc.reopenWithCredit(USER, "proj-5");
+
+        assertThat(closed.isClosed()).isFalse();
+        assertThat(closed.getColourBoardsUsed()).isZero();
+    }
+
+    /** An account holding none is told so, rather than being quietly charged instead. */
+    @Test
+    void aRoomCannotBeReopenedOnACreditTheAccountDoesNotHold() {
+        Project lapsed = Project.builder()
+                .id("proj-2")
+                .accessExpiresAt(LocalDateTime.now().minusDays(1))
+                .build();
+        when(projects.findByIdAndUserId("proj-2", USER)).thenReturn(Optional.of(lapsed));
+        when(ledger.claimFor(USER, "proj-2")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> svc.reopenWithCredit(USER, "proj-2"))
+                .isInstanceOf(QuotaExceededException.class)
+                .hasMessageContaining("no unused projects");
+        assertThat(lapsed.getAccessExpiresAt()).isBefore(LocalDateTime.now());
+    }
+
+    /**
+     * The credit rail is refused on exactly the terms the paying rails are, and BEFORE the
+     * credit is claimed — spending a project on a room that is already open is the same
+     * loss as being charged for one, and harder to notice.
+     */
+    @Test
+    void noCreditIsSpentOnARoomThatIsAlreadyOpen() {
+        Project open = Project.builder()
+                .id("proj-1")
+                .accessExpiresAt(LocalDateTime.now().plusDays(5))
+                .build();
+        when(projects.findByIdAndUserId("proj-1", USER)).thenReturn(Optional.of(open));
+
+        assertThatThrownBy(() -> svc.reopenWithCredit(USER, "proj-1"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("already open");
+        verify(ledger, never()).claimFor(any(), any());
+    }
+
+    /** A room a shop's code paid for is reopened by that shop, not out of the customer's
+     *  own credits — the same refusal the other two rails give. */
+    @Test
+    void noCreditIsSpentOnARoomAShopsCodePaidFor() {
+        Project codeCovered = Project.builder()
+                .id("proj-4")
+                .accessCode(new com.gridstore.huevista.account.model.CustomerAccessCode())
+                .build();
+        when(projects.findByIdAndUserId("proj-4", USER)).thenReturn(Optional.of(codeCovered));
+
+        assertThatThrownBy(() -> svc.reopenWithCredit(USER, "proj-4"))
+                .isInstanceOf(IllegalStateException.class);
+        verify(ledger, never()).claimFor(any(), any());
+    }
+
     // ─── The three-project bundle ────────────────────────────────────────────
 
     @Test
