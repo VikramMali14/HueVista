@@ -15,9 +15,12 @@ import java.util.Deque;
  * Pixel toolbox for the colour-coded mask pipeline: splits the model's
  * RED/GREEN/BLUE/BLACK image into per-category binary masks
  * ({@link #splitColorCodedMask}), smooth-resizes them to the canvas
- * resolution ({@link #resizeBinarySmooth}) and repairs the occasional
- * inverted SAM point mask ({@link #ensureWhiteForeground}). The masks are
- * otherwise stored exactly as the model produced them — no post-processing.
+ * resolution ({@link #resizeBinarySmooth}), lands them on the canvas at the
+ * registration {@link MaskAligner} measured ({@link #resizeBinaryAligned})
+ * and repairs the occasional inverted SAM point mask
+ * ({@link #ensureWhiteForeground}). Nothing here reshapes a region: the
+ * only geometry applied is the whole-frame scale and shift that puts the
+ * model's drawing back over the surfaces it was drawn from.
  *
  * 8-connectivity (including diagonals) wherever blobs are traced, so faint
  * JPEG-compression gaps along wall corners don't split one wall into two.
@@ -157,64 +160,14 @@ final class MaskProcessor {
 
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
-                int rgb = img.getRGB(x, y);
-                int r = (rgb >> 16) & 0xff;
-                int g = (rgb >> 8) & 0xff;
-                int b = rgb & 0xff;
                 int idx = y * w + x;
-
-                // Distinct-hue scheme (pushed apart for reliable separation):
-                //   RED-dominant   → main wall
-                //   GREEN-dominant → accent wall
-                //   BLUE-dominant  → trim
-                if (r >= g + 40 && r >= b + 40 && r >= 100) {
-                    mainBin[idx] = true;
-                    mainCount++;
-                    continue;
+                switch (classify(img.getRGB(x, y))) {
+                    case MAIN -> { mainBin[idx] = true; mainCount++; }
+                    case ACCENT -> { accentBin[idx] = true; accentCount++; }
+                    case TRIM -> { trimBin[idx] = true; trimCount++; }
+                    case WHITE -> { whiteBin[idx] = true; whiteCount++; }
+                    default -> { /* black or ambiguous — leave unassigned */ }
                 }
-                if (g >= r + 40 && g >= b + 40 && g >= 100) {
-                    accentBin[idx] = true;
-                    accentCount++;
-                    continue;
-                }
-                if (b >= r + 40 && b >= g + 40 && b >= 100) {
-                    trimBin[idx] = true;
-                    trimCount++;
-                    continue;
-                }
-                // Near-white (bright + low chroma): an off-spec colour the model
-                // used for a surface it should have painted green. Collected
-                // separately as the accent fallback below.
-                int min = Math.min(r, Math.min(g, b));
-                int max = Math.max(r, Math.max(g, b));
-                if (min >= 170 && max - min <= 50) {
-                    whiteBin[idx] = true;
-                    whiteCount++;
-                    continue;
-                }
-                // Anti-aliased / JPEG-softened pixels along a border BETWEEN two
-                // colour blocks read as a mix (magenta on a red|blue border,
-                // yellow on red|green): bright and clearly chromatic, but
-                // failing every dominance test above. Dropping them (the old
-                // behaviour) left an unassigned ribbon along every category
-                // border, which rendered as an unpainted white seam between
-                // regions. Adopt them into the strongest channel's category
-                // instead. Near-black stays unassigned (the model's
-                // "everything else"), and greys (railing silver, ambiguous
-                // noise) keep failing the chroma requirement.
-                if (max >= 100 && max - min >= 40) {
-                    if (r >= g && r >= b) {
-                        mainBin[idx] = true;
-                        mainCount++;
-                    } else if (g >= b) {
-                        accentBin[idx] = true;
-                        accentCount++;
-                    } else {
-                        trimBin[idx] = true;
-                        trimCount++;
-                    }
-                }
-                // else: black or ambiguous — leave unassigned.
             }
         }
 
@@ -237,6 +190,61 @@ final class MaskProcessor {
         if (accentCount >= minPixels) out.put("accent", encodeBinaryPng(accentBin, w, h));
         return out;
     }
+
+
+    /**
+     * Which category one pixel of the colour-coded mask belongs to. The single
+     * definition of the palette, shared by {@link #splitColorCodedMask} (which
+     * turns it into the stored masks) and {@link MaskAligner} (which traces the
+     * boundaries between categories to register the mask against the canvas) —
+     * two readings of the same image that must not disagree about where a
+     * region ends.
+     *
+     * Distinct-hue scheme (pushed apart for reliable separation):
+     *   RED-dominant   → main wall
+     *   GREEN-dominant → accent wall
+     *   BLUE-dominant  → trim
+     */
+    static byte classify(int rgb) {
+        int r = (rgb >> 16) & 0xff;
+        int g = (rgb >> 8) & 0xff;
+        int b = rgb & 0xff;
+
+        if (r >= g + 40 && r >= b + 40 && r >= 100) return MAIN;
+        if (g >= r + 40 && g >= b + 40 && g >= 100) return ACCENT;
+        if (b >= r + 40 && b >= g + 40 && b >= 100) return TRIM;
+
+        // Near-white (bright + low chroma): an off-spec colour the model
+        // used for a surface it should have painted green. Collected
+        // separately as the accent fallback in splitColorCodedMask.
+        int min = Math.min(r, Math.min(g, b));
+        int max = Math.max(r, Math.max(g, b));
+        if (min >= 170 && max - min <= 50) return WHITE;
+
+        // Anti-aliased / JPEG-softened pixels along a border BETWEEN two
+        // colour blocks read as a mix (magenta on a red|blue border,
+        // yellow on red|green): bright and clearly chromatic, but
+        // failing every dominance test above. Dropping them (the old
+        // behaviour) left an unassigned ribbon along every category
+        // border, which rendered as an unpainted white seam between
+        // regions. Adopt them into the strongest channel's category
+        // instead. Near-black stays unassigned (the model's
+        // "everything else"), and greys (railing silver, ambiguous
+        // noise) keep failing the chroma requirement.
+        if (max >= 100 && max - min >= 40) {
+            if (r >= g && r >= b) return MAIN;
+            return g >= b ? ACCENT : TRIM;
+        }
+        return NONE;
+    }
+
+    /** Categories {@link #classify} can return. Bytes rather than an enum:
+     *  the aligner holds one per pixel of a 384-px grid. */
+    static final byte NONE = 0;
+    static final byte MAIN = 1;
+    static final byte ACCENT = 2;
+    static final byte TRIM = 3;
+    static final byte WHITE = 4;
 
     /**
      * Reduces a white-salvage bucket to the one blob that can plausibly be THE
@@ -306,17 +314,87 @@ final class MaskProcessor {
      * (half-source-pixel accuracy), so a ~1K model mask upscaled to the canvas
      * resolution gets a smooth, straight edge instead of the enlarged staircase
      * blocks that nearest-neighbour scaling produces.
+     *
+     * <p>The identity case of {@link #resizeBinaryAligned}, and routed through
+     * it rather than drawn with {@code Graphics2D} so that one sampling
+     * convention governs every stored mask. Java2D's bilinear scale samples at
+     * {@code dst · sw/dw} instead of the texel centre, which slides the whole
+     * mask by half an output pixel per doubling — small, but a systematic
+     * shift in the same units as the drift the aligner is measuring, and it
+     * would have moved a mask depending only on whether the aligner found
+     * anything to correct.
      */
     static byte[] resizeBinarySmooth(byte[] maskBytes, int w, int h) throws IOException {
         BufferedImage src = decode(maskBytes);
         if (src.getWidth() == w && src.getHeight() == h) return maskBytes;
-        BufferedImage gray = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
-        Graphics2D g = gray.createGraphics();
-        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-        g.drawImage(src, 0, 0, w, h, null);
-        g.dispose();
-        return encodeBinaryPng(thresholdToBinary(gray, w, h), w, h);
+        return resizeBinaryAligned(maskBytes, w, h, 1, 1, 0, 0);
+    }
+
+    /**
+     * Resizes a binary mask to {@code w}×{@code h} while applying the
+     * registration correction {@link MaskAligner} measured for this
+     * generation, in ONE resample.
+     *
+     * <p>The identity fit (scale 1, no offset) is exactly
+     * {@link #resizeBinarySmooth} — the mask stretched to fill the canvas —
+     * so a run the aligner declined to touch produces the bytes it always did.
+     * A non-identity fit shifts and rescales the same content instead:
+     * {@code u_mask = 0.5 + (u_canvas - 0.5 - offset) / scale} per axis, then
+     * bilinear sampling and a 50% cut, which lands the boundary between source
+     * pixels the same way the plain resize does.
+     *
+     * <p>One resample, not a transform followed by a resize: a binary mask
+     * re-thresholded twice loses a pixel of edge accuracy to each pass, which
+     * is the same order as the drift being corrected.
+     *
+     * <p>Areas the correction pulls in from outside the model's frame are
+     * background. A mask that the fit pushes partly off-canvas therefore
+     * loses that sliver rather than smearing its edge pixel across the gap.
+     */
+    static byte[] resizeBinaryAligned(byte[] maskBytes, int w, int h,
+                                      double scaleX, double scaleY,
+                                      double offsetX, double offsetY) throws IOException {
+        BufferedImage src = decode(maskBytes);
+        int sw = src.getWidth(), sh = src.getHeight();
+        int[] px = src.getRGB(0, 0, sw, sh, null, 0, sw);
+        // Grayscale once so the inner loop is four array reads and no colour
+        // maths. Held as bytes, not floats: a 4K mask is 16M pixels, and the
+        // values are 0..255 either way.
+        byte[] lum = new byte[sw * sh];
+        for (int i = 0; i < px.length; i++) {
+            int rgb = px[i];
+            lum[i] = (byte) (((((rgb >> 16) & 0xff) + ((rgb >> 8) & 0xff) + (rgb & 0xff)) / 3) & 0xff);
+        }
+        px = null;   // the decoded ARGB copy is dead from here; let it go
+
+        boolean[] bin = new boolean[w * h];
+        for (int y = 0; y < h; y++) {
+            double v = 0.5 + (((y + 0.5) / h) - 0.5 - offsetY) / scaleY;
+            // Source row in pixel coordinates, half-pixel corrected so the
+            // sample sits at the centre of the texel it names.
+            double sy = v * sh - 0.5;
+            int y0 = (int) Math.floor(sy);
+            double fy = sy - y0;
+            for (int x = 0; x < w; x++) {
+                double u = 0.5 + (((x + 0.5) / w) - 0.5 - offsetX) / scaleX;
+                double sx = u * sw - 0.5;
+                int x0 = (int) Math.floor(sx);
+                double fx = sx - x0;
+                double value =
+                        sample(lum, sw, sh, x0, y0) * (1 - fx) * (1 - fy)
+                      + sample(lum, sw, sh, x0 + 1, y0) * fx * (1 - fy)
+                      + sample(lum, sw, sh, x0, y0 + 1) * (1 - fx) * fy
+                      + sample(lum, sw, sh, x0 + 1, y0 + 1) * fx * fy;
+                bin[y * w + x] = value > FOREGROUND_THRESHOLD;
+            }
+        }
+        return encodeBinaryPng(bin, w, h);
+    }
+
+    /** Luminance at a source pixel; outside the frame reads as background. */
+    private static int sample(byte[] lum, int w, int h, int x, int y) {
+        if (x < 0 || x >= w || y < 0 || y >= h) return 0;
+        return lum[y * w + x] & 0xff;
     }
 
     /**

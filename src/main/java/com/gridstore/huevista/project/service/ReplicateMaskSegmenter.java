@@ -20,9 +20,11 @@ import java.util.Optional;
  * paintable surface with a flat category colour.
  *
  * Honest caveat: this is generative image EDITING, not pixel extraction.
- * Pixel alignment isn't guaranteed. The downstream post-processing
- * (colour gate, morph clean, edge snap — see SegmentationService) exists
- * precisely to absorb the model's small misregistrations.
+ * Pixel alignment isn't guaranteed — the model repaints the photo rather than
+ * tracing it, so its colour blocks land a little off the surfaces they
+ * describe, and further off again whenever it rounds the output to one of its
+ * aspect buckets. {@link MaskAligner}, downstream, measures that offset
+ * against the canvas and corrects it before the masks are stored.
  *
  * <h2>Whose request schema</h2>
  *
