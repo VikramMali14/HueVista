@@ -44,7 +44,9 @@ import java.io.IOException;
 import java.net.URI;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -1366,6 +1368,7 @@ public class ProjectService {
         Region region = regionRepository.findByIdAndProjectId(regionId, projectId)
                 .orElseThrow(() -> new ResourceNotFoundException("Region not found: " + regionId));
         String maskUrl = region.getMaskUrl();
+        String originalMaskUrl = region.getOriginalMaskUrl();
         boolean manual = region.isManual();
         regionRepository.delete(region);
         // Library rooms share their masks with the template every copy is made from, so
@@ -1373,6 +1376,10 @@ public class ProjectService {
         // without that, one customer tidying up their copy would strip the wall out of
         // the shelf room for everybody.
         deleteOwnedBlob(maskUrl, "mask for region " + regionId);
+        // The kept-back original goes with the row; nothing else references it.
+        if (originalMaskUrl != null && !originalMaskUrl.equals(maskUrl)) {
+            deleteOwnedBlob(originalMaskUrl, "original mask for region " + regionId);
+        }
         log.info("{} region deleted: project={} region={}",
                 manual ? "Manual" : "Detected", projectId, regionId);
     }
@@ -1450,6 +1457,15 @@ public class ProjectService {
             throw new StorageException("Failed to store edited mask", e);
         }
 
+        // The FIRST edit files the mask it is replacing as this region's original, so
+        // "Restore original" has somewhere to go back to after the tab that made the
+        // edit is gone. Only the first: every later edit leaves the column alone, or it
+        // would decay into "the previous mask" and the tenth refinement would restore
+        // the ninth instead of what detection actually drew.
+        if (region.getOriginalMaskUrl() == null && oldMask != null && !oldMask.isBlank()) {
+            region.setOriginalMaskUrl(oldMask);
+        }
+
         // Repoint at the fresh key (stored as a KEY, presigned per read — see resolveMaskUrl).
         region.setMaskUrl(key);
         region.setMaskData(key);
@@ -1457,8 +1473,12 @@ public class ProjectService {
 
         // Best-effort cleanup of the mask we just replaced (skip foreign URLs and
         // the new key). A failure here is harmless — the row already points at the
-        // new mask.
-        if (!key.equals(oldMask)) {
+        // new mask. The one file that is never cleaned up here is the original: the row
+        // still names it, and deleting it would leave a restore button pointing at
+        // nothing.
+        String original = region.getOriginalMaskUrl();
+        boolean oldMaskIsTheOriginal = original != null && original.equals(oldMask);
+        if (!key.equals(oldMask) && !oldMaskIsTheOriginal) {
             deleteOwnedBlob(oldMask, "previous mask for region " + regionId);
         }
 
@@ -1745,6 +1765,15 @@ public class ProjectService {
                 ? storageService.getPublicUrl(project.getCleanedImageStorageKey()) : null;
         ProjectResponse r = ProjectResponse.fromPublic(project, originalUrl);
         r.setCleanedImageUrl(cleanedUrl);
+        // A guest owns this project and edits its walls, so they get the same route back
+        // to detection's own outline that a signed-in owner has. fromPublic leaves the
+        // field out because it also builds the SHARE view, where the viewer can't edit a
+        // mask and so has nothing to restore one onto.
+        if (r.getRegions() != null && project.getRegions() != null) {
+            Map<Long, String> originalsById = new HashMap<>();
+            project.getRegions().forEach(region -> originalsById.put(region.getId(), region.getOriginalMaskUrl()));
+            r.getRegions().forEach(region -> region.setOriginalMaskUrl(originalsById.get(region.getId())));
+        }
         refreshMaskUrls(r);
         return r;
     }
@@ -1888,6 +1917,7 @@ public class ProjectService {
         if (region == null) return;
         region.setMaskUrl(resolveMaskUrl(region.getMaskUrl()));
         region.setMaskData(resolveMaskUrl(region.getMaskData()));
+        region.setOriginalMaskUrl(resolveMaskUrl(region.getOriginalMaskUrl()));
     }
 
     /**

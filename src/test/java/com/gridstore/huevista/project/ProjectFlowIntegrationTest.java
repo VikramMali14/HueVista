@@ -37,6 +37,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -404,6 +405,88 @@ class ProjectFlowIntegrationTest {
         assertThat(updated.getMaskUrl()).isNotEqualTo(originalKey);
         assertThat(updated.isManual()).isFalse();
         assertThat(storageService.load(updated.getMaskUrl())).isEqualTo(refinedMask);
+    }
+
+    /**
+     * The FIRST hand-edit files the mask it replaces as the region's original, and keeps
+     * the file — that is what makes "Restore original" work after a reload.
+     */
+    @Test
+    void the_first_edit_keeps_the_mask_detection_drew() throws Exception {
+        String projectId = createProject();
+        byte[] detected = onePixelPng(0xFFFFFFFF);
+        String detectedKey = storageService.store(detected, userId, "main_wall.png", "image/png");
+        Region region = regionRepository.save(Region.builder()
+                .project(projectRepository.getReferenceById(projectId))
+                .label("Main wall")
+                .category(RegionCategory.MAIN_WALL)
+                .maskUrl(detectedKey)
+                .maskData(detectedKey)
+                .displayOrder(0)
+                .manual(false)
+                .build());
+
+        // Nothing has touched it yet, so there is no original to go back to — and the
+        // studio reads that null as "the live mask IS the original".
+        assertThat(region.getOriginalMaskUrl()).isNull();
+
+        editMask(projectId, region.getId(), onePixelPng(0xFF112233))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.originalMaskUrl").isNotEmpty());
+
+        Region afterFirst = regionRepository.findById(region.getId()).orElseThrow();
+        assertThat(afterFirst.getOriginalMaskUrl()).isEqualTo(detectedKey);
+        // Kept, not cleaned up with the mask it replaced: a restore button pointing at a
+        // deleted file is worse than no button.
+        assertThat(storageService.load(detectedKey)).isEqualTo(detected);
+
+        // A SECOND edit leaves the original alone. Were it re-filed each time it would
+        // decay into "the previous mask", and the tenth refinement would restore the
+        // ninth rather than what detection drew.
+        String firstEditKey = afterFirst.getMaskUrl();
+        editMask(projectId, region.getId(), onePixelPng(0xFF445566)).andExpect(status().isOk());
+
+        Region afterSecond = regionRepository.findById(region.getId()).orElseThrow();
+        assertThat(afterSecond.getOriginalMaskUrl()).isEqualTo(detectedKey);
+        assertThat(storageService.load(detectedKey)).isEqualTo(detected);
+        // The intermediate version is nobody's original, so it IS cleaned up.
+        assertThat(afterSecond.getMaskUrl()).isNotEqualTo(firstEditKey);
+    }
+
+    /** Restoring is an ordinary edit of the same mask — it must stay repeatable. */
+    @Test
+    void restoring_the_original_does_not_spend_it() throws Exception {
+        String projectId = createProject();
+        byte[] detected = onePixelPng(0xFFFFFFFF);
+        String detectedKey = storageService.store(detected, userId, "accent_wall.png", "image/png");
+        Region region = regionRepository.save(Region.builder()
+                .project(projectRepository.getReferenceById(projectId))
+                .label("Accent wall")
+                .category(RegionCategory.ACCENT_WALL)
+                .maskUrl(detectedKey)
+                .maskData(detectedKey)
+                .displayOrder(0)
+                .manual(false)
+                .build());
+
+        editMask(projectId, region.getId(), onePixelPng(0xFF112233)).andExpect(status().isOk());
+        // The studio restores by sending the original's own bytes back through the
+        // ordinary edit route.
+        editMask(projectId, region.getId(), detected).andExpect(status().isOk());
+
+        Region restored = regionRepository.findById(region.getId()).orElseThrow();
+        assertThat(restored.getOriginalMaskUrl()).isEqualTo(detectedKey);
+        assertThat(storageService.load(restored.getMaskUrl())).isEqualTo(detected);
+        assertThat(storageService.load(detectedKey)).isEqualTo(detected);
+    }
+
+    private ResultActions editMask(String projectId, Long regionId, byte[] png) throws Exception {
+        String body = objectMapper.writeValueAsString(Map.of(
+                "maskBase64", "data:image/png;base64," + Base64.getEncoder().encodeToString(png)));
+        return mockMvc.perform(put("/api/projects/{id}/regions/{rid}/mask", projectId, regionId)
+                .header("Authorization", "Bearer " + userToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body));
     }
 
     @Test
