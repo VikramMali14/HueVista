@@ -180,6 +180,10 @@ class ApiContractTest {
     void region_response_matches_frontend_RegionDetail() {
         assertThat(propsOf("RegionResponse")).containsExactlyInAnyOrder(
                 "id", "label", "category", "maskData", "maskUrl",
+                // The mask as it stood before anyone hand-edited it — what "Restore
+                // original" in the Mask Studio puts back. Null until a first edit files
+                // one, which is how the studio knows there is nothing to go back to.
+                "originalMaskUrl",
                 // Two codes for the applied colour, and which one a surface may show is
                 // the whole point of the pair: the manufacturer's is for shop staff, the
                 // HV code goes everywhere else — a customer's screen, a printed board, a

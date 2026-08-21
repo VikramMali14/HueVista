@@ -14,6 +14,19 @@ public class RegionResponse {
     private RegionCategory category;
     private String maskData;
     private String maskUrl;
+    /**
+     * The mask as it was before this region was ever hand-edited, or null if it never was.
+     *
+     * Null is the useful signal, not a gap: it means the live mask IS the original, so the
+     * studio hides "Restore original" rather than offering a button that would change
+     * nothing.
+     *
+     * Filled for anyone who can EDIT the project — the signed-in owner here, and a guest
+     * by way of ProjectService#toPublicResponse. {@link #fromPublic} leaves it out because
+     * it also builds the shared-link view, where the viewer cannot change a mask and so
+     * has nothing to restore one onto.
+     */
+    private String originalMaskUrl;
     private String appliedShadeCode;
     /**
      * The platform-wide code for the applied shade — "HV0348".
@@ -36,6 +49,7 @@ public class RegionResponse {
                 .category(region.getCategory())
                 .maskData(region.getMaskData())
                 .maskUrl(region.getMaskUrl())
+                .originalMaskUrl(region.getOriginalMaskUrl())
                 .appliedShadeCode(region.getAppliedShadeCode())
                 .appliedHexCode(region.getAppliedHexCode())
                 .displayOrder(region.getDisplayOrder())

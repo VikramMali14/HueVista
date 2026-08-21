@@ -38,6 +38,23 @@ public class Region {
     @Column(length = 2048)
     private String maskUrl;
 
+    /**
+     * The mask as it stood before the user's first hand-edit — for a detected wall,
+     * wall detection's own output.
+     *
+     * Filed by the FIRST call to replaceRegionMask and never touched again, so it does
+     * not drift into meaning "the previous mask": the tenth refinement still restores
+     * the same starting point as the first. The file it names is deliberately kept
+     * rather than cleaned up with the mask it replaced, which is what makes "Restore
+     * original" survive a reload instead of living in the browser tab that made the edit.
+     *
+     * Null for every region nobody has edited: there the live mask IS the original, and
+     * a restore would be a no-op. The studio reads it exactly that way and only offers
+     * the button when there is somewhere to go back to.
+     */
+    @Column(length = 2048)
+    private String originalMaskUrl;
+
     // Color currently applied to this region (updated via auto-save)
     private String appliedShadeCode;
     private String appliedHexCode;
