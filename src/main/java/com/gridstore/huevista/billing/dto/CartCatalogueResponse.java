@@ -71,6 +71,16 @@ public class CartCatalogueResponse {
     /** The offers, weakest first, so the cart can show the next one to reach for. */
     private List<Offer> offers;
 
+    /**
+     * Whether those offers also come off the combo and the special-offer bundle.
+     *
+     * <p>False, and it travels rather than being assumed by the screen, because it decides
+     * which subtotal the cart draws its running total from. A client that hard-coded the
+     * rule would quote a discount the server does not give the day it is switched on for a
+     * campaign — and of the two numbers, the one on the Pay button is the one people check.
+     */
+    private boolean offersApplyToPackages;
+
     /** Projects already paid for and not yet started. */
     private int availableProjects;
 

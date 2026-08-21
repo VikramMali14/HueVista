@@ -54,10 +54,26 @@ public class ProjectCreditLedger {
      */
     @Transactional
     public Optional<ProjectCredit> claim(String userId) {
+        return claimFor(userId, null);
+    }
+
+    /**
+     * Take one unspent credit and point it at a project that ALREADY EXISTS, in a single
+     * compare-and-set.
+     *
+     * <p>The two-phase dance this class is built around — claim, then {@link #attach} once
+     * the insert has handed out an id — exists because a new project has no id to record
+     * yet. Reopening one does: the room is already there, and splitting the spend into a
+     * claim and a later attach would leave a window in which the ledger says a credit was
+     * spent and cannot say on what. One statement, so the row is never half-written.
+     */
+    @Transactional
+    public Optional<ProjectCredit> claimFor(String userId, String projectId) {
         LocalDateTime now = LocalDateTime.now();
         for (ProjectCredit credit : creditRepository.findAvailable(userId)) {
-            if (creditRepository.consume(credit.getId(), null, now) == 1) {
+            if (creditRepository.consume(credit.getId(), projectId, now) == 1) {
                 credit.setConsumedAt(now);
+                credit.setProjectId(projectId);
                 return Optional.of(credit);
             }
         }

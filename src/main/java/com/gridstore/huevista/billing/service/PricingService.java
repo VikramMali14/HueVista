@@ -160,9 +160,12 @@ public class PricingService {
     // get rather than as a percentage off a subtotal, which is the only kind of offer
     // people work out in their heads at the counter.
     //
-    // It is a LINE, not a code. The percentage offers below still apply to a basket that
-    // holds one, and deliberately so: this is the price of the bundle, and an order big
-    // enough to earn HUE10 on top has earned it.
+    // It is a LINE, not a code — and it is priced as one. The percentage offers below do
+    // NOT come off it: the bundle and the combo already carry their discount in the price
+    // on the ticket, and taking another 25% off "three for the price of two" discounts the
+    // same basket twice. What the offers are for is the buyer who does not want a package,
+    // and their subtotal is what earns and receives them. See
+    // {@link #catalogueOffersApplyToPackages}.
 
     /** Projects in the special-offer bundle. */
     @Value("${app.customer-catalogue.bundle-projects:3}")
@@ -214,6 +217,24 @@ public class PricingService {
      */
     @Value("${app.customer-catalogue.offers:HUE10:28900:10,HUE20:58900:20,HUE25:98900:25}")
     private String catalogueOffers;
+
+    /**
+     * Whether the percentage offers also come off the combo and the special-offer bundle.
+     *
+     * <p>Off. Those two are packages: their whole pitch is a saving already taken off the
+     * price on the ticket — "cheaper than buying the two on their own", "the third is on
+     * us" — and a further 25% on top is the same basket discounted twice, at a rate nobody
+     * chose. The offers are the OTHER half of the counter: they earn on, and come off, what
+     * the buyer picked line by line.
+     *
+     * <p>Configured rather than hard-coded because it is a commercial decision and the kind
+     * that gets revisited for a campaign. True restores the old behaviour exactly — the
+     * whole subtotal earns the offer and the whole subtotal is discounted — and orders
+     * already open in Checkout are unaffected either way, because the base the discount was
+     * struck on travels on the order. See {@code CartPurchaseService}.
+     */
+    @Value("${app.customer-catalogue.offers-apply-to-packages:false}")
+    private boolean catalogueOffersApplyToPackages;
 
     @Value("${app.points.validity-days:365}")
     private int pointsValidityDays;
@@ -488,6 +509,12 @@ public class PricingService {
 
     public int catalogueMaxQuantity() {
         return Math.max(1, catalogueMaxQuantity);
+    }
+
+    /** See {@link #catalogueOffersApplyToPackages} — false means the combo and the bundle
+     *  keep their own saving and neither earns nor receives a percentage offer. */
+    public boolean catalogueOffersApplyToPackages() {
+        return catalogueOffersApplyToPackages;
     }
 
     /**

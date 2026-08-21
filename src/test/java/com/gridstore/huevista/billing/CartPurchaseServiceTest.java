@@ -123,7 +123,11 @@ class CartPurchaseServiceTest {
         return r;
     }
 
-    /** An order as Razorpay hands it back, with the notes the service wrote onto it. */
+    /**
+     * An order as Razorpay hands it back, with the notes the service wrote onto it — and
+     * deliberately WITHOUT a discount base, which is how every order opened before packages
+     * left the offer looks. {@link #paidOrderWithBase} is the one that carries it.
+     */
     private static Order paidOrder(int amountPaise, String purpose, String userId,
                                    int projectQty, int creditQty, int comboQty,
                                    int discountPercent) {
@@ -145,6 +149,16 @@ class CartPurchaseServiceTest {
         notes.put("validDays", VALID_DAYS);
         json.put("notes", notes);
         return new Order(json);
+    }
+
+    /** The same order with the base the percentage was struck on written onto it. */
+    private static Order paidOrderWithBase(int amountPaise, int projectQty, int creditQty,
+                                           int comboQty, int discountPercent, int discountBase) {
+        Order order = paidOrder(amountPaise, "cart_purchase", USER,
+                projectQty, creditQty, comboQty, discountPercent);
+        JSONObject notes = order.get("notes");
+        notes.put("discountBase", discountBase);
+        return order;
     }
 
     // ── Pricing ─────────────────────────────────────────────────────────────
@@ -195,13 +209,13 @@ class CartPurchaseServiceTest {
 
     @Test
     void theBestEarnedOfferIsAppliedEvenWhenNoCodeIsSent() {
-        // ₹398 — past ₹289, short of ₹589. Nobody typed anything.
-        var res = svc.createOrder(USER, basket(0, 0, 2, null));
+        // Two projects — ₹298, past ₹289 and short of ₹589. Nobody typed anything.
+        var res = svc.createOrder(USER, basket(2, 0, 0, null));
 
         assertThat(res.getDiscountCode()).isEqualTo("HUE10");
         assertThat(res.getDiscountPercent()).isEqualTo(10);
-        assertThat(res.getDiscountPaise()).isEqualTo(3_980);
-        assertThat(res.getAmountPaise()).isEqualTo(39_800 - 3_980);
+        assertThat(res.getDiscountPaise()).isEqualTo(2_980);
+        assertThat(res.getAmountPaise()).isEqualTo(29_800 - 2_980);
     }
 
     @Test
@@ -217,12 +231,55 @@ class CartPurchaseServiceTest {
 
     @Test
     void aCodeIsHonouredWhenTheBasketHasEarnedIt() {
-        // ₹995 — every offer unlocked. The buyer picked the weakest one, and picking
-        // between earned offers is the whole point of the strip.
-        var res = svc.createOrder(USER, basket(0, 0, 5, "HUE10"));
+        // Seven projects — ₹1,043, every offer unlocked. The buyer picked the weakest one,
+        // and picking between earned offers is the whole point of the strip.
+        var res = svc.createOrder(USER, basket(7, 0, 0, "HUE10"));
 
         assertThat(res.getDiscountPercent()).isEqualTo(10);
-        assertThat(res.getAmountPaise()).isEqualTo(99_500 - 9_950);
+        assertThat(res.getAmountPaise()).isEqualTo(104_300 - 10_430);
+    }
+
+    // ── Packages against percentages ────────────────────────────────────────
+    //
+    // The combo and the bundle carry their saving in their own price. A percentage on top
+    // of that is one basket discounted twice at a rate nobody set, so they neither earn an
+    // offer nor receive one — and the two have to move together, or a basket earns a
+    // discount of nothing and reads as broken.
+
+    @Test
+    void aBasketOfNothingButPackagesEarnsNoPercentageOnTop() {
+        // ₹995 of combos. Under the old rule this took 25% off a line already sold below
+        // the price of its parts.
+        var res = svc.createOrder(USER, basket(0, 0, 5, null));
+
+        assertThat(res.getDiscountPercent()).isZero();
+        assertThat(res.getDiscountPaise()).isZero();
+        assertThat(res.getAmountPaise()).isEqualTo(5 * COMBO_PRICE);
+    }
+
+    @Test
+    void aPackageInTheBasketNeitherEarnsTheOfferNorIsDiscountedByIt() {
+        // Two projects (₹298, enough for HUE10 on their own) and a combo alongside them.
+        // The 10% comes off ₹298 and not off ₹497 — the combo is rung up at its ticket
+        // price and does not lift the basket into a better band either.
+        var res = svc.createOrder(USER, basket(2, 0, 1, null));
+
+        assertThat(res.getSubtotalPaise()).isEqualTo(2 * PROJECT_PRICE + COMBO_PRICE);
+        assertThat(res.getDiscountPercent()).isEqualTo(10);
+        assertThat(res.getDiscountPaise()).isEqualTo(2_980);
+        assertThat(res.getAmountPaise()).isEqualTo(2 * PROJECT_PRICE + COMBO_PRICE - 2_980);
+    }
+
+    @Test
+    void packagesCanBeBroughtBackIntoTheOfferForACampaign() {
+        // The rule is a switch, not a weld. Flipped on, the whole subtotal earns and
+        // receives again — exactly what the counter did before.
+        ReflectionTestUtils.setField(pricing, "catalogueOffersApplyToPackages", true);
+
+        var res = svc.createOrder(USER, basket(0, 0, 2, null));
+
+        assertThat(res.getDiscountPercent()).isEqualTo(10);
+        assertThat(res.getAmountPaise()).isEqualTo(39_800 - 3_980);
     }
 
     @Test
@@ -355,6 +412,73 @@ class CartPurchaseServiceTest {
             assertThatThrownBy(() -> svc.verifyAndCredit(USER, req()))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("already been redeemed");
+            verify(projects, never()).creditCatalogueProjects(anyString(), anyInt(), anyInt());
+        }
+    }
+
+    /**
+     * An order opened before packages left the offer must still redeem.
+     *
+     * <p>Its notes carry no discount base, because there was none to carry — the whole
+     * subtotal was the base. Reading the new, narrower rule into it would work out a
+     * different amount from the one Razorpay actually took and refuse a payment the buyer
+     * has already made. {@link #paidOrder} writes no base, which is the case exactly.
+     */
+    @Test
+    void anOrderPricedBeforeTheRuleChangedStillRedeems() throws Exception {
+        // Two combos at ₹398 less the 10% they earned under the old rule = ₹358.20.
+        when(razorpay.orders.fetch("order_1"))
+                .thenReturn(paidOrder(35_820, "cart_purchase", USER, 0, 0, 2, 10));
+        when(purchases.existsByPaymentId("pay_1")).thenReturn(false);
+
+        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
+            utils.when(() -> Utils.verifyPaymentSignature(any(JSONObject.class), any())).thenReturn(true);
+
+            svc.verifyAndCredit(USER, req());
+
+            verify(projects).creditCatalogueProjects(USER, 2, VALID_DAYS);
+            verify(credits).creditPurchased(USER, 4, "pay_1", VALID_DAYS);
+        }
+    }
+
+    /**
+     * A basket priced under the new rule redeems for exactly what it granted.
+     *
+     * <p>Two projects and a combo: the 10% came off the ₹298 of singles and not off the
+     * ₹497 total, and verification has to reach the same ₹467.02 from the notes alone or
+     * the buyer is charged correctly and handed nothing.
+     */
+    @Test
+    void aBasketPricedWithPackagesOutsideTheOfferRedeemsForWhatItGranted() throws Exception {
+        int subtotal = 2 * PROJECT_PRICE + COMBO_PRICE;
+        int amount = subtotal - 2_980;
+        when(razorpay.orders.fetch("order_1"))
+                .thenReturn(paidOrderWithBase(amount, 2, 0, 1, 10, 2 * PROJECT_PRICE));
+        when(purchases.existsByPaymentId("pay_1")).thenReturn(false);
+
+        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
+            utils.when(() -> Utils.verifyPaymentSignature(any(JSONObject.class), any())).thenReturn(true);
+
+            svc.verifyAndCredit(USER, req());
+
+            // Two bought outright plus the combo's one; the combo's two credits.
+            verify(projects).creditCatalogueProjects(USER, 3, VALID_DAYS);
+            verify(credits).creditPurchased(USER, 2, "pay_1", VALID_DAYS);
+        }
+    }
+
+    /** A base bigger than the basket it is struck on is an invented discount. */
+    @Test
+    void anOrderClaimingADiscountBaseBeyondItsSubtotalIsRefused() throws Exception {
+        int subtotal = COMBO_PRICE;
+        when(razorpay.orders.fetch("order_1"))
+                .thenReturn(paidOrderWithBase(subtotal - 9_950, 0, 0, 1, 10, 99_500));
+
+        try (MockedStatic<Utils> utils = mockStatic(Utils.class)) {
+            utils.when(() -> Utils.verifyPaymentSignature(any(JSONObject.class), any())).thenReturn(true);
+
+            assertThatThrownBy(() -> svc.verifyAndCredit(USER, req()))
+                    .isInstanceOf(SecurityException.class);
             verify(projects, never()).creditCatalogueProjects(anyString(), anyInt(), anyInt());
         }
     }

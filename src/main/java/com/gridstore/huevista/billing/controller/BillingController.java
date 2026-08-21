@@ -206,6 +206,21 @@ public class BillingController {
                 () -> projectPurchaseService.verifyAndCreditReopen(userDetails.getUsername(), request)));
     }
 
+    @Operation(summary = "Reopen a locked project with a project credit already on the account",
+            description = "Spends one unstarted project — bought earlier and not yet used — to "
+                    + "give a locked project another validity window, for as long as that credit "
+                    + "was sold with. No payment sheet: the money moved when the credit was "
+                    + "bought. Refused with 402 when the account holds none, and with 409 on the "
+                    + "same terms as the other two rails when the caller can already work on the "
+                    + "project or the room is a shop's to reopen.")
+    @PostMapping("/projects/{projectId}/reopen/credit")
+    public ResponseEntity<ProjectReopenResponse> reopenWithCredit(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @PathVariable String projectId) {
+        return ResponseEntity.ok(
+                projectCreditService.reopenWithCredit(userDetails.getUsername(), projectId));
+    }
+
     @Operation(summary = "Get my colour-board PDF allowance",
             description = "Images-per-PDF and monthly download quota, resolved against whichever plan pays "
                     + "for the caller (a retailer's own; the issuing shop's for customers).")

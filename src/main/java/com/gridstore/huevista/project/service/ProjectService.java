@@ -645,7 +645,7 @@ public class ProjectService {
     public ProjectResponse getProjectAsAdmin(String projectId) {
         Project project = projectRepository.findById(projectId)
                 .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
-        return toResponse(project).withAccess(true, "Admin view — read only.", null, 0, 0);
+        return toResponse(project).withAccess(true, "Admin view — read only.", null, 0, 0, 0);
     }
 
     /** Attach the viewer's access to an owner-view response. */
@@ -654,8 +654,17 @@ public class ProjectService {
         if (user == null) return response;
         ProjectAccessService.Access access =
                 projectAccessService.accessFor(userId, user.getRole(), project);
+        // Counted only for a room a credit could actually open. Two exclusions, and they
+        // are the two ProjectAccessService.assertNeedsReopen refuses on, so the banner
+        // never offers a rail the endpoint behind it would turn down: a room the viewer
+        // can already work on, and a room a shop's code paid for — that one is reopened by
+        // the shop issuing a fresh code, not by the customer spending anything. It is also
+        // one query saved on the overwhelmingly common path.
+        int reopenCredits = access.editable() || project.getAccessCode() != null
+                ? 0 : projectCreditLedger.available(userId);
         return response.withAccess(!access.editable(), access.reason(),
-                access.expiresAt(), access.reopenPricePoints(), access.reopenPricePaise());
+                access.expiresAt(), access.reopenPricePoints(), access.reopenPricePaise(),
+                reopenCredits);
     }
 
     /**

@@ -5,6 +5,7 @@ import com.gridstore.huevista.billing.dto.ProjectReopenResponse;
 import com.gridstore.huevista.billing.model.Plan;
 import com.gridstore.huevista.billing.model.ProjectCredit;
 import com.gridstore.huevista.billing.model.RewardPointsTransaction;
+import com.gridstore.huevista.common.exception.QuotaExceededException;
 import com.gridstore.huevista.common.exception.ResourceNotFoundException;
 import com.gridstore.huevista.project.model.Project;
 import com.gridstore.huevista.project.repository.ProjectRepository;
@@ -261,7 +262,7 @@ public class ProjectCreditService {
         projectRepository.save(project);
         log.info("Project reopened with money: user={} project={} until={} paise={}",
                 userId, project.getId(), project.getAccessExpiresAt(), amountPaise);
-        return reopenResult(project, 0, amountPaise);
+        return reopenResult(userId, project, 0, amountPaise);
     }
 
     /**
@@ -281,6 +282,60 @@ public class ProjectCreditService {
     }
 
     // ── Extra AI renders ────────────────────────────────────────────────────
+
+    /**
+     * Reopen a locked project by spending one of the projects this account has ALREADY
+     * paid for and not yet started.
+     *
+     * <p><b>Why this rail had to exist.</b> A customer who bought three projects, started
+     * one and let its year run out was told the room was view-only and offered two ways
+     * out: points, which a customer may never hold, and a card. The two unstarted projects
+     * sitting on their account — bought, paid for, worth a room each — could not be spent
+     * on the room in front of them. The only route was to pay again for something already
+     * bought, which is the same complaint whichever way it is phrased.
+     *
+     * <p><b>What one credit buys here.</b> The credit's own window, not the configured
+     * reopen window: {@link ProjectCredit#getValidDays()} is captured at purchase time
+     * precisely so a credit opens what it was sold as opening, and a credit sold with a
+     * year on it must not reopen a room for thirty days because that is what the reopen
+     * rail happens to be priced at today. It is a whole project's worth either way — which
+     * is also why this is offered rather than made automatic: a lapsed window costs ₹9 on
+     * the cash rail and a credit is worth ₹149, so spending one is the buyer's call and
+     * nobody else's.
+     *
+     * <p>Refused on exactly the terms the other two rails are refused on — see
+     * {@link ProjectAccessService#assertNeedsReopen}. Nobody spends a credit on a room a
+     * plan or a shop's code is already keeping open.
+     */
+    @Transactional
+    public ProjectReopenResponse reopenWithCredit(String userId, String projectId) {
+        Project project = requireReopenable(userId, projectId);
+
+        // Claimed BEFORE the room is touched, and in one compare-and-set, so two taps on
+        // the button cannot spend two credits on the same reopen. A failure anywhere below
+        // rolls the claim back with the rest of this transaction — the credit is never
+        // left spent on a room that did not reopen.
+        ProjectCredit credit = creditLedger.claimFor(userId, projectId)
+                .orElseThrow(() -> new QuotaExceededException(
+                        "You have no unused projects to spend on this room. Buy one from "
+                        + "Projects & credits, or reopen this room on its own."));
+
+        // The claim's flush clears the persistence context, so the project loaded above is
+        // no longer managed. Read it back rather than saving a detached copy over the top.
+        project = projectRepository.findByIdAndUserId(projectId, userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Project not found: " + projectId));
+
+        int days = credit.getValidDays() > 0
+                ? credit.getValidDays() : pricingService.projectValidDays();
+        projectAccessService.reopenClosed(project);
+        projectAccessService.extendWindow(project, days);
+        projectRepository.save(project);
+        log.info("Project reopened with a project credit: user={} project={} credit={} until={} days={}",
+                userId, project.getId(), credit.getId(), project.getAccessExpiresAt(), days);
+
+        billingEmailService.sendProjectReopened(userId, 0, 0, days);
+        return reopenResult(userId, project, 0, 0, days);
+    }
 
     /**
      * Give a project another validity window, paid in points.
@@ -310,17 +365,36 @@ public class ProjectCreditService {
                 userId, project.getId(), project.getAccessExpiresAt(), points);
 
         billingEmailService.sendProjectReopened(userId, points, 0, pricingService.projectValidDays());
-        return reopenResult(project, points, 0);
+        return reopenResult(userId, project, points, 0);
     }
 
-    private ProjectReopenResponse reopenResult(Project project, int pointsSpent, int amountPaise) {
+    private ProjectReopenResponse reopenResult(String userId, Project project,
+                                               int pointsSpent, int amountPaise) {
+        return reopenResult(userId, project, pointsSpent, amountPaise,
+                pricingService.projectValidDays());
+    }
+
+    /**
+     * The days added are passed in rather than re-read, because they are not always the
+     * configured reopen window: a project credit opens the window it was SOLD with. See
+     * {@link #reopenWithCredit}.
+     *
+     * <p>{@code creditsLeft} rides along on every rail, not just the credit one. The studio
+     * shows "use one of your N projects" on the view-only banner, and a reopen paid for with
+     * a card leaves that N unchanged — but a banner that never hears the new number has to
+     * reload the account to find out it did not move.
+     */
+    private ProjectReopenResponse reopenResult(String userId, Project project, int pointsSpent,
+                                               int amountPaise, int daysAdded) {
+        int creditsLeft = creditLedger.available(userId);
         return ProjectReopenResponse.builder()
                 .projectId(project.getId())
                 .accessExpiresAt(project.getAccessExpiresAt())
                 .paused(project.getAccessPausedAt() != null)
                 .pointsSpent(pointsSpent)
                 .amountPaise(amountPaise)
-                .daysAdded(pricingService.projectValidDays())
+                .daysAdded(daysAdded)
+                .creditsLeft(creditsLeft)
                 .build();
     }
 }
