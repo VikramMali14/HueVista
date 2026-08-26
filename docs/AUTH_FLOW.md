@@ -649,6 +649,30 @@ What actually guards the project is the **authorised-domains list** in the Fireb
 console plus the backend's `aud` check. Leave the values blank and the feature is off:
 the mobile option is not offered and the endpoint answers 503.
 
+### What it costs, and the one setting that bounds it
+
+Phone sign-in is **not** on Firebase's free tier. Since September 2024 the project must
+be on the **Blaze** (pay-as-you-go) plan with a Cloud Billing account before Firebase
+will send a verification SMS at all; only the first 10 a day go unbilled. India runs
+about **USD 0.07 per SMS** — roughly ₹6 for every code requested, including the ones
+sent to a mistyped number that get requested again a moment later.
+
+That is far more than a DLT registration with a domestic aggregator costs per message.
+This flow is the way to launch *without* a DLT registration, not the way to stay
+without one; revisit it once the volume is real.
+
+**Set the SMS region policy to allow India only** (Firebase console → Authentication →
+Settings → SMS region policy) before this is public. It is the one setting that bounds
+the bill. Other regions cost up to USD 0.46 per message, and a public endpoint that
+will text any number on earth is a standing invitation to SMS pumping — an attacker
+requests codes to premium-rate numbers they collect revenue on, and the charges are
+yours. Nothing in this codebase can prevent that; the region policy can.
+
+Per-IP rate limiting on `POST /api/auth/phone/firebase` does **not** help here, because
+the SMS is sent by Firebase before that endpoint is ever reached. The controls that
+bound SMS spend all live in the Firebase console: the region policy, Firebase's own
+per-number and per-IP quotas, and the reCAPTCHA the client must pass.
+
 ---
 
 ## 8. Flow E - Refresh Token

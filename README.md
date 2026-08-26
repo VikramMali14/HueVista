@@ -381,6 +381,20 @@ bite if skipped:
    hides the option. The frontend needs the matching `NEXT_PUBLIC_FIREBASE_*` values
    at build time.
 
+   **This costs money, and it is not a rounding error.** Firebase has required a
+   Blaze (pay-as-you-go) billing account for phone sign-in since September 2024;
+   the free Spark plan cannot send a verification SMS at all, and only the first 10
+   a day go unbilled. India is about **USD 0.07 per SMS** — roughly ₹6 every time
+   somebody asks for a code, mistyped retries included. A DLT registration with a
+   domestic aggregator is a fraction of that per message, so treat Firebase as the
+   way to launch *without* one rather than the permanent answer.
+
+   **Set the SMS region policy to allow India only before going live**
+   (Firebase console → Authentication → Settings → SMS region policy). Other
+   regions run up to USD 0.46 per message, and a public phone-auth endpoint with no
+   region limit is a standing invitation to SMS pumping — an attacker requests codes
+   to premium numbers they collect revenue on, and the bill is yours.
+
    The product sends from two addresses and the SMTP account must be authorised
    for **both**, on one domain with SPF/DKIM/DMARC set — a provider asked to send
    as an address it cannot authenticate rewrites the From or drops the message:
