@@ -126,8 +126,20 @@ public class SecurityConfig {
                         // from any other Firebase project buys nothing here. Per-IP
                         // rate-limited alongside the password login.
                         "/api/auth/phone/firebase",
+                        // Sign in with a code we text ourselves. Public for the same
+                        // reason: the caller has no session and is asking for one. The
+                        // send step answers identically whether or not the number has an
+                        // account, and both steps are throttled per IP here and per
+                        // NUMBER in the service — every send costs money and lands on a
+                        // handset the caller may not own.
+                        "/api/auth/phone/otp/send",
+                        "/api/auth/phone/otp/verify",
                         // One-time OAuth code -> tokens; the exchange IS the login.
                         "/api/auth/oauth2/exchange").permitAll()
+                // Which mobile sign-in this server offers. Read by the sign-in page
+                // before anybody has a session; discloses one enum value about our own
+                // configuration and nothing about any person.
+                .requestMatchers(HttpMethod.GET, "/api/auth/phone/methods").permitAll()
                 .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
                 // Swagger UI / OpenAPI spec — public
                 .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()

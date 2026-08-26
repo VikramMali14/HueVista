@@ -173,7 +173,7 @@ public class VerificationService {
                     "Your HueVista verification code is " + code + ".\n\nIt expires in " + minutes
                             + " minutes. If you didn't request this, you can ignore this email.");
         } else {
-            smsSender.send(destination, "HueVista code: " + code + " (valid " + minutes + " min)");
+            smsSender.sendOtp(destination, code, (int) minutes);
         }
 
         return VerificationStatusResponse.builder()

@@ -15,14 +15,15 @@
 5. [Flow C - Protected Endpoint (Bearer JWT)](#5-flow-c--protected-endpoint-bearer-jwt)
 6. [Flow D - Google OAuth2 Login](#6-flow-d--google-oauth2-login)
 7. [Flow G - Mobile Number Sign-In (Firebase Phone Auth)](#7-flow-g--mobile-number-sign-in-firebase-phone-auth)
-8. [Flow E - Refresh Token](#8-flow-e--refresh-token)
-9. [Flow F - Logout](#9-flow-f--logout)
-10. [JWT Internals](#10-jwt-internals)
-11. [Refresh Token Internals](#11-refresh-token-internals)
-12. [Database Tables](#12-database-tables)
-13. [Error Handling Reference](#13-error-handling-reference)
-14. [Security Decisions Explained](#14-security-decisions-explained)
-15. [Spring Boot 4.x Compatibility Notes](#15-spring-boot-4x-compatibility-notes)
+8. [Flow H - Mobile Number Sign-In (our own SMS)](#8-flow-h--mobile-number-sign-in-our-own-sms)
+9. [Flow E - Refresh Token](#9-flow-e--refresh-token)
+10. [Flow F - Logout](#10-flow-f--logout)
+11. [JWT Internals](#11-jwt-internals)
+12. [Refresh Token Internals](#12-refresh-token-internals)
+13. [Database Tables](#13-database-tables)
+14. [Error Handling Reference](#14-error-handling-reference)
+15. [Security Decisions Explained](#15-security-decisions-explained)
+16. [Spring Boot 4.x Compatibility Notes](#16-spring-boot-4x-compatibility-notes)
 
 ---
 
@@ -675,7 +676,104 @@ per-number and per-IP quotas, and the reCAPTCHA the client must pass.
 
 ---
 
-## 8. Flow E - Refresh Token
+## 8. Flow H - Mobile Number Sign-In (our own SMS)
+
+`POST /api/auth/phone/otp/send` → `POST /api/auth/phone/otp/verify`
+
+### Why a second way in
+
+Flow G costs about ₹6 a message, because Firebase's price is what buys you out of a DLT
+registration. Once you hold one, an Indian route costs roughly ₹0.45 through Twilio or
+₹0.20 through MSG91 — thirteen to thirty times less.
+
+So there are two ways to prove a number, and a deployment picks one with configuration.
+**Which account that number then opens is not part of the choice**: both flows hand off
+to `PhoneAccountService`, which is the only thing that decides. Those rules determine
+whether a returning customer finds their rooms or a stranger's, and they are far too
+important to exist in two copies that can drift apart.
+
+```
+   Flow G                          Flow H
+   Firebase sends the SMS          WE send the SMS
+   browser checks the code         our server checks the code
+   no DLT needed, ~₹6              DLT required, ~₹0.20-0.45
+        |                               |
+        +-------------+-----------------+
+                      |
+              a proven phone number
+                      |
+              PhoneAccountService
+              - verified number? -> that account
+              - ADMIN?           -> 403
+              - unknown number?  -> open a CUSTOMER account
+                      |
+              the same session as every other sign-in
+```
+
+`GET /api/auth/phone/methods` reports which is live (`FIREBASE`, `SMS` or `NONE`). The
+sign-in page reads it **server-side** rather than carrying its own copy of the setting —
+a second copy is how a site ends up offering a sign-in its backend answers 503 to.
+
+### DLT, and why no provider waives it
+
+TRAI requires every sender to register its entity, its header and every message template
+before an Indian operator will carry a message. Twilio and MSG91 are transports, not
+exemptions; the DLT identifiers are passed on every send precisely because the provider
+has to hand them to the operator. Register on one portal (~₹5,900), then enrol free on
+the rest with the same Entity ID.
+
+**The registered template must match character for character.** One extra space and the
+operator drops the message — not an error, it simply never arrives. So the body is
+configuration (`app.sms.twilio.message-template`), with no default: configured without
+it, the app refuses the provider at startup rather than sending something that will be
+silently discarded.
+
+### Every send here spends money on somebody else's phone
+
+That is the difference from Flow G, where Google throttles and pays for the SMS before
+our server is ever reached. Here we are the sender, so the limits are ours:
+
+| Limit | Where | Why |
+|---|---|---|
+| 45s cooldown per number | `PhoneOtpService` | Measured from the last code SENT regardless of what became of it — a cooldown a successful verification resets is one an attacker can clear at will |
+| 10 codes per number per day | `PhoneOtpService` | The cooldown only PACES an attacker; it does not stop them texting a stranger all night at our expense |
+| 5 attempts per code | `PhoneOtpService`, under a row lock | Without the lock, parallel guesses each read the counter before any writes it, and the limit counts one try instead of ten |
+| Per IP | `SensitiveEndpointRateLimitFilter` | The send sits in the otp-send bucket, the verify with the other code confirmations |
+
+The caps are per **number**, not per account, because there may be no account — that is
+the point of the flow — and an attacker picking a stranger's number would otherwise face
+no limit at all.
+
+The send step also answers **identically** whether or not the number has an account. It
+has to: this endpoint is public, and an answer that differed would be a free tool for
+asking whether a given person is a HueVista customer.
+
+### Two transactions, deliberately
+
+`verify` needs opposite things from two different failures, and one transaction cannot
+give both:
+
+- A **wrong code** must still COMMIT its `attempts++`. Rolled back, the counter never
+  rises and the attempt limit is decorative.
+- A **refusal from `PhoneAccountService`** (an ADMIN account) must roll back cleanly.
+
+The first version tried to have it both ways with `noRollbackFor` across the whole
+method, and the two collided: the nested transaction marked itself rollback-only on the
+admin refusal, the outer one then tried to commit anyway, and the caller got
+`UnexpectedRollbackException` — **a 500 where a 403 belonged**.
+
+Every `@Transactional` test missed it, because a test transaction is rolled back at the
+end and never commits, which is the exact moment the conflict surfaces. It was found by
+driving a real server against a real PostgreSQL. `PhoneOtpCommitBehaviourTest` is
+deliberately NOT `@Transactional` for that reason.
+
+So the code check runs in its own transaction and **never throws** — it returns what it
+found and commits either way — and the throwing happens outside it. Account resolution
+then opens its own transaction with nothing nested inside.
+
+---
+
+## 9. Flow E - Refresh Token
 
 When the 15-minute access token expires, the frontend silently gets a new one.
 
@@ -727,7 +825,7 @@ legitimate user has already refreshed, it will be gone from the DB -> 400.
 
 ---
 
-## 9. Flow F - Logout
+## 10. Flow F - Logout
 
 **Endpoint:** `POST /api/auth/logout`
 **Header:** `Authorization: Bearer <accessToken>`
@@ -772,7 +870,7 @@ NOTE: The access token itself is NOT invalidated (JWTs are stateless).
 
 ---
 
-## 10. JWT Internals
+## 11. JWT Internals
 
 ### Structure
 
@@ -835,7 +933,7 @@ All are caught and return `false` from `isTokenValid()`.
 
 ---
 
-## 11. Refresh Token Internals
+## 12. Refresh Token Internals
 
 Refresh tokens are **opaque** - just a random UUID stored in the DB. They don't carry information;
 they are a DB lookup key.
@@ -873,7 +971,7 @@ Logout:
 
 ---
 
-## 12. Database Tables
+## 13. Database Tables
 
 ### users
 
@@ -901,7 +999,7 @@ Logout:
 
 ---
 
-## 13. Error Handling Reference
+## 14. Error Handling Reference
 
 All errors pass through `GlobalExceptionHandler` in `common/exception/GlobalExceptionHandler.java`.
 
@@ -929,7 +1027,7 @@ All errors pass through `GlobalExceptionHandler` in `common/exception/GlobalExce
 
 ---
 
-## 14. Security Decisions Explained
+## 15. Security Decisions Explained
 
 ### Why separate access token (15 min) and refresh token (7 days)?
 
@@ -967,7 +1065,7 @@ With non-rotating tokens, a stolen refresh token is valid indefinitely until log
 
 ---
 
-## 15. Spring Boot 4.x Compatibility Notes
+## 16. Spring Boot 4.x Compatibility Notes
 
 ### Jackson 3.x - package namespace change
 

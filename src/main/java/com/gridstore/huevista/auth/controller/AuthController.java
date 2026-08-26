@@ -26,6 +26,7 @@ public class AuthController {
     private final AuthService authService;
     private final com.gridstore.huevista.auth.service.PasswordResetService passwordResetService;
     private final com.gridstore.huevista.auth.service.PhoneAuthService phoneAuthService;
+    private final com.gridstore.huevista.auth.service.PhoneOtpService phoneOtpService;
 
     @Operation(summary = "Register a new user", description = "Creates a local account and returns JWT access + refresh tokens.")
     @ApiResponses({
@@ -82,6 +83,59 @@ public class AuthController {
     @PostMapping("/phone/firebase")
     public ResponseEntity<AuthResponse> signInWithPhone(@Valid @RequestBody PhoneSignInRequest request) {
         return ResponseEntity.ok(phoneAuthService.signIn(request.getIdToken(), request.getName()));
+    }
+
+    @Operation(summary = "Which mobile sign-in this server offers",
+            description = "FIREBASE when a Firebase project is configured, SMS when an SMS provider is, "
+                    + "NONE otherwise. The sign-in page reads this server-side so the option it shows "
+                    + "always matches what this backend will actually accept.")
+    @ApiResponse(responseCode = "200", description = "The available method")
+    @SecurityRequirements
+    @GetMapping("/phone/methods")
+    public ResponseEntity<PhoneAuthMethodsResponse> phoneMethods() {
+        // Firebase first when both are configured: it is the one a deployment has to go
+        // out of its way to switch on, so having done so is the clearer instruction.
+        String method = phoneAuthService.isEnabled() ? "FIREBASE"
+                : phoneOtpService.isEnabled() ? "SMS"
+                : "NONE";
+        return ResponseEntity.ok(PhoneAuthMethodsResponse.builder()
+                .method(method)
+                .enabled(!"NONE".equals(method))
+                .build());
+    }
+
+    @Operation(summary = "Text a sign-in code to a mobile number",
+            description = "Sends a 6-digit code over this server's own SMS provider. Answers identically "
+                    + "whether or not the number has an account — a public endpoint must not be a way to "
+                    + "ask whether somebody is a customer. Throttled per number by a cooldown AND a daily "
+                    + "cap, because every send costs money and lands on a handset the caller may not own.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Code sent (masked destination returned)"),
+            @ApiResponse(responseCode = "400", description = "That is not a usable mobile number"),
+            @ApiResponse(responseCode = "429", description = "Cooldown not elapsed, or the number's daily cap is spent"),
+            @ApiResponse(responseCode = "503", description = "No SMS provider is configured on this server")
+    })
+    @SecurityRequirements
+    @PostMapping("/phone/otp/send")
+    public ResponseEntity<PhoneOtpStatusResponse> sendPhoneOtp(@Valid @RequestBody PhoneOtpSendRequest request) {
+        return ResponseEntity.ok(phoneOtpService.send(request.getPhone(), request.getName()));
+    }
+
+    @Operation(summary = "Sign in with a texted code",
+            description = "Checks the code and issues access + refresh tokens. Lands on the account that "
+                    + "owns the number, or opens a passwordless CUSTOMER account if it has none — the same "
+                    + "rules as the Firebase path, because they are the same code.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Signed in"),
+            @ApiResponse(responseCode = "400", description = "Code wrong, expired, unrequested or exhausted"),
+            @ApiResponse(responseCode = "403", description = "The number belongs to an ADMIN account, which "
+                    + "must sign in with email + password so its second factor still runs"),
+            @ApiResponse(responseCode = "503", description = "No SMS provider is configured on this server")
+    })
+    @SecurityRequirements
+    @PostMapping("/phone/otp/verify")
+    public ResponseEntity<AuthResponse> verifyPhoneOtp(@Valid @RequestBody PhoneOtpVerifyRequest request) {
+        return ResponseEntity.ok(phoneOtpService.verify(request.getPhone(), request.getCode()));
     }
 
     @Operation(summary = "Refresh access token", description = "Exchange a valid refresh token for a new access + refresh token pair (token rotation).")

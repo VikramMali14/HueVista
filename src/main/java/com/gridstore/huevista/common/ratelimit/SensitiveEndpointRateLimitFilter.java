@@ -183,6 +183,13 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 // still costs the caller a real SMS to a real handset, which is a far
                 // harder limit than anything counted in Redis.
                 new Rule("POST", "/api/auth/phone/firebase", login),
+                // Our OWN SMS sign-in. The send goes in the otp-send bucket because this
+                // one really does spend money on every call and can be aimed at a
+                // stranger's handset — unlike the Firebase path, where Google throttles
+                // and pays for the SMS before this server is reached. Per-number caps in
+                // PhoneOtpService do the rest; this only bounds one IP.
+                new Rule("POST", "/api/auth/phone/otp/send", otpSend),
+                new Rule("POST", "/api/auth/phone/otp/verify", otpConfirm),
                 new Rule("POST", "/api/auth/refresh", refresh),
                 new Rule("POST", "/api/auth/forgot-password", reset),
                 new Rule("POST", "/api/auth/reset-password", reset),

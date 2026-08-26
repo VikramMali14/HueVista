@@ -6,20 +6,14 @@ import com.gridstore.huevista.auth.model.User;
 import com.gridstore.huevista.auth.model.UserRole;
 import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.auth.service.AuthService;
-import com.gridstore.huevista.auth.service.FirebaseTokenVerifier;
-import com.gridstore.huevista.auth.service.PhoneAuthService;
+import com.gridstore.huevista.auth.service.PhoneAccountService;
 import com.gridstore.huevista.common.audit.AuditService;
-import io.jsonwebtoken.Jwts;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
-import java.time.Instant;
-import java.util.Date;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -41,23 +35,15 @@ import static org.mockito.Mockito.when;
  * <p>Driven through a stubbed repository rather than real threads, because the point is
  * to pin the recovery path deterministically — a timing-dependent test that usually
  * fails to reproduce the race would pin nothing at all.
+ *
+ * <p>Targets {@link PhoneAccountService}, which is where both sign-in flows — Firebase
+ * and our own SMS codes — turn a proven number into a session. Testing it here rather
+ * than through either provider is the point: the recovery belongs to the account rules,
+ * not to whichever thing sent the message.
  */
 class PhoneSignInRaceTest {
 
-    private static final String PROJECT = "huevista-test";
     private static final String PHONE = "+919876500001";
-
-    private static FirebaseCerts certs;
-
-    @BeforeAll
-    static void start() throws Exception {
-        certs = new FirebaseCerts();
-    }
-
-    @AfterAll
-    static void stop() {
-        certs.close();
-    }
 
     /** Runs the callback inline — enough for a TransactionTemplate under test. */
     private static PlatformTransactionManager inlineTransactions() {
@@ -89,11 +75,10 @@ class PhoneSignInRaceTest {
         AuthResponse expected = AuthResponse.builder().accessToken("tok").build();
         when(auth.buildAuthResponse(winners)).thenReturn(expected);
 
-        PhoneAuthService service = new PhoneAuthService(
-                new FirebaseTokenVerifier(PROJECT, certs.url()),
+        PhoneAccountService service = new PhoneAccountService(
                 users, auth, mock(AuditService.class), inlineTransactions());
 
-        AuthResponse response = service.signIn(token(), null);
+        AuthResponse response = service.signInWithProvenNumber(PHONE, null, "test");
 
         assertThat(response).isSameAs(expected);
         assertThat(lookups.get()).as("exactly one retry, not a loop").isEqualTo(2);
@@ -112,25 +97,11 @@ class PhoneSignInRaceTest {
         when(users.save(any(User.class)))
                 .thenThrow(new DataIntegrityViolationException("something else entirely"));
 
-        PhoneAuthService service = new PhoneAuthService(
-                new FirebaseTokenVerifier(PROJECT, certs.url()),
+        PhoneAccountService service = new PhoneAccountService(
                 users, auth, mock(AuditService.class), inlineTransactions());
 
-        assertThatThrownBy(() -> service.signIn(token(), null))
+        assertThatThrownBy(() -> service.signInWithProvenNumber(PHONE, null, "test"))
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
-    private static String token() {
-        return Jwts.builder()
-                .header().keyId(FirebaseCerts.KID).and()
-                .subject("firebase-uid-race")
-                .issuer("https://securetoken.google.com/" + PROJECT)
-                .audience().add(PROJECT).and()
-                .claim("phone_number", PHONE)
-                .claim("firebase", FirebaseCerts.phoneProviderClaim(PHONE))
-                .issuedAt(Date.from(Instant.now().minusSeconds(10)))
-                .expiration(Date.from(Instant.now().plusSeconds(3600)))
-                .signWith(certs.privateKey(), Jwts.SIG.RS256)
-                .compact();
-    }
 }

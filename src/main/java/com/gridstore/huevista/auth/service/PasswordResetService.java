@@ -101,9 +101,9 @@ public class PasswordResetService {
                 .build());
 
         if (channel == Channel.SMS) {
-            smsSender.send(user.getPhoneNumber(),
-                    "Your HueVista password reset code is " + code + ". It expires in "
-                            + TTL.toMinutes() + " minutes. If you didn't request this, ignore this message.");
+            // One registered DLT template carries every code this app sends; the words
+            // are fixed there, not here.
+            smsSender.sendOtp(user.getPhoneNumber(), code, (int) TTL.toMinutes());
         } else {
             emailSender.send(user.getEmail(),
                     "Reset your HueVista password",
