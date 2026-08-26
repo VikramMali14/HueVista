@@ -39,6 +39,9 @@ public final class FirebaseCerts implements AutoCloseable {
 
     private final KeyPair keyPair;
     private final HttpServer server;
+    /** How many times the certificates have actually been fetched. */
+    private final java.util.concurrent.atomic.AtomicInteger fetches =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     public FirebaseCerts() throws Exception {
         KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
@@ -50,6 +53,7 @@ public final class FirebaseCerts implements AutoCloseable {
 
         this.server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/certs", exchange -> {
+            fetches.incrementAndGet();
             exchange.getResponseHeaders().add("Content-Type", "application/json");
             exchange.getResponseHeaders().add("Cache-Control", "public, max-age=3600");
             exchange.sendResponseHeaders(200, bytes.length);
@@ -66,6 +70,11 @@ public final class FirebaseCerts implements AutoCloseable {
 
     public PrivateKey privateKey() {
         return keyPair.getPrivate();
+    }
+
+    /** Outbound fetches served so far — how the refresh throttle is observed. */
+    public int fetchCount() {
+        return fetches.get();
     }
 
     @Override

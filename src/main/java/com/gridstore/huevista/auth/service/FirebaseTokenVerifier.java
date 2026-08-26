@@ -99,6 +99,21 @@ public class FirebaseTokenVerifier {
     /** Ceiling, so a nonsense {@code max-age} can't pin a rotated-out key forever. */
     private static final Duration MAX_CACHE = Duration.ofHours(24);
 
+    /**
+     * Floor on how often ANY outbound fetch happens, whatever asks for one.
+     *
+     * <p>This is a throttle, not a cache lifetime, and it exists because an unknown
+     * {@code kid} is attacker-controlled and can never be satisfied from cache: a caller
+     * sending tokens with random key ids would otherwise cause one HTTPS round trip per
+     * request — each inside the lock below, so every legitimate sign-in queues behind it
+     * and holds its database connection while it waits.
+     *
+     * <p>Five minutes of staleness costs nothing against a real rotation: Google
+     * publishes a new certificate well before it starts signing with it, and the old one
+     * stays valid for hours afterwards.
+     */
+    private static final Duration MIN_REFETCH = Duration.ofMinutes(5);
+
     /** What a phone sign-in's token must name as the provider that authenticated it. */
     public static final String PHONE_PROVIDER = "phone";
 
@@ -110,6 +125,9 @@ public class FirebaseTokenVerifier {
     /** Cached certificates and the instant they stop being trusted. Guarded by {@code this}. */
     private Map<String, PublicKey> cachedKeys = Collections.emptyMap();
     private Instant cachedUntil = Instant.EPOCH;
+    /** When a fetch was last ATTEMPTED — a failed one throttles too, so a Google outage
+     *  is not turned into a per-request hammering of Google. */
+    private Instant lastFetchAt = Instant.EPOCH;
 
     /**
      * @param certUrl where the signing certificates come from. Overridable only so the
@@ -236,23 +254,36 @@ public class FirebaseTokenVerifier {
     }
 
     /**
-     * The cached certificate set, fetched when it is stale (or when {@code force} says
-     * a key we have never seen has turned up).
+     * The cached certificate set, fetched when it is stale (or when {@code forUnknownKid}
+     * says a key we have never seen has turned up and might be a rotation).
      *
      * <p>Synchronized so a burst of sign-ins after an expiry makes ONE outbound request
      * rather than one per request. The lock is held across the fetch on purpose: the
      * alternative — every thread fetching — is worse than a brief queue, and the fetch
      * has a hard timeout.
+     *
+     * <p>Because that lock is held across a network call, how OFTEN a fetch can be asked
+     * for is a correctness question and not merely an efficiency one — see
+     * {@link #MIN_REFETCH}.
      */
-    private synchronized Map<String, PublicKey> currentKeys(boolean force) {
-        if (!force && Instant.now().isBefore(cachedUntil) && !cachedKeys.isEmpty()) {
+    private synchronized Map<String, PublicKey> currentKeys(boolean forUnknownKid) {
+        Instant now = Instant.now();
+        boolean usable = !cachedKeys.isEmpty() && now.isBefore(cachedUntil);
+        if (usable && !forUnknownKid) {
             return cachedKeys;
         }
-        // A forced refresh that has just happened is a repeat of the same miss, not a
-        // rotation — don't let an unknown kid become an unbounded fetch loop.
-        if (force && Instant.now().isBefore(cachedUntil.minus(MAX_CACHE).plus(MIN_CACHE))) {
+        // One outbound request per MIN_REFETCH, whoever asks and for whatever reason.
+        // Measured from the last ATTEMPT, not from the cache expiry: an unknown kid is
+        // never in the cache, so nothing derived from cachedUntil can bound it.
+        if (now.isBefore(lastFetchAt.plus(MIN_REFETCH))) {
+            if (cachedKeys.isEmpty()) {
+                // Nothing to check against, and we may not ask again yet. Say that,
+                // rather than reporting a perfectly good token as invalid.
+                throw new FirebaseTokenException("Could not check that sign-in right now. Please try again.");
+            }
             return cachedKeys;
         }
+        lastFetchAt = now;
         try {
             HttpResponse<String> response = http.send(
                     HttpRequest.newBuilder(URI.create(certUrl))

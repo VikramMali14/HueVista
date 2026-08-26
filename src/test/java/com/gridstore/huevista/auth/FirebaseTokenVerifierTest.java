@@ -163,6 +163,70 @@ class FirebaseTokenVerifierTest {
                 .isInstanceOf(FirebaseTokenVerifier.FirebaseTokenException.class);
     }
 
+    // ---- the certificate cache ---------------------------------------------
+
+    @Test
+    void an_unknown_kid_cannot_be_turned_into_a_fetch_per_request() throws Exception {
+        // A kid is attacker-controlled and is never in the cache, so "refresh once on an
+        // unknown kid, in case Google rotated" is a lever anybody can pull. Unthrottled it
+        // is one HTTPS round trip to Google per request, each inside the verifier's lock,
+        // so every legitimate sign-in queues behind it holding a database connection.
+        //
+        // This pins the throttle. The first version keyed it off the cache expiry, which
+        // an unknown kid never reaches — with Google's real max-age the guard evaluated
+        // to a time in the past and never engaged at all.
+        try (FirebaseCerts own = new FirebaseCerts()) {
+            FirebaseTokenVerifier v = new FirebaseTokenVerifier(PROJECT, own.url());
+
+            // Prime the cache with one good verification.
+            v.verify(tokenFor(own, b -> {}));
+            int afterPriming = own.fetchCount();
+            assertThat(afterPriming).isEqualTo(1);
+
+            for (int i = 0; i < 25; i++) {
+                final int n = i;
+                assertThatThrownBy(() -> v.verify(tokenFor(own, b -> b.header().keyId("unknown-" + n).and())))
+                        .isInstanceOf(FirebaseTokenVerifier.FirebaseTokenException.class);
+            }
+
+            assertThat(own.fetchCount())
+                    .as("25 unknown key ids must not become 25 outbound requests")
+                    .isEqualTo(afterPriming);
+        }
+    }
+
+    @Test
+    void a_cached_certificate_set_serves_many_verifications_from_one_fetch() throws Exception {
+        try (FirebaseCerts own = new FirebaseCerts()) {
+            FirebaseTokenVerifier v = new FirebaseTokenVerifier(PROJECT, own.url());
+            for (int i = 0; i < 10; i++) {
+                v.verify(tokenFor(own, b -> {}));
+            }
+            assertThat(own.fetchCount()).isEqualTo(1);
+        }
+    }
+
+    @Test
+    void an_unreachable_certificate_endpoint_is_reported_as_such_not_as_a_bad_token() throws Exception {
+        FirebaseCerts dead = new FirebaseCerts();
+        String url = dead.url();
+        String token = tokenFor(dead, b -> {});
+        dead.close();
+
+        FirebaseTokenVerifier v = new FirebaseTokenVerifier(PROJECT, url);
+
+        // Nothing to check against, and the token may well be perfectly good — the
+        // message has to say "we couldn't check", not "yours is invalid".
+        assertThatThrownBy(() -> v.verify(token))
+                .isInstanceOf(FirebaseTokenVerifier.FirebaseTokenException.class)
+                .hasMessageContaining("Could not check");
+
+        // And the retry must not hammer a service that is already down.
+        assertThatThrownBy(() -> v.verify(token))
+                .isInstanceOf(FirebaseTokenVerifier.FirebaseTokenException.class)
+                .hasMessageContaining("Could not check");
+    }
+
     // ---- configuration -----------------------------------------------------
 
     @Test
@@ -178,6 +242,22 @@ class FirebaseTokenVerifierTest {
     }
 
     // ---- helper ------------------------------------------------------------
+
+    /** A well-formed token for this project signed by a GIVEN certificate server. */
+    private static String tokenFor(FirebaseCerts source,
+                                   java.util.function.Consumer<io.jsonwebtoken.JwtBuilder> customise) {
+        io.jsonwebtoken.JwtBuilder builder = Jwts.builder()
+                .header().keyId(FirebaseCerts.KID).and()
+                .subject("firebase-uid-1")
+                .issuer("https://securetoken.google.com/" + PROJECT)
+                .audience().add(PROJECT).and()
+                .claim("phone_number", "+919876543210")
+                .claim("firebase", FirebaseCerts.phoneProviderClaim("+919876543210"))
+                .issuedAt(Date.from(Instant.now().minusSeconds(30)))
+                .expiration(Date.from(Instant.now().plusSeconds(3600)));
+        customise.accept(builder);
+        return builder.signWith(source.privateKey(), Jwts.SIG.RS256).compact();
+    }
 
     /** A well-formed token for this project, with the given overrides applied last. */
     private static String token(java.util.function.Consumer<io.jsonwebtoken.JwtBuilder> customise) {

@@ -8,11 +8,9 @@ import com.gridstore.huevista.auth.repository.UserRepository;
 import com.gridstore.huevista.auth.util.Emails;
 import com.gridstore.huevista.auth.util.PhoneNumbers;
 import io.jsonwebtoken.Claims;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
@@ -53,7 +51,6 @@ import java.util.List;
  */
 @Service
 @Slf4j
-@RequiredArgsConstructor
 public class PhoneAuthService {
 
     private final FirebaseTokenVerifier verifier;
@@ -62,13 +59,34 @@ public class PhoneAuthService {
     private final com.gridstore.huevista.common.audit.AuditService auditService;
 
     /**
+     * The transaction is opened explicitly, around the database work only.
+     *
+     * <p>Not {@code @Transactional} on the whole method, because the first thing it does
+     * is verify the token — and that can make an outbound HTTPS call to Google. A
+     * connection held from the pool across a third party's response time is a connection
+     * that is not available to anybody else while Google is having a slow minute.
+     */
+    private final org.springframework.transaction.support.TransactionTemplate transactions;
+
+    public PhoneAuthService(FirebaseTokenVerifier verifier,
+                            UserRepository userRepository,
+                            AuthService authService,
+                            com.gridstore.huevista.common.audit.AuditService auditService,
+                            org.springframework.transaction.PlatformTransactionManager transactionManager) {
+        this.verifier = verifier;
+        this.userRepository = userRepository;
+        this.authService = authService;
+        this.auditService = auditService;
+        this.transactions = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+    }
+
+    /**
      * Exchange a verified Firebase phone token for a HueVista session, opening an
      * account for the number if it does not have one yet.
      *
      * @param idToken    the Firebase ID token from the browser
      * @param signUpName what to call them, used only when creating a new account
      */
-    @Transactional
     public AuthResponse signIn(String idToken, String signUpName) {
         if (!verifier.isConfigured()) {
             // Nothing is half-configured here: with no project id there is no way to
@@ -97,8 +115,31 @@ public class PhoneAuthService {
         }
 
         String phone = normalized(claims.get("phone_number", String.class));
-        User user = resolveAccount(phone, signUpName);
 
+        // Everything below touches the database; everything above was network and
+        // arithmetic. The transaction starts here.
+        try {
+            return transactions.execute(status -> issueSession(phone, signUpName));
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            // Two sign-ins for the same NEW number at once — a double-tapped button on a
+            // slow connection is enough. The synthetic address is derived from the
+            // number and users.email is UNIQUE, so the loser of the race fails here.
+            //
+            // The retry has to be a FRESH transaction, not a catch further in: a
+            // constraint violation surfaces at flush and leaves the persistence context
+            // unusable, so there is nothing to recover inside the failed one. On the
+            // second pass the account exists and resolveAccount simply finds it — which
+            // is the outcome this request was asking for, so failing it would be
+            // reporting a sign-in that actually succeeded as broken.
+            log.info("Concurrent first sign-in for {} — retrying against the account the "
+                    + "other request opened", PhoneNumbers.mask(phone));
+            return transactions.execute(status -> issueSession(phone, signUpName));
+        }
+    }
+
+    /** The database half: find or open the account, note it, and mint the session. */
+    private AuthResponse issueSession(String phone, String signUpName) {
+        User user = resolveAccount(phone, signUpName);
         auditService.record(user.getId(), "PHONE_SIGN_IN", "USER", user.getId(),
                 PhoneNumbers.mask(phone));
         return authService.buildAuthResponse(user);
