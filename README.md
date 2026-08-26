@@ -364,6 +364,23 @@ bite if skipped:
    writes the code to the server log — so enabling it gates every retailer behind
    an OTP that is never delivered. Implement a provider first.
 
+   Note that texting a code to an Indian mobile also needs a **DLT** registration
+   (a sender id and templates registered with TRAI), which is the real reason this
+   is off rather than merely unimplemented. See `FIREBASE_PROJECT_ID` below for the
+   way around it.
+
+2. **Sign in with a mobile number** — set `FIREBASE_PROJECT_ID` to enable
+   `POST /api/auth/phone/firebase`. Firebase sends the one-time code on Google's own
+   registered routes, so this works with **no DLT and no SMS gateway account**; the
+   browser runs the code exchange with Firebase and the backend only verifies the
+   resulting ID token. See [docs/AUTH_FLOW.md](docs/AUTH_FLOW.md) §7 for the full flow.
+
+   The project id is **not a secret** — an ID token is verified against Google's
+   *public* certificates, and there is no service-account key to install. Leave it
+   blank and the feature is simply off: the endpoint answers 503 and the frontend
+   hides the option. The frontend needs the matching `NEXT_PUBLIC_FIREBASE_*` values
+   at build time.
+
    The product sends from two addresses and the SMTP account must be authorised
    for **both**, on one domain with SPF/DKIM/DMARC set — a provider asked to send
    as an address it cannot authenticate rewrites the From or drops the message:
@@ -378,31 +395,31 @@ bite if skipped:
    (below). The public site additionally points visitors at `team@` (general),
    `support@` (product help) and `payments@` (billing) — see the frontend's
    `src/lib/config.ts`.
-2. **Admin bootstrap** — set `ADMIN_EMAIL` / `ADMIN_PASSWORD` (shops are
+3. **Admin bootstrap** — set `ADMIN_EMAIL` / `ADMIN_PASSWORD` (shops are
    admin-provisioned). This is a **login identity, not a shared inbox**: shop-lead
    notifications go to `LEADS_EMAIL`, so the console credentials need not be a
    mailbox several people can read. Change the password after first sign-in. With
    mail enabled, admin logins require a 6-digit emailed code (2FA) — another
    reason to configure SMTP before launch; without mail the step-up is skipped so
    the admin can never be locked out.
-3. **Razorpay** — create the three plans in the dashboard, set the plan IDs, and
+4. **Razorpay** — create the three plans in the dashboard, set the plan IDs, and
    point a webhook at `POST {APP_BASE_URL}/api/billing/webhooks/razorpay` with
    `RAZORPAY_WEBHOOK_SECRET`. Renewals depend on the webhook.
-4. **Network posture** — if the backend port is ever reachable except through
+5. **Network posture** — if the backend port is ever reachable except through
    your own frontend/proxy, set `RATE_LIMIT_TRUST_FORWARDED=false` (otherwise
    spoofed `X-Forwarded-For` bypasses every per-IP limit).
-5. **Timezone** — the schema stores zone-naive timestamps; the Docker image pins
+6. **Timezone** — the schema stores zone-naive timestamps; the Docker image pins
    `TZ=Asia/Kolkata`. Keep the JVM on IST on any other host too, or every
    share/subscription/access-code expiry shifts by the host's offset.
-6. **Monitoring** — set `ACTUATOR_EXPOSURE=health,prometheus` and
+7. **Monitoring** — set `ACTUATOR_EXPOSURE=health,prometheus` and
    `METRICS_PUBLIC=true` (private networks only) and scrape
    `/actuator/prometheus` (JVM, HTTP latencies/status codes, Hikari pool,
    cache). Alert on 5xx rate, p95 latency, pool exhaustion and heap. Log files
    rotate at `logs/huevista.log` (10×10 MB) — ship them somewhere durable.
-7. **Backups** — schedule `pg_dump` (or your provider's automated snapshots)
+8. **Backups** — schedule `pg_dump` (or your provider's automated snapshots)
    for PostgreSQL and enable S3 bucket versioning; masks and cleaned images are
    reproducible at cost, originals are not.
-8. **Swagger stays off** — `SWAGGER_ENABLED=false` in production; the spec and
+9. **Swagger stays off** — `SWAGGER_ENABLED=false` in production; the spec and
    UI are public when on.
 
 ---

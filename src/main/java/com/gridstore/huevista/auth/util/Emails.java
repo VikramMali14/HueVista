@@ -46,6 +46,25 @@ public final class Emails {
     }
 
     /**
+     * The placeholder address for an account keyed to nothing but a mobile number —
+     * {@code ph-919876543210@customers.huevista.local}. Unique because the number is.
+     *
+     * <p>A Firebase phone sign-in proves a NUMBER and nothing else: there is no e-mail
+     * claim on a phone-provider token, and asking for one before letting somebody in
+     * would defeat the point of signing in with a mobile. The users table keys on
+     * e-mail and always will, so the row gets a placeholder built from the number —
+     * exactly as a kiosk walk-in's does from their access code. {@link #isSynthetic}
+     * recognises it, so {@link #publicEmailOf} withholds it everywhere the user-facing
+     * API answers and the customer is never shown a machine identifier as their own
+     * address.
+     *
+     * @param phone a normalized number (see {@code PhoneNumbers.normalize})
+     */
+    public static String syntheticForPhone(String phone) {
+        return "ph-" + phone.trim().replace("+", "") + SYNTHETIC_DOMAIN;
+    }
+
+    /**
      * True when the account's stored address is a placeholder, not something reachable.
      *
      * <p>Decided by the ADDRESS, not by the provider. A kiosk walk-in who gives their

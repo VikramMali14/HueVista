@@ -24,6 +24,23 @@ public interface UserRepository extends JpaRepository<User, String> {
     /** A user who has VERIFIED this mobile number — the only valid SMS-reset target. */
     Optional<User> findByPhoneNumberAndPhoneVerifiedTrue(String phoneNumber);
 
+    /**
+     * LIVE accounts that have VERIFIED this mobile number, oldest first.
+     *
+     * <p>A List rather than an Optional, and that is deliberate. Phone sign-in resolves
+     * an account from a number and nothing else, so it is the one caller that cannot
+     * afford to throw when the data says two rows hold the same verified number — a
+     * 500 on the sign-in endpoint over historic data is worse than picking one. Oldest
+     * first makes that pick deterministic and picks the account the customer has
+     * actually been using; the caller logs the collision. Going forward
+     * {@code VerificationService} refuses to create one.
+     *
+     * <p>Deleted rows are excluded: an account whose PII has been scrubbed keeps its
+     * number until the row is purged, and matching one would sign somebody in to the
+     * account they asked us to delete.
+     */
+    List<User> findByPhoneNumberAndPhoneVerifiedTrueAndDeletedAtIsNullOrderByCreatedAtAsc(String phoneNumber);
+
     List<User> findTop10ByOrderByCreatedAtDesc();
 
     long countByRole(com.gridstore.huevista.auth.model.UserRole role);

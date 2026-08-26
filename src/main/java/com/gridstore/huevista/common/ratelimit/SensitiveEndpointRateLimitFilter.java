@@ -24,6 +24,7 @@ import java.util.Map;
  *
  *   - register             — bulk account creation
  *   - login                — credential stuffing / password spraying
+ *   - phone sign-in        — grinding the Firebase token exchange
  *   - refresh              — token grinding
  *   - forgot/reset-password— reset-email bombing + 6-digit OTP brute force
  *   - OTP send (email/sms) — verification-message bombing (cost + spam)
@@ -175,6 +176,13 @@ public class SensitiveEndpointRateLimitFilter extends OncePerRequestFilter {
                 new Rule("POST", "/api/auth/login", login),
                 // Admin 2FA confirm: 6-digit code brute force defence.
                 new Rule("POST", "/api/auth/login/otp", otpConfirm),
+                // Mobile sign-in. The SMS it rests on was sent, paid for and throttled by
+                // Firebase before this endpoint is ever reached, so what is capped here is
+                // grinding at the exchange itself — same shape as a password login, so the
+                // same bucket. Account creation rides this path too, but each new account
+                // still costs the caller a real SMS to a real handset, which is a far
+                // harder limit than anything counted in Redis.
+                new Rule("POST", "/api/auth/phone/firebase", login),
                 new Rule("POST", "/api/auth/refresh", refresh),
                 new Rule("POST", "/api/auth/forgot-password", reset),
                 new Rule("POST", "/api/auth/reset-password", reset),

@@ -59,6 +59,27 @@ public class VerificationService {
         if (phone == null) {
             throw new IllegalArgumentException("Enter a mobile number to verify.");
         }
+        // One live account per verified number. This is what makes signing in with a
+        // mobile mean something: that flow resolves an account from a number and
+        // nothing else, so a number two accounts had both verified would send the
+        // customer to whichever one the query happened to return. Checked at SEND
+        // rather than at confirm so nobody is told the number is taken only after
+        // they have gone and read the text.
+        //
+        // It only ever trips on a number ANOTHER live account holds right now — a
+        // customer moving to a new SIM releases their old number the moment they
+        // verify the new one, because the number lives on their own row.
+        userRepository.findByPhoneNumberAndPhoneVerifiedTrueAndDeletedAtIsNullOrderByCreatedAtAsc(phone)
+                .stream()
+                .filter(owner -> !owner.getId().equals(user.getId()))
+                .findFirst()
+                .ifPresent(owner -> {
+                    log.warn("User {} tried to verify {}, already verified by {}",
+                            user.getId(), mask(VerificationChannel.PHONE, phone), owner.getId());
+                    throw new IllegalStateException(
+                            "That mobile number is already verified on another HueVista account. "
+                                    + "Sign in with it, or use a different number.");
+                });
         // Persist the (unverified) number so resend works and the UI can show it.
         if (!phone.equals(user.getPhoneNumber())) {
             user.setPhoneNumber(phone);
@@ -168,15 +189,14 @@ public class VerificationService {
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
     }
 
-    /** Keep an optional leading +, strip separators, require 8–15 digits. */
+    /**
+     * Delegates to the shared normalizer. Phone SIGN-IN finds an account by comparing
+     * the number in a Firebase token against the value this flow stored, so the two
+     * must not drift apart — a second copy of the rules here is a second chance for
+     * them to.
+     */
     private String normalizePhone(String raw) {
-        if (raw == null) return null;
-        String cleaned = raw.trim().replaceAll("[\\s\\-()]", "");
-        if (cleaned.isEmpty()) return null;
-        if (!cleaned.matches("^\\+?[0-9]{8,15}$")) {
-            throw new IllegalArgumentException("Enter a valid mobile number with country code, e.g. +9198…");
-        }
-        return cleaned;
+        return com.gridstore.huevista.auth.util.PhoneNumbers.normalize(raw);
     }
 
     private String mask(VerificationChannel channel, String destination) {

@@ -25,6 +25,7 @@ public class AuthController {
 
     private final AuthService authService;
     private final com.gridstore.huevista.auth.service.PasswordResetService passwordResetService;
+    private final com.gridstore.huevista.auth.service.PhoneAuthService phoneAuthService;
 
     @Operation(summary = "Register a new user", description = "Creates a local account and returns JWT access + refresh tokens.")
     @ApiResponses({
@@ -60,6 +61,27 @@ public class AuthController {
     @PostMapping("/login/otp")
     public ResponseEntity<AuthResponse> loginWithOtp(@Valid @RequestBody OtpLoginRequest request) {
         return ResponseEntity.ok(authService.loginWithOtp(request.getEmail(), request.getPassword(), request.getCode()));
+    }
+
+    @Operation(summary = "Sign in with a mobile number (Firebase Phone Auth)",
+            description = "Exchanges the Firebase ID token the browser received after Firebase texted a "
+                    + "one-time code and the customer entered it, for HueVista access + refresh tokens. "
+                    + "The number comes from the SIGNED TOKEN, never from the request body. If the number "
+                    + "already belongs to an account (phone sign-in before, or a mobile verified on an "
+                    + "email account) the caller lands on that account; otherwise a passwordless CUSTOMER "
+                    + "account is opened for it. `name` is used only when opening a new account.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Signed in"),
+            @ApiResponse(responseCode = "401", description = "Token missing, expired, issued to another "
+                    + "Firebase project, or not a phone sign-in"),
+            @ApiResponse(responseCode = "403", description = "The number belongs to an ADMIN account, which "
+                    + "must sign in with email + password so its second factor still runs"),
+            @ApiResponse(responseCode = "503", description = "Phone sign-in is not configured on this server")
+    })
+    @SecurityRequirements
+    @PostMapping("/phone/firebase")
+    public ResponseEntity<AuthResponse> signInWithPhone(@Valid @RequestBody PhoneSignInRequest request) {
+        return ResponseEntity.ok(phoneAuthService.signIn(request.getIdToken(), request.getName()));
     }
 
     @Operation(summary = "Refresh access token", description = "Exchange a valid refresh token for a new access + refresh token pair (token rotation).")

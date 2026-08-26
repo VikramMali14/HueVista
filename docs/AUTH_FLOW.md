@@ -14,14 +14,15 @@
 4. [Flow B - Local Login (POST /api/auth/login)](#4-flow-b--local-login)
 5. [Flow C - Protected Endpoint (Bearer JWT)](#5-flow-c--protected-endpoint-bearer-jwt)
 6. [Flow D - Google OAuth2 Login](#6-flow-d--google-oauth2-login)
-7. [Flow E - Refresh Token](#7-flow-e--refresh-token)
-8. [Flow F - Logout](#8-flow-f--logout)
-9. [JWT Internals](#9-jwt-internals)
-10. [Refresh Token Internals](#10-refresh-token-internals)
-11. [Database Tables](#11-database-tables)
-12. [Error Handling Reference](#12-error-handling-reference)
-13. [Security Decisions Explained](#13-security-decisions-explained)
-14. [Spring Boot 4.x Compatibility Notes](#14-spring-boot-4x-compatibility-notes)
+7. [Flow G - Mobile Number Sign-In (Firebase Phone Auth)](#7-flow-g--mobile-number-sign-in-firebase-phone-auth)
+8. [Flow E - Refresh Token](#8-flow-e--refresh-token)
+9. [Flow F - Logout](#9-flow-f--logout)
+10. [JWT Internals](#10-jwt-internals)
+11. [Refresh Token Internals](#11-refresh-token-internals)
+12. [Database Tables](#12-database-tables)
+13. [Error Handling Reference](#13-error-handling-reference)
+14. [Security Decisions Explained](#14-security-decisions-explained)
+15. [Spring Boot 4.x Compatibility Notes](#15-spring-boot-4x-compatibility-notes)
 
 ---
 
@@ -526,7 +527,131 @@ Server receives GET /login/oauth2/code/google?code=...&state=...
 
 ---
 
-## 7. Flow E - Refresh Token
+## 7. Flow G - Mobile Number Sign-In (Firebase Phone Auth)
+
+`POST /api/auth/phone/firebase`
+
+### Why this exists
+
+Texting a one-time code to an Indian mobile requires a **DLT** registration — a sender
+id and message templates registered with TRAI through a telecom operator. HueVista does
+not hold one, so `SmsSender` has no delivery provider and writes every code to the
+server log instead (see its class comment). Every SMS flow in the app is therefore dark.
+
+Firebase Phone Auth sends the code over **Google's own registered routes**. No DLT, no
+SMS gateway account, and nothing to implement — the browser does the whole code exchange
+with Firebase directly, and the backend only checks the result.
+
+### The shape of it
+
+The critical thing to understand: **our backend never sees a code, and never sends one.**
+What it receives is a *Firebase ID token* — a short-lived JWT, signed by Google,
+asserting "this browser proved control of +919876543210". Verifying that assertion is
+the entire security boundary of this flow.
+
+```
+Browser                          Firebase (Google)              HueVista backend
+   |                                    |                              |
+   |-- 1. signInWithPhoneNumber ------->|                              |
+   |     (+919876543210, reCAPTCHA)     |                              |
+   |                                    |--- SMS to the handset        |
+   |<-- 2. confirmationResult ----------|                              |
+   |                                    |                              |
+   |-- 3. confirm("482913") ----------->|                              |
+   |<-- 4. Firebase user + ID token ----|                              |
+   |                                                                   |
+   |-- 5. POST /api/auth/phone/firebase { idToken, name? } ----------->|
+   |                                                                   |
+   |                             6. FirebaseTokenVerifier.verify       |
+   |                             7. resolve or open the account        |
+   |                             8. buildAuthResponse (same as every   |
+   |                                other sign-in path)                |
+   |<-- 9. { accessToken, refreshToken, user } -------------------------|
+```
+
+Steps 1–4 are `HueVistaFrontEnd/src/lib/firebase.ts`. Steps 6–8 are
+`auth/service/PhoneAuthService` and `auth/service/FirebaseTokenVerifier`.
+
+### Step 6 - Verifying the token
+
+`FirebaseTokenVerifier` does this offline, with **no credential of any kind** — only the
+public project id. The Firebase Admin SDK does the same job and drags in gRPC, Google
+Cloud Storage and a service-account private key to do it; JJWT is already on the
+classpath, so there is no new dependency and, more to the point, no secret to leak,
+rotate, or forget to configure.
+
+| Check | Why it is there |
+|---|---|
+| `alg` is RS256 | Refused in the key locator, before any signature work — a token claiming `none` or `HS256` must never reach the parser with a key it could be verified against |
+| RS256 signature against the `kid`'s certificate | Certificates come from Google's public x509 endpoint, cached for as long as its `Cache-Control: max-age` says, refetched once on an unknown `kid` (Google rotates them) |
+| `exp` future, `iat` past | 60s clock skew allowance, enforced by JJWT |
+| **`aud` == our project id** | **The one that matters most.** Anyone can create a Firebase project in a minute and sign in to it as any number they control — including one read off a customer's account. Such a token is signed by these very same Google keys, so the signature alone proves nothing |
+| `iss` == `https://securetoken.google.com/<project id>` | Same reason, from the other side |
+| `sub` non-empty | The Firebase uid |
+| `auth_time` in the past | A later one means a clock we should not believe |
+| `firebase.sign_in_provider` == `phone` | Checked by `PhoneAuthService`, not the verifier. The same project can mint anonymous and email-link tokens, which prove nothing about a number — and an anonymous Firebase sign-in is free and instant, so without this it would be an account for the asking |
+
+With `app.firebase.project-id` unset the endpoint answers **503** rather than being
+lenient: with no project id there is nothing to check `aud` against.
+
+### Step 7 - Which account the caller lands on
+
+```
+normalize the phone_number claim (PhoneNumbers.normalize — the SAME
+normalizer the verification flow stores with, so the two cannot drift)
+           |
+           v
+  live accounts with this number VERIFIED, oldest first
+           |
+   +-------+--------+
+   |                |
+ none            one or more
+   |                |
+   |                +-> role == ADMIN ? -> 403, use email + password
+   |                |
+   |                +-> clear any password lockout, sign in
+   |
+   +-> open a PHONE / CUSTOMER account:
+         email        = Emails.syntheticForPhone(...)  (a row key, not an inbox)
+         password     = null
+         phoneVerified = TRUE
+```
+
+Three decisions worth spelling out:
+
+- **Only `phoneVerified = true` matches.** Anyone can type any number into the signup
+  form and nothing has proved it. If an unverified number matched, typing a stranger's
+  number at signup would be all it took to be handed their account later.
+- **A number verified on an email account signs into that account.** This is the case
+  that matters: a customer who bought a room last month must find it waiting, not a
+  second account holding half their work.
+- **ADMIN is refused.** An admin password login sends a second factor by email
+  (`loginWithOtp`). One SMS must not be able to skip it — a swapped SIM would otherwise
+  be the whole admin console.
+
+`VerificationService.sendPhoneCode` now refuses a number another live account has
+already verified, which is the invariant this resolution rests on. The migration's index
+is deliberately **not** unique: enforcing it in code fails one verification attempt with
+an explanation the customer can act on, where a unique index would fail the deploy on
+any existing duplicate.
+
+### Configuration
+
+| Where | Variable | Secret? |
+|---|---|---|
+| Backend | `FIREBASE_PROJECT_ID` | No — it is checked against Google's *public* certificates |
+| Frontend | `NEXT_PUBLIC_FIREBASE_API_KEY` | No — a Firebase web API key identifies a project, it does not authorise anything |
+| Frontend | `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN` | No (also feeds the CSP — needed at build **and** run time) |
+| Frontend | `NEXT_PUBLIC_FIREBASE_PROJECT_ID` | No — must match the backend's |
+| Frontend | `NEXT_PUBLIC_FIREBASE_APP_ID` | No, and optional (Analytics only) |
+
+What actually guards the project is the **authorised-domains list** in the Firebase
+console plus the backend's `aud` check. Leave the values blank and the feature is off:
+the mobile option is not offered and the endpoint answers 503.
+
+---
+
+## 8. Flow E - Refresh Token
 
 When the 15-minute access token expires, the frontend silently gets a new one.
 
@@ -578,7 +703,7 @@ legitimate user has already refreshed, it will be gone from the DB -> 400.
 
 ---
 
-## 8. Flow F - Logout
+## 9. Flow F - Logout
 
 **Endpoint:** `POST /api/auth/logout`
 **Header:** `Authorization: Bearer <accessToken>`
@@ -623,7 +748,7 @@ NOTE: The access token itself is NOT invalidated (JWTs are stateless).
 
 ---
 
-## 9. JWT Internals
+## 10. JWT Internals
 
 ### Structure
 
@@ -686,7 +811,7 @@ All are caught and return `false` from `isTokenValid()`.
 
 ---
 
-## 10. Refresh Token Internals
+## 11. Refresh Token Internals
 
 Refresh tokens are **opaque** - just a random UUID stored in the DB. They don't carry information;
 they are a DB lookup key.
@@ -724,7 +849,7 @@ Logout:
 
 ---
 
-## 11. Database Tables
+## 12. Database Tables
 
 ### users
 
@@ -752,7 +877,7 @@ Logout:
 
 ---
 
-## 12. Error Handling Reference
+## 13. Error Handling Reference
 
 All errors pass through `GlobalExceptionHandler` in `common/exception/GlobalExceptionHandler.java`.
 
@@ -780,7 +905,7 @@ All errors pass through `GlobalExceptionHandler` in `common/exception/GlobalExce
 
 ---
 
-## 13. Security Decisions Explained
+## 14. Security Decisions Explained
 
 ### Why separate access token (15 min) and refresh token (7 days)?
 
@@ -818,7 +943,7 @@ With non-rotating tokens, a stolen refresh token is valid indefinitely until log
 
 ---
 
-## 14. Spring Boot 4.x Compatibility Notes
+## 15. Spring Boot 4.x Compatibility Notes
 
 ### Jackson 3.x - package namespace change
 

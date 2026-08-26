@@ -118,6 +118,14 @@ public class SecurityConfig {
                         "/api/auth/forgot-password/phone",
                         "/api/auth/reset-password",
                         "/api/auth/reset-password/phone",
+                        // Sign in with a mobile number. Public by necessity — the caller
+                        // has no session; that is what they are asking for. The Firebase
+                        // ID token in the body IS the credential, and it is a short-lived
+                        // JWT signed by Google that this server verifies in full against
+                        // Google's public keys AND against our own project id, so a token
+                        // from any other Firebase project buys nothing here. Per-IP
+                        // rate-limited alongside the password login.
+                        "/api/auth/phone/firebase",
                         // One-time OAuth code -> tokens; the exchange IS the login.
                         "/api/auth/oauth2/exchange").permitAll()
                 .requestMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
