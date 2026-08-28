@@ -66,17 +66,22 @@ import java.util.Optional;
  *       into per-category binary masks server-side.</li>
  *   <li>{@link MaskAligner} measures how that generation actually sits on the
  *       canvas and returns the whole-frame scale and shift that lines its
- *       colour-block boundaries up with the canvas's own edges. The model
- *       repaints the photo rather than tracing it, so its answer drifts — and
- *       when it rounds the output to one of its aspect buckets, stretching
- *       that onto the canvas shears every region sideways. Both are corrected
- *       here, or the mask is left exactly as drawn when the measurement can't
- *       beat doing nothing.</li>
+ *       colour-block boundaries up with the canvas's own edges, plus — where
+ *       one frame-wide answer isn't enough — a small smooth field of
+ *       per-place nudges on top of it. The model repaints the photo rather
+ *       than tracing it, so its answer drifts; when it rounds the output to
+ *       one of its aspect buckets, stretching that onto the canvas shears
+ *       every region sideways; and because it reproduces each part of the
+ *       scene about as well as it can independently, the drift is not the
+ *       same everywhere — a roofline can be 2% of the frame out while the
+ *       windows below it are already right. All three are corrected here, or
+ *       the mask is left exactly as drawn when the measurement can't beat
+ *       doing nothing.</li>
  *   <li>Each non-empty category is smooth-upscaled to the canvas resolution at
  *       that registration (see {@link #resizeMaskToCanvas}), uploaded to S3 and
- *       persisted as a {@link Region} row. The region's SHAPE is still exactly
- *       what the model drew — nothing here reshapes a wall, it only puts the
- *       drawing back over the surfaces it was drawn from.</li>
+ *       persisted as a {@link Region} row. The region's SHAPE is still what the
+ *       model drew — nothing here reshapes a wall, it only puts the drawing
+ *       back over the surfaces it was drawn from.</li>
  * </ol>
  *
  * <h3>When the walls don't come out (but the clean did)</h3>
@@ -715,9 +720,9 @@ public class SegmentationService {
      * Smooth-upscales a raw split mask to the canvas aspect/resolution — the
      * model outputs ~1K and nearest scaling to a 4K canvas shows staircase
      * blocks — landing it at the registration {@code fit} measured for this
-     * generation. The mask's SHAPE is still exactly what the model drew; the
-     * fit only decides where on the canvas that shape goes. Best-effort — a
-     * failure keeps the model-resolution bytes.
+     * generation, local field and all. The mask's SHAPE is still what the model
+     * drew; the fit only decides where on the canvas each part of that shape
+     * goes. Best-effort — a failure keeps the model-resolution bytes.
      */
     private byte[] resizeMaskToCanvas(byte[] mask, int w, int h, MaskAligner.Fit fit) {
         if (mask == null) return null;
@@ -725,7 +730,8 @@ public class SegmentationService {
             return fit.isIdentity()
                     ? MaskProcessor.resizeBinarySmooth(mask, w, h)
                     : MaskProcessor.resizeBinaryAligned(mask, w, h,
-                            fit.scaleX(), fit.scaleY(), fit.offsetX(), fit.offsetY());
+                            fit.scaleX(), fit.scaleY(), fit.offsetX(), fit.offsetY(),
+                            fit.warp());
         } catch (Exception e) {
             log.warn("Mask smooth-upscale to {}x{} failed, keeping model resolution: {}",
                     w, h, e.getMessage());
@@ -751,8 +757,11 @@ public class SegmentationService {
                 log.info("Mask alignment: mask already sits on the canvas for project {} " +
                         "— left as drawn", projectId);
             } else {
-                log.info("Mask alignment for project {}: {} — centre moved {}% of the frame",
-                        projectId, fit, Math.round(fit.shift() * 1000) / 10.0);
+                log.info("Mask alignment for project {}: {} — centre moved {}% of the frame, "
+                                + "local field up to {}%",
+                        projectId, fit, Math.round(fit.shift() * 1000) / 10.0,
+                        fit.warp() == null ? 0.0
+                                : Math.round(fit.warp().maxShift() * 1000) / 10.0);
             }
             return fit;
         } catch (Exception e) {

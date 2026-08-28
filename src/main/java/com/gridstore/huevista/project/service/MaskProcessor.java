@@ -18,9 +18,10 @@ import java.util.Deque;
  * resolution ({@link #resizeBinarySmooth}), lands them on the canvas at the
  * registration {@link MaskAligner} measured ({@link #resizeBinaryAligned})
  * and repairs the occasional inverted SAM point mask
- * ({@link #ensureWhiteForeground}). Nothing here reshapes a region: the
- * only geometry applied is the whole-frame scale and shift that puts the
- * model's drawing back over the surfaces it was drawn from.
+ * ({@link #ensureWhiteForeground}). Nothing here reshapes a region: the only
+ * geometry applied is the whole-frame scale and shift — plus, where the
+ * aligner measured one, the small smooth per-position nudge on top of it —
+ * that puts the model's drawing back over the surfaces it was drawn from.
  *
  * 8-connectivity (including diagonals) wherever blobs are traced, so faint
  * JPEG-compression gaps along wall corners don't split one wall into two.
@@ -354,6 +355,28 @@ final class MaskProcessor {
     static byte[] resizeBinaryAligned(byte[] maskBytes, int w, int h,
                                       double scaleX, double scaleY,
                                       double offsetX, double offsetY) throws IOException {
+        return resizeBinaryAligned(maskBytes, w, h, scaleX, scaleY, offsetX, offsetY, null);
+    }
+
+    /**
+     * {@link #resizeBinaryAligned(byte[], int, int, double, double, double, double)}
+     * with the aligner's local displacement field applied on top of the rigid
+     * part, still in ONE resample.
+     *
+     * <p>A generative repaint does not drift by the same amount everywhere, so
+     * the registration can carry a small per-position nudge as well (see
+     * {@link MaskAligner.Warp}). Per canvas pixel:
+     * {@code u_mask = 0.5 + (u_canvas - du(u_canvas, v_canvas) - 0.5 - offset) / scale},
+     * with {@code du,dv} interpolated from the field's lattice — so the mask is
+     * pulled a little more onto the parapet and a little less over the windows
+     * that were already right, and the transition between the two is smooth.
+     *
+     * <p>{@code warp = null} is the rigid case exactly, byte for byte.
+     */
+    static byte[] resizeBinaryAligned(byte[] maskBytes, int w, int h,
+                                      double scaleX, double scaleY,
+                                      double offsetX, double offsetY,
+                                      MaskAligner.Warp warp) throws IOException {
         BufferedImage src = decode(maskBytes);
         int sw = src.getWidth(), sh = src.getHeight();
         int[] px = src.getRGB(0, 0, sw, sh, null, 0, sw);
@@ -368,27 +391,42 @@ final class MaskProcessor {
         px = null;   // the decoded ARGB copy is dead from here; let it go
 
         boolean[] bin = new boolean[w * h];
+        double[] d = new double[2];
         for (int y = 0; y < h; y++) {
-            double v = 0.5 + (((y + 0.5) / h) - 0.5 - offsetY) / scaleY;
-            // Source row in pixel coordinates, half-pixel corrected so the
-            // sample sits at the centre of the texel it names.
-            double sy = v * sh - 0.5;
-            int y0 = (int) Math.floor(sy);
-            double fy = sy - y0;
+            double v0 = (y + 0.5) / h;
+            // Source row for the rigid case, hoisted: without a field every
+            // pixel in the row samples the same v.
+            double vFlat = 0.5 + (v0 - 0.5 - offsetY) / scaleY;
             for (int x = 0; x < w; x++) {
-                double u = 0.5 + (((x + 0.5) / w) - 0.5 - offsetX) / scaleX;
-                double sx = u * sw - 0.5;
-                int x0 = (int) Math.floor(sx);
-                double fx = sx - x0;
-                double value =
-                        sample(lum, sw, sh, x0, y0) * (1 - fx) * (1 - fy)
-                      + sample(lum, sw, sh, x0 + 1, y0) * fx * (1 - fy)
-                      + sample(lum, sw, sh, x0, y0 + 1) * (1 - fx) * fy
-                      + sample(lum, sw, sh, x0 + 1, y0 + 1) * fx * fy;
-                bin[y * w + x] = value > FOREGROUND_THRESHOLD;
+                double u0 = (x + 0.5) / w;
+                double u, v;
+                if (warp == null) {
+                    u = 0.5 + (u0 - 0.5 - offsetX) / scaleX;
+                    v = vFlat;
+                } else {
+                    warp.displace(u0, v0, d);
+                    u = 0.5 + (u0 - d[0] - 0.5 - offsetX) / scaleX;
+                    v = 0.5 + (v0 - d[1] - 0.5 - offsetY) / scaleY;
+                }
+                bin[y * w + x] = bilinear(lum, sw, sh, u, v) > FOREGROUND_THRESHOLD;
             }
         }
         return encodeBinaryPng(bin, w, h);
+    }
+
+    /** Bilinear luminance at a normalized source position, half-pixel corrected
+     *  so the sample sits at the centre of the texel it names. */
+    private static double bilinear(byte[] lum, int w, int h, double u, double v) {
+        double sx = u * w - 0.5;
+        double sy = v * h - 0.5;
+        int x0 = (int) Math.floor(sx);
+        int y0 = (int) Math.floor(sy);
+        double fx = sx - x0;
+        double fy = sy - y0;
+        return sample(lum, w, h, x0, y0) * (1 - fx) * (1 - fy)
+             + sample(lum, w, h, x0 + 1, y0) * fx * (1 - fy)
+             + sample(lum, w, h, x0, y0 + 1) * (1 - fx) * fy
+             + sample(lum, w, h, x0 + 1, y0 + 1) * fx * fy;
     }
 
     /** Luminance at a source pixel; outside the frame reads as background. */

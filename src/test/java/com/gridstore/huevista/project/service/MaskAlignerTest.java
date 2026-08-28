@@ -117,7 +117,30 @@ class MaskAlignerTest {
         return fit.isIdentity()
                 ? MaskProcessor.resizeBinarySmooth(main, CANVAS_W, CANVAS_H)
                 : MaskProcessor.resizeBinaryAligned(main, CANVAS_W, CANVAS_H,
-                        fit.scaleX(), fit.scaleY(), fit.offsetX(), fit.offsetY());
+                        fit.scaleX(), fit.scaleY(), fit.offsetX(), fit.offsetY(), fit.warp());
+    }
+
+    /**
+     * The model's answer with a drift that VARIES across the frame instead of
+     * being the same everywhere: the scene is pulled {@code ampX} px sideways
+     * at the bottom and the same the other way at the top, and {@code ampY} px
+     * up one side and down the other. No scale-and-translate can express that,
+     * which is the point — it is what a generative repaint of a facade
+     * actually does, and it is why a single rigid fit leaves paint over the
+     * sky along one roofline while the windows below it were already right.
+     */
+    private static BufferedImage warpedColorMask(double ampX, double ampY) {
+        BufferedImage img = new BufferedImage(CANVAS_W, CANVAS_H, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < CANVAS_H; y++) {
+            for (int x = 0; x < CANVAS_W; x++) {
+                double cx = x - ampX * ((double) y / CANVAS_H - 0.5) * 2;
+                double cy = y - ampY * ((double) x / CANVAS_W - 0.5) * 2;
+                boolean inWall = cx >= WALL_X0 && cx < WALL_X1 && cy >= WALL_Y0 && cy < WALL_Y1;
+                boolean inWindow = cx >= 150 && cx < 210 && cy >= 120 && cy < 180;
+                img.setRGB(x, y, inWall && !inWindow ? 0xFF0000 : 0x000000);
+            }
+        }
+        return img;
     }
 
     @Test
@@ -234,5 +257,172 @@ class MaskAlignerTest {
         assertThat(maxX).isEqualTo(179);
         assertThat(minY).isEqualTo(40);
         assertThat(maxY).isEqualTo(139);
+    }
+
+    @Test
+    void followsADriftThatChangesAcrossTheFrame() throws Exception {
+        BufferedImage canvas = canvas();
+        // 10px sideways at the top and bottom, 9px up and down the sides: a
+        // couple of percent of the frame, and in a different direction in
+        // every corner.
+        BufferedImage warped = warpedColorMask(10, 9);
+
+        double before = iouWithRealWall(storedMask(warped, MaskAligner.Fit.identity()));
+        MaskAligner.Fit fit = MaskAligner.estimate(warped, canvas);
+
+        assertThat(fit.warp())
+                .as("a drift with no single rigid answer is what the local field is for")
+                .isNotNull();
+        double after = iouWithRealWall(storedMask(warped, fit));
+        assertThat(after).isGreaterThan(before);
+        assertThat(after).isGreaterThan(0.94);
+    }
+
+    @Test
+    void doesNotPullOneWallOffToPutAnotherOn() throws Exception {
+        // Two surfaces the model drifted opposite ways. The frame-wide fit that
+        // scores best here lands ONE of them perfectly and shoves the other
+        // further off — a big win on the average it is judged by, and a worse
+        // mask. Whatever the aligner returns, the stored mask has to cover more
+        // of the two walls than leaving it alone would.
+        BufferedImage canvas = twoWallCanvas();
+        BufferedImage drifted = twoWallColorMask(10, -7, -9, 8);
+
+        double before = iouWithBothWalls(twoWallStoredMask(drifted, MaskAligner.Fit.identity()));
+        MaskAligner.Fit fit = MaskAligner.estimate(drifted, canvas);
+        double after = iouWithBothWalls(twoWallStoredMask(drifted, fit));
+
+        assertThat(after).isGreaterThan(before);
+        assertThat(after).isGreaterThan(0.83);
+    }
+
+    @Test
+    void neverMovesAnyPartOfTheFrameFurtherThanTheLocalCap() {
+        // Far past what the local search may reach, on a canvas full of edges
+        // it could chase: no node of the field may exceed its cap.
+        MaskAligner.Fit fit = MaskAligner.estimate(twoWallColorMask(60, 40, -55, -45), twoWallCanvas());
+        if (fit.warp() != null) {
+            assertThat(fit.warp().maxShift()).isLessThanOrEqualTo(0.0300001);
+        }
+    }
+
+    @Test
+    void warpedResampleMovesEachPartOfTheMaskByItsOwnAmount() throws Exception {
+        // Two white blocks, one at the top of the frame and one at the bottom,
+        // under a field that pushes the top one right and the bottom one left.
+        // The resampler must move each by its own amount, not both by an
+        // average of the two.
+        BufferedImage blocks = new BufferedImage(200, 200, BufferedImage.TYPE_INT_RGB);
+        for (int y = 20; y < 60; y++) {
+            for (int x = 80; x < 120; x++) blocks.setRGB(x, y, 0xFFFFFF);
+        }
+        for (int y = 140; y < 180; y++) {
+            for (int x = 80; x < 120; x++) blocks.setRGB(x, y, 0xFFFFFF);
+        }
+        // One column of cells, two rows, so the lattice's three rows of nodes sit
+        // at the top, middle and bottom of the frame: +0.1 of the frame at the
+        // top, 0 in the middle, -0.1 at the bottom, interpolated in between.
+        MaskAligner.Warp warp = new MaskAligner.Warp(1, 2,
+                new double[]{0.1, 0.1, 0.0, 0.0, -0.1, -0.1},
+                new double[]{0, 0, 0, 0, 0, 0});
+
+        BufferedImage out = ImageIO.read(new ByteArrayInputStream(
+                MaskProcessor.resizeBinaryAligned(png(blocks), 200, 200, 1, 1, 0, 0, warp)));
+
+        // Each block sits at the middle of its half of the frame, where the
+        // field reads ±0.06 — 12px of this 200px frame — so they end up 24px
+        // apart having started on top of each other.
+        assertThat(centreX(out, 20, 60)).isCloseTo(112d, org.assertj.core.data.Offset.offset(2d));
+        assertThat(centreX(out, 140, 180)).isCloseTo(88d, org.assertj.core.data.Offset.offset(2d));
+    }
+
+    /** Mean x of the foreground pixels in rows {@code y0..y1}. */
+    private static double centreX(BufferedImage img, int y0, int y1) {
+        double sum = 0;
+        int n = 0;
+        for (int y = y0; y < y1; y++) {
+            for (int x = 0; x < img.getWidth(); x++) {
+                if ((img.getRGB(x, y) & 0xff) > 127) {
+                    sum += x;
+                    n++;
+                }
+            }
+        }
+        return n == 0 ? -1 : sum / n;
+    }
+
+    // ---- two-surface fixture ------------------------------------------------
+    //
+    // The single-wall canvas above cannot show the failure this exists for: one
+    // wall has one right answer, and a frame-wide fit can always reach it. Two
+    // surfaces that drifted different ways cannot both be fixed by one.
+
+    private static final int L_X0 = 40, L_X1 = 180, L_Y0 = 60, L_Y1 = 240;
+    private static final int LW_X0 = 80, LW_X1 = 120, LW_Y0 = 100, LW_Y1 = 150;
+    private static final int R_X0 = 220, R_X1 = 370, R_Y0 = 90, R_Y1 = 250;
+    private static final int RW_X0 = 270, RW_X1 = 320, RW_Y0 = 130, RW_Y1 = 180;
+
+    private static boolean inLeftWall(double x, double y) {
+        return x >= L_X0 && x < L_X1 && y >= L_Y0 && y < L_Y1
+                && !(x >= LW_X0 && x < LW_X1 && y >= LW_Y0 && y < LW_Y1);
+    }
+
+    private static boolean inRightWall(double x, double y) {
+        return x >= R_X0 && x < R_X1 && y >= R_Y0 && y < R_Y1
+                && !(x >= RW_X0 && x < RW_X1 && y >= RW_Y0 && y < RW_Y1);
+    }
+
+    private static BufferedImage twoWallCanvas() {
+        Random rnd = new Random(11);
+        BufferedImage img = new BufferedImage(CANVAS_W, CANVAS_H, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < CANVAS_H; y++) {
+            for (int x = 0; x < CANVAS_W; x++) {
+                boolean glass = (x >= LW_X0 && x < LW_X1 && y >= LW_Y0 && y < LW_Y1)
+                        || (x >= RW_X0 && x < RW_X1 && y >= RW_Y0 && y < RW_Y1);
+                int v;
+                if (glass) v = 25;
+                else if (inLeftWall(x, y) || inRightWall(x, y)) v = 205;
+                else if (y >= 250) v = 90;
+                else v = 45;
+                v = Math.max(0, Math.min(255, v + rnd.nextInt(13) - 6));
+                img.setRGB(x, y, (v << 16) | (v << 8) | v);
+            }
+        }
+        return img;
+    }
+
+    private static BufferedImage twoWallColorMask(int ldx, int ldy, int rdx, int rdy) {
+        BufferedImage img = new BufferedImage(CANVAS_W, CANVAS_H, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < CANVAS_H; y++) {
+            for (int x = 0; x < CANVAS_W; x++) {
+                boolean red = inLeftWall(x - ldx, y - ldy) || inRightWall(x - rdx, y - rdy);
+                img.setRGB(x, y, red ? 0xFF0000 : 0x000000);
+            }
+        }
+        return img;
+    }
+
+    private static byte[] twoWallStoredMask(BufferedImage colorMask, MaskAligner.Fit fit)
+            throws Exception {
+        byte[] main = MaskProcessor.splitColorCodedMask(png(colorMask), 100, false).get("main");
+        assertThat(main).isNotNull();
+        return fit.isIdentity()
+                ? MaskProcessor.resizeBinarySmooth(main, CANVAS_W, CANVAS_H)
+                : MaskProcessor.resizeBinaryAligned(main, CANVAS_W, CANVAS_H,
+                        fit.scaleX(), fit.scaleY(), fit.offsetX(), fit.offsetY(), fit.warp());
+    }
+
+    private static double iouWithBothWalls(byte[] maskPng) throws Exception {
+        BufferedImage mask = ImageIO.read(new ByteArrayInputStream(maskPng));
+        int inter = 0, union = 0;
+        for (int y = 0; y < CANVAS_H; y++) {
+            for (int x = 0; x < CANVAS_W; x++) {
+                boolean truth = inLeftWall(x, y) || inRightWall(x, y);
+                boolean painted = (mask.getRGB(x, y) & 0xff) > 127;
+                if (truth && painted) inter++;
+                if (truth || painted) union++;
+            }
+        }
+        return union == 0 ? 0 : (double) inter / union;
     }
 }
