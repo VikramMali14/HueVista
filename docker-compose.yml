@@ -63,6 +63,9 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-dev-google-client-secret}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      # Where a Google sign-in the MOBILE app started is redirected back to. Must
+      # match the `scheme` in the mobile app's app.json; the default does.
+      MOBILE_OAUTH_REDIRECT_URI: ${MOBILE_OAUTH_REDIRECT_URI:-huevista://sign-in/callback}
       # Optional integrations — pass through if set in .env.
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-}
       REPLICATE_API_TOKEN: ${REPLICATE_API_TOKEN:-}

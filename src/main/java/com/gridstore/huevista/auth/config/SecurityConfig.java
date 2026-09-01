@@ -2,6 +2,7 @@ package com.gridstore.huevista.auth.config;
 
 import com.gridstore.huevista.auth.filter.GuestAuthFilter;
 import com.gridstore.huevista.auth.filter.JwtAuthFilter;
+import com.gridstore.huevista.auth.filter.OAuthClientHintFilter;
 import com.gridstore.huevista.common.ratelimit.SensitiveEndpointRateLimitFilter;
 import com.gridstore.huevista.auth.handler.OAuth2AuthenticationFailureHandler;
 import com.gridstore.huevista.auth.handler.OAuth2AuthenticationSuccessHandler;
@@ -66,6 +67,7 @@ public class SecurityConfig {
     private final GuestAuthFilter guestAuthFilter;
     private final SensitiveEndpointRateLimitFilter sensitiveEndpointRateLimitFilter;
     private final CustomOAuth2UserService customOAuth2UserService;
+    private final OAuthClientHintFilter oAuthClientHintFilter;
     private final OAuth2AuthenticationSuccessHandler oAuth2SuccessHandler;
     private final OAuth2AuthenticationFailureHandler oAuth2FailureHandler;
     private final PasswordEncoder passwordEncoder;
@@ -249,7 +251,14 @@ public class SecurityConfig {
             // ── Per-IP throttle for the sensitive endpoints (register, login, refresh,
             //    password reset, OTP send/confirm, access-code redeem). Acts only on
             //    those exact paths; fail-open if Redis is down.
-            .addFilterBefore(sensitiveEndpointRateLimitFilter, UsernamePasswordAuthenticationFilter.class);
+            .addFilterBefore(sensitiveEndpointRateLimitFilter, UsernamePasswordAuthenticationFilter.class)
+            // ── Notes which client started a Google sign-in, and must therefore run
+            //    BEFORE the filter that redirects to Google. Anchored to the same
+            //    core filter as the two above (a custom class cannot be a position
+            //    reference), which puts it comfortably ahead of
+            //    OAuth2AuthorizationRequestRedirectFilter. Reads one query param and
+            //    writes one short-lived cookie; it authenticates nothing.
+            .addFilterBefore(oAuthClientHintFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }
