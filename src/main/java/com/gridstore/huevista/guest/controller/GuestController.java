@@ -14,6 +14,7 @@ import com.gridstore.huevista.project.dto.ProjectResponse;
 import com.gridstore.huevista.project.dto.ProjectSummaryResponse;
 import com.gridstore.huevista.project.dto.RecordColourBoardRequest;
 import com.gridstore.huevista.project.dto.RegionColorUpdate;
+import com.gridstore.huevista.project.dto.RegionPlanUpdate;
 import com.gridstore.huevista.project.dto.RegionResponse;
 import com.gridstore.huevista.project.service.ProjectService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -115,6 +116,18 @@ public class GuestController {
             Authentication auth) {
         // 204 — same featherweight autosave contract as the signed-in path.
         projectService.updateGuestRegionColors(accessCodeId(auth), id, updates);
+        return ResponseEntity.noContent().build();
+    }
+
+    @Operation(summary = "Save the paint plan (guest)",
+            description = "Which surfaces are being painted and what each one is in the scheme. "
+                    + "See the owner endpoint for the per-field PATCH rules.")
+    @PutMapping("/projects/{id}/regions/plan")
+    public ResponseEntity<Void> updateRegionPlan(
+            @PathVariable String id,
+            @RequestBody List<RegionPlanUpdate> updates,
+            Authentication auth) {
+        projectService.updateGuestRegionPlan(accessCodeId(auth), id, updates);
         return ResponseEntity.noContent().build();
     }
 

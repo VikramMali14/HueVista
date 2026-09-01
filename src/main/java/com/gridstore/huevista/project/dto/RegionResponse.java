@@ -41,6 +41,13 @@ public class RegionResponse {
     private String appliedHexCode;
     private Integer displayOrder;
     private boolean manual;
+    /**
+     * Whether this surface is one of the ones being painted.
+     *
+     * Sent on every view, the shared link included: a forwarded scheme should show the
+     * three walls the customer chose, not the ten surfaces the detector happened to find.
+     */
+    private boolean inPlan;
 
     public static RegionResponse from(Region region) {
         return RegionResponse.builder()
@@ -54,6 +61,7 @@ public class RegionResponse {
                 .appliedHexCode(region.getAppliedHexCode())
                 .displayOrder(region.getDisplayOrder())
                 .manual(region.isManual())
+                .inPlan(region.isInPlan())
                 .build();
     }
 
@@ -77,6 +85,7 @@ public class RegionResponse {
                 .appliedHexCode(region.getAppliedHexCode()) // hex shown, manufacturer code hidden
                 .displayOrder(region.getDisplayOrder())
                 .manual(region.isManual())
+                .inPlan(region.isInPlan())
                 .build();
     }
 }

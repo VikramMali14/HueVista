@@ -106,6 +106,29 @@ public class ProjectController {
         return ResponseEntity.noContent().build();
     }
 
+    @Operation(summary = "Save the paint plan",
+            description = """
+                    Says which surfaces are being painted, and what each one is in the scheme
+                    (main wall / accent wall / another wall / trim). Called when the customer
+                    closes the studio's Walls panel, not on every click.
+
+                    Per-field PATCH: a null category, label or inPlan leaves that field as it
+                    was. Excluding a wall keeps the region and its mask — it only takes the
+                    surface out of the suggestions, out of "Apply all" and off the board — so
+                    putting it back brings the room back exactly as it was.
+                    """
+    )
+    @ApiResponse(responseCode = "204", description = "Plan saved")
+    @PutMapping("/{id}/regions/plan")
+    public ResponseEntity<Void> updateRegionPlan(
+            @PathVariable String id,
+            @RequestBody List<RegionPlanUpdate> updates,
+            Authentication auth
+    ) {
+        projectService.updateRegionPlan(userId(auth), id, updates);
+        return ResponseEntity.noContent().build();
+    }
+
     @Operation(summary = "Update project details",
             description = "Partial update of name / room type / notes. Only provided fields change; a blank name is rejected.")
     @ApiResponses({
