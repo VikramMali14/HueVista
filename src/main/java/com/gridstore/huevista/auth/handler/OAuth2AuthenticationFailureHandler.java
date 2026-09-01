@@ -13,18 +13,26 @@ import java.io.IOException;
 /**
  * Called by Spring Security when OAuth2 authentication fails at any stage
  * (bad state param, token exchange failure, user-denied access, etc.).
- * Redirects the browser back to the frontend sign-in page with an error flag
- * instead of dumping raw JSON in the browser.
+ * Redirects the browser back to the sign-in page with an error flag instead of
+ * dumping raw JSON in the browser.
+ *
+ * A sign-in the mobile app started goes back to the app's deep link with the
+ * same flag, so the system browser session closes and the app can say "that
+ * didn't work" on its own sign-in screen. Left on the website, the failure would
+ * strand the user in a browser sheet with nothing to tap.
  */
 @Component
 @Slf4j
 public class OAuth2AuthenticationFailureHandler extends SimpleUrlAuthenticationFailureHandler {
 
     private final String frontendUrl;
+    private final String mobileRedirectUri;
 
     public OAuth2AuthenticationFailureHandler(
-            @Value("${app.cors.allowed-origins:http://localhost:3000}") String allowedOrigins) {
+            @Value("${app.cors.allowed-origins:http://localhost:3000}") String allowedOrigins,
+            @Value("${app.mobile.oauth-redirect-uri:huevista://sign-in/callback}") String mobileRedirectUri) {
         this.frontendUrl = firstOrigin(allowedOrigins);
+        this.mobileRedirectUri = mobileRedirectUri;
     }
 
     @Override
@@ -32,8 +40,12 @@ public class OAuth2AuthenticationFailureHandler extends SimpleUrlAuthenticationF
                                         HttpServletResponse response,
                                         AuthenticationException exception) throws IOException {
         log.warn("OAuth2 authentication failed: {}", exception.getMessage());
+        boolean mobile = OAuthClientHint.isMobile(request);
+        OAuthClientHint.clear(request, response);
         response.setStatus(HttpServletResponse.SC_FOUND);
-        response.setHeader("Location", frontendUrl + "/sign-in?error=google");
+        response.setHeader("Location", mobile
+                ? mobileRedirectUri + "#error=google"
+                : frontendUrl + "/sign-in?error=google");
     }
 
     /** The first configured CORS origin is the frontend base URL; fall back to local dev. */

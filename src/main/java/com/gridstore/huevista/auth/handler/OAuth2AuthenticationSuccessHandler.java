@@ -21,15 +21,23 @@ import java.util.Map;
  * Called by Spring Security after the full OAuth2 code exchange completes and
  * CustomOAuth2UserService has upserted the user into our DB.
  *
- * Redirects the browser back to the frontend callback with a SHORT-LIVED,
+ * Redirects the browser back to the caller's callback with a SHORT-LIVED,
  * SINGLE-USE exchange code in the URL <em>fragment</em>:
- * {@code {frontend}/sign-in/callback#code=...}. The fragment never reaches a
- * server (stays out of access logs and proxies), and — unlike the tokens this
- * handler used to put there — the code is worthless to anything that reads the
- * URL later (extensions, synced history): it expires in a minute and dies on
- * first use. The callback trades it for real tokens via
- * {@code POST /api/auth/oauth2/exchange} and sets HttpOnly session cookies,
- * mirroring the email/password login path.
+ * {@code {callback}#code=...}. The fragment never reaches a server (stays out of
+ * access logs and proxies), and — unlike the tokens this handler used to put
+ * there — the code is worthless to anything that reads the URL later
+ * (extensions, synced history): it expires in a minute and dies on first use.
+ * The callback trades it for real tokens via
+ * {@code POST /api/auth/oauth2/exchange}, mirroring the email/password path.
+ *
+ * There are two callbacks, because there are two clients. The website gets
+ * {@code {frontend}/sign-in/callback}. The mobile app gets its own deep link
+ * ({@code app.mobile.oauth-redirect-uri}, e.g. {@code huevista://sign-in/callback}),
+ * which is what closes the system browser session it opened and hands the code
+ * back to the app — a phone landing on the website instead would sign the
+ * browser in and leave the app exactly as unauthenticated as it started.
+ * Which one is in play is remembered across the Google round-trip by
+ * {@link OAuthClientHint}.
  */
 @Component
 @Slf4j
@@ -38,14 +46,17 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
     private final UserRepository userRepository;
     private final AuthService authService;
     private final String frontendUrl;
+    private final String mobileRedirectUri;
 
     public OAuth2AuthenticationSuccessHandler(
             UserRepository userRepository,
             AuthService authService,
-            @Value("${app.cors.allowed-origins:http://localhost:3000}") String allowedOrigins) {
+            @Value("${app.cors.allowed-origins:http://localhost:3000}") String allowedOrigins,
+            @Value("${app.mobile.oauth-redirect-uri:huevista://sign-in/callback}") String mobileRedirectUri) {
         this.userRepository = userRepository;
         this.authService = authService;
         this.frontendUrl = firstOrigin(allowedOrigins);
+        this.mobileRedirectUri = mobileRedirectUri;
     }
 
     @Override
@@ -61,9 +72,12 @@ public class OAuth2AuthenticationSuccessHandler extends SimpleUrlAuthenticationS
                 .orElseThrow(() -> new IllegalStateException("User not found after OAuth2 login: " + email));
 
         String exchangeCode = authService.createOAuthExchangeCode(user);
-        log.info("OAuth2 login successful for: {}", email);
+        boolean mobile = OAuthClientHint.isMobile(request);
+        log.info("OAuth2 login successful for: {} ({})", email, mobile ? "mobile" : "web");
+        OAuthClientHint.clear(request, response);
 
-        String target = frontendUrl + "/sign-in/callback#code=" + enc(exchangeCode);
+        String callback = mobile ? mobileRedirectUri : frontendUrl + "/sign-in/callback";
+        String target = callback + "#code=" + enc(exchangeCode);
 
         // Set the Location header directly so the '#' fragment is preserved verbatim
         // (servlet sendRedirect/encodeRedirectURL can mangle fragments).
