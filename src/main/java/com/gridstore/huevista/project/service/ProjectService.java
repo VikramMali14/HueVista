@@ -824,6 +824,55 @@ public class ProjectService {
     }
 
     /**
+     * Save the customer's paint plan: which surfaces are being painted, and what each one
+     * is in the scheme.
+     *
+     * <p>Gated on {@link #findEditable} rather than {@code findWallEditable}, which is the
+     * distinction that matters here: a library room's walls are fixed because their SHAPES
+     * were marked out when the room was published, and nothing on this path changes a
+     * shape. Deciding that the alcove is staying as it is, or that the chimney breast is
+     * the accent, is a decision about paint — exactly what a library room is for.
+     *
+     * <p>PATCH per field, so the studio can send the whole plan back without a user who
+     * re-labelled one wall also resetting the two things they never touched. Regions are
+     * looked up by id AND project, so an id from someone else's room matches nothing and
+     * is skipped rather than refused — the plan is one gesture and half-applying it
+     * because one row went stale is worse than ignoring the row.
+     *
+     * <p>Excluding a wall does NOT clear the colour on it. The commonest reason to take a
+     * surface out is to try a scheme without it, and putting it back has to bring the room
+     * back as it was — otherwise every exclusion is a decision the customer cannot undo,
+     * which is the exact problem this flag exists to fix.
+     */
+    @Transactional
+    public void updateRegionPlan(String userId, String projectId, List<RegionPlanUpdate> updates) {
+        findEditable(userId, projectId);
+        applyRegionPlan(projectId, updates);
+    }
+
+    /** Shared body for saving a paint plan (signed-in and guest). */
+    private void applyRegionPlan(String projectId, List<RegionPlanUpdate> updates) {
+        if (updates == null || updates.isEmpty()) return;
+        for (RegionPlanUpdate update : updates) {
+            if (update.getRegionId() == null) continue;
+            Region region = regionRepository.findByIdAndProjectId(update.getRegionId(), projectId)
+                    .orElse(null);
+            if (region == null) continue;
+            if (update.getCategory() != null) {
+                region.setCategory(update.getCategory());
+            }
+            if (update.getLabel() != null && !update.getLabel().isBlank()) {
+                region.setLabel(update.getLabel().trim().substring(0, Math.min(update.getLabel().trim().length(), 120)));
+            }
+            if (update.getInPlan() != null) {
+                region.setInPlan(update.getInPlan());
+            }
+            regionRepository.save(region);
+        }
+        log.info("Paint plan saved: project={} regions={}", projectId, updates.size());
+    }
+
+    /**
      * Rename / re-describe a project. PATCH semantics: only non-null fields are
      * applied, so the frontend can send just the field being edited. A provided
      * name must be non-blank — an unnamed project can't be found again on the
@@ -1584,6 +1633,13 @@ public class ProjectService {
                 regionRepository.save(region);
             });
         }
+    }
+
+    /** The guest's paint plan — same rules as the signed-in path, guest ownership. */
+    @Transactional
+    public void updateGuestRegionPlan(String accessCodeId, String projectId, List<RegionPlanUpdate> updates) {
+        findGuestOwned(accessCodeId, projectId);
+        applyRegionPlan(projectId, updates);
     }
 
     @Transactional

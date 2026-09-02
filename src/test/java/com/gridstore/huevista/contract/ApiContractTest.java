@@ -190,7 +190,11 @@ class ApiContractTest {
                 // forwarded share link — because it names nothing and only a HueVista
                 // shop can read it back.
                 "appliedShadeCode", "appliedHvCode",
-                "appliedHexCode", "displayOrder", "manual");
+                "appliedHexCode", "displayOrder", "manual",
+                // Whether this surface is one of the ones being painted. Separate from
+                // whether it EXISTS: a wall out of the plan keeps its mask and its
+                // colour and is simply not one the suggestions size themselves to.
+                "inPlan");
     }
 
     @Test

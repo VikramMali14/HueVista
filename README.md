@@ -95,6 +95,7 @@ Retailers subscribe to use HueVista as a sales tool with walk-ins, shortening th
 | GET | `/api/projects` | List user's projects |
 | GET | `/api/projects/{id}` | Project detail with regions |
 | PUT | `/api/projects/{id}/regions` | Auto-save region colors |
+| PUT | `/api/projects/{id}/regions/plan` | Save the paint plan — which walls are being painted, and what each one is |
 | POST | `/api/projects/{id}/segment` | Async auto-segmentation (Nano Banana) |
 | GET | `/api/projects/ai-models` | Image models a run may be pinned to (ADMIN) |
 | POST | `/api/projects/{id}/segment/point` | Click-to-segment (SAM 2) |

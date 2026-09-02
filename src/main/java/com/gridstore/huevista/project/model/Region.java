@@ -68,6 +68,26 @@ public class Region {
     @Column(nullable = false)
     private boolean manual;
 
+    /**
+     * Whether this surface is part of the scheme being painted.
+     *
+     * Separate from whether the region EXISTS, because those are two different questions
+     * and only one of them is about paint. Detection returns every surface it can see and
+     * the Mask Studio adds every surface the user outlines; both are answers to "what is
+     * paintable here". Which of them are actually getting a colour is the customer's
+     * choice, and it changes from one scheme to the next.
+     *
+     * A region that is out of the plan keeps its mask and its place in the room — it is
+     * simply not one of the surfaces being coloured, so the suggestion palettes size
+     * themselves to the walls that are in, and the colour board prints only those.
+     *
+     * True for every region that has never been excluded, which is how they all behaved
+     * before the flag existed.
+     */
+    @Builder.Default
+    @Column(nullable = false)
+    private boolean inPlan = true;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 }
