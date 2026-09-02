@@ -171,6 +171,42 @@ final class MaskAligner {
      *  resample the mask for nothing. In shares of the frame. */
     private static final double FIELD_EPSILON = 1e-4;
 
+    /* ---- Limits for a registration a person made, not the search ----
+     *
+     * The caps above exist because an unattended search that guesses wrong is
+     * worse than one that does nothing, so it is allowed only the smallest move
+     * that could be a real drift. None of that reasoning survives a person
+     * looking at the mask on the canvas and dragging it: they can SEE whether
+     * the wall lines up, which is the check every threshold above is a proxy
+     * for. So the limits on a hand-made registration are different in kind —
+     * they are not "is this move plausible" but "is this move something the
+     * resampler can carry out at all", plus a bound loose enough that hitting it
+     * means a mistake rather than a judgement.
+     */
+
+    /** Cells a hand-made lattice may have on a side. Well past anything a person
+     *  would sit and drag; there to bound the array a request can ask us to
+     *  allocate. */
+    private static final int MAX_MANUAL_CELLS = 64;
+
+    /** How far one hand-placed node may move, as a share of the frame. Ten times
+     *  the automatic {@link #MAX_LOCAL_OFFSET}, because a person correcting the
+     *  runs the search declined is by definition working past what it would
+     *  reach — and still small enough that a node at the cap is a slip. */
+    private static final double MAX_MANUAL_OFFSET = 0.30;
+
+    /** The widest and narrowest a hand-made rigid scale may be. A registration
+     *  is a correction to where the model's drawing sits, not a licence to
+     *  resize it into a different picture. */
+    private static final double MIN_MANUAL_SCALE = 0.5;
+    private static final double MAX_MANUAL_SCALE = 2.0;
+
+    /** How much of a cell's width the lattice may consume before it counts as
+     *  folded. Strictly below 1 so the accepted cases stay a safe distance from
+     *  the degenerate one, where a cell maps to zero width and the resampled
+     *  mask tears. */
+    private static final double FOLD_MARGIN = 0.9;
+
     /**
      * The extra, position-dependent nudge applied on top of the rigid fit: a
      * {@code (cols+1) × (rows+1)} lattice of displacements over the CANVAS
@@ -185,6 +221,78 @@ final class MaskAligner {
      * back on itself.
      */
     record Warp(int cols, int rows, double[] du, double[] dv) {
+
+        /**
+         * A lattice somebody authored by hand, checked for the two things the
+         * search cannot produce but a person dragging nodes can.
+         *
+         * <p>The first is shape: the arrays have to be exactly the lattice the
+         * cols/rows claim, or {@link #displace} reads off the end of them.
+         *
+         * <p>The second is folding, and it is the reason this is a factory and
+         * not a bare constructor. The resampler runs the map BACKWARDS —
+         * {@code u_mask = 0.5 + (u − du(u) − 0.5 − offset) / scale} — so it stays
+         * a function of the canvas only while {@code u − du(u)} keeps
+         * increasing. Across one cell {@code du} changes by
+         * {@code du[i+1] − du[i]} over a width of {@code 1/cols}, so the map
+         * folds the moment that difference reaches {@code 1/cols}: the mask
+         * doubles back, and a wall appears twice with a tear between the copies.
+         * The automatic field can never get there — every node is capped at
+         * {@link #MAX_LOCAL_OFFSET} and then smoothed — but a person pulling one
+         * node across its neighbour can, and the failure is silent in the stored
+         * PNG. {@link #FOLD_MARGIN} keeps a little air between "accepted" and
+         * "degenerate" rather than allowing the exactly-flat case.
+         *
+         * @throws IllegalArgumentException if the lattice is misshapen, holds a
+         *                                  value that is not finite, or folds
+         */
+        static Warp of(int cols, int rows, double[] du, double[] dv) {
+            if (cols < 1 || rows < 1 || cols > MAX_MANUAL_CELLS || rows > MAX_MANUAL_CELLS) {
+                throw new IllegalArgumentException(
+                        "Warp grid must be between 1 and " + MAX_MANUAL_CELLS + " cells a side, got "
+                                + cols + "×" + rows);
+            }
+            int expected = (cols + 1) * (rows + 1);
+            if (du == null || dv == null || du.length != expected || dv.length != expected) {
+                throw new IllegalArgumentException(
+                        "Warp lattice must hold " + expected + " nodes for a " + cols + "×" + rows
+                                + " grid, got " + (du == null ? 0 : du.length) + " and "
+                                + (dv == null ? 0 : dv.length));
+            }
+            for (int i = 0; i < expected; i++) {
+                if (!Double.isFinite(du[i]) || !Double.isFinite(dv[i])) {
+                    throw new IllegalArgumentException("Warp node " + i + " is not a finite number");
+                }
+                if (Math.hypot(du[i], dv[i]) > MAX_MANUAL_OFFSET) {
+                    throw new IllegalArgumentException(
+                            "Warp node " + i + " moves " + Math.hypot(du[i], dv[i])
+                                    + " of the frame, past the " + MAX_MANUAL_OFFSET + " cap");
+                }
+            }
+
+            int stride = cols + 1;
+            double uLimit = FOLD_MARGIN / cols;
+            double vLimit = FOLD_MARGIN / rows;
+            for (int j = 0; j <= rows; j++) {
+                for (int i = 0; i < cols; i++) {
+                    if (du[j * stride + i + 1] - du[j * stride + i] >= uLimit) {
+                        throw new IllegalArgumentException(
+                                "Warp folds horizontally between nodes " + i + " and " + (i + 1)
+                                        + " of row " + j);
+                    }
+                }
+            }
+            for (int i = 0; i <= cols; i++) {
+                for (int j = 0; j < rows; j++) {
+                    if (dv[(j + 1) * stride + i] - dv[j * stride + i] >= vLimit) {
+                        throw new IllegalArgumentException(
+                                "Warp folds vertically between nodes " + j + " and " + (j + 1)
+                                        + " of column " + i);
+                    }
+                }
+            }
+            return new Warp(cols, rows, du.clone(), dv.clone());
+        }
 
         /** The displacement at canvas point {@code (u,v)}, written into
          *  {@code out} as {@code {du, dv}}. Outside the frame the nearest edge
@@ -239,6 +347,42 @@ final class MaskAligner {
 
         static Fit identity() {
             return new Fit(1, 1, 0, 0, null, 0, 0);
+        }
+
+        /**
+         * A registration somebody placed by hand, validated to what the
+         * resampler can carry out.
+         *
+         * <p>Scored zero on both counts, and that is not a gap: the scores are
+         * the search's own evidence for preferring one candidate over another,
+         * and there was no search. A person looked at the mask on the canvas.
+         * Recording a made-up edge score here would put a number in the logs
+         * that reads exactly like a measurement and is not one.
+         *
+         * @throws IllegalArgumentException if the scale, offset or lattice is
+         *                                  outside what can be resampled
+         */
+        static Fit manual(double scaleX, double scaleY, double offsetX, double offsetY, Warp warp) {
+            requireScale(scaleX, "scaleX");
+            requireScale(scaleY, "scaleY");
+            requireOffset(offsetX, "offsetX");
+            requireOffset(offsetY, "offsetY");
+            return new Fit(scaleX, scaleY, offsetX, offsetY, warp, 0, 0);
+        }
+
+        private static void requireScale(double s, String name) {
+            if (!Double.isFinite(s) || s < MIN_MANUAL_SCALE || s > MAX_MANUAL_SCALE) {
+                throw new IllegalArgumentException(
+                        name + " must be between " + MIN_MANUAL_SCALE + " and " + MAX_MANUAL_SCALE
+                                + ", got " + s);
+            }
+        }
+
+        private static void requireOffset(double o, String name) {
+            if (!Double.isFinite(o) || Math.abs(o) > MAX_MANUAL_OFFSET) {
+                throw new IllegalArgumentException(
+                        name + " must be within ±" + MAX_MANUAL_OFFSET + " of the frame, got " + o);
+            }
         }
 
         boolean isIdentity() {

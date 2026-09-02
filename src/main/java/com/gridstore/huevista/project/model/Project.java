@@ -84,6 +84,21 @@ public class Project {
     // for projects whose regions are manual-only.
     private String rawMaskStorageKey;
 
+    // Where an admin put this project's masks by hand, as the JSON the align bench
+    // sends: scale, offset, and optionally a lattice of per-position displacements —
+    // the same shape MaskAligner.Fit already carries. Kept so the registration can be
+    // RE-OPENED: the bench loads it back, the person nudges it a further two pixels,
+    // and the raw colour-coded mask is re-split through the new one. Without it the
+    // only trace of the work would be the region masks it produced, which cannot be
+    // adjusted without starting over.
+    //
+    // Null on every project nobody has hand-registered — which is nearly all of them,
+    // and says the automatic fit is what shipped. Requires rawMaskStorageKey: a
+    // registration is a way of re-reading the model's drawing, so a project that no
+    // longer has that drawing cannot carry one.
+    @Column(columnDefinition = "text")
+    private String manualMaskRegistration;
+
     // ADMIN testing knob, set per segmentation request: TRUE = skip the
     // image-cleaner step for the next run (masks are generated straight from
     // the original photo). Null/FALSE = default behaviour (the cleaner runs
