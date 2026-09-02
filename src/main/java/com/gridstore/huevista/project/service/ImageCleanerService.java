@@ -66,22 +66,36 @@ import java.util.concurrent.Callable;
  * are asked in a flat, configured order, and the first image produced wins:
  *
  * <ol>
- *   <li>{@code black-forest-labs/flux-2-pro}</li>
  *   <li>{@code google/nano-banana-2}</li>
- *   <li>{@code black-forest-labs/flux-2-max}</li>
  *   <li>{@code google/nano-banana-pro}</li>
+ *   <li>{@code black-forest-labs/flux-2-pro}</li>
+ *   <li>{@code black-forest-labs/flux-2-max}</li>
  * </ol>
+ *
+ * <h3>Gemini first, FLUX behind it</h3>
+ *
+ * The chain is grouped by FAMILY rather than alternating between them: both Gemini
+ * tiers are asked before FLUX is reached at all. Gemini leads because it is the family
+ * the mask stage runs on ({@link ReplicateMaskSegmenter}), so on the common path the
+ * canvas and the masks drawn over it come from the same family and read the same
+ * surfaces the same way. FLUX is the whole-family fallback behind it, reached at the
+ * point where two Gemini tiers in a row have declined — which is when the trouble looks
+ * Gemini-wide rather than like one busy tier.
+ *
+ * <p>The cost of grouping, stated plainly: what ends a prediction here is nearly always
+ * the queue rather than the photo ({@code ModelRateLimitError: Service is currently
+ * unavailable due to high demand (E003)}), and a queue is a per-family fact — so a
+ * Gemini-wide outage now spends TWO links discovering that before an independent pool
+ * is asked. An alternating order would find the working family one link sooner; this
+ * order prefers a Gemini canvas whenever Gemini can serve one.
  *
  * <h3>One attempt each, and why</h3>
  *
  * Each model gets exactly ONE try before the chain moves on ({@code max-attempts}
- * defaults to 1). The chain alternates families deliberately — FLUX, Gemini, FLUX,
- * Gemini — so the model after any failure is from the OTHER family, with its own queue
- * and its own weather. Nearly everything that ends a prediction here is the queue rather
- * than the photo ({@code ModelRateLimitError: Service is currently unavailable due to
- * high demand (E003)}), and a second go at a pool that is already full mostly buys
- * another minute of the run's eight-minute budget to learn the same thing. Asking a
- * different family instead is both faster and more likely to answer.
+ * defaults to 1). A pool that is already full stays full for longer than a retry takes,
+ * so a second go at the same model mostly buys another minute of the run's eight-minute
+ * budget to learn what the first attempt already said. Asking the NEXT model — the
+ * sibling tier, then the other family — is both faster and more likely to answer.
  *
  * <p>Each model's request body differs; {@link ReplicateImageEditor} owns that. A refusal
  * about the PHOTO itself (a safety block) stops the chain immediately — every model would
@@ -116,7 +130,7 @@ import java.util.concurrent.Callable;
  *
  * Configuration:
  *   replicate.image-cleaner.enabled          — kill switch (default false)
- *   replicate.image-cleaner.model            — first in the chain, default flux-2-pro
+ *   replicate.image-cleaner.model            — first in the chain, default nano-banana-2
  *   replicate.image-cleaner.fallback-models  — comma-separated, the rest of the chain
  *   replicate.image-cleaner.max-attempts     — tries per model before moving on (1)
  *   replicate.image-cleaner.gemini-fallback  — ask Google directly once the chain is
@@ -143,25 +157,26 @@ public class ImageCleanerService {
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
 
-    @Value("${replicate.image-cleaner.model:black-forest-labs/flux-2-pro}")
+    @Value("${replicate.image-cleaner.model:google/nano-banana-2}")
     private String model;
 
     /**
      * The rest of the chain after {@link #model}, in order — a comma-separated list of
      * Replicate model ids.
      *
-     * <p>The order alternates FAMILIES on purpose: FLUX 2 Pro, Nano Banana 2, FLUX 2
-     * Max, Nano Banana Pro. What ends a prediction here is almost always the queue in
-     * front of a model rather than anything about the photo, and a queue is a
-     * per-family fact — so the model asked immediately after a failure should be one
-     * whose capacity is unrelated to the one that just declined. Alternating also means
-     * the chain has visited both families before it has exhausted either, which is the
-     * cheapest way to find out whether the problem is the platform or the picture.
+     * <p>The order is grouped by FAMILY: Nano Banana 2, Nano Banana Pro, then FLUX 2
+     * Pro and FLUX 2 Max. Gemini leads because it is the family the mask stage runs on,
+     * so the canvas and the masks drawn over it normally come from the same family;
+     * FLUX sits behind both Gemini tiers as the independent pool to fall back to once
+     * the trouble looks Gemini-wide rather than like one busy tier. Within each family
+     * the cheaper tier is asked first — both clean a room photo well, and the higher
+     * tier is not reliably better at THIS job (removing clutter, not composing a
+     * picture).
      *
      * <p>The ids are configuration so a newer tier can be swapped in without a deploy —
      * {@link ReplicateImageEditor} picks the request schema off the model name.
      */
-    @Value("${replicate.image-cleaner.fallback-models:google/nano-banana-2,black-forest-labs/flux-2-max,google/nano-banana-pro}")
+    @Value("${replicate.image-cleaner.fallback-models:google/nano-banana-pro,black-forest-labs/flux-2-pro,black-forest-labs/flux-2-max}")
     private String fallbackModels;
 
     /**
@@ -196,12 +211,12 @@ public class ImageCleanerService {
     /**
      * How many times ONE model is asked before we move on to the next.
      *
-     * <p>One. The chain is four models deep and alternates families, so the next thing
-     * to ask after a failure is always a model with a different queue — which is both
-     * quicker and likelier to answer than a second go at a pool that just said it was
-     * full. A single attempt already takes the best part of a minute out of the run's
-     * eight-minute budget, and spending two of them on the same busy model is how a run
-     * reaches its deadline having asked half the chain.
+     * <p>One. The chain is four models deep across two families, so there is always a
+     * next thing to ask — the sibling tier, or the other family once this one is out —
+     * which is both quicker and likelier to answer than a second go at a pool that just
+     * said it was full. A single attempt already takes the best part of a minute out of
+     * the run's eight-minute budget, and spending two of them on the same busy model is
+     * how a run reaches its deadline having asked half the chain.
      */
     @Value("${replicate.image-cleaner.max-attempts:1}")
     private int maxAttempts;

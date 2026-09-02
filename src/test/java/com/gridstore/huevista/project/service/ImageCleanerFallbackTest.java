@@ -30,16 +30,18 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * The cleaning chain: FLUX 2 Pro, Nano Banana 2, FLUX 2 Max, Nano Banana Pro — one
+ * The cleaning chain: Nano Banana 2, Nano Banana Pro, FLUX 2 Pro, FLUX 2 Max — one
  * attempt each, until one of them produces an image.
  *
  * <p>This matters more than it reads. Wall detection runs ONLY against a cleaned canvas,
  * so a clean that nobody serves is not a degraded run — it is no run at all.
  *
- * <p>Two properties are worth stating because they are what the order buys. The chain
- * ALTERNATES families, so whatever is asked after a failure has a different queue behind
- * it; and each model gets ONE try, because the thing that fails here is almost always
- * that queue, and a queue that is full stays full for longer than a retry takes.
+ * <p>Two properties are worth stating because they are what the order buys. The chain is
+ * GROUPED BY FAMILY with Gemini in front — the family the mask stage also runs on, so
+ * the canvas and the masks drawn over it normally come from the same family, with FLUX
+ * as the independent pool behind both Gemini tiers; and each model gets ONE try, because
+ * the thing that fails here is almost always a full queue, and a queue that is full
+ * stays full for longer than a retry takes.
  */
 class ImageCleanerFallbackTest {
 
@@ -65,9 +67,9 @@ class ImageCleanerFallbackTest {
     void configure() {
         ReflectionTestUtils.setField(cleaner, "enabled", true);
         ReflectionTestUtils.setField(cleaner, "replicateApiToken", "tok");
-        ReflectionTestUtils.setField(cleaner, "model", "black-forest-labs/flux-2-pro");
+        ReflectionTestUtils.setField(cleaner, "model", "google/nano-banana-2");
         ReflectionTestUtils.setField(cleaner, "fallbackModels",
-                "google/nano-banana-2,black-forest-labs/flux-2-max,google/nano-banana-pro");
+                "google/nano-banana-pro,black-forest-labs/flux-2-pro,black-forest-labs/flux-2-max");
         ReflectionTestUtils.setField(cleaner, "maxAttempts", 1);
         ReflectionTestUtils.setField(cleaner, "retryBackoffMs", 0L);
         ReflectionTestUtils.setField(cleaner, "upscaleLongestPx", 0);
@@ -86,10 +88,10 @@ class ImageCleanerFallbackTest {
     }
 
     @Test
-    void aBusyModelHandsStraightToTheNextFamilyRatherThanRetryingItself() {
+    void aBusyModelHandsStraightToTheNextModelRatherThanRetryingItself() {
         // The E003 case: the model is fine, Replicate's pool for it is full. A second go
         // at the same pool is a minute spent learning the same thing, so the chain moves
-        // to the other family immediately.
+        // to the next model — here the sibling Gemini tier — immediately.
         when(replicate.edit(any()))
                 .thenThrow(ImageEditException.retry(
                         "ModelRateLimitError: Service is currently unavailable due to high demand (E003)"))
@@ -101,7 +103,7 @@ class ImageCleanerFallbackTest {
                 ArgumentCaptor.forClass(ReplicateImageEditor.Spec.class);
         verify(replicate, times(2)).edit(specs.capture());
         assertThat(specs.getAllValues()).extracting(ReplicateImageEditor.Spec::model)
-                .containsExactly("black-forest-labs/flux-2-pro", "google/nano-banana-2");
+                .containsExactly("google/nano-banana-2", "google/nano-banana-pro");
         // Google's own API is a tail step and off by default — it is not what a busy
         // Replicate model falls over to any more.
         verify(gemini, never()).edit(anyString(), any(), any());
@@ -110,9 +112,9 @@ class ImageCleanerFallbackTest {
     @Test
     void theChainIsWalkedInTheConfiguredOrderUntilOneDelivers() {
         when(replicate.edit(any()))
-                .thenThrow(ImageEditException.failover("flux 2 pro produced nothing"))
                 .thenThrow(ImageEditException.failover("nano banana 2 produced nothing"))
-                .thenReturn(IMAGE); // FLUX 2 Max delivers
+                .thenThrow(ImageEditException.failover("nano banana pro produced nothing"))
+                .thenReturn(IMAGE); // FLUX 2 Pro delivers
 
         assertThat(cleaner.cleanImage("http://photo", ImageType.OUTDOOR)).contains(IMAGE);
 
@@ -120,17 +122,17 @@ class ImageCleanerFallbackTest {
                 ArgumentCaptor.forClass(ReplicateImageEditor.Spec.class);
         verify(replicate, times(3)).edit(specs.capture());
         assertThat(specs.getAllValues()).extracting(ReplicateImageEditor.Spec::model)
-                .containsExactly("black-forest-labs/flux-2-pro",
-                        "google/nano-banana-2",
-                        "black-forest-labs/flux-2-max");
-        // Nano Banana Pro is never reached: the chain stops at the first image, it does
-        // not work through the whole list.
+                .containsExactly("google/nano-banana-2",
+                        "google/nano-banana-pro",
+                        "black-forest-labs/flux-2-pro");
+        // FLUX 2 Max is never reached: the chain stops at the first image, it does not
+        // work through the whole list.
     }
 
     @Test
     void everyLinkGetsExactlyOneTry() {
         // The property the order depends on. Two tries per model would spend eight model
-        // calls and most of the run's deadline before the chain had visited both families.
+        // calls and most of the run's deadline before the chain had reached FLUX at all.
         when(replicate.edit(any())).thenThrow(ImageEditException.retry("busy"));
 
         assertThat(cleaner.cleanImage("http://photo", ImageType.OUTDOOR)).isEmpty();
@@ -139,10 +141,10 @@ class ImageCleanerFallbackTest {
                 ArgumentCaptor.forClass(ReplicateImageEditor.Spec.class);
         verify(replicate, times(4)).edit(specs.capture());
         assertThat(specs.getAllValues()).extracting(ReplicateImageEditor.Spec::model)
-                .containsExactly("black-forest-labs/flux-2-pro",
-                        "google/nano-banana-2",
-                        "black-forest-labs/flux-2-max",
-                        "google/nano-banana-pro");
+                .containsExactly("google/nano-banana-2",
+                        "google/nano-banana-pro",
+                        "black-forest-labs/flux-2-pro",
+                        "black-forest-labs/flux-2-max");
     }
 
     @Test
@@ -200,11 +202,11 @@ class ImageCleanerFallbackTest {
         // request cannot be built, and spending a minute proving that would eat the
         // run's deadline for nothing.
         ReflectionTestUtils.setField(cleaner, "fallbackModels",
-                "openai/gpt-image-1,google/nano-banana-2");
+                "openai/gpt-image-1,black-forest-labs/flux-2-pro");
         when(replicate.canRun("openai/gpt-image-1")).thenReturn(false);
         when(replicate.edit(any()))
-                .thenThrow(ImageEditException.failover("flux 2 pro produced nothing"))
-                .thenReturn(IMAGE); // nano banana 2 delivers
+                .thenThrow(ImageEditException.failover("nano banana 2 produced nothing"))
+                .thenReturn(IMAGE); // flux 2 pro delivers
 
         assertThat(cleaner.cleanImage("http://photo", ImageType.OUTDOOR)).contains(IMAGE);
 
@@ -212,7 +214,7 @@ class ImageCleanerFallbackTest {
                 ArgumentCaptor.forClass(ReplicateImageEditor.Spec.class);
         verify(replicate, times(2)).edit(specs.capture());
         assertThat(specs.getAllValues()).extracting(ReplicateImageEditor.Spec::model)
-                .containsExactly("black-forest-labs/flux-2-pro", "google/nano-banana-2");
+                .containsExactly("google/nano-banana-2", "black-forest-labs/flux-2-pro");
     }
 
     @Test
@@ -280,10 +282,10 @@ class ImageCleanerFallbackTest {
                 " google/nano-banana-2 , black-forest-labs/flux-2-pro ,, google/nano-banana-pro ");
 
         assertThat(cleaner.fallbackModelList())
-                .containsExactly("google/nano-banana-2", "google/nano-banana-pro");
+                .containsExactly("black-forest-labs/flux-2-pro", "google/nano-banana-pro");
         assertThat(cleaner.modelChain())
-                .containsExactly("black-forest-labs/flux-2-pro",
-                        "google/nano-banana-2",
+                .containsExactly("google/nano-banana-2",
+                        "black-forest-labs/flux-2-pro",
                         "google/nano-banana-pro");
     }
 
