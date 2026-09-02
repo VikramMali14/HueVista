@@ -294,15 +294,11 @@ a wire crossing a wall becomes a wall edge, an unplastered shell reads as claddi
 blacks the room out. So the clean is defended first, and the run is failed honestly
 rather than half-completed.
 
-1. **The clean is asked of several models, in order** — Nano Banana → Nano Banana Pro →
-   FLUX 2 Pro → FLUX 2 Max, both Google tiers before either FLUX one and the cheaper tier
-   of each family first, with Google's own API available as an off-by-default tail step
-   (a different queue: Replicate answers a full pool with `ModelRateLimitError … (E003)`,
-   which says nothing about the photo). The first image produced wins. The order is by
-   which model should MAKE the canvas rather than by whose queue is likely to be free —
-   the clean is what everything downstream is measured against. The cost of that is two
-   Google tiers back to back, which can decline to the same outage; if cleans start
-   failing in pairs, reorder the chain before looking anywhere else. A refusal about the *photo* (a safety block) stops the chain
+1. **The clean is asked of several models, in order** — Nano Banana Pro on Replicate,
+   then the same model through Google's own API (a different queue: Replicate answers a
+   full pool with `ModelRateLimitError … (E003)`, which says nothing about the photo),
+   then a different family each time: FLUX 2 Pro → GPT Image → Seedream. The first image
+   produced wins. A refusal about the *photo* (a safety block) stops the chain
    immediately — every model would answer the same, and proving it costs the user their
    run. Configure with `REPLICATE_IMAGE_CLEANER_FALLBACK_MODELS`; each model's request
    schema is picked from its name, so newer tiers can be swapped in without a code
