@@ -61,24 +61,24 @@ import java.util.Optional;
  *       masks). Painting onto the real surfaces rather than drawing an abstract
  *       map keeps the colour blocks CLOSE to the canvas — closer than any
  *       from-scratch generation gets — but it is still a repaint, not a trace,
- *       so close is where it stops. The next step is what makes it exact.</li>
+ *       so close is where it stops, and measured on real facades "close" is
+ *       several percent of the frame. Nothing downstream makes it exact; see
+ *       {@link #maskAlignEnabled}.</li>
  *   <li>{@link MaskProcessor#splitColorCodedMask} splits the colored mask
  *       into per-category binary masks server-side.</li>
- *   <li>{@link MaskAligner} measures how that generation actually sits on the
- *       canvas and returns the whole-frame scale and shift that lines its
- *       colour-block boundaries up with the canvas's own edges, plus — where
- *       one frame-wide answer isn't enough — a small smooth field of
- *       per-place nudges on top of it. The model repaints the photo rather
- *       than tracing it, so its answer drifts; when it rounds the output to
- *       one of its aspect buckets, stretching that onto the canvas shears
- *       every region sideways; and because it reproduces each part of the
- *       scene about as well as it can independently, the drift is not the
- *       same everywhere — a roofline can be 2% of the frame out while the
- *       windows below it are already right. All three are corrected here, or
- *       the mask is left exactly as drawn when the measurement can't beat
- *       doing nothing.</li>
- *   <li>Each non-empty category is smooth-upscaled to the canvas resolution at
- *       that registration (see {@link #resizeMaskToCanvas}), uploaded to S3 and
+ *   <li>{@link MaskAligner} can measure how that generation sits on the canvas
+ *       and return the scale, shift and small local field that line its
+ *       colour-block boundaries up with the canvas's own edges — but it is OFF
+ *       by default now, so ordinarily nothing happens here and the mask goes
+ *       to the next step exactly as drawn. See
+ *       {@link #maskAlignEnabled} for the measurements that turned it off: the
+ *       drift a real facade shows is larger than the search's caps and grows
+ *       across the frame, and the flat white cleaned canvas gives the edge map
+ *       too little to score against for a correction to be believed. The step
+ *       is kept, behind the flag, to compare against.</li>
+ *   <li>Each non-empty category is smooth-upscaled to the canvas resolution — at
+ *       that registration if there was one (see {@link #resizeMaskToCanvas}),
+ *       otherwise a plain stretch — uploaded to S3 and
  *       persisted as a {@link Region} row. The region's SHAPE is still what the
  *       model drew — nothing here reshapes a wall, it only puts the drawing
  *       back over the surfaces it was drawn from.</li>
@@ -393,10 +393,11 @@ public class SegmentationService {
     /**
      * One mask-model call ({@link ReplicateMaskSegmenter}) returns a single
      * color-coded image; we split it into per-category binary masks,
-     * smooth-upscale each one to the canvas resolution at the registration
-     * {@link MaskAligner} measured for it (see {@link #resizeMaskToCanvas})
-     * and persist each non-empty one as a Region row, otherwise exactly as the
-     * model produced it.
+     * smooth-upscale each one to the canvas resolution — at the registration
+     * {@link MaskAligner} measured for it when {@link #maskAlignEnabled} is on,
+     * otherwise a plain stretch (see {@link #resizeMaskToCanvas}) — and persist
+     * each non-empty one as a Region row, otherwise exactly as the model
+     * produced it.
      *
      * <p>Generative segmentation occasionally produces a dud (no red main
      * wall at all, an off-palette image the split can't use). One dud used
@@ -707,13 +708,32 @@ public class SegmentationService {
 
     /**
      * Kill switch for the mask-to-canvas registration step
-     * ({@link #alignToCanvas}). On by default: a generative mask is not
-     * pixel-registered to the photo it was drawn from, and without this the
-     * pipeline stretches whatever came back onto the canvas and stores it.
-     * Off restores exactly that older behaviour, for comparing the two on the
-     * same photo.
+     * ({@link #alignToCanvas}). OFF by default, which is a change: the
+     * registration used to run on every auto-mask.
+     *
+     * <p>It was turned off because measurement on real facades put the drift
+     * outside what it can reach. The colour-coded generation comes back with
+     * the building drawn some 5% taller and up to 7% wider than the canvas,
+     * and growing top-to-bottom rather than constant — against a search capped
+     * at {@link MaskAligner} {@code MAX_OFFSET} 5% translation,
+     * {@code MAX_SCALE_JITTER} 6% scale and {@code MAX_LOCAL_OFFSET} 3% per
+     * cell. On top of that the canvas it measures against is the CLEANED
+     * repaint, whose facade is deliberately flat white: the wall-to-parapet
+     * junctions the mask has to land on normalise to near zero in the edge
+     * map, so a real correction rarely clears {@code MIN_GAIN} and the step
+     * usually returned the identity fit anyway.
+     *
+     * <p>So this now leaves the mask exactly as the model drew it, stretched
+     * to the canvas — which is what it was already doing on most runs, minus
+     * the occasional move made on thin evidence. That is not a fix for the
+     * misalignment; the fix is to stop taking mask GEOMETRY from a generative
+     * model at all (SAM 2 already returns pixel-registered masks on this same
+     * canvas for click-to-segment). This is the honest baseline to measure
+     * that work against.
+     *
+     * <p>On restores the registration, for comparing the two on the same photo.
      */
-    @Value("${huevista.segmentation.mask-align.enabled:true}")
+    @Value("${huevista.segmentation.mask-align.enabled:false}")
     private boolean maskAlignEnabled;
 
     /**
@@ -742,12 +762,14 @@ public class SegmentationService {
     /**
      * Measures how this generation's colour blocks sit on the canvas, so the
      * masks can be put back where the surfaces actually are. See
-     * {@link MaskAligner} for what it can and cannot correct.
+     * {@link MaskAligner} for what it can and cannot correct, and
+     * {@link #maskAlignEnabled} — OFF by default — for why it is no longer
+     * asked to.
      *
-     * <p>Never throws and never blocks a run: a canvas it cannot measure, a
-     * mask with no boundaries to trace, or any failure at all yields the
-     * identity fit — which is the plain stretch-to-canvas this pipeline did
-     * before, so the worst case is the old behaviour rather than a lost run.
+     * <p>Never throws and never blocks a run: the step switched off, a canvas
+     * it cannot measure, a mask with no boundaries to trace, or any failure at
+     * all yields the identity fit — the plain stretch-to-canvas — so the worst
+     * case is an unregistered mask rather than a lost run.
      */
     private MaskAligner.Fit alignToCanvas(byte[] colorMask, BufferedImage canvas, String projectId) {
         if (!maskAlignEnabled || canvas == null) return MaskAligner.Fit.identity();
@@ -787,11 +809,9 @@ public class SegmentationService {
 
     /** Logs (never fails) when the colour-coded mask's aspect drifts >5% from
      *  the canvas — the tell-tale of an aspect-bucketed model output, which
-     *  used to shear every region off its real surface once stretched.
-     *  {@link #alignToCanvas} now absorbs drift of this size, so this is a
-     *  signal about the model's inputs rather than a report of damage: a run
-     *  that logs it and then reports a non-identity fit is the correction
-     *  doing its job. */
+     *  shears every region off its real surface once stretched. With
+     *  {@link #maskAlignEnabled} off this is a report of damage again, not just
+     *  a signal about the model's inputs: nothing downstream will absorb it. */
     private void logAspectDriftIfAny(byte[] colorMask, int targetW, int targetH, String projectId) {
         try {
             BufferedImage m = MaskProcessor.decode(colorMask);
@@ -799,10 +819,11 @@ public class SegmentationService {
             double canvasAr = (double) targetW / targetH;
             if (Math.abs(maskAr / canvasAr - 1.0) > 0.05) {
                 log.warn("Color-coded mask {}x{} has a different aspect than canvas {}x{} " +
-                                "for project {} — the aligner will try to absorb it, but check " +
-                                "the replicate.nano-banana.aspect-ratio input: a bucketed output " +
-                                "beyond the aligner's range leaves regions off their surfaces",
-                        m.getWidth(), m.getHeight(), targetW, targetH, projectId);
+                                "for project {} — check the replicate.nano-banana.aspect-ratio " +
+                                "input: stretching a bucketed output onto the canvas leaves every " +
+                                "region sheared off its surface (mask-align.enabled={})",
+                        m.getWidth(), m.getHeight(), targetW, targetH, projectId,
+                        maskAlignEnabled);
             }
         } catch (Exception ignored) {
             // best-effort diagnostics only

@@ -28,15 +28,22 @@ import java.util.Map;
 /**
  * Puts a project's detected masks where an admin says they belong.
  *
- * <p>{@link MaskAligner} already measures how a generative colour-coded mask
- * sits on the canvas and corrects it, but its search is deliberately timid —
- * capped at a few percent of the frame and discarded outright unless it beats
- * leaving the mask alone by a clear margin. That is the right posture for a step
- * nobody is watching, and it means the runs it declines are exactly the ones a
- * person has to finish: a facade whose repaint drifted further than the search
- * may reach, or drifted by different amounts in different parts of the frame.
+ * <p>{@link MaskAligner} can measure how a generative colour-coded mask sits on
+ * the canvas and correct it, but its search is deliberately timid — capped at a
+ * few percent of the frame and discarded outright unless it beats leaving the
+ * mask alone by a clear margin — and on real facades the drift is routinely
+ * larger than those caps and uneven across the frame. So the automatic step is
+ * now OFF by default (see {@code huevista.segmentation.mask-align.enabled}) and
+ * every auto-mask ships as the model drew it. That makes this path the ONLY
+ * registration a project gets, rather than the finish on the runs the search
+ * declined.
  *
- * <p>This is that finish. It takes the registration the admin bench produced,
+ * <p>This path is unaffected by that flag: the caps and validation it applies
+ * are {@link MaskAligner.Fit#manual}'s, which are looser by design because a
+ * person can SEE whether the wall lines up — the check every automatic threshold
+ * is only a proxy for.
+ *
+ * <p>It takes the registration the admin bench produced,
  * re-splits the RAW colour-coded mask the run stored, and re-lands each category
  * through {@link MaskProcessor#resizeBinaryAligned} — the same single resample
  * the automatic path uses, so a hand-made fit and a measured one produce bytes
