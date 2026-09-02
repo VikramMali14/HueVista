@@ -66,34 +66,22 @@ import java.util.concurrent.Callable;
  * are asked in a flat, configured order, and the first image produced wins:
  *
  * <ol>
- *   <li>{@code google/nano-banana}</li>
- *   <li>{@code google/nano-banana-pro}</li>
  *   <li>{@code black-forest-labs/flux-2-pro}</li>
+ *   <li>{@code google/nano-banana-2}</li>
  *   <li>{@code black-forest-labs/flux-2-max}</li>
+ *   <li>{@code google/nano-banana-pro}</li>
  * </ol>
  *
  * <h3>One attempt each, and why</h3>
  *
  * Each model gets exactly ONE try before the chain moves on ({@code max-attempts}
- * defaults to 1). Nearly everything that ends a prediction here is the queue rather
+ * defaults to 1). The chain alternates families deliberately — FLUX, Gemini, FLUX,
+ * Gemini — so the model after any failure is from the OTHER family, with its own queue
+ * and its own weather. Nearly everything that ends a prediction here is the queue rather
  * than the photo ({@code ModelRateLimitError: Service is currently unavailable due to
  * high demand (E003)}), and a second go at a pool that is already full mostly buys
- * another minute of the run's eight-minute budget to learn the same thing.
- *
- * <p>The order is Gemini first, then FLUX: both Google tiers are asked before either
- * FLUX one, cheapest tier of each family first. It is ordered by what should MAKE the
- * canvas rather than by whose queue is likely to be free — the clean is the image every
- * later step is measured against, so which model draws it is a product decision, and the
- * failover is what happens when that decision cannot be honoured.
- *
- * <p>The cost of ordering it this way is worth stating plainly, because it is the reason
- * the order used to alternate FLUX, Gemini, FLUX, Gemini: a queue is a per-FAMILY fact,
- * so two Google tiers back to back can both decline to the same outage, and the chain
- * then spends two of its four steps learning one thing. Alternating reached both families
- * before exhausting either, which is the quickest way to find out whether the problem is
- * the platform or the picture. If cleans start failing in pairs, that trade is the first
- * place to look — the ids are configuration, and swapping back is one environment
- * variable.
+ * another minute of the run's eight-minute budget to learn the same thing. Asking a
+ * different family instead is both faster and more likely to answer.
  *
  * <p>Each model's request body differs; {@link ReplicateImageEditor} owns that. A refusal
  * about the PHOTO itself (a safety block) stops the chain immediately — every model would
@@ -128,7 +116,7 @@ import java.util.concurrent.Callable;
  *
  * Configuration:
  *   replicate.image-cleaner.enabled          — kill switch (default false)
- *   replicate.image-cleaner.model            — first in the chain, default nano-banana
+ *   replicate.image-cleaner.model            — first in the chain, default flux-2-pro
  *   replicate.image-cleaner.fallback-models  — comma-separated, the rest of the chain
  *   replicate.image-cleaner.max-attempts     — tries per model before moving on (1)
  *   replicate.image-cleaner.gemini-fallback  — ask Google directly once the chain is
@@ -155,28 +143,25 @@ public class ImageCleanerService {
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
 
-    @Value("${replicate.image-cleaner.model:google/nano-banana}")
+    @Value("${replicate.image-cleaner.model:black-forest-labs/flux-2-pro}")
     private String model;
 
     /**
      * The rest of the chain after {@link #model}, in order — a comma-separated list of
      * Replicate model ids.
      *
-     * <p>Nano Banana Pro, then FLUX 2 Pro, then FLUX 2 Max: both Google tiers before
-     * either FLUX one, and within each family the cheaper tier first. The chain is
-     * ordered by which model should make the canvas rather than by whose queue is likely
-     * to be free — see the class doc for what that costs when a whole family is down.
-     *
-     * <p>{@code google/nano-banana-2} is deliberately not here. The chain is four models
-     * deep and every step past the first is already a step the user is waiting through;
-     * a third Gemini tier between the two Google models and the FLUX ones would push the
-     * first model of the second family to fifth, which is where the family alternation
-     * was protecting against in the first place.
+     * <p>The order alternates FAMILIES on purpose: FLUX 2 Pro, Nano Banana 2, FLUX 2
+     * Max, Nano Banana Pro. What ends a prediction here is almost always the queue in
+     * front of a model rather than anything about the photo, and a queue is a
+     * per-family fact — so the model asked immediately after a failure should be one
+     * whose capacity is unrelated to the one that just declined. Alternating also means
+     * the chain has visited both families before it has exhausted either, which is the
+     * cheapest way to find out whether the problem is the platform or the picture.
      *
      * <p>The ids are configuration so a newer tier can be swapped in without a deploy —
      * {@link ReplicateImageEditor} picks the request schema off the model name.
      */
-    @Value("${replicate.image-cleaner.fallback-models:google/nano-banana-pro,black-forest-labs/flux-2-pro,black-forest-labs/flux-2-max}")
+    @Value("${replicate.image-cleaner.fallback-models:google/nano-banana-2,black-forest-labs/flux-2-max,google/nano-banana-pro}")
     private String fallbackModels;
 
     /**
