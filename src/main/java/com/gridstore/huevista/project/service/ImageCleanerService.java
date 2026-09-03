@@ -198,8 +198,8 @@ public class ImageCleanerService {
      * further from being smoothed away. That matters more here than it would for a plain
      * photo: the masks are generated FROM this canvas, so an edge the clean rounds off
      * is an edge the mask model never sees, and the paint then stops short of the real
-     * surface or bleeds past it. 4K is ~1.8x the price and mostly resampled away by the
-     * local upscale below, so it is not the default.
+     * surface or bleeds past it. 4K is ~1.8x the price for detail the canvas does not
+     * need at the size the studio renders it, so it is not the default.
      *
      * <p>One value for the whole chain rather than one per model: whichever model
      * answers produces the canvas every later step is measured against, so they should
@@ -219,8 +219,22 @@ public class ImageCleanerService {
     @Value("${replicate.image-cleaner.aspect-ratio:match_input_image}")
     private String aspectRatio;
 
-    /** Longest edge (px) to upscale the cleaned image to locally. 0 = no upscale. */
-    @Value("${replicate.image-cleaner.upscale-longest-px:3840}")
+    /**
+     * Longest edge (px) to upscale the cleaned image to locally. 0 = no upscale.
+     *
+     * <p><b>Off.</b> It used to resample every clean up to 3840px, which added no
+     * detail — Thumbnailator is a classic resampler, not a super-resolution model — and
+     * only interpolated what the model already produced, at roughly 4x the stored bytes
+     * for every cleaned canvas. Now that the clean is generated at 2K the model output
+     * is already the size the studio needs, so the canvas is stored exactly as the model
+     * drew it and the pixels the user sees are pixels a model actually generated.
+     *
+     * <p>Nothing downstream needs the old size: the stored masks are capped at
+     * {@code MAX_MASK_DIM} (2048) whatever the canvas measures, so they come out
+     * unchanged. The step itself is kept and still tested — set a value here to turn it
+     * back on without a deploy.
+     */
+    @Value("${replicate.image-cleaner.upscale-longest-px:0}")
     private int upscaleLongestPx;
 
     /**
@@ -506,10 +520,17 @@ public class ImageCleanerService {
             }
             return Optional.empty();
         }
-        byte[] upscaled = upscaleToLongestEdge(cleaned, upscaleLongestPx);
-        log.info("ImageCleaner produced cleaned image on {}: {} bytes (gen={}, upscaled to ~{}px: {} bytes)",
-                producedBy, cleaned.length, resolution, upscaleLongestPx, upscaled.length);
-        return Optional.of(upscaled);
+        byte[] canvas = upscaleToLongestEdge(cleaned, upscaleLongestPx);
+        if (upscaleLongestPx > 0) {
+            log.info("ImageCleaner produced cleaned image on {}: {} bytes (gen={}, upscaled "
+                    + "to ~{}px: {} bytes)",
+                    producedBy, cleaned.length, resolution, upscaleLongestPx, canvas.length);
+        } else {
+            log.info("ImageCleaner produced cleaned image on {}: {} bytes (gen={}, stored as "
+                    + "the model drew it — local upscale off)",
+                    producedBy, cleaned.length, resolution);
+        }
+        return Optional.of(canvas);
     }
 
     /**
@@ -631,8 +652,7 @@ public class ImageCleanerService {
     /**
      * One full Replicate prediction on the given model.
      *
-     * <p>Generates at a smaller resolution (cheaper/faster) and upscales locally
-     * afterwards — see {@link #upscaleToLongestEdge}. The resolution and aspect asks
+     * <p>The resolution and aspect asks
      * are written in Nano Banana's units here and translated per family by
      * {@link ReplicateImageEditor}, which also drops them and retries once if a model
      * turns out not to know them.
@@ -1454,9 +1474,12 @@ public class ImageCleanerService {
     /**
      * Upscales the cleaned image so its longest edge is {@code longestPx}, using
      * Thumbnailator's high-quality resampler (the same library used elsewhere for
-     * downscaling). Aspect ratio is preserved. This is a classic resampler, not an
-     * AI super-resolution model — it gives a clean, sharp 4K-sized canvas from the
-     * cheaper 2K generation, without the cost of a generative upscale.
+     * downscaling). Aspect ratio is preserved.
+     *
+     * <p>Currently a no-op: {@code upscale-longest-px} defaults to 0, because this is a
+     * classic resampler rather than an AI super-resolution model and interpolating a 2K
+     * generation up to 4K adds no detail the model did not draw. Kept, and kept tested,
+     * so a deployment that wants a larger stored canvas can have one from config.
      *
      * Best-effort: any decode/encode problem (or an already-large image) returns the
      * original bytes unchanged, so upscaling can never fail the clean step.

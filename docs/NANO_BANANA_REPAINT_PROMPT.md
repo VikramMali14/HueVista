@@ -95,5 +95,8 @@ category set.
   falls back to Nano Banana 2.
 - **Resolution:** **2K**, which is what `replicate.image-cleaner.resolution` now
   ships as — same price as 1K on the Gemini tiers, sharper edges = cleaner masks.
-  4K costs ~1.8× more and is mostly resampled away by the local upscale. The mask
-  stage runs at 2K too (`replicate.nano-banana.resolution`).
+  4K costs ~1.8× more for detail the canvas does not need at the size the studio
+  renders it. The mask stage runs at 2K too (`replicate.nano-banana.resolution`).
+- **Local upscale:** off (`replicate.image-cleaner.upscale-longest-px=0`). It was a
+  plain resampler, so at 2K it added stored bytes rather than detail; the cleaned
+  canvas is now kept exactly as the model drew it.
