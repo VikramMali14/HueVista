@@ -189,8 +189,23 @@ public class ImageCleanerService {
     @Value("${replicate.image-cleaner.enabled:false}")
     private boolean enabled;
 
-    /** Resolution requested from the model (Nano Banana Pro: 1K/2K/4K). Blank = omit. */
-    @Value("${replicate.image-cleaner.resolution:1K}")
+    /**
+     * Resolution requested from the model (Nano Banana units 1K/2K/4K, translated per
+     * family by {@link ReplicateImageEditor}). Blank = omit the parameter.
+     *
+     * <p>2K, matching the mask stage. It is the same price as 1K on the Gemini tiers and
+     * holds surface boundaries — a wall meeting a ceiling, a window reveal — that much
+     * further from being smoothed away. That matters more here than it would for a plain
+     * photo: the masks are generated FROM this canvas, so an edge the clean rounds off
+     * is an edge the mask model never sees, and the paint then stops short of the real
+     * surface or bleeds past it. 4K is ~1.8x the price and mostly resampled away by the
+     * local upscale below, so it is not the default.
+     *
+     * <p>One value for the whole chain rather than one per model: whichever model
+     * answers produces the canvas every later step is measured against, so they should
+     * all be asked for the same size.
+     */
+    @Value("${replicate.image-cleaner.resolution:2K}")
     private String resolution;
 
     /**
@@ -1441,7 +1456,7 @@ public class ImageCleanerService {
      * Thumbnailator's high-quality resampler (the same library used elsewhere for
      * downscaling). Aspect ratio is preserved. This is a classic resampler, not an
      * AI super-resolution model — it gives a clean, sharp 4K-sized canvas from the
-     * cheaper 1K generation, without the cost of a generative upscale.
+     * cheaper 2K generation, without the cost of a generative upscale.
      *
      * Best-effort: any decode/encode problem (or an already-large image) returns the
      * original bytes unchanged, so upscaling can never fail the clean step.

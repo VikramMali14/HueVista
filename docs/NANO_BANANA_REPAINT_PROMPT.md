@@ -93,5 +93,7 @@ category set.
   (`google/nano-banana-2`), then Nano Banana Pro (`google/nano-banana-pro`, Gemini 3
   Pro Image), then FLUX 2 Pro and FLUX 2 Max; the segmenter runs Nano Banana Pro and
   falls back to Nano Banana 2.
-- **Resolution:** request **2K** — same price as 1K, sharper edges = cleaner
-  masks. 4K costs ~1.8× more. Set via `replicate.image-cleaner.resolution`.
+- **Resolution:** **2K**, which is what `replicate.image-cleaner.resolution` now
+  ships as — same price as 1K on the Gemini tiers, sharper edges = cleaner masks.
+  4K costs ~1.8× more and is mostly resampled away by the local upscale. The mask
+  stage runs at 2K too (`replicate.nano-banana.resolution`).
