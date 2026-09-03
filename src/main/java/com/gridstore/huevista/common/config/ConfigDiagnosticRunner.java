@@ -80,6 +80,17 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
     @Value("${replicate.image-cleaner.model:NOT SET}")
     private String imageCleanerModel;
 
+    /**
+     * The size the CLEAN is generated at. Printed because it was the one number in this
+     * pair the startup banner did not show, and its absence hid a real misconfiguration:
+     * a deployment carrying REPLICATE_IMAGE_CLEANER_RESOLUTION=1K from an older env file
+     * kept cleaning at 1K after the default moved to 2K, while the mask line beside it
+     * read 2K and looked correct. Masks are generated FROM the cleaned canvas, so that
+     * pairing is not cosmetic — see cleanerResolutionWarning.
+     */
+    @Value("${replicate.image-cleaner.resolution:NOT SET}")
+    private String imageCleanerResolution;
+
     // The rest of the hierarchy. Worth printing on startup because wall detection
     // now runs ONLY on a cleaned canvas: if this list is empty and Nano Banana Pro is
     // having a bad day, every run in that window fails, and this line is where an
@@ -203,9 +214,11 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
             "  Mask Resolution : {}\n" +
             "  Cleaner Enabled : {}\n" +
             "  Cleaner Model   : {}\n" +
+            "  Cleaner Res     : {}\n" +
             "  Cleaner Chain   : {}\n" +
             "  Gemini Key      : {}   (direct Google route for the clean)\n" +
             "  OpenAI Key      : {}   (needed by openai/* in the chain)\n" +
+            "{}" +
             "\n── GOOGLE OAUTH2 ─────────────────────────────────────────────\n" +
             "  Client ID    : {}\n" +
             "  Secret       : {}\n" +
@@ -251,8 +264,9 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
             mask(replicateToken), blank(sam2Version),
             // Auto segmentation — plain values, nothing secret here
             maskSegmenterEnabled, maskSegmenterModel, maskSegmenterResolution,
-            imageCleanerEnabled, imageCleanerModel, imageCleanerFallbacks,
-            isSet(geminiApiKey), isSet(openAiApiKey),
+            imageCleanerEnabled, imageCleanerModel, imageCleanerResolution,
+            imageCleanerFallbacks,
+            isSet(geminiApiKey), isSet(openAiApiKey), cleanerResolutionWarning(),
             // Google
             mask(googleClientId), isSet(googleClientSecret),
             // Razorpay — the key id carries its own mode prefix and is half of a public
@@ -340,6 +354,48 @@ public class ConfigDiagnosticRunner implements ApplicationRunner {
      * still lose events. Each branch corresponds to a failure we have actually hit in
      * a deployed environment.
      */
+    /**
+     * Flags a clean generated coarser than the mask it feeds.
+     *
+     * <p>The two resolutions are separate settings that look independent and are not:
+     * the colour-coded mask is generated FROM the cleaned canvas, so the clean is the
+     * ceiling on what the mask model can resolve. Asking the mask stage for 2K off a 1K
+     * clean does not recover the edge the clean already smoothed away — it just draws
+     * the same boundary at twice the pixel count, and the paint still stops short of the
+     * real surface or bleeds past it.
+     *
+     * <p>Worth a startup line rather than a comment because the way this happens is
+     * invisible in the repo: an environment carrying REPLICATE_IMAGE_CLEANER_RESOLUTION
+     * from an older .env silently overrides the default, and every file in the codebase
+     * still reads 2K. Only the running process knows.
+     *
+     * <p>Compared by rank rather than by string so 1K/2K/4K order correctly and an
+     * unrecognised or unset value simply says nothing instead of crying wolf.
+     */
+    private String cleanerResolutionWarning() {
+        int clean = resolutionRank(imageCleanerResolution);
+        int mask = resolutionRank(maskSegmenterResolution);
+        if (clean < 0 || mask < 0 || clean >= mask) return "";
+        return "  ⚠  The clean is generated at " + imageCleanerResolution.trim()
+             + " but the mask is asked for " + maskSegmenterResolution.trim() + ".\n"
+             + "     Masks are generated FROM the cleaned canvas, so the clean is the ceiling\n"
+             + "     on what they can resolve — an edge lost at " + imageCleanerResolution.trim()
+             + " cannot be found at " + maskSegmenterResolution.trim() + ".\n"
+             + "     Set REPLICATE_IMAGE_CLEANER_RESOLUTION=" + maskSegmenterResolution.trim()
+             + " (or unset it to take the default).\n";
+    }
+
+    /** 1K/2K/4K as a comparable rank; -1 for blank, "NOT SET" or anything unrecognised. */
+    private static int resolutionRank(String value) {
+        if (value == null) return -1;
+        return switch (value.trim().toUpperCase(java.util.Locale.ROOT)) {
+            case "1K" -> 1;
+            case "2K" -> 2;
+            case "4K" -> 4;
+            default -> -1;
+        };
+    }
+
     private String razorpayWarnings() {
         if (isBlank(razorpayKeyId) || isBlank(razorpayKeySecret)) {
             return "  ⚠  Razorpay keys not set — subscriptions, points and project purchases\n"

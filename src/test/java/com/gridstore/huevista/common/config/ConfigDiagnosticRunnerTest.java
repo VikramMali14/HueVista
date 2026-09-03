@@ -12,6 +12,53 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ConfigDiagnosticRunnerTest {
 
+    /**
+     * The clean/mask resolution pairing, which is a real production case rather than a
+     * hypothetical: an environment kept REPLICATE_IMAGE_CLEANER_RESOLUTION=1K from an
+     * older .env, so the clean carried on at 1K after the default moved to 2K while the
+     * mask line beside it read 2K and looked right. Nothing in the repository showed it
+     * — only the running process knew — so the boot banner is where it has to surface.
+     */
+    private String resolutionWarningFor(String cleanRes, String maskRes) {
+        ConfigDiagnosticRunner runner = new ConfigDiagnosticRunner();
+        ReflectionTestUtils.setField(runner, "imageCleanerResolution", cleanRes);
+        ReflectionTestUtils.setField(runner, "maskSegmenterResolution", maskRes);
+        return (String) ReflectionTestUtils.invokeMethod(runner, "cleanerResolutionWarning");
+    }
+
+    @Test
+    void aCleanCoarserThanTheMaskItFeedsIsFlagged() {
+        assertThat(resolutionWarningFor("1K", "2K"))
+                .contains("clean is generated at 1K")
+                .contains("mask is asked for 2K")
+                // The remedy names the variable, because the value is almost always
+                // coming from an environment nobody has looked at in a while.
+                .contains("REPLICATE_IMAGE_CLEANER_RESOLUTION=2K");
+    }
+
+    @Test
+    void matchingResolutionsSayNothing() {
+        assertThat(resolutionWarningFor("2K", "2K")).isEmpty();
+    }
+
+    @Test
+    void aCleanFinerThanTheMaskIsNotAProblem() {
+        // The mask being coarser is a deliberate, cheaper choice: it is generated from a
+        // canvas that already holds the edge, so it costs detail it can afford to lose.
+        assertThat(resolutionWarningFor("4K", "2K")).isEmpty();
+    }
+
+    @Test
+    void anUnsetOrUnknownResolutionIsNotGuessedAt() {
+        // Blank means "let the model pick", and NOT SET means the property is absent.
+        // Neither is comparable to 2K, and inventing a rank for them would put a warning
+        // on the screen of every deployment that never set one.
+        assertThat(resolutionWarningFor("NOT SET", "2K")).isEmpty();
+        assertThat(resolutionWarningFor("", "2K")).isEmpty();
+        assertThat(resolutionWarningFor("1K", "NOT SET")).isEmpty();
+        assertThat(resolutionWarningFor("720p", "2K")).isEmpty();
+    }
+
     private String warningsFor(String enabled, String host, String username,
                                String password, String from, String billingFrom) {
         ConfigDiagnosticRunner runner = new ConfigDiagnosticRunner();
