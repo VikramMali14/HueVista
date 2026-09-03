@@ -44,8 +44,8 @@ Retailers subscribe to use HueVista as a sales tool with walk-ins, shortening th
                       |
 +---------------------v----------------------------+
 |              AI / ML LAYER                       |
-|  Image cleaning: Nano Banana Pro → Gemini direct |
-|                 → FLUX 2 → GPT Image → Seedream  |
+|  Image cleaning:  Nano Banana 2 → Nano Banana   |
+|      Pro → FLUX 2 Pro → FLUX 2 Max              |
 |  Auto mask generation:    Nano Banana (color)    |
 |    (runs ONLY on a cleaned canvas)               |
 |  Click refinement:        SAM 2 (point prompt)   |
@@ -167,7 +167,7 @@ With this on, the two paid Replicate steps are replaced by local no-ops:
 | Step | Normally | With the stub |
 |---|---|---|
 | Upload classification | Claude Vision | **unchanged — still calls Claude** (indoor / house exterior / not a house) |
-| Photo clean-up | Nano Banana Pro repaint, falling down a hierarchy of other image models | skipped — the uploaded photo is left untouched and stays the canvas, and the mask step still runs (the "clean first" gate applies only to a clean that was attempted and failed) |
+| Photo clean-up | Nano Banana 2 repaint, falling down a chain of other image models | skipped — the uploaded photo is left untouched and stays the canvas, and the mask step still runs (the "clean first" gate applies only to a clean that was attempted and failed) |
 | Cleaning hints | Claude | skipped (only reachable from inside the cleaner) |
 | Colour-coded mask | Nano Banana Pro | drawn locally: three equal **vertical** stripes, RED \| GREEN \| BLUE |
 
@@ -294,16 +294,22 @@ a wire crossing a wall becomes a wall edge, an unplastered shell reads as claddi
 blacks the room out. So the clean is defended first, and the run is failed honestly
 rather than half-completed.
 
-1. **The clean is asked of several models, in order** — Nano Banana Pro on Replicate,
-   then the same model through Google's own API (a different queue: Replicate answers a
-   full pool with `ModelRateLimitError … (E003)`, which says nothing about the photo),
-   then a different family each time: FLUX 2 Pro → GPT Image → Seedream. The first image
-   produced wins. A refusal about the *photo* (a safety block) stops the chain
-   immediately — every model would answer the same, and proving it costs the user their
-   run. Configure with `REPLICATE_IMAGE_CLEANER_FALLBACK_MODELS`; each model's request
-   schema is picked from its name, so newer tiers can be swapped in without a code
-   change. (Claude is not in this chain: Anthropic's models read images but do not edit
-   them. Claude classifies the photo and describes its clutter for the prompt.)
+1. **The clean is asked of four models, in order** — Nano Banana 2 → Nano Banana Pro →
+   FLUX 2 Pro → FLUX 2 Max, all on Replicate, one attempt each. The chain is grouped by
+   family: Gemini leads because the mask stage runs on Gemini too, so the canvas and the
+   masks drawn over it normally come from the same family, and FLUX is the independent
+   pool behind it — reached once two Gemini tiers in a row have declined, which is when
+   the trouble looks Gemini-wide rather than like one busy tier (Replicate answers a full
+   pool with `ModelRateLimitError … (E003)`, which says nothing about the photo). The
+   first image produced wins. A refusal about the *photo* (a safety block) stops the
+   chain immediately — every model would answer the same, and proving it costs the user
+   their run. Google's own API is a further tail step behind the chain, OFF unless
+   `REPLICATE_IMAGE_CLEANER_GEMINI_FALLBACK` is set. Configure the chain with
+   `REPLICATE_IMAGE_CLEANER_MODEL` and `REPLICATE_IMAGE_CLEANER_FALLBACK_MODELS`; each
+   model's request schema is picked from its name, so newer tiers can be swapped in
+   without a code change. (Claude is not in this chain: Anthropic's models read images
+   but do not edit them. Claude classifies the photo and describes its clutter for the
+   prompt.)
 2. **No clean, no masks.** If every provider declines, the project ends `FAILED` with
    `failureStage=CLEAN` and the mask model is never called — no second generation spent
    on a canvas that doesn't exist.
@@ -341,8 +347,8 @@ GitHub Actions workflow at [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 |---|---|---|
 | Classification | Claude Haiku Vision | ~₹0.30 |
 | Auto-mask | Replicate Nano Banana | ~₹3.40 |
-| Image cleaning | Replicate Nano Banana Pro | ~₹8.50 |
-| ↳ when that can't serve it | Gemini direct, then FLUX 2 Pro → GPT Image → Seedream | same order of magnitude; only the provider that SUCCEEDS bills a full generation |
+| Image cleaning | Replicate Nano Banana 2 | ~₹8.50 |
+| ↳ when that can't serve it | Nano Banana Pro, then FLUX 2 Pro → FLUX 2 Max | same order of magnitude; only the model that SUCCEEDS bills a full generation |
 | Click refinement | Replicate SAM 2 | ~₹1.70 |
 | Recommendation | Claude Sonnet Vision | ~₹2.50 |
 | Color application | Browser WebGL | ₹0 |

@@ -73,9 +73,10 @@ services:
       REPLICATE_NANO_BANANA_ENABLED: ${REPLICATE_NANO_BANANA_ENABLED:-false}
       REPLICATE_NANO_BANANA_MODEL: ${REPLICATE_NANO_BANANA_MODEL:-google/nano-banana-pro}
       # Image cleaner (declutter + refresh paint before masking) — opt-in, default off.
-      # Defaults to Gemini 3 Pro Image (google/nano-banana-pro); ~$0.10 per clean on Replicate.
+      # First in the chain: Nano Banana 2 (google/nano-banana-2); ~$0.10 per clean on
+      # Replicate. The rest of the chain is REPLICATE_IMAGE_CLEANER_FALLBACK_MODELS.
       REPLICATE_IMAGE_CLEANER_ENABLED: ${REPLICATE_IMAGE_CLEANER_ENABLED:-false}
-      REPLICATE_IMAGE_CLEANER_MODEL: ${REPLICATE_IMAGE_CLEANER_MODEL:-google/nano-banana-pro}
+      REPLICATE_IMAGE_CLEANER_MODEL: ${REPLICATE_IMAGE_CLEANER_MODEL:-google/nano-banana-2}
       RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
       RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
