@@ -674,15 +674,15 @@ public class ImageCleanerService {
     // for its colours in PLAIN WORDS rather than hex (see CLEAN_PROMPT_INTERIOR
     // for why). "A clean, bright, pure brilliant white" is the same white these
     // hexes name — if one moves, move the other.
-    private static final String EXT_WALL = "#ffffff";      // white
-    private static final String EXT_BORDER = "#ffffff";    // white trim (same as walls)
+    static final String EXT_WALL = "#ffffff";      // white
+    static final String EXT_BORDER = "#ffffff";    // white trim (same as walls)
     // Doors and railings get no recolourable region (the segmenter marks them
     // BLACK), so the colours below are the final colours those surfaces keep.
     // Door leaves stay a dark wood brown; metal/iron railings are finished a
     // charcoal grey (reads as powder-coated metalwork, matching the reference
     // combo's "Metalwork: Charcoal Grey").
-    private static final String DOOR_LEAF = "#5c4033";     // dark brown wood
-    private static final String RAILING = "#43464a";       // charcoal grey metal
+    static final String DOOR_LEAF = "#5c4033";     // dark brown wood
+    static final String RAILING = "#43464a";       // charcoal grey metal
 
     /**
      * Interiors and exterior facades have completely different clutter and
