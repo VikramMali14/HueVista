@@ -89,9 +89,9 @@ category set.
 
 ## Generation settings
 
-- **Model:** the clean/repaint chain leads with Nano Banana 2
-  (`google/nano-banana-2`), then Nano Banana Pro (`google/nano-banana-pro`, Gemini 3
-  Pro Image), then FLUX 2 Pro and FLUX 2 Max; the segmenter runs Nano Banana Pro and
-  falls back to Nano Banana 2.
+- **Model:** the clean/repaint chain leads with Nano Banana Pro
+  (`google/nano-banana-pro`, Gemini 3 Pro Image), then Nano Banana
+  (`google/nano-banana`), then FLUX 2 Pro and FLUX 2 Max; the segmenter runs Nano
+  Banana Pro and falls back to Nano Banana 2.
 - **Resolution:** request **2K** — same price as 1K, sharper edges = cleaner
   masks. 4K costs ~1.8× more. Set via `replicate.image-cleaner.resolution`.

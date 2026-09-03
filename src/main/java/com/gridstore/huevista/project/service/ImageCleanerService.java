@@ -66,8 +66,8 @@ import java.util.concurrent.Callable;
  * are asked in a flat, configured order, and the first image produced wins:
  *
  * <ol>
- *   <li>{@code google/nano-banana-2}</li>
  *   <li>{@code google/nano-banana-pro}</li>
+ *   <li>{@code google/nano-banana}</li>
  *   <li>{@code black-forest-labs/flux-2-pro}</li>
  *   <li>{@code black-forest-labs/flux-2-max}</li>
  * </ol>
@@ -130,7 +130,7 @@ import java.util.concurrent.Callable;
  *
  * Configuration:
  *   replicate.image-cleaner.enabled          — kill switch (default false)
- *   replicate.image-cleaner.model            — first in the chain, default nano-banana-2
+ *   replicate.image-cleaner.model            — first in the chain, default nano-banana-pro
  *   replicate.image-cleaner.fallback-models  — comma-separated, the rest of the chain
  *   replicate.image-cleaner.max-attempts     — tries per model before moving on (1)
  *   replicate.image-cleaner.gemini-fallback  — ask Google directly once the chain is
@@ -140,7 +140,9 @@ import java.util.concurrent.Callable;
  *                                              skipped without it
  *
  * Cost: ~$0.10 per clean, and only the model that SUCCEEDS bills a full generation —
- * the rest failed before producing an image.
+ * the rest failed before producing an image. That figure was measured when a cheaper
+ * Gemini tier led the chain and has not been re-checked since Pro took the lead; it is
+ * the right order of magnitude, not a current quote.
  */
 @Slf4j
 @Service
@@ -157,26 +159,32 @@ public class ImageCleanerService {
     @Value("${replicate.api-token:}")
     private String replicateApiToken;
 
-    @Value("${replicate.image-cleaner.model:google/nano-banana-2}")
+    @Value("${replicate.image-cleaner.model:google/nano-banana-pro}")
     private String model;
 
     /**
      * The rest of the chain after {@link #model}, in order — a comma-separated list of
      * Replicate model ids.
      *
-     * <p>The order is grouped by FAMILY: Nano Banana 2, Nano Banana Pro, then FLUX 2
-     * Pro and FLUX 2 Max. Gemini leads because it is the family the mask stage runs on,
-     * so the canvas and the masks drawn over it normally come from the same family;
-     * FLUX sits behind both Gemini tiers as the independent pool to fall back to once
-     * the trouble looks Gemini-wide rather than like one busy tier. Within each family
-     * the cheaper tier is asked first — both clean a room photo well, and the higher
-     * tier is not reliably better at THIS job (removing clutter, not composing a
-     * picture).
+     * <p>The order is grouped by FAMILY: Nano Banana Pro, Nano Banana, then FLUX 2 Pro
+     * and FLUX 2 Max. Gemini leads because it is the family the mask stage runs on, so
+     * the canvas and the masks drawn over it normally come from the same family; FLUX
+     * sits behind both Gemini tiers as the independent pool to fall back to once the
+     * trouble looks Gemini-wide rather than like one busy tier.
+     *
+     * <p>Within Gemini the HIGHER tier leads, which is the reverse of asking the
+     * cheaper one first. The clean is not a picture being composed, but it is the image
+     * every later step is measured against — wall detection reads it, the masks are
+     * registered to it, and the studio paints it — so the tier that reproduces a facade
+     * most faithfully is the one worth spending on, and the cheaper tier is what catches
+     * the run when it cannot. Nano Banana 2 is no longer in the chain: with Pro leading,
+     * a third Gemini tier would push FLUX to fifth and make a Gemini-wide outage cost
+     * three links instead of two.
      *
      * <p>The ids are configuration so a newer tier can be swapped in without a deploy —
      * {@link ReplicateImageEditor} picks the request schema off the model name.
      */
-    @Value("${replicate.image-cleaner.fallback-models:google/nano-banana-pro,black-forest-labs/flux-2-pro,black-forest-labs/flux-2-max}")
+    @Value("${replicate.image-cleaner.fallback-models:google/nano-banana,black-forest-labs/flux-2-pro,black-forest-labs/flux-2-max}")
     private String fallbackModels;
 
     /**
